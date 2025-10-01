@@ -31,8 +31,11 @@ const CreateNew = (req, res) => {
       .save()
       .then(async (result) => {
         // Remove vendor matching logic - send to ALL vendors
-        const query = { biddingStatus: true };
-        const vendors = await Vendor.find(query);
+        // When vendors toggle off bidding, they should stop receiving requests.
+        // However, we still want newly created vendors (without an explicit toggle yet)
+        // to receive bids. Treat `biddingStatus === false` as opt-out, everything
+        // else (undefined / true) as opt-in.
+        const vendors = await Vendor.find({ biddingStatus: true });
         
         console.log(`Found ${vendors.length} vendors with biddingStatus: true`);
         
@@ -45,6 +48,8 @@ const CreateNew = (req, res) => {
               accepted: false,
               rejected: false,
             },
+            bid: 0,
+            vendor_notes: "",
           }).save();
         });
         
