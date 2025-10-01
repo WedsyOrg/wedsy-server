@@ -1259,12 +1259,21 @@ const AcceptBiddingBid = async (req, res) => {
   
   if (_id) {
     try {
+      const bidAmount = typeof bid === "number" ? bid : parseInt(bid, 10);
+
+      if (!Number.isFinite(bidAmount) || bidAmount <= 0) {
+        return res.status(400).send({ message: "Invalid bid amount" });
+      }
+
       const result = await BiddingBid.findOneAndUpdate(
         { bidding: _id, vendor: user_id, "status.rejected": false },
         {
           $set: {
             "status.accepted": true,
-            bid,
+            "status.rejected": false,
+            "status.userRejected": false,
+            "status.userViewed": false,
+            bid: bidAmount,
             vendor_notes,
           },
         },
