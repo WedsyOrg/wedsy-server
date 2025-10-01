@@ -1,96 +1,98 @@
 const Event = require("../models/Event");
 const User = require("../models/User");
-const { SendUpdate } = require("../utils/update");
+const {SendUpdate} = require("../utils/update");
 
 const CreateNew = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { name, community, eventDay, date, time, venue, user } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {name, community, eventDay, date, time, venue, user} = req.body;
   if (!name || !community || !eventDay || !date || !time || !venue) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
+    // Store the provided date both as date and eventDate to ensure consistency
     new Event({
       user: isAdmin ? user : user_id,
       name,
       community,
-      eventDays: [{ name: eventDay, date, time, venue }],
+      eventDate: date, // Add the eventDate field explicitly
+      eventDays: [{name: eventDay, date, time, venue}],
     })
       .save()
       .then((result) => {
-        res.status(200).send({ message: "success", _id: result._id });
+        res.status(200).send({message: "success", _id: result._id});
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const Update = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { name, community, eventNotes } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+  const {name, community, eventNotes} = req.body;
   if (!eventNotes && !(name && community)) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else if (eventNotes) {
-    Event.findOneAndUpdate(isAdmin ? { _id } : { _id, user: user_id }, {
+    Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
       eventNotes,
     })
       .then((result) => {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   } else if (name && community) {
-    Event.findOneAndUpdate(isAdmin ? { _id } : { _id, user: user_id }, {
+    Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
       name,
       community,
     })
       .then((result) => {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   } else {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   }
 };
 
 const UpdateEventPlanner = (req, res) => {
-  const { _id } = req.params;
-  const { eventPlanner } = req.body;
+  const {_id} = req.params;
+  const {eventPlanner} = req.body;
   if (!eventPlanner) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
-      { _id },
+      {_id},
       {
         eventPlanner,
       }
     )
       .then((result) => {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const ShuffleEventDays = async (req, res) => {
-  const { _id } = req.params;
-  const { eventDayId, direction } = req.body;
+  const {_id} = req.params;
+  const {eventDayId, direction} = req.body;
   if (!["up", "down"].includes(direction)) {
     return res
       .status(400)
-      .json({ error: "Invalid direction. Use 'up' or 'down'." });
+      .json({error: "Invalid direction. Use 'up' or 'down'."});
   }
 
   try {
     // Find the event by ID
     const event = await Event.findById(_id);
     if (!event) {
-      return res.status(404).json({ error: "Event not found." });
+      return res.status(404).json({error: "Event not found."});
     }
 
     const eventDays = event.eventDays;
@@ -99,14 +101,14 @@ const ShuffleEventDays = async (req, res) => {
     );
 
     if (index === -1) {
-      return res.status(404).json({ error: "Event day not found." });
+      return res.status(404).json({error: "Event day not found."});
     }
 
     // Calculate the new index
     const newIndex = direction === "up" ? index - 1 : index + 1;
 
     if (newIndex < 0 || newIndex >= eventDays.length) {
-      return res.status(400).json({ error: "Cannot shuffle beyond bounds." });
+      return res.status(400).json({error: "Cannot shuffle beyond bounds."});
     }
 
     // Swap the event days
@@ -118,21 +120,21 @@ const ShuffleEventDays = async (req, res) => {
     // Save the updated event
     await event.save();
 
-    res.status(200).json({ message: "success", event });
+    res.status(200).json({message: "success", event});
   } catch (error) {
     console.error("Error shuffling event days:", error);
-    res.status(500).json({ error: "Internal server error." });
+    res.status(500).json({error: "Internal server error."});
   }
 };
 
 const AddEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { name, date, time, venue } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+  const {name, date, time, venue} = req.body;
   if (!name || !date || !time || !venue) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
-    Event.findOneAndUpdate(isAdmin ? { _id } : { _id, user: user_id }, {
+    Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
       $addToSet: {
         eventDays: {
           name,
@@ -150,25 +152,25 @@ const AddEventDay = (req, res) => {
       },
     })
       .then((result) => {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const UpdateEventDayNotes = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, eventDay } = req.params;
-  const { notes } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, eventDay} = req.params;
+  const {notes} = req.body;
   if (notes === null || notes === undefined) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, "eventDays._id": eventDay }
-        : { _id, user: user_id, "eventDays._id": eventDay },
+        ? {_id, "eventDays._id": eventDay}
+        : {_id, user: user_id, "eventDays._id": eventDay},
       {
         $set: {
           "eventDays.$.notes": notes,
@@ -177,28 +179,28 @@ const UpdateEventDayNotes = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const UpdateEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, eventDay } = req.params;
-  const { name, date, time, venue } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, eventDay} = req.params;
+  const {name, date, time, venue} = req.body;
   if (!name || !date || !time || !venue || !eventDay) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, "eventDays._id": eventDay }
-        : { _id, user: user_id, "eventDays._id": eventDay },
+        ? {_id, "eventDays._id": eventDay}
+        : {_id, user: user_id, "eventDays._id": eventDay},
       {
         $set: {
           "eventDays.$.name": name,
@@ -210,23 +212,23 @@ const UpdateEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const DeleteEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, eventDay } = req.params;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, eventDay} = req.params;
   Event.findOneAndUpdate(
     isAdmin
-      ? { _id, "eventDays._id": eventDay, "status.approved": false }
+      ? {_id, "eventDays._id": eventDay, "status.approved": false}
       : {
           _id,
           user: user_id,
@@ -235,38 +237,37 @@ const DeleteEventDay = (req, res) => {
         },
     {
       $pull: {
-        eventDays: { _id: eventDay },
+        eventDays: {_id: eventDay},
       },
     }
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const UpdateNotes = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, eventDay } = req.params;
-  const { user, decor_id, package_id, admin_notes, user_notes, notes } =
-    req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, eventDay} = req.params;
+  const {user, decor_id, package_id, admin_notes, user_notes, notes} = req.body;
   if (!decor_id && !package_id) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     if (decor_id) {
       Event.updateOne(
         isAdmin
-          ? { _id, eventDays: { $elemMatch: { _id: eventDay } } }
+          ? {_id, eventDays: {$elemMatch: {_id: eventDay}}}
           : {
               _id,
               user: user_id,
-              eventDays: { $elemMatch: { _id: eventDay } },
+              eventDays: {$elemMatch: {_id: eventDay}},
             },
         {
           $set: isAdmin
@@ -279,26 +280,26 @@ const UpdateNotes = (req, res) => {
                 "eventDays.$.decorItems.$[x].user_notes": user_notes,
               },
         },
-        { arrayFilters: [{ "x.decor": decor_id }] }
+        {arrayFilters: [{"x.decor": decor_id}]}
       )
         .then((result) => {
           if (result) {
-            res.status(200).send({ message: "success" });
+            res.status(200).send({message: "success"});
           } else {
-            res.status(404).send({ message: "Event not found" });
+            res.status(404).send({message: "Event not found"});
           }
         })
         .catch((error) => {
-          res.status(400).send({ message: "error", error });
+          res.status(400).send({message: "error", error});
         });
     } else if (package_id) {
       Event.updateOne(
         isAdmin
-          ? { _id, eventDays: { $elemMatch: { _id: eventDay } } }
+          ? {_id, eventDays: {$elemMatch: {_id: eventDay}}}
           : {
               _id,
               user: user_id,
-              eventDays: { $elemMatch: { _id: eventDay } },
+              eventDays: {$elemMatch: {_id: eventDay}},
             },
         {
           $set: isAdmin
@@ -310,33 +311,33 @@ const UpdateNotes = (req, res) => {
                 "eventDays.$.packages.$[x].user_notes": user_notes,
               },
         },
-        { arrayFilters: [{ "x.package": package_id }] }
+        {arrayFilters: [{"x.package": package_id}]}
       )
         .then((result) => {
           if (result) {
-            res.status(200).send({ message: "success" });
+            res.status(200).send({message: "success"});
           } else {
-            res.status(404).send({ message: "Event not found" });
+            res.status(404).send({message: "Event not found"});
           }
         })
         .catch((error) => {
-          res.status(400).send({ message: "error", error });
+          res.status(400).send({message: "error", error});
         });
     }
   }
 };
 
 const UpdateCustomItemsInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { customItems } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {customItems} = req.body;
   if (customItems === undefined || customItems === null) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.customItems": customItems,
@@ -345,28 +346,28 @@ const UpdateCustomItemsInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const UpdateCustomItemsTitleInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { customItemsTitle } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {customItemsTitle} = req.body;
   if (customItemsTitle === undefined || customItemsTitle === null) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.customItemsTitle": customItemsTitle,
@@ -375,28 +376,28 @@ const UpdateCustomItemsTitleInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const UpdateMandatoryItemsInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { mandatoryItems } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {mandatoryItems} = req.body;
   if (mandatoryItems === undefined || mandatoryItems === null) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.mandatoryItems": mandatoryItems,
@@ -405,20 +406,20 @@ const UpdateMandatoryItemsInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const AddDecorInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
   const {
     decor,
     platform,
@@ -443,8 +444,8 @@ const AddDecorInEventDay = (req, res) => {
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $addToSet: {
           "eventDays.$.decorItems": {
@@ -469,20 +470,20 @@ const AddDecorInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const EditDecorInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
   const {
     decor_id,
     platform,
@@ -506,8 +507,8 @@ const EditDecorInEventDay = (req, res) => {
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.decorItems.$[x].price": price,
@@ -525,188 +526,188 @@ const EditDecorInEventDay = (req, res) => {
           "eventDays.$.decorItems.$[x].priceModifier": priceModifier,
         },
       },
-      { arrayFilters: [{ "x.decor": decor_id }] }
+      {arrayFilters: [{"x.decor": decor_id}]}
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const EditDecorAddOnsInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor_id, addOns, price } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {decor_id, addOns, price} = req.body;
   if (!decor_id || addOns === undefined) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.decorItems.$[x].addOns": addOns,
           "eventDays.$.decorItems.$[x].price": price,
         },
       },
-      { arrayFilters: [{ "x.decor": decor_id }] }
+      {arrayFilters: [{"x.decor": decor_id}]}
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const EditDecorIncludedInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor_id, included } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {decor_id, included} = req.body;
   if (!decor_id || included === undefined) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.decorItems.$[x].included": included,
         },
       },
-      { arrayFilters: [{ "x.decor": decor_id }] }
+      {arrayFilters: [{"x.decor": decor_id}]}
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const EditDecorSetupLocationImageInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor_id, setupLocationImage } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {decor_id, setupLocationImage} = req.body;
   if (!decor_id || !setupLocationImage) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.decorItems.$[x].setupLocationImage": setupLocationImage,
         },
       },
-      { arrayFilters: [{ "x.decor": decor_id }] }
+      {arrayFilters: [{"x.decor": decor_id}]}
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const EditDecorPrimaryColorInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor_id, primaryColor } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {decor_id, primaryColor} = req.body;
   if (!decor_id || !primaryColor) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.decorItems.$[x].primaryColor": primaryColor,
         },
       },
-      { arrayFilters: [{ "x.decor": decor_id }] }
+      {arrayFilters: [{"x.decor": decor_id}]}
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const EditDecorSecondaryColorInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor_id, secondaryColor } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {decor_id, secondaryColor} = req.body;
   if (!decor_id || !secondaryColor) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $set: {
           "eventDays.$.decorItems.$[x].secondaryColor": secondaryColor,
         },
       },
-      { arrayFilters: [{ "x.decor": decor_id }] }
+      {arrayFilters: [{"x.decor": decor_id}]}
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const RemoveDecorInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {decor} = req.body;
   if (!decor) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $pull: {
           "eventDays.$.decorItems": {
@@ -717,26 +718,26 @@ const RemoveDecorInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const AddDecorPackageInEventDay = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id, dayId } = req.params;
-  const { package, price, variant, decorItems } = req.body;
+  const {user_id} = req.auth;
+  const {_id, dayId} = req.params;
+  const {package, price, variant, decorItems} = req.body;
   if (!package || !variant || !price) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
-      { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+      {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $addToSet: {
           "eventDays.$.packages": {
@@ -750,28 +751,28 @@ const AddDecorPackageInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const RemoveDecorPackageInEventDay = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { package } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id, dayId} = req.params;
+  const {package} = req.body;
   if (!package) {
-    res.status(400).send({ message: "Incomplete Data" });
+    res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
       isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+        ? {_id, eventDays: {$elemMatch: {_id: dayId}}}
+        : {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
       {
         $pull: {
           "eventDays.$.packages": {
@@ -782,19 +783,19 @@ const RemoveDecorPackageInEventDay = (req, res) => {
     )
       .then((result) => {
         if (result) {
-          res.status(200).send({ message: "success" });
+          res.status(200).send({message: "success"});
         } else {
-          res.status(404).send({ message: "Event not found" });
+          res.status(404).send({message: "Event not found"});
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(400).send({message: "error", error});
       });
   }
 };
 
 const GetAll = async (req, res) => {
-  const { user_id, isAdmin } = req.auth;
+  const {user_id, isAdmin} = req.auth;
   if (isAdmin) {
     if (req.query.stats === "upcoming") {
       //
@@ -810,17 +811,17 @@ const GetAll = async (req, res) => {
               $size: {
                 $filter: {
                   input: "$eventDays",
-                  cond: { $eq: ["$$this.status.finalized", true] },
+                  cond: {$eq: ["$$this.status.finalized", true]},
                 },
               },
             },
           },
         },
-        { $group: { _id: null, count: { $sum: "$count" } } },
+        {$group: {_id: null, count: {$sum: "$count"}}},
       ]);
       // Extract the count from the result
       const count = result.length > 0 ? result[0].count : 0;
-      res.send({ pending_approval: count });
+      res.send({pending_approval: count});
     } else {
       const page = parseInt(req.query.page) || 1;
       const limit = parseInt(req.query.limit) || 10;
@@ -844,17 +845,17 @@ const GetAll = async (req, res) => {
       }
       if (search) {
         query.$or = [
-          { name: { $regex: new RegExp(search, "i") } },
-          { venue: { $regex: new RegExp(search, "i") } },
-          { community: { $regex: new RegExp(search, "i") } },
+          {name: {$regex: new RegExp(search, "i")}},
+          {venue: {$regex: new RegExp(search, "i")}},
+          {community: {$regex: new RegExp(search, "i")}},
         ];
         query.$or.push({
           user: {
             $in: await User.find({
               $or: [
-                { name: { $regex: new RegExp(search, "i") } },
-                { phone: { $regex: new RegExp(search, "i") } },
-                { email: { $regex: new RegExp(search, "i") } },
+                {name: {$regex: new RegExp(search, "i")}},
+                {phone: {$regex: new RegExp(search, "i")}},
+                {email: {$regex: new RegExp(search, "i")}},
               ],
             }).distinct("_id"),
           },
@@ -886,7 +887,7 @@ const GetAll = async (req, res) => {
           query["status.approved"] = true;
           query["status.paymentDone"] = false;
           query.$expr = {
-            $eq: ["$amount.paid", { $multiply: ["$amount.total", 0.2] }],
+            $eq: ["$amount.paid", {$multiply: ["$amount.total", 0.2]}],
           };
         } else if (status === "Partially Paid") {
           query["status.finalized"] = true;
@@ -895,7 +896,7 @@ const GetAll = async (req, res) => {
           query.$and = [
             {
               $expr: {
-                $gt: ["$amount.paid", { $multiply: ["$amount.total", 0.2] }],
+                $gt: ["$amount.paid", {$multiply: ["$amount.total", 0.2]}],
               },
             },
             {
@@ -919,7 +920,7 @@ const GetAll = async (req, res) => {
         query["eventDays.date"] = eventDate;
       }
       if (startDate && endDate) {
-        query["eventDays.date"] = { $gte: startDate, $lte: endDate };
+        query["eventDays.date"] = {$gte: startDate, $lte: endDate};
       }
       if (sort) {
         if (sort === "Newest (Creation)") {
@@ -947,7 +948,7 @@ const GetAll = async (req, res) => {
             )
             .exec()
             .then((result) => {
-              res.send({ list: result, totalPages, page, limit });
+              res.send({list: result, totalPages, page, limit});
             })
             .catch((error) => {
               res.status(400).send({
@@ -964,9 +965,29 @@ const GetAll = async (req, res) => {
         });
     }
   } else {
-    Event.find({ user: user_id })
+    Event.find({user: user_id})
       .exec()
-      .then((result) => {
+      .then((events) => {
+        // For each event, ensure eventDate field exists
+        const result = events.map((event) => {
+          const eventObj = event.toObject();
+
+          // If eventDate doesn't exist, set it based on best available date
+          if (!eventObj.eventDate) {
+            if (
+              eventObj.eventDays &&
+              eventObj.eventDays.length > 0 &&
+              eventObj.eventDays[0].date
+            ) {
+              eventObj.eventDate = eventObj.eventDays[0].date;
+            } else if (eventObj.date) {
+              eventObj.eventDate = eventObj.date;
+            }
+          }
+
+          return eventObj;
+        });
+
         res.send(result);
       })
       .catch((error) => {
@@ -979,9 +1000,9 @@ const GetAll = async (req, res) => {
 };
 
 const MarkEventLost = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { lostResponse } = req.body;
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+  const {lostResponse} = req.body;
   Event.findOneAndUpdate(
     isAdmin
       ? {
@@ -1000,21 +1021,21 @@ const MarkEventLost = (req, res) => {
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const FinalizeEventDay = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id, dayId } = req.params;
+  const {user_id} = req.auth;
+  const {_id, dayId} = req.params;
   Event.findOneAndUpdate(
-    { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+    {_id, user: user_id, eventDays: {$elemMatch: {_id: dayId}}},
     {
       $set: {
         "eventDays.$.status.finalized": true,
@@ -1023,19 +1044,19 @@ const FinalizeEventDay = (req, res) => {
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const FinalizeEvent = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
   Event.findOne(
     isAdmin
       ? {
@@ -1127,38 +1148,38 @@ const FinalizeEvent = (req, res) => {
           },
           {
             arrayFilters: [
-              { "elem._id": { $in: summary.map((i) => i.eventDayId) } },
+              {"elem._id": {$in: summary.map((i) => i.eventDayId)}},
             ],
           }
         )
           .then((result) => {
             if (result) {
-              res.status(200).send({ message: "success" });
+              res.status(200).send({message: "success"});
             } else {
-              res.status(404).send({ message: "Event not found" });
+              res.status(404).send({message: "Event not found"});
             }
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            res.status(400).send({message: "error", error});
           });
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const ApproveEventDay = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id, dayId } = req.params;
+  const {user_id} = req.auth;
+  const {_id, dayId} = req.params;
   Event.findOneAndUpdate(
     {
       _id,
       "status.finalized": true,
       "status.approved": false,
-      eventDays: { $elemMatch: { _id: dayId, "status.finalized": true } },
+      eventDays: {$elemMatch: {_id: dayId, "status.finalized": true}},
     },
     {
       $set: {
@@ -1168,19 +1189,19 @@ const ApproveEventDay = (req, res) => {
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const RemoveEventDayApproval = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id, dayId } = req.params;
+  const {user_id} = req.auth;
+  const {_id, dayId} = req.params;
   Event.findOneAndUpdate(
     {
       _id,
@@ -1202,21 +1223,21 @@ const RemoveEventDayApproval = (req, res) => {
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const ApproveEvent = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id } = req.params;
-  const { discount } = req.body;
-  Event.findOne({ _id, "status.finalized": true, "status.approved": false })
+  const {user_id} = req.auth;
+  const {_id} = req.params;
+  const {discount} = req.body;
+  Event.findOne({_id, "status.finalized": true, "status.approved": false})
     .populate("user")
     .exec()
     .then((event) => {
@@ -1268,7 +1289,7 @@ const ApproveEvent = (req, res) => {
         const tempDiscount = discount || 0;
         let finalTotal = finalPreTotal - tempDiscount;
         Event.findOneAndUpdate(
-          { _id, "status.finalized": true, "status.approved": false },
+          {_id, "status.finalized": true, "status.approved": false},
           {
             $set: {
               amount: {
@@ -1287,7 +1308,7 @@ const ApproveEvent = (req, res) => {
           },
           {
             arrayFilters: [
-              { "elem._id": { $in: summary.map((i) => i.eventDayId) } },
+              {"elem._id": {$in: summary.map((i) => i.eventDayId)}},
             ],
           }
         )
@@ -1301,28 +1322,28 @@ const ApproveEvent = (req, res) => {
                   phone: event?.user?.phone,
                 },
               });
-              res.status(200).send({ message: "success" });
+              res.status(200).send({message: "success"});
             } else {
-              res.status(404).send({ message: "Event not found" });
+              res.status(404).send({message: "Event not found"});
             }
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            res.status(400).send({message: "error", error});
           });
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const RemoveEventApproval = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id } = req.params;
+  const {user_id} = req.auth;
+  const {_id} = req.params;
   Event.findOneAndUpdate(
-    { _id, "status.finalized": true, "status.approved": true },
+    {_id, "status.finalized": true, "status.approved": true},
     {
       $set: {
         "status.approved": false,
@@ -1331,21 +1352,21 @@ const RemoveEventApproval = (req, res) => {
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const RemoveEventFinalize = (req, res) => {
-  const { user_id } = req.auth;
-  const { _id } = req.params;
+  const {user_id} = req.auth;
+  const {_id} = req.params;
   Event.findOneAndUpdate(
-    { _id, "status.finalized": true, "status.approved": false },
+    {_id, "status.finalized": true, "status.approved": false},
     {
       $set: {
         "status.finalized": false,
@@ -1354,22 +1375,22 @@ const RemoveEventFinalize = (req, res) => {
   )
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const Get = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { populate, display } = req.query;
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+  const {populate, display} = req.query;
   let query = Event.findById(
-    isAdmin || display == "true" ? { _id } : { _id, user: user_id }
+    isAdmin || display == "true" ? {_id} : {_id, user: user_id}
   );
   if (populate === "true") {
     query = query.populate(
@@ -1383,25 +1404,41 @@ const Get = (req, res) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // Convert to object for manipulation
+        const eventObj = result.toObject();
+
+        // If eventDate doesn't exist, set it based on best available date
+        if (!eventObj.eventDate) {
+          if (
+            eventObj.eventDays &&
+            eventObj.eventDays.length > 0 &&
+            eventObj.eventDays[0].date
+          ) {
+            eventObj.eventDate = eventObj.eventDays[0].date;
+          } else if (eventObj.date) {
+            eventObj.eventDate = eventObj.date;
+          }
+        }
+
         if (display == "true" && !isAdmin) {
           res.send({
-            ...result.toObject(),
+            ...eventObj,
             userAccess: user_id == result.user,
           });
         } else {
-          res.send(result);
+          res.send(eventObj);
         }
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const SendEventToClient = (req, res) => {
-  const { _id } = req.params;
+  const {_id} = req.params;
   // Event.findOne({ _id, "status.finalized": true, "status.approved": false })
-  Event.findOne({ _id })
+  Event.findOne({_id})
     .populate("user")
     .exec()
     .then((event) => {
@@ -1415,20 +1452,20 @@ const SendEventToClient = (req, res) => {
             link: `https://wedsy.in/event/${event?._id}/view`,
           },
         });
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const SendEventBookingReminder = (req, res) => {
-  const { _id } = req.params;
+  const {_id} = req.params;
   // Event.findOne({ _id, "status.finalized": true, "status.approved": false })
-  Event.findOne({ _id })
+  Event.findOne({_id})
     .populate("user")
     .exec()
     .then((event) => {
@@ -1441,70 +1478,70 @@ const SendEventBookingReminder = (req, res) => {
             phone: event?.user?.phone,
           },
         });
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const AddEventAccess = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { phone } = req.body;
-  Event.findOneAndUpdate(isAdmin ? { _id } : { _id, user: user_id }, {
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+  const {phone} = req.body;
+  Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
     $addToSet: {
       eventAccess: phone,
     },
   })
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const RemoveEventAccess = (req, res) => {
-  const { user_id, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { phone } = req.body;
-  Event.findOneAndUpdate(isAdmin ? { _id } : { _id, user: user_id }, {
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+  const {phone} = req.body;
+  Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
     $pull: {
       eventAccess: phone,
     },
   })
     .then((result) => {
       if (result) {
-        res.status(200).send({ message: "success" });
+        res.status(200).send({message: "success"});
       } else {
-        res.status(404).send({ message: "Event not found" });
+        res.status(404).send({message: "Event not found"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
 const DeleteEvents = (req, res) => {
-  const { eventIds } = req.body;
-  Event.deleteMany({ _id: { $in: eventIds } })
+  const {eventIds} = req.body;
+  Event.deleteMany({_id: {$in: eventIds}})
     .then((result) => {
       if (!result) {
         res.status(404).send();
       } else {
-        res.send({ message: "success" });
+        res.send({message: "success"});
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(400).send({message: "error", error});
     });
 };
 
