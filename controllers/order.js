@@ -161,7 +161,7 @@ const CreateOrder = async (req, res) => {
       }
     } else if (source === "Bidding") {
       const { vendor, events, bid } = req.body;
-      if (!vendor || !bid || events.length === 9) {
+      if (!vendor || !bid || !events || events.length === 0) {
         res.status(400).send({ message: "Incomplete Data" });
       } else {
         const biddingBooking = await new BiddingBooking({
