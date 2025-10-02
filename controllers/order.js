@@ -245,11 +245,38 @@ const CreateOrder = async (req, res) => {
           },
         })
           .save()
-          .then((result) => {
+          .then(async (result) => {
+            // Find the chat between user and vendor
+            const chat = await Chat.findOne({
+              user: user_id,
+              vendor: vendor
+            });
+            
+            if (chat) {
+              // Update only the ChatContent for this specific chat and these events
+              await ChatContent.updateOne(
+                {
+                  chat: chat._id,
+                  contentType: { $in: ["BiddingOffer", "BiddingBid"] },
+                  "other.accepted": { $ne: true },
+                  $or: [
+                    { "other.events": { $in: events } }
+                  ]
+                },
+                {
+                  $set: {
+                    "other.accepted": true,
+                    "other.order": result._id
+                  }
+                },
+                { sort: { createdAt: -1 } } // Update the most recent matching message
+              );
+            }
+            
             res.status(201).send({
               message: "success",
               id: result._id,
-              amount: payableToWedsy,
+              amount: total,
             });
           })
           .catch((error) => {
