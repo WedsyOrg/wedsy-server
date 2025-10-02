@@ -4,6 +4,7 @@ const ChatContent = require("../models/ChatContent");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
 const Vendor = require("../models/Vendor");
+const Order = require("../models/Order");
 
 // const CreateNew = (req, res) => {
 //   const { title } = req.body;
@@ -158,61 +159,109 @@ const Get = (req, res) => {
     });
 };
 
-const CreateNewChatContent = (req, res) => {
-  const { user_id, isVendor, isAdmin } = req.auth;
-  const { _id } = req.params;
-  const { contentType, content, other } = req.body;
-  if (contentType === "Text" && content) {
-    new ChatContent({
-      chat: _id,
-      contentType,
-      content,
-      sender: {
-        id: user_id,
-        role: isVendor ? "vendor" : isAdmin ? "admin" : "user",
-      },
-      status: {
-        viewedByUser: !isVendor && !isAdmin,
-        viewedByVendor: isVendor,
-      },
-    })
-      .save()
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "error" });
+const CreateNewChatContent = async (req, res) => {
+  try {
+    const { user_id, isVendor, isAdmin } = req.auth;
+    const { _id } = req.params;
+    const { contentType, content, other } = req.body;
+
+    if (!contentType) {
+      return res.status(400).send({ message: "Incomplete Data" });
+    }
+
+    if (!isVendor && !isAdmin && contentType === "Text") {
+      const latestOffer = await ChatContent.findOne(
+        {
+          chat: _id,
+          contentType: {
+            $in: ["BiddingOffer", "BiddingBid", "PersonalPackageAccepted"],
+          },
+        },
+        {},
+        { sort: { createdAt: -1 } }
+      ).lean();
+
+      if (latestOffer) {
+        const { contentType, other = {} } = latestOffer;
+
+        let paymentOutstanding = false;
+
+        if (contentType === "PersonalPackageAccepted") {
+          if (!other?.order) {
+            paymentOutstanding = true;
+          } else {
+            const order = await Order.findById(other.order)
+              .select("amount due amount.due amount.paid status.paymentDone")
+              .lean();
+            const dueAmount =
+              order?.amount?.due ?? order?.due ?? Number.POSITIVE_INFINITY;
+            const paymentDone = Boolean(order?.status?.paymentDone);
+            paymentOutstanding = !order || (!paymentDone && dueAmount > 0);
+          }
+        } else if (["BiddingOffer", "BiddingBid"].includes(contentType)) {
+          const accepted = Boolean(other.accepted);
+          const rejected = Boolean(other.rejected);
+          paymentOutstanding = !accepted && !rejected;
         }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
-  } else if (contentType === "BiddingOffer") {
-    new ChatContent({
-      chat: _id,
-      contentType,
-      content,
-      other,
-      sender: {
-        id: user_id,
-        role: isVendor ? "vendor" : isAdmin ? "admin" : "user",
-      },
-      status: {
-        viewedByUser: !isVendor && !isAdmin,
-        viewedByVendor: isVendor,
-      },
-    })
-      .save()
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "error" });
+
+        if (paymentOutstanding) {
+          return res.status(403).send({
+            message: "payment_required",
+            error:
+              "Complete the payment for the latest offer to continue chatting.",
+          });
         }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+      }
+    }
+
+    if (contentType === "Text" && content) {
+      const result = await new ChatContent({
+        chat: _id,
+        contentType,
+        content,
+        sender: {
+          id: user_id,
+          role: isVendor ? "vendor" : isAdmin ? "admin" : "user",
+        },
+        status: {
+          viewedByUser: !isVendor && !isAdmin,
+          viewedByVendor: isVendor,
+        },
+      }).save();
+
+      if (result) {
+        return res.status(200).send({ message: "success" });
+      }
+
+      return res.status(404).send({ message: "error" });
+    }
+
+    if (contentType === "BiddingOffer") {
+      const result = await new ChatContent({
+        chat: _id,
+        contentType,
+        content,
+        other,
+        sender: {
+          id: user_id,
+          role: isVendor ? "vendor" : isAdmin ? "admin" : "user",
+        },
+        status: {
+          viewedByUser: !isVendor && !isAdmin,
+          viewedByVendor: isVendor,
+        },
+      }).save();
+
+      if (result) {
+        return res.status(200).send(result);
+      }
+
+      return res.status(404).send({ message: "error" });
+    }
+
+    return res.status(400).send({ message: "Unsupported content type" });
+  } catch (error) {
+    res.status(400).send({ message: "error", error });
   }
 };
 
