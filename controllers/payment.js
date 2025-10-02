@@ -1,6 +1,7 @@
 const Event = require("../models/Event");
 const Order = require("../models/Order");
 const Payment = require("../models/Payment");
+const ChatContent = require("../models/ChatContent");
 const { createInvoice } = require("../utils/invoice");
 const {
   CreatePayment,
@@ -302,7 +303,19 @@ const UpdatePayment = (req, res) => {
                       },
                     }
                   )
-                    .then((result) => {
+                    .then(async (result) => {
+                      // Enable chat by updating ChatContent message
+                      await ChatContent.updateMany(
+                        {
+                          "other.order": order._id,
+                          contentType: { $in: ["PersonalPackageAccepted", "BiddingOffer", "BiddingBid"] }
+                        },
+                        {
+                          $set: {
+                            "other.orderPaymentDone": true
+                          }
+                        }
+                      );
                       res.status(200).send({ message: "success" });
                     })
                     .catch((error) => {

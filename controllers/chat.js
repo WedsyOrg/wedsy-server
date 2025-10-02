@@ -201,7 +201,19 @@ const CreateNewChatContent = async (req, res) => {
         } else if (["BiddingOffer", "BiddingBid"].includes(contentType)) {
           const accepted = Boolean(other.accepted);
           const rejected = Boolean(other.rejected);
-          paymentOutstanding = !accepted && !rejected;
+          
+          // Check if payment is done for accepted bids
+          if (accepted && other?.order) {
+            const order = await Order.findById(other.order)
+              .select("amount.due amount.paid status.paymentDone")
+              .lean();
+            const dueAmount =
+              order?.amount?.due ?? Number.POSITIVE_INFINITY;
+            const paymentDone = Boolean(order?.status?.paymentDone);
+            paymentOutstanding = !order || (!paymentDone && dueAmount > 0);
+          } else {
+            paymentOutstanding = !accepted && !rejected;
+          }
         }
 
         if (paymentOutstanding) {
