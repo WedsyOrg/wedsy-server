@@ -286,13 +286,13 @@ const CreateOrder = async (req, res) => {
     } else {
       res.status(400).send({
         message: "error",
-        error,
+        error: "Incomplete data provided",
       });
     }
   } else {
     res.status(400).send({
       message: "error",
-      error,
+      error: "Unauthorized access",
     });
   }
 };
@@ -1505,7 +1505,7 @@ const GetWedsyPackageBooking = async (req, res) => {
   } else {
     res.status(400).send({
       message: "error",
-      error,
+      error: "Unauthorized access - vendor access required",
     });
   }
 };
