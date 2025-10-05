@@ -13,6 +13,7 @@ const CreateVendorSettlementAccount = (req, res) => {
     addresses,
     pan,
     gst,
+    phone,
   } = req.body;
   if (
     !legal_business_name ||
@@ -27,9 +28,20 @@ const CreateVendorSettlementAccount = (req, res) => {
     const base64Token = Buffer.from(
       `${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`
     ).toString("base64");
+    // Format phone number for Razorpay (remove + prefix)
+    console.log("Phone number debugging:");
+    console.log("- phone from request body:", phone);
+    console.log("- user.phone from profile:", user?.phone);
+    
+    // Prioritize phone from request body, then format it
+    let phoneToUse = phone || user?.phone;
+    const formattedPhone = phoneToUse?.replace('+', '') || phoneToUse;
+    console.log("- phone to use:", phoneToUse);
+    console.log("- formatted phone:", formattedPhone);
+    
     let data = JSON.stringify({
       email: user?.email, //: "gaurav.kumar@example.com",
-      phone: user?.phone, //: "9000090000",
+      phone: formattedPhone, //: "9000090000",
       type: "route",
       //   reference_id: user_id, //"124124",
       legal_business_name, //: "Acme Corp",
@@ -55,6 +67,10 @@ const CreateVendorSettlementAccount = (req, res) => {
         gst: gst ?? "", //: "18AABCU9603R1ZM",
       },
     });
+    
+    console.log("Data being sent to Razorpay:", JSON.parse(data));
+    console.log("Business type being sent:", business_type);
+    console.log("PAN being sent:", pan);
     let config = {
       method: "post",
       maxBodyLength: Infinity,
@@ -93,8 +109,16 @@ const CreateVendorSettlementAccount = (req, res) => {
         }
       })
       .catch((error) => {
-        console.log("Error", error.response?.data, data);
-        res.status(400).send({ message: "error", error });
+        console.log("Razorpay API Error Details:");
+        console.log("Status:", error.response?.status);
+        console.log("Error Data:", JSON.stringify(error.response?.data, null, 2));
+        console.log("Request Data:", data);
+        console.log("Full Error:", error);
+        res.status(400).send({ 
+          message: "Razorpay API Error", 
+          error: error.response?.data || error.message,
+          details: error.response?.data
+        });
       });
   }
 };
@@ -150,8 +174,16 @@ const CreateVendorSettlementProduct = (req, res) => {
         }
       })
       .catch((error) => {
-        console.log("Error", error.response?.data, data);
-        res.status(400).send({ message: "error", error });
+        console.log("Razorpay API Error Details:");
+        console.log("Status:", error.response?.status);
+        console.log("Error Data:", JSON.stringify(error.response?.data, null, 2));
+        console.log("Request Data:", data);
+        console.log("Full Error:", error);
+        res.status(400).send({ 
+          message: "Razorpay API Error", 
+          error: error.response?.data || error.message,
+          details: error.response?.data
+        });
       });
   }
 };
@@ -242,8 +274,16 @@ const UpdateVendorSettlementProduct = (req, res) => {
           });
       })
       .catch((error) => {
-        console.log("Error", error.response?.data, data);
-        res.status(400).send({ message: "error", error });
+        console.log("Razorpay API Error Details:");
+        console.log("Status:", error.response?.status);
+        console.log("Error Data:", JSON.stringify(error.response?.data, null, 2));
+        console.log("Request Data:", data);
+        console.log("Full Error:", error);
+        res.status(400).send({ 
+          message: "Razorpay API Error", 
+          error: error.response?.data || error.message,
+          details: error.response?.data
+        });
       });
   }
 };
