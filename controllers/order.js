@@ -699,20 +699,6 @@ const GetVendorOngoingOrder = async (req, res) => {
 
     // Get current time
     const now = new Date();
-    console.log(`Current time: ${now}`);
-
-    // First, let's check if there are any orders for this vendor at all
-    const allVendorOrders = await Order.find({ vendor: user_id });
-    console.log(`Total orders for vendor ${user_id}: ${allVendorOrders.length}`);
-    console.log('All orders:', allVendorOrders.map(o => ({
-      _id: o._id,
-      source: o.source,
-      status: o.status,
-      finalized: o.finalized,
-      completed: o.completed,
-      lost: o.lost
-    })));
-
     // Find orders that are finalized but not completed or lost
     const orders = await Order.find({
       vendor: user_id,
@@ -744,37 +730,18 @@ const GetVendorOngoingOrder = async (req, res) => {
 
     // Also check Bidding model directly for events
     const biddingEvents = await Bidding.find({
+      "selectedVendor.vendor": user_id,
       "status.finalized": true,
       "status.completed": false,
       "status.lost": false
     }).populate('user', 'name phone email');
     
-    console.log(`Found ${biddingEvents.length} bidding events`);
-
     // Collect all upcoming events from all orders
     const allUpcomingEvents = [];
-
-    console.log(`Found ${allOrders.length} finalized orders for vendor ${user_id}`);
-    console.log('Orders:', allOrders.map(o => ({
-      _id: o._id,
-      source: o.source,
-      finalized: o.status?.finalized || o.finalized,
-      completed: o.status?.completed || o.completed,
-      lost: o.status?.lost || o.lost,
-      biddingBooking: !!o.biddingBooking,
-      wedsyPackageBooking: !!o.wedsyPackageBooking,
-      vendorPersonalPackageBooking: !!o.vendorPersonalPackageBooking
-    })));
-
     // Process bidding events directly
     biddingEvents.forEach(bidding => {
-      console.log(`Processing bidding ${bidding._id} with events:`, bidding.events);
       if (bidding.events && bidding.events.length > 0) {
         bidding.events.forEach((event, index) => {
-          console.log(`Bidding event ${index}:`, event);
-          console.log(`Event keys:`, Object.keys(event));
-          console.log(`Event date:`, event.date, `Event time:`, event.time);
-          
           // Try different date/time field combinations
           const eventDate = event.date && event.time ? 
             new Date(`${event.date}T${event.time}`) :
@@ -783,8 +750,6 @@ const GetVendorOngoingOrder = async (req, res) => {
             null;
             
           if (eventDate) {
-            console.log(`Processing bidding event: ${event.date || event.eventDateTime} ${event.time || ''} -> ${eventDate}`);
-            console.log(`Event date > now: ${eventDate > now}`);
             if (eventDate > now) {
               allUpcomingEvents.push({
                 eventName: event.eventName || 'Event',
@@ -803,16 +768,9 @@ const GetVendorOngoingOrder = async (req, res) => {
     });
 
     allOrders.forEach(order => {
-      console.log(`Processing order ${order._id} with source ${order.source}`);
-      
       if (order.biddingBooking && order.biddingBooking.events && order.biddingBooking.events.length > 0) {
-        console.log(`Bidding booking has ${order.biddingBooking.events.length} events:`, order.biddingBooking.events);
         // For bidding bookings, check all events
         order.biddingBooking.events.forEach((event, index) => {
-          console.log(`Event ${index}:`, event);
-          console.log(`Event keys:`, Object.keys(event));
-          console.log(`Event date:`, event.date, `Event time:`, event.time);
-          
           // Try different date/time field combinations
           const eventDate = event.date && event.time ? 
             new Date(`${event.date}T${event.time}`) :
@@ -821,8 +779,6 @@ const GetVendorOngoingOrder = async (req, res) => {
             null;
             
           if (eventDate) {
-            console.log(`Processing bidding event: ${event.date || event.eventDateTime} ${event.time || ''} -> ${eventDate}`);
-            console.log(`Event date > now: ${eventDate > now}`);
             if (eventDate > now) {
               allUpcomingEvents.push({
                 eventName: event.eventName || 'Event',
@@ -838,12 +794,9 @@ const GetVendorOngoingOrder = async (req, res) => {
           }
         });
       } else if (order.wedsyPackageBooking) {
-        console.log(`Wedsy package booking:`, order.wedsyPackageBooking);
         // For Wedsy package bookings
         if (order.wedsyPackageBooking.date && order.wedsyPackageBooking.time) {
           const eventDate = new Date(`${order.wedsyPackageBooking.date}T${order.wedsyPackageBooking.time}`);
-          console.log(`Processing Wedsy package event: ${order.wedsyPackageBooking.date} ${order.wedsyPackageBooking.time} -> ${eventDate}`);
-          console.log(`Event date > now: ${eventDate > now}`);
           if (eventDate > now) {
             allUpcomingEvents.push({
               eventName: 'Wedsy Package Event',
@@ -858,12 +811,9 @@ const GetVendorOngoingOrder = async (req, res) => {
           }
         }
       } else if (order.vendorPersonalPackageBooking) {
-        console.log(`Personal package booking:`, order.vendorPersonalPackageBooking);
         // For personal package bookings
         if (order.vendorPersonalPackageBooking.date && order.vendorPersonalPackageBooking.time) {
           const eventDate = new Date(`${order.vendorPersonalPackageBooking.date}T${order.vendorPersonalPackageBooking.time}`);
-          console.log(`Processing personal package event: ${order.vendorPersonalPackageBooking.date} ${order.vendorPersonalPackageBooking.time} -> ${eventDate}`);
-          console.log(`Event date > now: ${eventDate > now}`);
           if (eventDate > now) {
             allUpcomingEvents.push({
               eventName: 'Personal Package Event',
@@ -883,14 +833,6 @@ const GetVendorOngoingOrder = async (req, res) => {
     // Sort all events by date and time (nearest first)
     allUpcomingEvents.sort((a, b) => new Date(a.eventDateTime) - new Date(b.eventDateTime));
 
-    console.log(`Found ${allUpcomingEvents.length} upcoming events`);
-    console.log('Upcoming events:', allUpcomingEvents.map(e => ({
-      eventName: e.eventName,
-      eventDateTime: e.eventDateTime,
-      location: e.location,
-      customerName: e.customerName
-    })));
-
     // Get the nearest event (first in sorted array)
     const nearestEvent = allUpcomingEvents.length > 0 ? allUpcomingEvents[0] : null;
 
@@ -900,27 +842,9 @@ const GetVendorOngoingOrder = async (req, res) => {
         ongoingOrder: nearestEvent
       });
     } else {
-      // For debugging - return a test event if no real events found
-      console.log("No upcoming events found, returning test data for debugging");
       res.status(200).send({
         message: "success",
-        ongoingOrder: {
-          eventName: "Test Event",
-          eventDateTime: new Date(Date.now() + 24 * 60 * 60 * 1000), // Tomorrow
-          location: "Test Location",
-          customerName: "Test Customer",
-          orderId: "test_id",
-          source: "Test",
-          services: [
-            {
-              noOfPeople: "1",
-              preferredLook: "Bridal",
-              makeupStyle: "Face Makeup",
-              addOns: "Bridal AddOns"
-            }
-          ],
-          amount: 14000
-        }
+        ongoingOrder: null
       });
     }
 
