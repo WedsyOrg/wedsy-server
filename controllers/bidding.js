@@ -101,6 +101,24 @@ const GetAll = (req, res) => {
         });
       });
   } else if (isVendor) {
+    // For vendors, get all bidding bids assigned to them
+    BiddingBid.find({ vendor: user_id })
+      .populate({
+        path: "bidding",
+        populate: {
+          path: "user",
+          model: "User",
+        },
+      })
+      .then((result) => {
+        res.send(result);
+      })
+      .catch((error) => {
+        res.status(400).send({
+          message: "error",
+          error,
+        });
+      });
   } else {
     Bidding.find({ user: user_id })
       .then((result) => {

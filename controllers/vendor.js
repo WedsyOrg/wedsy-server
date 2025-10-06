@@ -908,6 +908,17 @@ const Update = (req, res) => {
               const updates = {};
               const notificationsList = [];
               if (profileCompleted === true) {
+                // Check if at least one document is uploaded
+                const hasDocuments = documents && documents.length > 0 && documents.some(doc => 
+                  doc.front && doc.front.url && doc.back && doc.back.url
+                );
+                
+                if (!hasDocuments) {
+                  return res.status(400).send({ 
+                    message: "At least one address proof document (Aadhaar Card, Driving License, or Passport) is required to complete your profile." 
+                  });
+                }
+                
                 updates.profileCompleted = true;
                 if (notifications?.bidding !== vendor?.notifications?.bidding) {
                   notificationsList.push({
