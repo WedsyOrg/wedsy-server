@@ -29,6 +29,8 @@ router.get("/", CheckLogin, (req, res) => {
     order.GetVendorFollowUps(req, res);
   } else if (source === "ongoing-order") {
     order.GetVendorOngoingOrder(req, res);
+  } else if (source === "calls-list") {
+    order.GetVendorCallsList(req, res);
   } else {
     order.GetAllOrders(req, res);
   }

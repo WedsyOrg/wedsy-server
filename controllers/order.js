@@ -56,6 +56,28 @@ const CreateOrder = async (req, res) => {
             }).save();
           })
         );
+        
+        // Create notifications for all vendors about new package booking
+        const user = await User.findById(user_id).lean();
+        const userName = user?.name || "A user";
+        
+        const notificationPromises = vendors.map(vendor => {
+          return new Notification({
+            category: "New Package Booking",
+            title: "New Package Booking",
+            message: `${userName} has booked a new package. Check it out!`,
+            vendor: vendor._id,
+            type: "order",
+            references: {
+              order: result._id,
+              wedsyPackageBooking: packageBooking._id,
+              user: user_id
+            }
+          }).save();
+        });
+        
+        await Promise.all(notificationPromises);
+        console.log(`Created ${vendors.length} notifications for new package booking: ${result._id}`);
         new Order({
           user: user_id,
           source: "Wedsy-Package",
@@ -150,7 +172,26 @@ const CreateOrder = async (req, res) => {
           },
         })
           .save()
-          .then((result) => {
+          .then(async (result) => {
+            // Create notification for vendor about new personal package booking
+            const user = await User.findById(user_id).lean();
+            const userName = user?.name || "A user";
+            
+            await new Notification({
+              category: "New Personal Package Booking",
+              title: "New Personal Package Booking",
+              message: `${userName} has booked your personal package. Check it out!`,
+              vendor: vendor,
+              type: "order",
+              references: {
+                order: result._id,
+                vendorPersonalPackageBooking: packageBooking._id,
+                user: user_id
+              }
+            }).save();
+            
+            console.log(`Created notification for new personal package booking: ${result._id}`);
+            
             res
               .status(201)
               .send({ message: "success", id: result._id, amount: total });
@@ -678,6 +719,41 @@ const GetVendorFollowUps = async (req, res) => {
       message: "error",
       error: error.message
     });
+  }
+};
+
+const GetVendorCallsList = async (req, res) => {
+  const { user_id, isVendor } = req.auth;
+  
+  if (!isVendor) {
+    return res.status(403).send({ message: "Access denied. Vendor access required." });
+  }
+
+  try {
+    const VendorStatLog = require("../models/VendorStatLog");
+    const User = require("../models/User");
+    
+    // Get calls with user details
+    const calls = await VendorStatLog.find({
+      vendor: user_id,
+      statType: "call"
+    })
+    .populate('user', 'name phone')
+    .sort({ createdAt: -1 })
+    .lean();
+
+    // Format the calls data
+    const callsList = calls.map(call => ({
+      id: call._id,
+      name: call.user?.name || "Unknown",
+      number: call.user?.phone || "N/A",
+      date: call.createdAt
+    }));
+
+    res.send({ calls: callsList });
+  } catch (error) {
+    console.error("Error fetching vendor calls list:", error);
+    res.status(500).send({ message: "Internal server error" });
   }
 };
 
