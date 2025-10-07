@@ -487,6 +487,11 @@ const Update = (req, res) => {
           res.status(400).send({ message: "error", error });
         });
     } else {
+      // Allow explicit gallery clears (coverPhoto="" or photos=[])
+      const galleryPayload = req.body && req.body.gallery ? req.body.gallery : undefined;
+      const hasExplicitGalleryChange =
+        !!galleryPayload && (Object.prototype.hasOwnProperty.call(galleryPayload, "coverPhoto") ||
+        Object.prototype.hasOwnProperty.call(galleryPayload, "photos"));
       const {
         name,
         tag,
@@ -521,11 +526,15 @@ const Update = (req, res) => {
         !other?.usp &&
         other?.makeupProducts?.length === 0 &&
         other?.awards?.length === 0 &&
-        !gallery?.coverPhoto &&
-        gallery?.photos?.length === 0 &&
+        /* No minimum gallery photo requirement */
         ![1, 2, 3, 4, 5].includes(rating)
       ) {
+        if (hasExplicitGalleryChange) {
+          // Proceed to allow clearing gallery values
+        } else {
         res.status(400).send({ message: "Incomplete Data" });
+          return;
+        }
       } else {
         Vendor.findById(_id)
           .then((vendor) => {
@@ -534,10 +543,8 @@ const Update = (req, res) => {
             } else {
               const updates = {};
               const notifications = [];
-              if (
-                gallery?.coverPhoto &&
-                gallery?.coverPhoto !== vendor?.gallery?.coverPhoto
-              ) {
+              // Apply gallery cover photo update whenever key is present (allow no-op and deletions)
+              if (gallery && Object.prototype.hasOwnProperty.call(gallery, "coverPhoto")) {
                 updates["gallery.coverPhoto"] = gallery?.coverPhoto;
                 notifications.push({
                   title: `${vendor?.name} Gallery (coverPhoto) Changed`,
@@ -545,13 +552,9 @@ const Update = (req, res) => {
                   references: { vendor: vendor._id },
                 });
               }
-              if (
-                gallery?.photos &&
-                gallery?.photos.length > 0 &&
-                JSON.stringify(gallery?.photos) !==
-                  JSON.stringify(vendor?.gallery?.photos)
-              ) {
-                updates["gallery.photos"] = gallery?.photos;
+              // Apply gallery photos update whenever key is present (allow empty array and no-op)
+              if (gallery && Object.prototype.hasOwnProperty.call(gallery, "photos")) {
+                updates["gallery.photos"] = gallery?.photos || [];
                 notifications.push({
                   title: `${vendor?.name} Gallery (photos) Updated`,
                   category: "Vendor",
@@ -816,8 +819,9 @@ const Update = (req, res) => {
                   references: { vendor: vendor._id },
                 });
               }
+              // If only gallery keys were sent but values equal, still allow success (idempotent)
               if (Object.keys(updates).length === 0) {
-                return res.status(400).send({ message: "No changes detected" });
+                return res.status(200).send({ message: "success" });
               }
               Vendor.findByIdAndUpdate(_id, { $set: updates }, { new: true })
                 .then((result) => {
@@ -856,6 +860,11 @@ const Update = (req, res) => {
       profileCompleted,
       documents,
     } = req.body;
+    // Detect explicit gallery updates, even if values are empty (used for deletions)
+    const galleryPayloadVendor = req.body && req.body.gallery ? req.body.gallery : undefined;
+    const hasExplicitGalleryChangeVendor =
+      !!galleryPayloadVendor && (Object.prototype.hasOwnProperty.call(galleryPayloadVendor, "coverPhoto") ||
+      Object.prototype.hasOwnProperty.call(galleryPayloadVendor, "photos"));
     if (
       !name &&
       // !businessAddress?.state &&
@@ -875,8 +884,7 @@ const Update = (req, res) => {
       !prices?.party &&
       !prices?.bridal &&
       !prices?.groom &&
-      !gallery?.coverPhoto &&
-      gallery?.photos?.length === 0 &&
+      /* No minimum gallery photo requirement */
       documents?.length === 0 &&
       [
         notifications?.bidding,
@@ -897,7 +905,10 @@ const Update = (req, res) => {
       other?.awards?.length === 0 &&
       documents?.length === 0
     ) {
-      res.status(400).send({ message: "Incomplete Data" });
+      if (!hasExplicitGalleryChangeVendor) {
+        res.status(400).send({ message: "Incomplete Data" });
+        return;
+      }
     } else {
       Vendor.findById({ _id: user_id })
         .then((vendor) => {
@@ -1031,6 +1042,24 @@ const Update = (req, res) => {
                     references: { vendor: vendor._id },
                   });
                 }
+              }
+              // Apply gallery cover photo update whenever key is present (allow no-op and deletions)
+              if (gallery && Object.prototype.hasOwnProperty.call(gallery, "coverPhoto")) {
+                updates["gallery.coverPhoto"] = gallery?.coverPhoto;
+                notificationsList.push({
+                  title: `${vendor?.name} Gallery (coverPhoto) Changed`,
+                  category: "Vendor",
+                  references: { vendor: vendor._id },
+                });
+              }
+              // Apply gallery photos update whenever key is present (allow empty array and no-op)
+              if (gallery && Object.prototype.hasOwnProperty.call(gallery, "photos")) {
+                updates["gallery.photos"] = gallery?.photos || [];
+                notificationsList.push({
+                  title: `${vendor?.name} Gallery (photos) Updated`,
+                  category: "Vendor",
+                  references: { vendor: vendor._id },
+                });
               }
               if (documents && documents.length > 0 && JSON.stringify(documents) !== JSON.stringify(vendor?.documents)) {
                 const { valid, message, documents: uploadedDocuments } = verifyDocument(documents);
@@ -1376,7 +1405,7 @@ const Update = (req, res) => {
               //   });
               // }
               if (Object.keys(updates).length === 0) {
-                return res.status(400).send({ message: "No changes detected" });
+                return res.status(200).send({ message: "success" });
               }
               Vendor.findByIdAndUpdate(
                 { _id: user_id },
