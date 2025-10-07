@@ -96,7 +96,7 @@ const GetAll = async (req, res) => {
   }
 };
 
-const Get = (req, res) => {
+const Get = async (req, res) => {
   const { user_id, isVendor, isAdmin } = req.auth;
   const { _id } = req.params;
   const { read } = req.query;
