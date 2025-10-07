@@ -96,7 +96,7 @@ const GetAll = async (req, res) => {
   }
 };
 
-const Get = (req, res) => {
+const Get = async (req, res) => {
   const { user_id, isVendor, isAdmin } = req.auth;
   const { _id } = req.params;
   const { read } = req.query;
@@ -118,12 +118,24 @@ const Get = (req, res) => {
   }
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 100);
   const before = req.query.before ? new Date(req.query.before) : null;
+  const cutoff = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
   const messageQuery = { chat: _id };
-  if (before) messageQuery.createdAt = { $lt: before };
+  // Always filter server response to only include messages from the last 60s
+  if (before) {
+    messageQuery.createdAt = { $lt: before, $gte: cutoff };
+  } else {
+    messageQuery.createdAt = { $gte: cutoff };
+  }
 
   console.log("Get - Query:", query);
   console.log("Get - Message query:", messageQuery);
   
+  // Soft-prune messages older than retention window for this chat
+  try {
+    const cutoff = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    await ChatContent.deleteMany({ chat: _id, createdAt: { $lt: cutoff } });
+  } catch (_) {}
+
   Chat.findOne(query)
     .populate(populate)
     .lean()
@@ -225,6 +237,12 @@ const CreateNewChatContent = async (req, res) => {
         }
       }
     }
+
+    // Prune messages older than retention window whenever a new message is created
+    try {
+      const cutoff = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+      await ChatContent.deleteMany({ chat: _id, createdAt: { $lt: cutoff } });
+    } catch (_) {}
 
     if (contentType === "Text" && content) {
       const result = await new ChatContent({
