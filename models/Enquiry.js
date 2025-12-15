@@ -16,7 +16,7 @@ const ObjectId = mongoose.Schema.Types.ObjectId;
 const EnquirySchema = new mongoose.Schema(
   {
     name: { type: String, required: true },
-    phone: { type: String, required: true },
+    phone: { type: String, required: true, unique: true },
     email: { type: String, default: "" },
     verified: { type: Boolean, default: false, required: true },
     isInterested: { type: Boolean, default: false, required: true },
@@ -31,5 +31,8 @@ const EnquirySchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+// Create unique index on phone to prevent duplicates at database level
+EnquirySchema.index({ phone: 1 }, { unique: true });
 
 module.exports = mongoose.model("Enquiry", EnquirySchema);

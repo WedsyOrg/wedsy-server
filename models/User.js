@@ -7,6 +7,8 @@ const UserSchema = new mongoose.Schema(
     phone: { type: String, required: true },
     email: { type: String, default: "" },
     profilePhoto: { type: String, default: "" },
+    blocked: { type: Boolean, default: false },
+    deleted: { type: Boolean, default: false },
     address: {
       apartment: { type: String, default: "" },
       street: { type: String, default: "" },

@@ -17,4 +17,8 @@ router.post("/", auth.Login);
 router.get("/", CheckLogin, auth.Get);
 router.post("/otp", auth.GetOTP);
 
+// User management (admin)
+router.put("/user/block", CheckLogin, auth.BlockUser);
+router.delete("/user", CheckLogin, auth.DeleteUserAccount);
+
 module.exports = router;

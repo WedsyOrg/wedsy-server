@@ -1,3 +1,4 @@
+// Core models and utilities used throughout the Enquiry controller
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
 const { VerifyOTP } = require("../utils/otp");
@@ -5,6 +6,9 @@ const jwt = require("jsonwebtoken");
 const jwtConfig = require("../config/jwt");
 const Event = require("../models/Event");
 const Payment = require("../models/Payment");
+// NEW (Lead details screen): used only to compute bidding / package status summary for a lead
+const Bidding = require("../models/Bidding");
+const Order = require("../models/Order");
 const { SendUpdate } = require("../utils/update");
 const { GetPaymentTransactions } = require("../utils/payment");
 
@@ -17,72 +21,141 @@ const CreateNew = (req, res) => {
     VerifyOTP(phone, ReferenceId, Otp)
       .then((result) => {
         if (result.Valid === true) {
-          User.findOne({ phone })
-            .then((user) => {
-              if (user) {
-                const { _id } = user;
-                const token = jwt.sign(
-                  { _id },
-                  process.env.JWT_SECRET,
-                  jwtConfig
-                );
-                new Enquiry({
-                  name,
-                  phone,
-                  verified,
-                  source,
-                  additionalInfo: additionalInfo || {},
-                })
-                  .save()
-                  .then((result) => {
-                    SendUpdate({
-                      channels: ["SMS", "Whatsapp"],
-                      message: "New Lead",
-                      parameters: { name, phone },
-                    });
-                    res.send({
-                      message: "Enquiry Added Successfully",
-                      token,
-                    });
+          // First check if Enquiry already exists
+          Enquiry.findOne({ phone })
+            .then((existingEnquiry) => {
+              if (existingEnquiry) {
+                // Update existing enquiry instead of creating duplicate
+                Enquiry.findByIdAndUpdate(
+                  existingEnquiry._id,
+                  {
+                    $set: {
+                      name,
+                      verified: verified || existingEnquiry.verified,
+                      source: existingEnquiry.source || source,
+                      additionalInfo: { ...existingEnquiry.additionalInfo, ...(additionalInfo || {}) },
+                    },
+                  },
+                  { new: true }
+                )
+                  .then(() => {
+                    User.findOne({ phone })
+                      .then((user) => {
+                        if (user) {
+                          const { _id } = user;
+                          const token = jwt.sign(
+                            { _id },
+                            process.env.JWT_SECRET,
+                            jwtConfig
+                          );
+                          res.send({
+                            message: "Enquiry Updated Successfully",
+                            token,
+                          });
+                        } else {
+                          // Create user if doesn't exist
+                          new User({
+                            name,
+                            phone,
+                          })
+                            .save()
+                            .then((result) => {
+                              const { _id } = result;
+                              const token = jwt.sign(
+                                { _id },
+                                process.env.JWT_SECRET,
+                                jwtConfig
+                              );
+                              res.send({
+                                message: "Enquiry Updated Successfully",
+                                token,
+                              });
+                            })
+                            .catch((error) => {
+                              res.status(400).send({ message: "error", error });
+                            });
+                        }
+                      })
+                      .catch((error) => {
+                        res.status(400).send({ message: "error", error });
+                      });
                   })
                   .catch((error) => {
                     res.status(400).send({ message: "error", error });
                   });
               } else {
-                new User({
-                  name,
-                  phone,
-                })
-                  .save()
-                  .then((result) => {
-                    const { _id } = result;
-                    const token = jwt.sign(
-                      { _id },
-                      process.env.JWT_SECRET,
-                      jwtConfig
-                    );
-                    new Enquiry({
-                      name,
-                      phone,
-                      verified,
-                      source,
-                      additionalInfo: additionalInfo || {},
-                    })
-                      .save()
-                      .then((result) => {
-                        SendUpdate({
-                          channels: ["SMS", "Whatsapp"],
-                          message: "New Lead",
-                          parameters: { name, phone },
-                        });
-                        res.send({
-                          message: "Enquiry Added Successfully",
-                          token,
-                        });
+                // No existing enquiry, proceed with original logic
+                User.findOne({ phone })
+                  .then((user) => {
+                    if (user) {
+                      const { _id } = user;
+                      const token = jwt.sign(
+                        { _id },
+                        process.env.JWT_SECRET,
+                        jwtConfig
+                      );
+                      new Enquiry({
+                        name,
+                        phone,
+                        verified,
+                        source,
+                        additionalInfo: additionalInfo || {},
                       })
-                      .catch((error) => {
-                        res.status(400).send({ message: "error", error });
-                      });
+                        .save()
+                        .then((result) => {
+                          SendUpdate({
+                            channels: ["SMS", "Whatsapp"],
+                            message: "New Lead",
+                            parameters: { name, phone },
+                          });
+                          res.send({
+                            message: "Enquiry Added Successfully",
+                            token,
+                          });
+                        })
+                        .catch((error) => {
+                          res.status(400).send({ message: "error", error });
+                        });
+                    } else {
+                      new User({
+                        name,
+                        phone,
+                      })
+                        .save()
+                        .then((result) => {
+                          const { _id } = result;
+                          const token = jwt.sign(
+                            { _id },
+                            process.env.JWT_SECRET,
+                            jwtConfig
+                          );
+                          new Enquiry({
+                            name,
+                            phone,
+                            verified,
+                            source,
+                            additionalInfo: additionalInfo || {},
+                          })
+                            .save()
+                            .then((result) => {
+                              SendUpdate({
+                                channels: ["SMS", "Whatsapp"],
+                                message: "New Lead",
+                                parameters: { name, phone },
+                              });
+                              res.send({
+                                message: "Enquiry Added Successfully",
+                                token,
+                              });
+                            })
+                            .catch((error) => {
+                              res.status(400).send({ message: "error", error });
+                            });
+                        })
+                        .catch((error) => {
+                          res.status(400).send({ message: "error", error });
+                        });
+                    }
                   })
                   .catch((error) => {
                     res.status(400).send({ message: "error", error });
@@ -100,21 +173,50 @@ const CreateNew = (req, res) => {
         res.status(400).send({ message: "error", error: err });
       });
   } else {
-    new Enquiry({
-      name,
-      phone,
-      verified: false,
-      source,
-      additionalInfo: additionalInfo || {},
-    })
-      .save()
-      .then((result) => {
-        SendUpdate({
-          channels: ["SMS", "Whatsapp"],
-          message: "New Lead",
-          parameters: { name, phone },
-        });
-        res.status(201).send();
+    // For unverified enquiries, also check for duplicates
+    Enquiry.findOne({ phone })
+      .then((existingEnquiry) => {
+        if (existingEnquiry) {
+          // Update existing enquiry
+          Enquiry.findByIdAndUpdate(
+            existingEnquiry._id,
+            {
+              $set: {
+                name,
+                source: existingEnquiry.source || source,
+                additionalInfo: { ...existingEnquiry.additionalInfo, ...(additionalInfo || {}) },
+              },
+            },
+            { new: true }
+          )
+            .then(() => {
+              res.status(200).send({ message: "Enquiry Updated Successfully" });
+            })
+            .catch((error) => {
+              res.status(400).send({ message: "error", error });
+            });
+        } else {
+          // Create new enquiry
+          new Enquiry({
+            name,
+            phone,
+            verified: false,
+            source,
+            additionalInfo: additionalInfo || {},
+          })
+            .save()
+            .then((result) => {
+              SendUpdate({
+                channels: ["SMS", "Whatsapp"],
+                message: "New Lead",
+                parameters: { name, phone },
+              });
+              res.status(201).send({ message: "Enquiry Added Successfully" });
+            })
+            .catch((error) => {
+              res.status(400).send({ message: "error", error });
+            });
+        }
       })
       .catch((error) => {
         res.status(400).send({ message: "error", error });
@@ -155,7 +257,18 @@ const GetAll = async (req, res) => {
   } else {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const { source, date, search, sort, status } = req.query;
+    const {
+      source,
+      date,
+      search,
+      sort,
+      status,
+      service,
+      eventCreated,
+      eventMonth,
+      bidRequest,
+      storeAccess,
+    } = req.query;
     const query = {};
     const sortQuery = {};
     if (source) {
@@ -186,6 +299,50 @@ const GetAll = async (req, res) => {
       }
     } else {
       sortQuery.createdAt = -1;
+    }
+
+    // NEW: Filter by interested service stored in additionalInfo
+    // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.
+    if (service) {
+      const serviceRegex = new RegExp(`^${service}$`, "i");
+      // Match either additionalInfo.service or additionalInfo.interestedService
+      query.$and = query.$and || [];
+      query.$and.push({
+        $or: [
+          { "additionalInfo.service": serviceRegex },
+          { "additionalInfo.interestedService": serviceRegex },
+        ],
+      });
+    }
+
+    // NEW: Event created filter.
+    // Backed by a boolean flag in additionalInfo.eventCreated (to be populated alongside event creation flows).
+    if (eventCreated === "Yes") {
+      query["additionalInfo.eventCreated"] = true;
+    } else if (eventCreated === "No") {
+      query["additionalInfo.eventCreated"] = { $ne: true };
+    }
+
+    // NEW: Event month filter.
+    // Backed by a string field in additionalInfo.eventMonth like "January", "February", etc.
+    if (eventMonth && eventMonth !== "All months") {
+      query["additionalInfo.eventMonth"] = eventMonth;
+    }
+
+    // NEW: Bid request filter.
+    // Backed by a boolean flag in additionalInfo.bidRequest (true => has bid request).
+    if (bidRequest === "Yes") {
+      query["additionalInfo.bidRequest"] = true;
+    } else if (bidRequest === "No") {
+      query["additionalInfo.bidRequest"] = { $ne: true };
+    }
+
+    // NEW: Store access filter.
+    // Backed by a boolean flag in additionalInfo.storeAccess (true => has store access).
+    if (storeAccess === "Yes") {
+      query["additionalInfo.storeAccess"] = true;
+    } else if (storeAccess === "No") {
+      query["additionalInfo.storeAccess"] = { $ne: true };
     }
     if (status) {
       // Fresh, New, Hot, Potential, Cold, Lost, Interested, Verified, Not Verified
@@ -457,22 +614,46 @@ const Update = (req, res) => {
   }
 };
 
+// UPDATE: previously this endpoint only updated the lead name.
+// Now it can also persist selected fields under `additionalInfo` via `additionalInfoUpdates`,
+// which is used by the admin lead-details page for things like Store Access and Client Budget.
 const UpdateLead = (req, res) => {
   const { _id } = req.params;
-  const { name } = req.body;
+  const { name, additionalInfoUpdates } = req.body;
+
+  const updateFields = {};
+
   if (name) {
-    Enquiry.findByIdAndUpdate({ _id }, { $set: { name } })
-      .then((result) => {
-        if (!result) {
-          res.status(404).send();
-        } else {
-          res.send({ message: "success" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+    updateFields.name = name;
   }
+
+  if (
+    additionalInfoUpdates &&
+    typeof additionalInfoUpdates === "object" &&
+    !Array.isArray(additionalInfoUpdates)
+  ) {
+    Object.keys(additionalInfoUpdates).forEach((key) => {
+      updateFields[`additionalInfo.${key}`] = additionalInfoUpdates[key];
+    });
+  }
+
+  // Guard: avoid accidental empty updates so existing behaviour is preserved
+  if (Object.keys(updateFields).length === 0) {
+    res.status(400).send({ message: "No valid fields to update" });
+    return;
+  }
+
+  Enquiry.findByIdAndUpdate({ _id }, { $set: updateFields })
+    .then((result) => {
+      if (!result) {
+        res.status(404).send();
+      } else {
+        res.send({ message: "success" });
+      }
+    })
+    .catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
 };
 
 const Delete = (req, res) => {
@@ -490,6 +671,9 @@ const Delete = (req, res) => {
     });
 };
 
+// EXTENSION: enrich the single-lead GET response with:
+// - paymentStats (existing behaviour)
+// - statusSummary (NEW) derived from Orders + Biddings, used by the "Makeup Report" UI boxes.
 const Get = (req, res) => {
   const { _id } = req.params;
   Enquiry.findById({ _id })
@@ -535,18 +719,69 @@ const Get = (req, res) => {
                         })
                       )
                         .then((updatedPayments) => {
-                          res.send({
-                            ...result.toObject(),
-                            userCreated: true,
-                            user,
-                            events,
-                            payments: updatedPayments,
-                            paymentStats: {
-                              totalAmount,
-                              amountPaid,
-                              amountDue,
-                            },
-                          });
+                          // NEW: derive bidding / package status using Orders and Biddings for this user
+                          Order.find({ user: user._id })
+                            .then((orders) => {
+                              Bidding.find({ user: user._id })
+                                .then((biddings) => {
+                                  let biddingStatus = "No Bid";
+                                  if (biddings.length > 0) {
+                                    const hasBiddingOrder = orders.some(
+                                      (o) =>
+                                        o.source === "Bidding" &&
+                                        (o.status?.booked ||
+                                          o.status?.completed)
+                                    );
+                                    if (hasBiddingOrder) {
+                                      biddingStatus = "Booked";
+                                    } else {
+                                      biddingStatus = "Bid in Progress";
+                                    }
+                                  }
+
+                                  const hasWedsyOrder = orders.some(
+                                    (o) =>
+                                      o.source === "Wedsy-Package" &&
+                                      (o.status?.booked || o.status?.completed)
+                                  );
+
+                                  const hasVendorOrder = orders.some(
+                                    (o) =>
+                                      o.source === "Personal-Package" &&
+                                      (o.status?.booked || o.status?.completed)
+                                  );
+
+                                  res.send({
+                                    ...result.toObject(),
+                                    userCreated: true,
+                                    user,
+                                    events,
+                                    payments: updatedPayments,
+                                    paymentStats: {
+                                      totalAmount,
+                                      amountPaid,
+                                      amountDue,
+                                    },
+                                    statusSummary: {
+                                      bidding: biddingStatus,
+                                      wedsyPackage: hasWedsyOrder
+                                        ? "Booked"
+                                        : "No Activity",
+                                      vendorPackage: hasVendorOrder
+                                        ? "Booked"
+                                        : "No Activity",
+                                    },
+                                  });
+                                })
+                                .catch((error) => {
+                                  res
+                                    .status(400)
+                                    .send({ message: "error", error });
+                                });
+                            })
+                            .catch((error) => {
+                              res.status(400).send({ message: "error", error });
+                            });
                         })
                         .catch((error) => {
                           res.status(400).send({ message: "error", error });

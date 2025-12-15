@@ -7,32 +7,107 @@ const CreateNew = (req, res) => {
   if (!name || !phone) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
-    new VendorPersonalLead({
-      vendor: user_id,
-      name,
-      phone,
-      notes,
-      eventInfo,
-      tasks,
-      payment,
-    })
-      .save()
-      .then((result) => {
-        new Enquiry({
-          name,
-          phone,
-          email: "",
-          verified: false,
-          source: "Vendor Personal Leads",
-          additionalInfo: { vendor: user_id },
-        })
-          .save()
-          .then((r) => {
-            res.status(201).send({ message: "success", id: result._id });
+    // Check if enquiry already exists
+    Enquiry.findOne({ phone })
+      .then((existingEnquiry) => {
+        if (existingEnquiry) {
+          // Update existing enquiry instead of creating duplicate
+          Enquiry.findByIdAndUpdate(
+            existingEnquiry._id,
+            {
+              $set: {
+                name,
+                source: existingEnquiry.source || "Vendor Personal Leads",
+                additionalInfo: {
+                  ...existingEnquiry.additionalInfo,
+                  vendor: user_id,
+                },
+              },
+            }
+          )
+            .then(() => {
+              // Create or update vendor personal lead
+              VendorPersonalLead.findOne({ vendor: user_id, phone })
+                .then((existingLead) => {
+                  if (existingLead) {
+                    VendorPersonalLead.findByIdAndUpdate(
+                      existingLead._id,
+                      {
+                        $set: {
+                          name,
+                          phone,
+                          notes,
+                          eventInfo,
+                          tasks,
+                          payment,
+                        },
+                      }
+                    )
+                      .then((result) => {
+                        res.status(200).send({ message: "success", id: result._id });
+                      })
+                      .catch((error) => {
+                        res.status(400).send({ message: "error", error });
+                      });
+                  } else {
+                    new VendorPersonalLead({
+                      vendor: user_id,
+                      name,
+                      phone,
+                      notes,
+                      eventInfo,
+                      tasks,
+                      payment,
+                    })
+                      .save()
+                      .then((result) => {
+                        res.status(201).send({ message: "success", id: result._id });
+                      })
+                      .catch((error) => {
+                        res.status(400).send({ message: "error", error });
+                      });
+                  }
+                })
+                .catch((error) => {
+                  res.status(400).send({ message: "error", error });
+                });
+            })
+            .catch((error) => {
+              res.status(400).send({ message: "error", error });
+            });
+        } else {
+          // No existing enquiry, create new one
+          new VendorPersonalLead({
+            vendor: user_id,
+            name,
+            phone,
+            notes,
+            eventInfo,
+            tasks,
+            payment,
           })
-          .catch((error) => {
-            res.status(400).send({ message: "error", error });
-          });
+            .save()
+            .then((result) => {
+              new Enquiry({
+                name,
+                phone,
+                email: "",
+                verified: false,
+                source: "Vendor Personal Leads",
+                additionalInfo: { vendor: user_id },
+              })
+                .save()
+                .then((r) => {
+                  res.status(201).send({ message: "success", id: result._id });
+                })
+                .catch((error) => {
+                  res.status(400).send({ message: "error", error });
+                });
+            })
+            .catch((error) => {
+              res.status(400).send({ message: "error", error });
+            });
+        }
       })
       .catch((error) => {
         res.status(400).send({ message: "error", error });

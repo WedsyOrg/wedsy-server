@@ -8,6 +8,16 @@ const Vendor = require("../models/Vendor");
 const { CheckHash, CreateHash } = require("../utils/password");
 const { SendUpdate } = require("../utils/update");
 const Enquiry = require("../models/Enquiry");
+const Order = require("../models/Order");
+const Payment = require("../models/Payment");
+const Bidding = require("../models/Bidding");
+const BiddingBooking = require("../models/BiddingBooking");
+const Chat = require("../models/Chat");
+const Notification = require("../models/Notification");
+const VendorReview = require("../models/VendorReview");
+const VendorStatLog = require("../models/VendorStatLog");
+const UserSavedAddress = require("../models/UserSavedAddress");
+const PaymentReminder = require("../models/PaymentReminder");
 
 const Login = (req, res) => {
   const { name, phone, Otp, ReferenceId, source } = req.body;
@@ -20,12 +30,40 @@ const Login = (req, res) => {
           User.findOne({ phone })
             .then((user) => {
               if (user) {
+                if (user.blocked) {
+                  return res
+                    .status(403)
+                    .send({ message: "UserBlocked", error: "User is blocked" });
+                }
+                if (user.deleted) {
+                  return res
+                    .status(403)
+                    .send({ message: "UserDeleted", error: "User account has been deleted" });
+                }
                 const { _id } = user;
                 const token = jwt.sign(
                   { _id },
                   process.env.JWT_SECRET,
                   jwtConfig
                 );
+                // Check if enquiry already exists before creating
+                Enquiry.findOne({ phone })
+                  .then((existingEnquiry) => {
+                    if (!existingEnquiry) {
+                      // Only create enquiry if it doesn't exist
+                      new Enquiry({
+                        name,
+                        phone,
+                        verified: true,
+                        source: source || "User Signup (Account Creation)",
+                        additionalInfo: {},
+                      })
+                        .save()
+                        .then((result) => {})
+                        .catch((error) => {});
+                    }
+                  })
+                  .catch((error) => {});
                 res.send({
                   message: "Login Successful",
                   token,
@@ -43,15 +81,22 @@ const Login = (req, res) => {
                       process.env.JWT_SECRET,
                       jwtConfig
                     );
-                    new Enquiry({
-                      name,
-                      phone,
-                      verified: true,
-                      source: source || "User Signup (Account Creation)",
-                      additionalInfo: {},
-                    })
-                      .save()
-                      .then((result) => {})
+                    // Check if enquiry already exists before creating
+                    Enquiry.findOne({ phone })
+                      .then((existingEnquiry) => {
+                        if (!existingEnquiry) {
+                          new Enquiry({
+                            name,
+                            phone,
+                            verified: true,
+                            source: source || "User Signup (Account Creation)",
+                            additionalInfo: {},
+                          })
+                            .save()
+                            .then((result) => {})
+                            .catch((error) => {});
+                        }
+                      })
                       .catch((error) => {});
                     SendUpdate({
                       channels: ["SMS", "Whatsapp"],
@@ -78,6 +123,93 @@ const Login = (req, res) => {
       .catch((err) => {
         res.status(400).send({ message: "error", error: err });
       });
+  }
+};
+
+// Block / unblock a user (admin only)
+const BlockUser = (req, res) => {
+  const { user_id, isAdmin } = req.auth || {};
+  const { userId, blocked } = req.body || {};
+
+  if (!isAdmin) {
+    return res.status(403).send({ message: "Access denied" });
+  }
+  if (!userId) {
+    return res.status(400).send({ message: "userId is required" });
+  }
+
+  User.findByIdAndUpdate(
+    { _id: userId },
+    { $set: { blocked: blocked !== false } },
+    { new: true }
+  )
+    .then((user) => {
+      if (!user) {
+        res.status(404).send({ message: "User not found" });
+      } else {
+        res.send({ message: "success", blocked: user.blocked });
+      }
+    })
+    .catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
+};
+
+// Delete user account (admin only)
+// mode = "soft" (default) or "hard"
+const DeleteUserAccount = async (req, res) => {
+  const { isAdmin } = req.auth || {};
+  const { userId, mode = "soft" } = req.body || {};
+
+  if (!isAdmin) {
+    return res.status(403).send({ message: "Access denied" });
+  }
+  if (!userId) {
+    return res.status(400).send({ message: "userId is required" });
+  }
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    // HARD DELETE: remove user and all linked data
+    if (mode === "hard") {
+      await Promise.all([
+        Event.deleteMany({ user: userId }),
+        Order.deleteMany({ user: userId }),
+        Payment.deleteMany({ user: userId }),
+        Bidding.deleteMany({ user: userId }),
+        BiddingBooking.deleteMany({ user: userId }),
+        Chat.deleteMany({ user: userId }),
+        VendorStatLog.deleteMany({ user: userId }),
+        VendorReview.deleteMany({ user: userId }),
+        UserSavedAddress.deleteMany({ user: userId }),
+        PaymentReminder.deleteMany({ user: userId }),
+        Notification.deleteMany({ user: userId }),
+      ]);
+
+      await User.findByIdAndDelete(userId);
+
+      return res.send({ message: "success", mode: "hard" });
+    }
+
+    // SOFT DELETE: keep history, but disable and anonymize account
+    user.blocked = true;
+    user.deleted = true;
+    user.name = "Deleted User";
+    user.email = "";
+    user.phone = `deleted-${user.phone}`;
+
+    await user.save();
+
+    return res.send({ message: "success", mode: "soft" });
+  } catch (error) {
+    console.error("DeleteUserAccount error:", error);
+    return res
+      .status(400)
+      .send({ message: "error", error: error.message || error });
   }
 };
 
@@ -279,4 +411,6 @@ module.exports = {
   GetOTP,
   VendorLogin,
   GetVendor,
+  BlockUser,
+  DeleteUserAccount,
 };
