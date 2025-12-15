@@ -9,6 +9,10 @@ const UserSchema = new mongoose.Schema(
     profilePhoto: { type: String, default: "" },
     blocked: { type: Boolean, default: false },
     deleted: { type: Boolean, default: false },
+    // Store original data before deletion for restore capability
+    originalName: { type: String, default: "" },
+    originalEmail: { type: String, default: "" },
+    originalPhone: { type: String, default: "" },
     address: {
       apartment: { type: String, default: "" },
       street: { type: String, default: "" },

@@ -196,6 +196,13 @@ const DeleteUserAccount = async (req, res) => {
     }
 
     // SOFT DELETE: keep history, but disable and anonymize account
+    // Store original data before anonymizing for restore capability
+    if (!user.originalName) {
+      user.originalName = user.name;
+      user.originalEmail = user.email;
+      user.originalPhone = user.phone;
+    }
+
     user.blocked = true;
     user.deleted = true;
     user.name = "Deleted User";
@@ -213,6 +220,70 @@ const DeleteUserAccount = async (req, res) => {
   }
 };
 
+// Restore a soft-deleted user account (admin only)
+const RestoreUserAccount = async (req, res) => {
+  const { isAdmin } = req.auth || {};
+  const { userId } = req.body || {};
+
+  if (!isAdmin) {
+    return res.status(403).send({ message: "Access denied" });
+  }
+  if (!userId) {
+    return res.status(400).send({ message: "userId is required" });
+  }
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+
+    // Check if user is actually deleted
+    if (!user.deleted) {
+      return res.status(400).send({ message: "User is not deleted" });
+    }
+
+    // Check if we have original data to restore
+    if (!user.originalPhone) {
+      return res.status(400).send({ 
+        message: "Cannot restore: original user data not found. User may have been hard deleted." 
+      });
+    }
+
+    // Restore original data
+    user.name = user.originalName || user.name;
+    user.email = user.originalEmail || user.email;
+    user.phone = user.originalPhone;
+    user.deleted = false;
+    // Note: blocked status is kept as-is (admin can unblock separately if needed)
+    // Or uncomment below to auto-unblock on restore:
+    // user.blocked = false;
+
+    // Clear original data fields after restore
+    user.originalName = "";
+    user.originalEmail = "";
+    user.originalPhone = "";
+
+    await user.save();
+
+    return res.send({ 
+      message: "success", 
+      restored: true,
+      user: {
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        blocked: user.blocked
+      }
+    });
+  } catch (error) {
+    console.error("RestoreUserAccount error:", error);
+    return res
+      .status(400)
+      .send({ message: "error", error: error.message || error });
+  }
+};
+
 const VendorLogin = (req, res) => {
   const { phone, Otp, ReferenceId } = req.body;
   if (phone.length !== 13 || !Otp || !ReferenceId) {
@@ -224,6 +295,11 @@ const VendorLogin = (req, res) => {
           Vendor.findOne({ phone })
             .then((user) => {
               if (user) {
+                if (user.deleted) {
+                  return res
+                    .status(403)
+                    .send({ message: "VendorDeleted", error: "Vendor account has been deleted" });
+                }
                 const { _id } = user;
                 const token = jwt.sign(
                   { _id, isVendor: true },
@@ -248,6 +324,122 @@ const VendorLogin = (req, res) => {
       .catch((err) => {
         res.status(400).send({ message: "error", error: err });
       });
+  }
+};
+
+// Delete vendor account (soft delete only)
+// Vendor can delete their own account, Admin can delete any vendor
+const DeleteVendorAccount = async (req, res) => {
+  const { isAdmin, isVendor, user_id } = req.auth || {};
+  const { vendorId } = req.body || {};
+
+  // Determine which vendor to delete
+  const targetVendorId = vendorId || (isVendor ? user_id : null);
+
+  if (!targetVendorId) {
+    return res.status(400).send({ message: "vendorId is required" });
+  }
+
+  // Authorization check: Vendor can only delete self, Admin can delete any
+  if (!isAdmin && (!isVendor || user_id !== targetVendorId)) {
+    return res.status(403).send({ message: "Access denied" });
+  }
+
+  try {
+    const vendor = await Vendor.findById(targetVendorId);
+    if (!vendor) {
+      return res.status(404).send({ message: "Vendor not found" });
+    }
+
+    // Check if vendor is already deleted
+    if (vendor.deleted) {
+      return res.status(400).send({ message: "Vendor already deleted" });
+    }
+
+    // SOFT DELETE: keep history, but disable and anonymize account
+    // Store original data before anonymizing for restore capability
+    if (!vendor.originalName) {
+      vendor.originalName = vendor.name;
+      vendor.originalEmail = vendor.email;
+      vendor.originalPhone = vendor.phone;
+    }
+
+    vendor.blocked = true;
+    vendor.deleted = true;
+    vendor.name = "Deleted Vendor";
+    vendor.email = `deleted-${vendor.email}`; // Use placeholder instead of empty string to satisfy required validation
+    vendor.phone = `deleted-${vendor.phone}`;
+
+    await vendor.save();
+
+    return res.send({ message: "success" });
+  } catch (error) {
+    console.error("DeleteVendorAccount error:", error);
+    return res
+      .status(400)
+      .send({ message: "error", error: error.message || error });
+  }
+};
+
+// Restore a soft-deleted vendor account (admin only)
+const RestoreVendorAccount = async (req, res) => {
+  const { isAdmin } = req.auth || {};
+  const { vendorId } = req.body || {};
+
+  if (!isAdmin) {
+    return res.status(403).send({ message: "Access denied" });
+  }
+  if (!vendorId) {
+    return res.status(400).send({ message: "vendorId is required" });
+  }
+
+  try {
+    const vendor = await Vendor.findById(vendorId);
+    if (!vendor) {
+      return res.status(404).send({ message: "Vendor not found" });
+    }
+
+    // Check if vendor is actually deleted
+    if (!vendor.deleted) {
+      return res.status(400).send({ message: "Vendor is not deleted" });
+    }
+
+    // Check if we have original data to restore
+    if (!vendor.originalPhone) {
+      return res.status(400).send({ 
+        message: "Cannot restore: original vendor data not found." 
+      });
+    }
+
+    // Restore original data
+    vendor.name = vendor.originalName || vendor.name;
+    vendor.email = vendor.originalEmail || vendor.email;
+    vendor.phone = vendor.originalPhone;
+    vendor.deleted = false;
+    // Note: blocked status is kept as-is (admin can unblock separately if needed)
+
+    // Clear original data fields after restore
+    vendor.originalName = "";
+    vendor.originalEmail = "";
+    vendor.originalPhone = "";
+
+    await vendor.save();
+
+    return res.send({ 
+      message: "success", 
+      restored: true,
+      vendor: {
+        name: vendor.name,
+        phone: vendor.phone,
+        email: vendor.email,
+        blocked: vendor.blocked
+      }
+    });
+  } catch (error) {
+    console.error("RestoreVendorAccount error:", error);
+    return res
+      .status(400)
+      .send({ message: "error", error: error.message || error });
   }
 };
 
@@ -413,4 +605,7 @@ module.exports = {
   GetVendor,
   BlockUser,
   DeleteUserAccount,
+  RestoreUserAccount,
+  DeleteVendorAccount,
+  RestoreVendorAccount,
 };

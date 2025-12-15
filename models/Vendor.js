@@ -14,6 +14,12 @@ const VendorSchema = new mongoose.Schema(
     email: { type: String, required: true },
     gender: { type: String, required: true },
     dob: { type: String, required: false, default: "" },
+    blocked: { type: Boolean, default: false },
+    deleted: { type: Boolean, default: false },
+    // Store original data before deletion for restore capability
+    originalName: { type: String, default: "" },
+    originalEmail: { type: String, default: "" },
+    originalPhone: { type: String, default: "" },
     profileCompleted: { type: Boolean, default: false },
     paymentCompleted: { type: Boolean, default: false },
     profileVerified: { type: Boolean, default: false },
