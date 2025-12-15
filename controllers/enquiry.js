@@ -681,16 +681,43 @@ const Get = (req, res) => {
       if (!result) {
         res.status(404).send();
       } else {
-        User.findOne({ phone: result.phone })
-          .then((user) => {
-            if (!user) {
-              res.send({ ...result.toObject(), userCreated: false });
-            } else {
-              Event.find({ user: user._id })
-                .then((events) => {
-                  Payment.find({ user: user._id })
-                    .populate("event")
-                    .then((payments) => {
+        // Backward compatibility: Convert old string conversations to new format.
+        // Important: if we migrate, we re-read the updated doc so subdocuments get real _id values immediately
+        // (required for editing/updating a specific note from the admin UI).
+        let resultObj = result.toObject();
+        let needsConversationMigration = false;
+        if (
+          resultObj.updates?.conversations &&
+          Array.isArray(resultObj.updates.conversations)
+        ) {
+          resultObj.updates.conversations = resultObj.updates.conversations.map((conv) => {
+            // If it's already an object with text, return as is
+            if (typeof conv === "object" && conv !== null && conv.text) {
+              return conv;
+            }
+            // If it's a string (old format), convert to new format
+            if (typeof conv === "string") {
+              needsConversationMigration = true;
+              return {
+                text: conv,
+                createdAt: result.createdAt || new Date(),
+              };
+            }
+            return conv;
+          });
+        }
+
+        const proceedWith = (finalResultObj) => {
+          User.findOne({ phone: result.phone })
+            .then((user) => {
+              if (!user) {
+                res.send({ ...finalResultObj, userCreated: false });
+              } else {
+                Event.find({ user: user._id })
+                  .then((events) => {
+                    Payment.find({ user: user._id })
+                      .populate("event")
+                      .then((payments) => {
                       const { totalAmount, amountPaid, amountDue } =
                         events.reduce(
                           (accumulator, e) => {
@@ -752,7 +779,7 @@ const Get = (req, res) => {
                                   );
 
                                   res.send({
-                                    ...result.toObject(),
+                                    ...finalResultObj,
                                     userCreated: true,
                                     user,
                                     events,
@@ -786,19 +813,80 @@ const Get = (req, res) => {
                         .catch((error) => {
                           res.status(400).send({ message: "error", error });
                         });
-                    })
-                    .catch((error) => {
-                      res.status(400).send({ message: "error", error });
-                    });
-                })
-                .catch((error) => {
-                  res.status(400).send({ message: "error", error });
-                });
-            }
-          })
-          .catch((error) => {
-            res.status(400).send({ message: "error", error });
-          });
+                      })
+                      .catch((error) => {
+                        res.status(400).send({ message: "error", error });
+                      });
+                  })
+                  .catch((error) => {
+                    res.status(400).send({ message: "error", error });
+                  });
+              }
+            })
+            .catch((error) => {
+              res.status(400).send({ message: "error", error });
+            });
+        };
+
+        // Persist migration so each conversation gets a proper Mongo subdocument _id (enables editing/updating notes)
+        if (needsConversationMigration) {
+          Enquiry.findByIdAndUpdate(
+            { _id },
+            { $set: { "updates.conversations": resultObj.updates.conversations } },
+            { new: true }
+          )
+            .then((migrated) => {
+              if (migrated) {
+                proceedWith(migrated.toObject());
+              } else {
+                proceedWith(resultObj);
+              }
+            })
+            .catch(() => {
+              proceedWith(resultObj);
+            });
+        } else {
+          proceedWith(resultObj);
+        }
+      }
+    })
+    .catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
+};
+
+const UpdateConversation = (req, res) => {
+  const { _id, conversationId } = req.params;
+  const { text, createdAt } = req.body;
+
+  if (!conversationId) {
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  const updateFields = {};
+  if (typeof text === "string") {
+    updateFields["updates.conversations.$.text"] = text;
+  }
+  if (createdAt) {
+    const d = new Date(createdAt);
+    if (!Number.isNaN(d.getTime())) {
+      updateFields["updates.conversations.$.createdAt"] = d;
+    }
+  }
+
+  if (Object.keys(updateFields).length === 0) {
+    return res.status(400).send({ message: "No valid fields to update" });
+  }
+
+  Enquiry.findOneAndUpdate(
+    { _id, "updates.conversations._id": conversationId },
+    { $set: updateFields }
+  )
+    .then((result) => {
+      if (!result) {
+        res.status(404).send();
+      } else {
+        res.send({ message: "success" });
       }
     })
     .catch((error) => {
@@ -833,10 +921,18 @@ const CreateUser = (req, res) => {
 
 const AddConversation = (req, res) => {
   const { _id } = req.params;
-  const { conversation } = req.body;
+  const { conversation, createdAt } = req.body;
+  let createdAtDate = createdAt ? new Date(createdAt) : new Date();
+  if (Number.isNaN(createdAtDate.getTime())) {
+    createdAtDate = new Date();
+  }
+  const conversationObj = {
+    text: conversation,
+    createdAt: createdAtDate,
+  };
   Enquiry.findByIdAndUpdate(
     { _id },
-    { $addToSet: { "updates.conversations": conversation } }
+    { $push: { "updates.conversations": conversationObj } }
   )
     .then((result) => {
       if (!result) {
@@ -894,6 +990,7 @@ module.exports = {
   Delete,
   CreateUser,
   AddConversation,
+  UpdateConversation,
   UpdateNotes,
   UpdateCallSchedule,
 };

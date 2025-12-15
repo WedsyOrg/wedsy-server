@@ -11,6 +11,11 @@ router.delete("/", CheckAdminLogin, enquiry.Delete);
 router.get("/:_id", CheckAdminLogin, enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
+router.put(
+  "/:_id/conversations/:conversationId",
+  CheckAdminLogin,
+  enquiry.UpdateConversation
+);
 router.put("/:_id/", CheckAdminLogin, enquiry.UpdateLead);
 router.put("/:_id/notes", CheckAdminLogin, enquiry.UpdateNotes);
 router.put("/:_id/call", CheckAdminLogin, enquiry.UpdateCallSchedule);

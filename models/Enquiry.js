@@ -23,7 +23,15 @@ const EnquirySchema = new mongoose.Schema(
     isLost: { type: Boolean, default: false, required: true },
     source: { type: String, required: true, default: "Default" },
     updates: {
-      conversations: { type: [String], default: [] },
+      conversations: {
+        type: [
+          {
+            text: { type: String, required: true },
+            createdAt: { type: Date, default: Date.now },
+          },
+        ],
+        default: [],
+      },
       notes: { type: String, default: "" },
       callSchedule: { type: Date, default: "" },
     },
