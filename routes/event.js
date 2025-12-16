@@ -7,6 +7,7 @@ const {
   CheckAdminLogin,
 } = require("../middlewares/auth");
 const event = require("../controllers/event");
+const eventShare = require("../controllers/eventShare");
 
 router.post("/", CheckLogin, event.CreateNew);
 router.get("/", CheckLogin, event.GetAll);
@@ -103,5 +104,16 @@ router.put(
 router.post("/:_id/event-access", CheckLogin, event.AddEventAccess);
 router.delete("/:_id/event-access", CheckLogin, event.RemoveEventAccess);
 router.post("/:_id/lost", CheckAdminLogin, event.MarkEventLost);
+
+// Share links (no-login view access via token)
+router.get("/:_id/share", CheckAdminLogin, eventShare.ListShares);
+router.post("/:_id/share", CheckAdminLogin, eventShare.CreateShare);
+router.put("/:_id/share/:shareId", CheckAdminLogin, eventShare.UpdateShare);
+router.delete("/:_id/share/:shareId", CheckAdminLogin, eventShare.RevokeShare);
+router.post(
+  "/:_id/share/:shareId/rotate",
+  CheckAdminLogin,
+  eventShare.RotateShareToken
+);
 
 module.exports = router;

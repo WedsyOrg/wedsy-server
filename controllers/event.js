@@ -1,6 +1,8 @@
 const Event = require("../models/Event");
 const User = require("../models/User");
 const {SendUpdate} = require("../utils/update");
+const EventShare = require("../models/EventShare");
+const {sha256} = require("./eventShare");
 
 const CreateNew = (req, res) => {
   const {user_id, isAdmin} = req.auth;
@@ -1388,7 +1390,7 @@ const RemoveEventFinalize = (req, res) => {
 const Get = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id} = req.params;
-  const {populate, display} = req.query;
+  const {populate, display, share} = req.query;
   let query = Event.findById(
     isAdmin || display == "true" ? {_id} : {_id, user: user_id}
   );
@@ -1400,7 +1402,7 @@ const Get = (req, res) => {
     );
   }
   query
-    .then((result) => {
+    .then(async (result) => {
       if (!result) {
         res.status(404).send();
       } else {
@@ -1421,10 +1423,30 @@ const Get = (req, res) => {
         }
 
         if (display == "true" && !isAdmin) {
-          res.send({
-            ...eventObj,
-            userAccess: user_id == result.user,
-          });
+          const isOwner = user_id && String(user_id) === String(result.user);
+          let hasShareAccess = false;
+
+          if (share) {
+            try {
+              const tokenHash = sha256(share);
+              const shareDoc = await EventShare.findOne({
+                event: _id,
+                tokenHash,
+                active: true,
+              }).lean();
+              hasShareAccess = !!shareDoc;
+            } catch (_) {
+              hasShareAccess = false;
+            }
+          }
+
+          if (!isOwner && !hasShareAccess) {
+            return res
+              .status(403)
+              .send({message: "error", error: "Forbidden"});
+          }
+
+          res.send({...eventObj, userAccess: isOwner});
         } else {
           res.send(eventObj);
         }

@@ -255,6 +255,8 @@ const GetAll = async (req, res) => {
     });
     res.send({ stats });
   } else {
+    const escapeRegExp = (str) =>
+      String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const {
@@ -285,10 +287,11 @@ const GetAll = async (req, res) => {
       };
     }
     if (search) {
+      const safeSearch = escapeRegExp(search);
       query.$or = [
-        { name: { $regex: new RegExp(search, "i") } },
-        { email: { $regex: new RegExp(search, "i") } },
-        { phone: { $regex: new RegExp(search, "i") } },
+        { name: { $regex: new RegExp(safeSearch, "i") } },
+        { email: { $regex: new RegExp(safeSearch, "i") } },
+        { phone: { $regex: new RegExp(safeSearch, "i") } },
       ];
     }
     if (sort) {
@@ -304,7 +307,7 @@ const GetAll = async (req, res) => {
     // NEW: Filter by interested service stored in additionalInfo
     // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.
     if (service) {
-      const serviceRegex = new RegExp(`^${service}$`, "i");
+      const serviceRegex = new RegExp(`^${escapeRegExp(service)}$`, "i");
       // Match either additionalInfo.service or additionalInfo.interestedService
       query.$and = query.$and || [];
       query.$and.push({
