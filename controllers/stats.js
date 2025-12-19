@@ -6,6 +6,66 @@ const { default: mongoose } = require("mongoose");
 const Chat = require("../models/Chat");
 const Payment = require("../models/Payment");
 
+const MONTH_NAMES = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+];
+
+const monthKeyFromDate = (d) => `${MONTH_NAMES[d.getMonth()]} ${d.getFullYear()}`;
+
+const safeDateOnly = (d) => {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
+  return d.toISOString().split("T")[0];
+};
+
+const parseDateString = (val) => {
+  if (!val) return null;
+  const d = new Date(val);
+  if (!Number.isNaN(d.getTime())) return d;
+  // handle common YYYY-MM-DD strings explicitly
+  if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+    const d2 = new Date(`${val}T00:00:00.000Z`);
+    if (!Number.isNaN(d2.getTime())) return d2;
+  }
+  return null;
+};
+
+const orderEffectiveDate = (order) => {
+  if (!order) return null;
+  if (order.source === "Wedsy-Package") {
+    return parseDateString(order?.wedsyPackageBooking?.date);
+  }
+  if (order.source === "Personal-Package") {
+    return parseDateString(order?.vendorPersonalPackageBooking?.date);
+  }
+  if (order.source === "Bidding") {
+    const events = order?.biddingBooking?.events || [];
+    let best = null;
+    for (const ev of events) {
+      const d = parseDateString(ev?.date);
+      if (!d) continue;
+      if (!best || d < best) best = d;
+    }
+    return best;
+  }
+  return null;
+};
+
+const orderAmountTotal = (order) => {
+  const n = Number(order?.amount?.total ?? 0);
+  return Number.isFinite(n) ? n : 0;
+};
+
 const GetStatistics = async (req, res) => {
   const { user_id, user, isAdmin, isVendor } = req.auth;
   const { key } = req.query;
@@ -20,22 +80,7 @@ const GetStatistics = async (req, res) => {
         while (registrationDate <= currentDate) {
           // Append month to list
           stats.push({
-            month: `${
-              [
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December",
-              ][registrationDate.getMonth()]
-            } ${registrationDate.getFullYear()}`,
+            month: `${MONTH_NAMES[registrationDate.getMonth()]} ${registrationDate.getFullYear()}`,
             wedsyPackagesAmount: 0,
             personalPackagesAmount: 0,
             biddingAmount: 0,
@@ -45,9 +90,75 @@ const GetStatistics = async (req, res) => {
           });
           registrationDate.setMonth(registrationDate.getMonth() + 1);
         }
+
+        // Fill real counts/amounts from vendor orders (finalized only)
+        const vendorOrders = await Order.find({
+          vendor: new mongoose.Types.ObjectId(vendor),
+          "status.finalized": true,
+        })
+          .populate("wedsyPackageBooking vendorPersonalPackageBooking biddingBooking")
+          .lean();
+
+        const monthIndex = new Map(stats.map((s, idx) => [s.month, idx]));
+        for (const o of vendorOrders) {
+          const d = orderEffectiveDate(o);
+          if (!d) continue;
+          const key = monthKeyFromDate(d);
+          const idx = monthIndex.get(key);
+          if (idx === undefined) continue;
+          const amt = orderAmountTotal(o);
+          if (o.source === "Wedsy-Package") {
+            stats[idx].wedsyPackagesCount += 1;
+            stats[idx].wedsyPackagesAmount += amt;
+          } else if (o.source === "Personal-Package") {
+            stats[idx].personalPackagesCount += 1;
+            stats[idx].personalPackagesAmount += amt;
+          } else if (o.source === "Bidding") {
+            stats[idx].biddingCount += 1;
+            stats[idx].biddingAmount += amt;
+          }
+        }
+
         res.send({ message: "success", stats });
       } catch (error) {
         console.error("Error fetching vendor stats:", error);
+        res.send({ message: "error", error });
+      }
+    } else if (key === "vendor-orders-day") {
+      const { vendor, day } = req.query;
+      try {
+        const now = new Date();
+        const target = new Date(now);
+        if (day === "tomorrow") target.setDate(target.getDate() + 1);
+        const targetISO = safeDateOnly(target);
+
+        const vendorOrders = await Order.find({
+          vendor: new mongoose.Types.ObjectId(vendor),
+          "status.finalized": true,
+          source: { $in: ["Wedsy-Package", "Personal-Package", "Bidding"] },
+        })
+          .populate("wedsyPackageBooking vendorPersonalPackageBooking biddingBooking")
+          .lean();
+
+        let wedsyPackages = 0;
+        let personalPackages = 0;
+        let bidding = 0;
+
+        for (const o of vendorOrders) {
+          const d = orderEffectiveDate(o);
+          if (!d) continue;
+          if (safeDateOnly(d) !== targetISO) continue;
+          if (o.source === "Wedsy-Package") wedsyPackages += 1;
+          else if (o.source === "Personal-Package") personalPackages += 1;
+          else if (o.source === "Bidding") bidding += 1;
+        }
+
+        res.send({
+          message: "success",
+          stats: { wedsyPackages, personalPackages, bidding },
+        });
+      } catch (error) {
+        console.error("Error fetching vendor day orders:", error);
         res.send({ message: "error", error });
       }
     } else if (key === "vendor-analytics") {

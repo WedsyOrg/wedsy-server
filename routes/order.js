@@ -10,7 +10,12 @@ const {
 
 router.post("/", CheckLogin, order.CreateOrder);
 router.get("/", CheckLogin, (req, res) => {
-  const { source } = req.query;
+  const { source, vendorId, sourceFilter } = req.query;
+  // Admin vendor oversight: allow filtering orders by vendorId/source without triggering
+  // vendor-only handlers (which require isVendor).
+  if (req.auth?.isAdmin && (vendorId || sourceFilter)) {
+    return order.GetAllOrders(req, res);
+  }
   if (source === "Personal-Package") {
     order.GetVendorPersonalPackageBooking(req, res);
   } else if (source === "Wedsy-Package") {

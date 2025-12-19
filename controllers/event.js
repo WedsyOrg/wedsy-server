@@ -132,8 +132,9 @@ const ShuffleEventDays = async (req, res) => {
 const AddEventDay = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id} = req.params;
-  const {name, date, time, venue} = req.body;
-  if (!name || !date || !time || !venue) {
+  const {name, date, time, venue, eventSpace, location} = req.body;
+  const computedVenue = venue || location?.formatted_address;
+  if (!name || !date || !time || !computedVenue) {
     res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
@@ -142,7 +143,9 @@ const AddEventDay = (req, res) => {
           name,
           date,
           time,
-          venue,
+          venue: computedVenue,
+          eventSpace: eventSpace || "",
+          location: location || {},
           decorItems: [],
           status: {
             finalized: false,
@@ -195,8 +198,9 @@ const UpdateEventDayNotes = (req, res) => {
 const UpdateEventDay = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id, eventDay} = req.params;
-  const {name, date, time, venue} = req.body;
-  if (!name || !date || !time || !venue || !eventDay) {
+  const {name, date, time, venue, eventSpace, location} = req.body;
+  const computedVenue = venue || location?.formatted_address;
+  if (!name || !date || !time || !computedVenue || !eventDay) {
     res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
@@ -208,7 +212,9 @@ const UpdateEventDay = (req, res) => {
           "eventDays.$.name": name,
           "eventDays.$.date": date,
           "eventDays.$.time": time,
-          "eventDays.$.venue": venue,
+          "eventDays.$.venue": computedVenue,
+          "eventDays.$.eventSpace": eventSpace || "",
+          "eventDays.$.location": location || {},
         },
       }
     )

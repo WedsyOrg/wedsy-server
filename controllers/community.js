@@ -32,6 +32,10 @@ const restructureCommunity = async (item, user_id, role) => {
     const user = await User.findById(item.author.id);
     name = user?.name || "";
   }
+  // If post is anonymous, non-admin viewers should NOT see the author's name.
+  if (temp?.author?.anonymous && role !== "admin") {
+    name = "";
+  }
   temp.author = {
     ...temp.author,
     name,
@@ -93,6 +97,10 @@ const GetAll = (req, res) => {
             const user = await User.findById(item.author.id);
             name = user?.name || "";
           }
+          // If post is anonymous, non-admin viewers should NOT see the author's name.
+          if (temp?.author?.anonymous && !isAdmin) {
+            name = "";
+          }
           temp.author = {
             ...temp.author,
             name,
@@ -114,6 +122,10 @@ const GetAll = (req, res) => {
                   } else if (reply.author.role === "user") {
                     const user = await User.findById(reply.author.id);
                     name = user?.name || "";
+                  }
+                  // If reply is anonymous, non-admin viewers should NOT see the author's name.
+                  if (tempItem?.author?.anonymous && !isAdmin) {
+                    name = "";
                   }
                   tempItem.author = {
                     ...tempItem.author,
@@ -168,6 +180,10 @@ const Get = (req, res) => {
               } else if (reply.author.role === "user") {
                 const user = await User.findById(reply.author.id);
                 name = user?.name || "";
+              }
+              // If reply is anonymous, non-admin viewers should NOT see the author's name.
+              if (temp?.author?.anonymous && !isAdmin) {
+                name = "";
               }
               temp.author = {
                 ...temp.author,

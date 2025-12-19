@@ -486,6 +486,35 @@ const Update = (req, res) => {
         .catch((error) => {
           res.status(400).send({ message: "error", error });
         });
+    } else if (updateKey && updateKey === "rating") {
+      const { rating } = req.body;
+      const nextRating = parseInt(rating);
+      if (![1, 2, 3, 4, 5].includes(nextRating)) {
+        return res.status(400).send({ message: "Invalid rating" });
+      }
+      Vendor.findByIdAndUpdate(
+        { _id },
+        {
+          $set: {
+            rating: nextRating,
+          },
+        }
+      )
+        .then((result) => {
+          if (result) {
+            CreateNotification({
+              title: `Vendor Rating Updated to ${nextRating}`,
+              category: "Vendor",
+              references: { vendor: _id },
+            });
+            res.status(200).send({ message: "success" });
+          } else {
+            res.status(404).send({ message: "not found" });
+          }
+        })
+        .catch((error) => {
+          res.status(400).send({ message: "error", error });
+        });
     } else {
       // Allow explicit gallery clears (coverPhoto="" or photos=[])
       const galleryPayload = req.body && req.body.gallery ? req.body.gallery : undefined;

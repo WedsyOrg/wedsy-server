@@ -20,6 +20,16 @@ const EventSchema = new mongoose.Schema(
           date: {type: String, required: true},
           time: {type: String, required: true},
           venue: {type: String, required: true},
+          // NEW: Google-map location + custom event space
+          location: {
+            place_id: {type: String, default: ""},
+            formatted_address: {type: String, default: ""},
+            geometry: {
+              lat: {type: Number, default: 0},
+              lng: {type: Number, default: 0},
+            },
+          },
+          eventSpace: {type: String, default: ""},
           decorItems: {
             type: [
               {
