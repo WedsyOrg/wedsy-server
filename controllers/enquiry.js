@@ -949,6 +949,28 @@ const AddConversation = (req, res) => {
     });
 };
 
+const DeleteConversation = (req, res) => {
+  const { _id, conversationId } = req.params;
+  if (!conversationId) {
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  Enquiry.findByIdAndUpdate(
+    { _id },
+    { $pull: { "updates.conversations": { _id: conversationId } } }
+  )
+    .then((result) => {
+      if (!result) {
+        res.status(404).send();
+      } else {
+        res.send({ message: "success" });
+      }
+    })
+    .catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
+};
+
 const UpdateNotes = (req, res) => {
   const { _id } = req.params;
   const { notes } = req.body;
@@ -993,6 +1015,7 @@ module.exports = {
   Delete,
   CreateUser,
   AddConversation,
+  DeleteConversation,
   UpdateConversation,
   UpdateNotes,
   UpdateCallSchedule,
