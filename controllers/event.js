@@ -1,6 +1,8 @@
 const Event = require("../models/Event");
 const User = require("../models/User");
 const {SendUpdate} = require("../utils/update");
+const EventShare = require("../models/EventShare");
+const {sha256} = require("./eventShare");
 
 const CreateNew = (req, res) => {
   const {user_id, isAdmin} = req.auth;
@@ -130,8 +132,9 @@ const ShuffleEventDays = async (req, res) => {
 const AddEventDay = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id} = req.params;
-  const {name, date, time, venue} = req.body;
-  if (!name || !date || !time || !venue) {
+  const {name, date, time, venue, eventSpace, location} = req.body;
+  const computedVenue = venue || location?.formatted_address;
+  if (!name || !date || !time || !computedVenue) {
     res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
@@ -140,7 +143,9 @@ const AddEventDay = (req, res) => {
           name,
           date,
           time,
-          venue,
+          venue: computedVenue,
+          eventSpace: eventSpace || "",
+          location: location || {},
           decorItems: [],
           status: {
             finalized: false,
@@ -193,8 +198,9 @@ const UpdateEventDayNotes = (req, res) => {
 const UpdateEventDay = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id, eventDay} = req.params;
-  const {name, date, time, venue} = req.body;
-  if (!name || !date || !time || !venue || !eventDay) {
+  const {name, date, time, venue, eventSpace, location} = req.body;
+  const computedVenue = venue || location?.formatted_address;
+  if (!name || !date || !time || !computedVenue || !eventDay) {
     res.status(400).send({message: "Incomplete Data"});
   } else {
     Event.findOneAndUpdate(
@@ -206,7 +212,9 @@ const UpdateEventDay = (req, res) => {
           "eventDays.$.name": name,
           "eventDays.$.date": date,
           "eventDays.$.time": time,
-          "eventDays.$.venue": venue,
+          "eventDays.$.venue": computedVenue,
+          "eventDays.$.eventSpace": eventSpace || "",
+          "eventDays.$.location": location || {},
         },
       }
     )
@@ -1388,7 +1396,7 @@ const RemoveEventFinalize = (req, res) => {
 const Get = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id} = req.params;
-  const {populate, display} = req.query;
+  const {populate, display, share} = req.query;
   let query = Event.findById(
     isAdmin || display == "true" ? {_id} : {_id, user: user_id}
   );
@@ -1400,7 +1408,7 @@ const Get = (req, res) => {
     );
   }
   query
-    .then((result) => {
+    .then(async (result) => {
       if (!result) {
         res.status(404).send();
       } else {
@@ -1421,10 +1429,30 @@ const Get = (req, res) => {
         }
 
         if (display == "true" && !isAdmin) {
-          res.send({
-            ...eventObj,
-            userAccess: user_id == result.user,
-          });
+          const isOwner = user_id && String(user_id) === String(result.user);
+          let hasShareAccess = false;
+
+          if (share) {
+            try {
+              const tokenHash = sha256(share);
+              const shareDoc = await EventShare.findOne({
+                event: _id,
+                tokenHash,
+                active: true,
+              }).lean();
+              hasShareAccess = !!shareDoc;
+            } catch (_) {
+              hasShareAccess = false;
+            }
+          }
+
+          if (!isOwner && !hasShareAccess) {
+            return res
+              .status(403)
+              .send({message: "error", error: "Forbidden"});
+          }
+
+          res.send({...eventObj, userAccess: isOwner});
         } else {
           res.send(eventObj);
         }

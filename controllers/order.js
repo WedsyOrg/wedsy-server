@@ -340,6 +340,7 @@ const CreateOrder = async (req, res) => {
 
 const GetAllOrders = (req, res) => {
   const { user_id, isVendor, isAdmin } = req.auth;
+  const { vendorId, sourceFilter, source, page, limit } = req.query;
   if (isVendor) {
     Order.find({ vendor: user_id })
       .populate(
@@ -359,23 +360,33 @@ const GetAllOrders = (req, res) => {
         });
       });
   } else if (isAdmin) {
-    Order.find({})
+    const q = {};
+    if (vendorId) q.vendor = vendorId;
+    const effectiveSource = sourceFilter || source;
+    if (
+      effectiveSource &&
+      ["Bidding", "Wedsy-Package", "Personal-Package"].includes(effectiveSource)
+    ) {
+      q.source = effectiveSource;
+    }
+
+    const p = parseInt(page || "1", 10);
+    const l = Math.min(parseInt(limit || "50", 10), 200);
+    const skip = (p - 1) * l;
+
+    Promise.all([Order.countDocuments(q), Order.find(q)
       .populate(
         "biddingBooking wedsyPackageBooking vendorPersonalPackageBooking user vendor"
       )
-      .then((result) => {
-        if (!result) {
-          res.status(404).send();
-        } else {
-          res.send(result);
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({
-          message: "error",
-          error,
-        });
-      });
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(l)
+      .lean()]).then(([total, result]) => {
+        const totalPages = Math.ceil(total / l) || 1;
+        res.send({ list: result || [], totalPages, page: p, limit: l });
+      }).catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
   } else {
     Order.find({ user: user_id })
       .populate(

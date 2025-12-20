@@ -115,6 +115,9 @@ const Get = async (req, res) => {
     query.user = new mongoose.Types.ObjectId(user_id);
     populate = "vendor";
     setUpdate["status.viewedByUser"] = true;
+  } else {
+    // Admin can view any chat and should see both sides.
+    populate = "vendor user";
   }
   const limit = Math.min(parseInt(req.query.limit || '50', 10), 100);
   const before = req.query.before ? new Date(req.query.before) : null;

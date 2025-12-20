@@ -255,6 +255,8 @@ const GetAll = async (req, res) => {
     });
     res.send({ stats });
   } else {
+    const escapeRegExp = (str) =>
+      String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
     const {
@@ -285,10 +287,11 @@ const GetAll = async (req, res) => {
       };
     }
     if (search) {
+      const safeSearch = escapeRegExp(search);
       query.$or = [
-        { name: { $regex: new RegExp(search, "i") } },
-        { email: { $regex: new RegExp(search, "i") } },
-        { phone: { $regex: new RegExp(search, "i") } },
+        { name: { $regex: new RegExp(safeSearch, "i") } },
+        { email: { $regex: new RegExp(safeSearch, "i") } },
+        { phone: { $regex: new RegExp(safeSearch, "i") } },
       ];
     }
     if (sort) {
@@ -304,7 +307,7 @@ const GetAll = async (req, res) => {
     // NEW: Filter by interested service stored in additionalInfo
     // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.
     if (service) {
-      const serviceRegex = new RegExp(`^${service}$`, "i");
+      const serviceRegex = new RegExp(`^${escapeRegExp(service)}$`, "i");
       // Match either additionalInfo.service or additionalInfo.interestedService
       query.$and = query.$and || [];
       query.$and.push({
@@ -946,6 +949,28 @@ const AddConversation = (req, res) => {
     });
 };
 
+const DeleteConversation = (req, res) => {
+  const { _id, conversationId } = req.params;
+  if (!conversationId) {
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  Enquiry.findByIdAndUpdate(
+    { _id },
+    { $pull: { "updates.conversations": { _id: conversationId } } }
+  )
+    .then((result) => {
+      if (!result) {
+        res.status(404).send();
+      } else {
+        res.send({ message: "success" });
+      }
+    })
+    .catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
+};
+
 const UpdateNotes = (req, res) => {
   const { _id } = req.params;
   const { notes } = req.body;
@@ -990,6 +1015,7 @@ module.exports = {
   Delete,
   CreateUser,
   AddConversation,
+  DeleteConversation,
   UpdateConversation,
   UpdateNotes,
   UpdateCallSchedule,

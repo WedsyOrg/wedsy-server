@@ -7,6 +7,7 @@ const Order = require("../models/Order");
 const VendorReview = require("../models/VendorReview");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
+const mongoose = require("mongoose");
 
 /**
  * CreateNew - Creates a new bidding and sends it to ALL vendors
@@ -90,16 +91,175 @@ const CreateNew = (req, res) => {
 const GetAll = (req, res) => {
   const { user_id, isAdmin, isVendor } = req.auth;
   if (isAdmin) {
-    Bidding.find({})
-      .then((result) => {
-        res.send(result);
-      })
-      .catch((error) => {
-        res.status(400).send({
-          message: "error",
-          error,
+    // Admin vendor oversight: return vendor-specific bidding bids list with filters
+    const {
+      vendorId,
+      search,
+      sort,
+      confirmed,
+      chatInitiated,
+      startDate,
+      endDate,
+    } = req.query;
+
+    if (vendorId) {
+      const parseDateString = (val) => {
+        if (!val) return null;
+        const d = new Date(val);
+        if (!Number.isNaN(d.getTime())) return d;
+        if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+          const d2 = new Date(`${val}T00:00:00.000Z`);
+          if (!Number.isNaN(d2.getTime())) return d2;
+        }
+        return null;
+      };
+
+      const safeISODate = (d) => {
+        if (!(d instanceof Date) || Number.isNaN(d.getTime())) return "";
+        return d.toISOString().split("T")[0];
+      };
+
+      const rangeStart = parseDateString(startDate);
+      const rangeEnd = parseDateString(endDate);
+      if (rangeEnd) rangeEnd.setHours(23, 59, 59, 999);
+
+      const vendorObjId = new mongoose.Types.ObjectId(vendorId);
+
+      BiddingBid.find({ vendor: vendorObjId })
+        .populate({
+          path: "bidding",
+          populate: { path: "user", model: "User" },
+        })
+        .lean()
+        .then(async (bids) => {
+          const biddingIds = (bids || [])
+            .map((b) => b?.bidding?._id)
+            .filter(Boolean)
+            .map((id) => new mongoose.Types.ObjectId(id));
+
+          const userIds = (bids || [])
+            .map((b) => b?.bidding?.user?._id)
+            .filter(Boolean)
+            .map((id) => new mongoose.Types.ObjectId(id));
+
+          const [chatDocs, bestBidAgg] = await Promise.all([
+            Chat.find({ vendor: vendorObjId, user: { $in: userIds } })
+              .select("_id user")
+              .lean(),
+            biddingIds.length
+              ? BiddingBid.aggregate([
+                  {
+                    $match: {
+                      bidding: { $in: biddingIds },
+                      bid: { $gt: 0 },
+                    },
+                  },
+                  { $group: { _id: "$bidding", minBid: { $min: "$bid" } } },
+                ])
+              : [],
+          ]);
+
+          const chatByUser = new Map(
+            (chatDocs || []).map((c) => [String(c.user), String(c._id)])
+          );
+          const bestBidByBidding = new Map(
+            (bestBidAgg || []).map((r) => [String(r._id), Number(r.minBid || 0)])
+          );
+
+          let rows = (bids || []).map((b) => {
+            const bidding = b?.bidding || {};
+            const user = bidding?.user || {};
+            const events = Array.isArray(bidding?.events) ? bidding.events : [];
+            const eventDates = events
+              .map((e) => parseDateString(e?.date))
+              .filter(Boolean);
+            const firstEvent =
+              eventDates.length > 0
+                ? eventDates.reduce((min, cur) => (cur < min ? cur : min), eventDates[0])
+                : null;
+
+            const uId = user?._id ? String(user._id) : "";
+            const bidId = bidding?._id ? String(bidding._id) : "";
+            const confirmedFlag = Boolean(b?.status?.userAccepted);
+            const chatId = uId ? chatByUser.get(uId) || "" : "";
+
+            return {
+              _id: String(b._id),
+              biddingId: bidId,
+              customer: { _id: uId, name: user?.name || "", phone: user?.phone || "" },
+              eventDay: firstEvent ? safeISODate(firstEvent) : "",
+              eventsCount: events.length,
+              bestBid: bidId ? bestBidByBidding.get(bidId) || 0 : 0,
+              bid: Number(b?.bid || 0),
+              bidSent: Number(b?.bid || 0) > 0,
+              confirmed: confirmedFlag,
+              chatInitiated: Boolean(chatId),
+              chatId,
+              createdAt: b?.createdAt,
+              _eventDates: eventDates, // internal for filtering
+            };
+          });
+
+          // Filters
+          if (confirmed === "Yes") rows = rows.filter((r) => r.confirmed === true);
+          if (confirmed === "No") rows = rows.filter((r) => r.confirmed === false);
+
+          if (chatInitiated === "Yes")
+            rows = rows.filter((r) => r.chatInitiated === true);
+          if (chatInitiated === "No")
+            rows = rows.filter((r) => r.chatInitiated === false);
+
+          if (rangeStart || rangeEnd) {
+            rows = rows.filter((r) => {
+              const dts = r._eventDates || [];
+              if (dts.length === 0) return false;
+              return dts.some((d) => {
+                if (rangeStart && d < rangeStart) return false;
+                if (rangeEnd && d > rangeEnd) return false;
+                return true;
+              });
+            });
+          }
+
+          if (search) {
+            const s = String(search).toLowerCase();
+            rows = rows.filter((r) => {
+              return (
+                r.customer?.name?.toLowerCase().includes(s) ||
+                String(r.customer?.phone || "").toLowerCase().includes(s)
+              );
+            });
+          }
+
+          // Sorting
+          if (sort === "Oldest") {
+            rows.sort(
+              (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0)
+            );
+          } else if (sort === "Best Bid") {
+            rows.sort((a, b) => (a.bestBid || 0) - (b.bestBid || 0));
+          } else {
+            // Newest (default)
+            rows.sort(
+              (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)
+            );
+          }
+
+          // Remove internal field
+          rows = rows.map(({ _eventDates, ...rest }) => rest);
+
+          res.send({ message: "success", list: rows });
+        })
+        .catch((error) => {
+          res.status(400).send({ message: "error", error });
         });
-      });
+      return;
+    }
+
+    // Default admin behavior (all biddings)
+    Bidding.find({})
+      .then((result) => res.send(result))
+      .catch((error) => res.status(400).send({ message: "error", error }));
   } else if (isVendor) {
     // For vendors, get all bidding bids assigned to them
     BiddingBid.find({ vendor: user_id })
