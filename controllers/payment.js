@@ -417,7 +417,7 @@ const GetAllPayments = async (req, res) => {
   } else {
     // User Controller
     let payments = await Payment.find({ user: user_id })
-      .populate("event")
+      .populate("event order")
       .exec();
     let events = await Event.find({ user: user_id });
     let { totalAmount, amountPaid, amountDue } = events
@@ -484,25 +484,66 @@ const GetInvoice = (req, res) => {
   const { _id } = req.params;
   if (_id) {
     Payment.findOne({ _id })
-      .populate("user event")
+      .populate("user event order")
       .exec()
       .then(async (result) => {
         if (result) {
           try {
-            let payments = await Payment.find({
-              user: result.user?._id,
-              event: result.event?._id,
-              createdAt: { $lt: result?.createdAt },
-              status: "paid",
-            }).exec();
-            let event = result?.event?.toObject();
-            let { total, paid, due } = event.amount;
-            let received = payments
-              .filter((p) => p?.status === "paid")
-              .reduce((accumulator, e) => {
-                return accumulator + e.amountPaid / 100;
-              }, 0);
-            received += result.amountPaid / 100;
+            // Determine whether this payment is for an Event or an Order.
+            const isEventPayment = Boolean(result?.event?._id);
+            const isOrderPayment = Boolean(result?.order?._id);
+
+            let received = 0;
+            let stats = { total: 0, paid: 0, due: 0, received: 0 };
+
+            if (isEventPayment) {
+              const payments = await Payment.find({
+                user: result.user?._id,
+                event: result.event?._id,
+                createdAt: { $lt: result?.createdAt },
+                status: "paid",
+              }).exec();
+
+              const event = result?.event?.toObject();
+              const { total, paid, due } = event?.amount || {
+                total: 0,
+                paid: 0,
+                due: 0,
+              };
+              received =
+                (payments || [])
+                  .filter((p) => p?.status === "paid")
+                  .reduce((accumulator, e) => accumulator + e.amountPaid / 100, 0) +
+                result.amountPaid / 100;
+
+              stats = { total, paid, due, received };
+            } else if (isOrderPayment) {
+              // For makeup-and-beauty/order payments, compute stats from the order.
+              const payments = await Payment.find({
+                user: result.user?._id,
+                order: result.order?._id,
+                createdAt: { $lt: result?.createdAt },
+                status: "paid",
+              }).exec();
+
+              const order = result?.order?.toObject();
+              const { total, paid, due } = order?.amount || {
+                total: 0,
+                paid: 0,
+                due: 0,
+              };
+              received =
+                (payments || [])
+                  .filter((p) => p?.status === "paid")
+                  .reduce((accumulator, e) => accumulator + e.amountPaid / 100, 0) +
+                result.amountPaid / 100;
+
+              stats = { total, paid, due, received };
+            } else {
+              // We can't generate an invoice without event/order context.
+              return res.status(404).send({ message: "Invoice not available for this payment" });
+            }
+
             let transactions = result.transactions || [];
             if (
               !["cash", "upi", "bank-transfer"].includes(
@@ -517,7 +558,7 @@ const GetInvoice = (req, res) => {
             createInvoice(
               {
                 ...result.toObject(),
-                stats: { total, paid, due, received },
+                stats,
                 transactions,
               },
               res

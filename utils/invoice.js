@@ -39,6 +39,24 @@ function generateFooter(doc) {
     );
 }
 function generateCustomerInformation(doc, payment) {
+  const isEvent = Boolean(payment?.event?._id);
+  const isOrder = Boolean(payment?.order?._id);
+
+  const orderNumber = isEvent
+    ? payment?.event?._id?.toString()?.toUpperCase()
+    : isOrder
+    ? payment?.order?._id?.toString()?.toUpperCase()
+    : "";
+
+  const orderDate = isEvent
+    ? formatDate(
+        payment?.event?.eventDays?.sort((a, b) => new Date(a.date) - new Date(b.date))?.[0]
+          ?.date
+      )
+    : isOrder
+    ? formatDate(payment?.order?.createdAt || payment.createdAt)
+    : "";
+
   doc
     .fontSize(10)
     .font("Helvetica")
@@ -55,17 +73,11 @@ function generateCustomerInformation(doc, payment) {
     .font("Helvetica-Bold")
     .text(`Order Number: `, 50, 250, { continued: true })
     .font("Helvetica")
-    .text(`${payment?.event?._id.toString().toUpperCase()}`)
+    .text(`${orderNumber}`)
     .font("Helvetica-Bold")
     .text(`Order Date: `, 50, 265, { continued: true })
     .font("Helvetica")
-    .text(
-      `${formatDate(
-        payment?.event?.eventDays.sort(
-          (a, b) => new Date(a.date) - new Date(b.date)
-        )[0].date
-      )}`
-    )
+    .text(`${orderDate}`)
     .font("Helvetica-Bold")
     .text(`Sold by:`, 200, 120, { align: "right" })
     .text(`Wedsy India Pvt Ltd`, 200, 132, { align: "right" })
@@ -99,22 +111,39 @@ function generateInvoiceTable(doc, payment) {
     ]);
     doc.font("Helvetica");
 
-    let eventDays = payment?.event?.eventDays;
-    let summary = payment?.event?.amount?.summary;
+    const isEvent = Boolean(payment?.event?._id);
+    const isOrder = Boolean(payment?.order?._id);
 
-    for (i = 0; i < eventDays.length; i++) {
+    if (isEvent) {
+      let eventDays = payment?.event?.eventDays || [];
+      let summary = payment?.event?.amount?.summary || [];
+
+      for (i = 0; i < eventDays.length; i++) {
+        invoiceTableTop = invoiceTableTop + 20;
+        const item = eventDays[i];
+        let amount =
+          summary.find((j) => j.eventDayId == item._id)?.total?.toString() || "";
+        generateTableRow(doc, invoiceTableTop, [
+          i + 1,
+          item.name,
+          amount,
+          `0`,
+          `0`,
+          `0`,
+          amount,
+        ]);
+      }
+    } else if (isOrder) {
+      const total = payment?.stats?.total || payment?.order?.amount?.total || payment?.amount / 100 || 0;
       invoiceTableTop = invoiceTableTop + 20;
-      const item = eventDays[i];
-      let amount =
-        summary.find((j) => j.eventDayId == item._id)?.total?.toString() || "";
       generateTableRow(doc, invoiceTableTop, [
-        i + 1,
-        item.name,
-        amount,
+        1,
+        `Order Payment (${payment?.order?.source || "makeup-and-beauty"})`,
+        `${total}`,
         `0`,
         `0`,
         `0`,
-        amount,
+        `${total}`,
       ]);
     }
     invoiceTableTop = invoiceTableTop + 20;
@@ -124,10 +153,19 @@ function generateInvoiceTable(doc, payment) {
       .rect(50, invoiceTableTop - 5, 512, 20)
       .stroke()
       .text("Sub Total", 60, invoiceTableTop)
-      .text(`${payment?.event?.amount?.preTotal}`, 501.6, invoiceTableTop, {
+      .text(
+        `${
+          isEvent
+            ? payment?.event?.amount?.preTotal
+            : payment?.stats?.total || payment?.order?.amount?.total || payment?.amount / 100 || 0
+        }`,
+        501.6,
+        invoiceTableTop,
+        {
         width: 60.4,
         align: "center",
-      });
+        }
+      );
     invoiceTableTop = invoiceTableTop + 20;
     doc
       .strokeColor("#aaaaaa")
@@ -135,7 +173,7 @@ function generateInvoiceTable(doc, payment) {
       .rect(50, invoiceTableTop - 5, 512, 20)
       .stroke()
       .text("Coupon Discount", 60, invoiceTableTop)
-      .text(`${payment?.event?.amount?.discount}`, 501.6, invoiceTableTop, {
+      .text(`${isEvent ? payment?.event?.amount?.discount : 0}`, 501.6, invoiceTableTop, {
         width: 60.4,
         align: "center",
       });
@@ -146,10 +184,19 @@ function generateInvoiceTable(doc, payment) {
       .rect(50, invoiceTableTop - 5, 512, 20)
       .stroke()
       .text("Total", 60, invoiceTableTop)
-      .text(`${payment?.event?.amount?.total}`, 501.6, invoiceTableTop, {
+      .text(
+        `${
+          isEvent
+            ? payment?.event?.amount?.total
+            : payment?.stats?.total || payment?.order?.amount?.total || payment?.amount / 100 || 0
+        }`,
+        501.6,
+        invoiceTableTop,
+        {
         width: 60.4,
         align: "center",
-      })
+        }
+      )
       .font("Helvetica");
     invoiceTableTop = invoiceTableTop + 20;
     doc
@@ -160,7 +207,13 @@ function generateInvoiceTable(doc, payment) {
       .text("Amount in words", 60, invoiceTableTop)
       .font("Helvetica-Bold")
       .text(
-        `${toProperCase(convertAmountToWords(payment?.event?.amount?.total))}`,
+        `${toProperCase(
+          convertAmountToWords(
+            isEvent
+              ? payment?.event?.amount?.total
+              : payment?.stats?.total || payment?.order?.amount?.total || payment?.amount / 100 || 0
+          )
+        )}`,
         60,
         invoiceTableTop + 12
       );
@@ -190,7 +243,14 @@ function generateInvoiceTable(doc, payment) {
         continued: true,
       })
       .font("Helvetica-Bold")
-      .text(`${payment?.event?.amount?.total - payment?.stats?.received}`);
+      .text(
+        `${
+          (isEvent
+            ? payment?.event?.amount?.total
+            : payment?.stats?.total || payment?.order?.amount?.total || payment?.amount / 100 || 0) -
+          (payment?.stats?.received || 0)
+        }`
+      );
     invoiceTableTop = invoiceTableTop + 15;
     doc
       .font("Helvetica")
@@ -414,7 +474,7 @@ function formatCurrency(amount) {
 }
 function createInvoice(payment, res) {
   try {
-    let doc = new PDFDocument({ ize: "A4", margin: 50 });
+    let doc = new PDFDocument({ size: "A4", margin: 50 });
     let chunks = [];
     let result;
 
@@ -444,7 +504,7 @@ function createInvoice(payment, res) {
     });
     doc.end();
   } catch (error) {
-    console.error("Error:", err);
+    console.error("Error:", error);
     res.status(500).send("Error");
   }
 }
