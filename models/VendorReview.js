@@ -22,7 +22,31 @@ const VendorReviewSchema = new mongoose.Schema(
       required: true,
     },
     vendor: { type: ObjectId, required: true, ref: "Vendor" },
-    user: { type: ObjectId, required: true, ref: "User" },
+    // User is optional because reviews can come from a public share-link (non-logged-in customer).
+    user: { type: ObjectId, required: false, ref: "User", default: null },
+    // For non-logged-in customers we store minimal contact info.
+    customer: {
+      name: { type: String, default: "" },
+      phone: { type: String, default: "" },
+    },
+    // Replies (typically from vendor/admin)
+    replies: {
+      type: [
+        {
+          message: { type: String, required: true, default: "" },
+          by: {
+            id: { type: ObjectId, required: true },
+            role: {
+              type: String,
+              enum: ["user", "vendor", "admin"],
+              required: true,
+            },
+          },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
     likes: {
       type: [
         {

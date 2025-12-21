@@ -199,6 +199,42 @@ const SendUpdate = ({ channels, message, parameters }) => {
         console.log("Error while sending SMS", error);
       }
     }
+  } else if (message === "Vendor Payment Reminder") {
+    // Vendor personal-lead payment reminder (Whatsapp)
+    if (channels.includes("Whatsapp")) {
+      try {
+        data = JSON.stringify({
+          apiKey: process.env.AISENSY_API_KEY,
+          campaignName:
+            process.env.AISENSY_VENDOR_PAYMENT_REMINDER_CAMPAIGN ||
+            "vendor_payment_reminder",
+          destination: phone,
+          userName: name,
+          // Configure your template to accept these params (order can vary)
+          templateParams: [
+            parameters?.name || name || "",
+            String(parameters?.total ?? ""),
+            String(parameters?.received ?? ""),
+            String(parameters?.due ?? ""),
+          ],
+        });
+        axios({
+          method: "post",
+          url: `${process.env.AISENSY_API_URL}`,
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: data,
+          data,
+        })
+          .then(function (response) {})
+          .catch(function (error) {
+            console.log("Error while sending Whatsapp", error);
+          });
+      } catch (error) {
+        console.log("Error while sending Whatsapp", error);
+      }
+    }
   }
 };
 

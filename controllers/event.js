@@ -31,24 +31,41 @@ const CreateNew = (req, res) => {
 const Update = (req, res) => {
   const {user_id, isAdmin} = req.auth;
   const {_id} = req.params;
-  const {name, community, eventNotes} = req.body;
-  if (!eventNotes && !(name && community)) {
+  const {name, community, eventNotes, eventType, eventDate} = req.body;
+
+  const hasMetaUpdate =
+    name !== undefined ||
+    community !== undefined ||
+    eventType !== undefined ||
+    eventDate !== undefined;
+
+  if (eventNotes === undefined && !hasMetaUpdate) {
     res.status(400).send({message: "Incomplete Data"});
-  } else if (eventNotes) {
-    Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
-      eventNotes,
-    })
+  } else if (eventNotes !== undefined) {
+    Event.findOneAndUpdate(
+      isAdmin ? {_id} : {_id, user: user_id},
+      {
+        $set: {eventNotes},
+      }
+    )
       .then((result) => {
         res.status(200).send({message: "success"});
       })
       .catch((error) => {
         res.status(400).send({message: "error", error});
       });
-  } else if (name && community) {
-    Event.findOneAndUpdate(isAdmin ? {_id} : {_id, user: user_id}, {
-      name,
-      community,
-    })
+  } else if (hasMetaUpdate) {
+    const update = {};
+    if (name !== undefined) update.name = name;
+    if (community !== undefined) update.community = community;
+    if (eventType !== undefined) update.eventType = eventType;
+    if (eventDate !== undefined) update.eventDate = eventDate;
+
+    Event.findOneAndUpdate(
+      isAdmin ? {_id} : {_id, user: user_id},
+      {$set: update},
+      {new: true}
+    )
       .then((result) => {
         res.status(200).send({message: "success"});
       })
@@ -58,6 +75,36 @@ const Update = (req, res) => {
   } else {
     res.status(400).send({message: "Incomplete Data"});
   }
+};
+
+// Delete a single event
+// - Admin: can delete any event
+// - User: can delete only own event, and only if not finalized/approved
+const DeleteEvent = (req, res) => {
+  const {user_id, isAdmin} = req.auth;
+  const {_id} = req.params;
+
+  const filter = isAdmin
+    ? {_id}
+    : {
+        _id,
+        user: user_id,
+        "status.finalized": false,
+        "status.approved": false,
+      };
+
+  Event.findOneAndDelete(filter)
+    .then((result) => {
+      if (result) {
+        res.status(200).send({message: "success"});
+      } else {
+        // Either not found or user not allowed (finalized/approved)
+        res.status(404).send({message: "not found"});
+      }
+    })
+    .catch((error) => {
+      res.status(400).send({message: "error", error});
+    });
 };
 
 const UpdateEventPlanner = (req, res) => {
@@ -1579,6 +1626,7 @@ module.exports = {
   Update,
   GetAll,
   Get,
+  DeleteEvent,
   AddEventDay,
   AddDecorInEventDay,
   EditDecorInEventDay,

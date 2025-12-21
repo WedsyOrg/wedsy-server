@@ -23,6 +23,8 @@ router.get(
   event.Get
 );
 router.delete("/", CheckAdminLogin, event.DeleteEvents);
+// Delete a single event (admin: any, user: own event only)
+router.delete("/:_id", CheckLogin, event.DeleteEvent);
 router.put("/:_id", CheckLogin, event.Update);
 router.post("/:_id/send", CheckAdminLogin, event.SendEventToClient);
 router.post(

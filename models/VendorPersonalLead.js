@@ -8,6 +8,7 @@ const VendorPersonalLeadSchema = new mongoose.Schema(
     phone: { type: String, required: true },
     notes: { type: String, default: "" },
     admin_notes: { type: String, default: "" },
+    eventType: { type: String, default: "" },
     eventInfo: {
       type: [
         {
@@ -45,6 +46,19 @@ const VendorPersonalLeadSchema = new mongoose.Schema(
     payment: {
       total: { type: Number, required: true, default: 0 },
       received: { type: Number, required: true, default: 0 },
+      remindersSentCount: { type: Number, required: true, default: 0 },
+      lastReminderAt: { type: Date, default: null },
+      reminders: {
+        type: [
+          {
+            sentAt: { type: Date, default: Date.now },
+            channel: { type: String, default: "Whatsapp" },
+            status: { type: String, default: "sent" }, // "sent" | "failed"
+            notes: { type: String, default: "" },
+          },
+        ],
+        default: [],
+      },
       transactions: {
         type: [
           {
