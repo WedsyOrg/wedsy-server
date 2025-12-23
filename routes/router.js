@@ -13,6 +13,7 @@ router.use("/user", require("./user"));
 router.use("/enquiry", require("./enquiry"));
 router.use("/decor", require("./decor"));
 router.use("/decor-package", require("./decor-package"));
+router.use("/search", require("./search"));
 router.use("/event", require("./event"));
 router.use("/payment", require("./payment"));
 router.use("/file", require("./file"));
