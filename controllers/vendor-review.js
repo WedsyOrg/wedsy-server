@@ -12,13 +12,88 @@ function generateToken() {
   return crypto.randomBytes(32).toString("hex");
 }
 
-function buildShareLink(token) {
-  // You can override this in env to point to your PWA page.
-  // Example: REVIEW_SHARE_BASE_URL=https://wedsy.in/reviews
-  const base = process.env.REVIEW_SHARE_BASE_URL || "https://wedsy.in/review";
-  const sep = base.includes("?") ? "&" : "?";
-  return `${base}${sep}share=${token}`;
+function buildShareLink(vendorId, token) {
+  // Points directly to the user app artist page so user can review on that page itself.
+  // Local dev: USER_APP_ORIGIN=http://localhost:3000
+  const origin = process.env.USER_APP_ORIGIN || "https://www.wedsy.in";
+  return `${origin}/makeup-and-beauty/artists/${vendorId}?share=${token}#reviews`;
 }
+
+// Public list reviews for user app (no login)
+const PublicList = async (req, res) => {
+  const { vendorId, limit, page, sort } = req.query;
+  if (!vendorId) {
+    return res
+      .status(400)
+      .send({ message: "error", error: "vendorId is required" });
+  }
+
+  const safeLimit = Math.min(parseInt(limit, 10) || 10, 50);
+  const safePage = Math.max(parseInt(page, 10) || 1, 1);
+  const skip = (safePage - 1) * safeLimit;
+
+  const sortQuery = {};
+  if (sort === "Oldest") sortQuery.createdAt = 1;
+  else sortQuery.createdAt = -1;
+
+  try {
+    const list = await VendorReview.find({ vendor: vendorId })
+      .sort(sortQuery)
+      .skip(skip)
+      .limit(safeLimit)
+      .populate("user", "name phone")
+      .lean();
+    res.send({ message: "success", list, page: safePage, limit: safeLimit });
+  } catch (error) {
+    res.status(400).send({ message: "error", error });
+  }
+};
+
+// Public stats for user app (no login)
+const PublicStats = async (req, res) => {
+  const { vendorId } = req.query;
+  if (!vendorId) {
+    return res
+      .status(400)
+      .send({ message: "error", error: "vendorId is required" });
+  }
+
+  try {
+    const vendorObjId = new mongoose.Types.ObjectId(vendorId);
+    const [agg] = await VendorReview.aggregate([
+      { $match: { vendor: vendorObjId } },
+      {
+        $group: {
+          _id: "$vendor",
+          total: { $sum: 1 },
+          avgRating: { $avg: "$rating" },
+          r1: { $sum: { $cond: [{ $eq: ["$rating", 1] }, 1, 0] } },
+          r2: { $sum: { $cond: [{ $eq: ["$rating", 2] }, 1, 0] } },
+          r3: { $sum: { $cond: [{ $eq: ["$rating", 3] }, 1, 0] } },
+          r4: { $sum: { $cond: [{ $eq: ["$rating", 4] }, 1, 0] } },
+          r5: { $sum: { $cond: [{ $eq: ["$rating", 5] }, 1, 0] } },
+        },
+      },
+    ]);
+
+    res.send({
+      message: "success",
+      stats: {
+        total: agg?.total || 0,
+        avgRating: agg?.avgRating ? Number(agg.avgRating.toFixed(2)) : 0,
+        distribution: {
+          1: agg?.r1 || 0,
+          2: agg?.r2 || 0,
+          3: agg?.r3 || 0,
+          4: agg?.r4 || 0,
+          5: agg?.r5 || 0,
+        },
+      },
+    });
+  } catch (error) {
+    res.status(400).send({ message: "error", error });
+  }
+};
 
 const List = async (req, res) => {
   const { user_id, isAdmin, isVendor } = req.auth;
@@ -338,7 +413,7 @@ const CreateShare = async (req, res) => {
         active: doc.active,
         createdAt: doc.createdAt,
       },
-      shareLink: buildShareLink(token),
+      shareLink: buildShareLink(vendorId, token),
       shareToken: token, // convenient for dev/testing
     });
   } catch (error) {
@@ -372,6 +447,8 @@ const RevokeShare = async (req, res) => {
 module.exports = {
   List,
   Stats,
+  PublicList,
+  PublicStats,
   CreatePublic,
   Create,
   Reply,

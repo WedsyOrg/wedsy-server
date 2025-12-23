@@ -4,6 +4,10 @@ const router = express.Router();
 const vendorReview = require("../controllers/vendor-review");
 const { CheckLogin, CheckToken, CheckVendorLogin, CheckAdminLogin } = require("../middlewares/auth");
 
+// Public read APIs for user app (no login required)
+router.get("/public", vendorReview.PublicList);
+router.get("/public/stats", vendorReview.PublicStats);
+
 // Public review submission via share link (optional auth)
 router.post("/public", CheckToken, vendorReview.CreatePublic);
 
