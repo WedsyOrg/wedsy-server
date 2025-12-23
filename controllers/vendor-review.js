@@ -25,7 +25,7 @@ const PublicList = async (req, res) => {
   if (!vendorId) {
     return res
       .status(400)
-      .send({ message: "error", error: "vendorId is required" });
+      .send({ message: "error", error: "vendorId required" });
   }
 
   const safeLimit = Math.min(parseInt(limit, 10) || 10, 50);
