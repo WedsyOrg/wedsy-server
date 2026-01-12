@@ -3,7 +3,7 @@ const ObjectId = mongoose.Schema.Types.ObjectId;
 
 const UserSchema = new mongoose.Schema(
   {
-    name: { type: String, required: true },
+    name: { type: String, default: "" },
     phone: { type: String, required: true },
     email: { type: String, default: "" },
     profilePhoto: { type: String, default: "" },

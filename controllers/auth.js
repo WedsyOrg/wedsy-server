@@ -52,7 +52,7 @@ const Login = (req, res) => {
                     if (!existingEnquiry) {
                       // Only create enquiry if it doesn't exist
                       new Enquiry({
-                        name,
+                        name: name || user.name || "",
                         phone,
                         verified: true,
                         source: source || "User Signup (Account Creation)",
@@ -70,7 +70,7 @@ const Login = (req, res) => {
                 });
               } else {
                 new User({
-                  name,
+                  name: name || "",
                   phone,
                 })
                   .save()
@@ -86,7 +86,7 @@ const Login = (req, res) => {
                       .then((existingEnquiry) => {
                         if (!existingEnquiry) {
                           new Enquiry({
-                            name,
+                            name: name || "",
                             phone,
                             verified: true,
                             source: source || "User Signup (Account Creation)",
@@ -101,7 +101,7 @@ const Login = (req, res) => {
                     SendUpdate({
                       channels: ["SMS", "Whatsapp"],
                       message: "New User",
-                      parameters: { name, phone },
+                      parameters: { name: name || "", phone },
                     });
                     res.send({
                       message: "Login Successful",
