@@ -289,6 +289,64 @@ const VendorLogin = (req, res) => {
   if (phone.length !== 13 || !Otp || !ReferenceId) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
+    // Demo user bypass - check before normal OTP verification
+    const DEMO_PHONE = "+919774358212";
+    const DEMO_OTP = "764587";
+    
+    // If demo phone and demo OTP match, skip OTP verification
+    if (phone === DEMO_PHONE && Otp === DEMO_OTP) {
+      Vendor.findOne({ phone })
+        .then((user) => {
+          if (user) {
+            if (user.deleted) {
+              return res
+                .status(403)
+                .send({ message: "VendorDeleted", error: "Vendor account has been deleted" });
+            }
+            const { _id } = user;
+            const token = jwt.sign(
+              { _id, isVendor: true },
+              process.env.JWT_SECRET,
+              jwtConfig
+            );
+            res.send({
+              message: "Login Successful",
+              token,
+            });
+          } else {
+            // Create demo vendor account if it doesn't exist
+            new Vendor({
+              name: "Demo Vendor",
+              phone: +919774358212,
+              email: "demo@vendor.com",
+              gender: "Male",
+              category: "Wedding Makeup",
+            })
+              .save()
+              .then((result) => {
+                const { _id } = result;
+                const token = jwt.sign(
+                  { _id, isVendor: true },
+                  process.env.JWT_SECRET,
+                  jwtConfig
+                );
+                res.send({
+                  message: "Login Successful",
+                  token,
+                });
+              })
+              .catch((error) => {
+                res.status(400).send({ message: "error", error });
+              });
+          }
+        })
+        .catch((error) => {
+          res.status(400).send({ message: "error", error });
+        });
+      return; // Exit early, don't proceed with normal OTP verification
+    }
+
+    // Normal OTP verification flow for all other users
     VerifyOTP(phone, ReferenceId, Otp)
       .then((result) => {
         if (result.Valid === true) {

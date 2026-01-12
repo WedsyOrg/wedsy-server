@@ -266,7 +266,105 @@ const GetAll = (req, res) => {
         });
     }
   } else {
-    Vendor.find({ profileVisibility: true })
+    // Regular user: apply filters for public-facing vendor listing
+    const {
+      search,
+      locality,
+      rating,
+      speciality,
+      servicesOffered,
+      groomMakeup,
+      gender,
+    } = req.query;
+
+    const query = { profileVisibility: true };
+
+    // Search filter - search by name
+    if (search) {
+      query.$or = [
+        { name: { $regex: new RegExp(search, "i") } },
+        { businessName: { $regex: new RegExp(search, "i") } },
+      ];
+    }
+
+    // Locality filter - match against businessAddress.locality
+    if (locality) {
+      const localityValues = locality.split(",").map((l) => l.trim());
+      // Map locality names to search patterns
+      const localityPatterns = localityValues.map((loc) => {
+        // Handle "North Bangalore", "South Bangalore" etc.
+        if (loc.includes("Bangalore")) {
+          const direction = loc.replace(" Bangalore", "").trim();
+          return new RegExp(direction, "i");
+        }
+        return new RegExp(loc, "i");
+      });
+      query["businessAddress.locality"] = { $in: localityPatterns };
+    }
+
+    // Rating filter - support for different rating thresholds
+    if (rating) {
+      const ratingValues = rating.split(",").map((r) => r.trim());
+      const ratingConditions = [];
+
+      ratingValues.forEach((r) => {
+        if (r === "<4") {
+          ratingConditions.push({ rating: { $lt: 4 } });
+        } else if (r === "4+") {
+          ratingConditions.push({ rating: { $gte: 4 } });
+        } else if (r === "4.5+") {
+          ratingConditions.push({ rating: { $gte: 4.5 } });
+        } else if (r === "4.8+") {
+          ratingConditions.push({ rating: { $gte: 4.8 } });
+        }
+      });
+
+      if (ratingConditions.length > 0) {
+        if (query.$or) {
+          // If $or already exists from search, use $and to combine
+          query.$and = query.$and || [];
+          query.$and.push({ $or: ratingConditions });
+        } else {
+          query.$or = ratingConditions;
+        }
+      }
+    }
+
+    // Speciality filter
+    if (speciality) {
+      const specialityValues = speciality.split(",").map((s) => s.trim());
+      query.speciality = { $in: specialityValues.map((s) => new RegExp(s, "i")) };
+    }
+
+    // Services offered filter
+    if (servicesOffered) {
+      const servicesValues = servicesOffered.split(",").map((s) => s.trim());
+      // Handle special case for "Both Makeup & Hairstyle"
+      if (servicesValues.includes("MUA") && servicesValues.includes("Hairstylist")) {
+        query.servicesOffered = { $all: ["MUA", "Hairstylist"] };
+      } else {
+        query.servicesOffered = { $in: servicesValues };
+      }
+    }
+
+    // Groom makeup filter
+    if (groomMakeup) {
+      const groomValues = groomMakeup.split(",").map((g) => g.trim().toLowerCase());
+      if (groomValues.includes("yes") && !groomValues.includes("no")) {
+        query["other.groomMakeup"] = true;
+      } else if (groomValues.includes("no") && !groomValues.includes("yes")) {
+        query["other.groomMakeup"] = false;
+      }
+      // If both "yes" and "no" selected, don't filter by groom makeup
+    }
+
+    // Gender filter
+    if (gender) {
+      const genderValues = gender.split(",").map((g) => g.trim());
+      query.gender = { $in: genderValues.map((g) => new RegExp(`^${g}$`, "i")) };
+    }
+
+    Vendor.find(query)
       .then((result) => {
         res.send(result);
       })
