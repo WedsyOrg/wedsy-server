@@ -155,11 +155,19 @@ const GetAll = (req, res) => {
         });
       });
   } else if (similarDecorFor) {
+    // Build match query - exclude current decor and filter by category if provided
+    const matchQuery = {
+      _id: { $ne: similarDecorFor },
+    };
+    
+    // Add category filter if category parameter is provided
+    if (category) {
+      matchQuery.category = category;
+    }
+    
     Decor.aggregate([
       {
-        $match: {
-          _id: { $ne: similarDecorFor },
-        },
+        $match: matchQuery,
       },
       // {
       //   $project: {
