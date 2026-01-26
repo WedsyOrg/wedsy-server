@@ -10,8 +10,8 @@ const User = require("../models/User");
 const mongoose = require("mongoose");
 
 /**
- * CreateNew - Creates a new bidding and sends it to ALL vendors
- * Removed vendor matching logic - now all vendors with biddingStatus: true receive bids
+ * CreateNew - Creates a new bidding and sends it to verified, visible vendors
+ * Only vendors with biddingStatus: true, profileVerified: true, and profileVisibility: true receive bids
  */
 const CreateNew = (req, res) => {
   const { user_id, isAdmin, isVendor } = req.auth;
@@ -31,14 +31,18 @@ const CreateNew = (req, res) => {
     })
       .save()
       .then(async (result) => {
-        // Remove vendor matching logic - send to ALL vendors
-        // When vendors toggle off bidding, they should stop receiving requests.
-        // However, we still want newly created vendors (without an explicit toggle yet)
-        // to receive bids. Treat `biddingStatus === false` as opt-out, everything
-        // else (undefined / true) as opt-in.
-        const vendors = await Vendor.find({ biddingStatus: true });
+        // Send to verified vendors with visible profiles and bidding enabled
+        // Vendors must meet ALL criteria:
+        // - biddingStatus: true (opted in to receive bidding requests)
+        // - profileVerified: true (verified by admin)
+        // - profileVisibility: true (profile is visible to users)
+        const vendors = await Vendor.find({ 
+          biddingStatus: true,
+          profileVerified: true,
+          profileVisibility: true
+        });
         
-        console.log(`Found ${vendors.length} vendors with biddingStatus: true`);
+        console.log(`Found ${vendors.length} verified and visible vendors with bidding enabled`);
         
         // Create BiddingBid for ALL vendors
         const biddingBidPromises = vendors.map((item) => {
@@ -559,6 +563,7 @@ const Delete = (req, res) => {
 /**
  * CreateBiddingBidsForExisting - Manually create BiddingBid records for existing biddings
  * Useful for testing or fixing existing biddings that don't have vendor bids
+ * Only sends to verified vendors with visible profiles
  */
 const CreateBiddingBidsForExisting = async (req, res) => {
   const { biddingId } = req.params;
@@ -584,9 +589,13 @@ const CreateBiddingBidsForExisting = async (req, res) => {
       });
     }
     
-    // Find all vendors with biddingStatus: true
-    const vendors = await Vendor.find({ biddingStatus: true });
-    console.log(`Found ${vendors.length} vendors for existing bidding: ${biddingId}`);
+    // Find all verified vendors with visible profiles and bidding enabled
+    const vendors = await Vendor.find({ 
+      biddingStatus: true,
+      profileVerified: true,
+      profileVisibility: true
+    });
+    console.log(`Found ${vendors.length} verified and visible vendors for existing bidding: ${biddingId}`);
     
     // Create BiddingBid for ALL vendors
     const biddingBidPromises = vendors.map((item) => {
