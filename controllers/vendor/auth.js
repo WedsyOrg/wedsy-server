@@ -108,6 +108,7 @@ const signup = async (req, res) => {
     servicesOffered: servicesOfferedRaw,
     category,
     businessAddress: businessAddressRaw,
+    socialMedia: socialMediaRaw,
     documents,
     documentType,
   } = req.body || {};
@@ -126,6 +127,8 @@ const signup = async (req, res) => {
 
   const servicesOffered = parseJsonMaybe(servicesOfferedRaw);
   const businessAddress = parseJsonMaybe(businessAddressRaw);
+  const socialMedia =
+    typeof socialMediaRaw === "string" ? socialMediaRaw.trim() : "";
 
   if (
     !name ||
@@ -165,6 +168,10 @@ const signup = async (req, res) => {
     // Optional: store a structured businessAddress if provided (Google place-like payload)
     if (businessAddress && typeof businessAddress === "object") {
       doc.businessAddress = businessAddress;
+    }
+    // Optional: store social media link as plain string
+    if (socialMedia) {
+      doc.socialMedia = socialMedia;
     }
 
     const created = await new Vendor(doc).save();

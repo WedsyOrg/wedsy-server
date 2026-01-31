@@ -597,6 +597,7 @@ const GetVendor = (req, res) => {
     profileCompleted,
     paymentCompleted,
     documents,
+    socialMedia,
   } = user;
   const { groomMakeup, onlyHairStyling } = other;
   const { searchFor } = req.query;
@@ -623,6 +624,7 @@ const GetVendor = (req, res) => {
         groomMakeup,
         onlyHairStyling,
         businessAddress,
+        socialMedia,
       });
     } else if (searchFor === "documents") {
       res.send({ documents });

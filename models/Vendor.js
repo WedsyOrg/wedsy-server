@@ -100,6 +100,8 @@ const VendorSchema = new mongoose.Schema(
       makeupProducts: { type: [String], default: [] },
       awards: { type: [{ title: String, certificate: String }], default: [] },
     },
+    // Social media link (optional) - single string field
+    socialMedia: { type: String, default: "" },
     documents: [
       {
         name: {
