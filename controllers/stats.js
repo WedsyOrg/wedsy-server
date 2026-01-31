@@ -431,7 +431,21 @@ const GetStatisticsList = async (req, res) => {
       res.send({ message: "failure" });
     }
   } else if (isVendor) {
-    res.send({ message: "failure" });
+    // Vendor can view their own call list
+    if (key === "vendor-call") {
+      try {
+        const list = await VendorStatLog.find({
+          vendor: user_id,
+          statType: "call",
+        }).populate("user", "name email phone");
+        res.send({ message: "success", list });
+      } catch (error) {
+        console.error("Error fetching vendor call stats:", error);
+        res.send({ message: "error", error });
+      }
+    } else {
+      res.send({ message: "failure" });
+    }
   } else {
     res.send({ message: "failure" });
   }

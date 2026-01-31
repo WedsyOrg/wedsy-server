@@ -34,6 +34,8 @@ router.get("/", CheckLogin, (req, res) => {
     order.GetVendorFollowUps(req, res);
   } else if (source === "ongoing-order") {
     order.GetVendorOngoingOrder(req, res);
+  } else if (source === "orders-today") {
+    order.GetVendorOrdersToday(req, res);
   } else if (source === "calls-list") {
     order.GetVendorCallsList(req, res);
   } else {
@@ -77,6 +79,6 @@ router.post(
 router.post(
   "/:_id/reject-personal-package-booking",
   CheckVendorLogin,
-  order.AcceptVendorPersonalPackageBooking
+  order.RejectVendorPersonalPackageBooking
 );
 module.exports = router;

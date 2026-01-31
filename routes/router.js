@@ -42,6 +42,9 @@ router.use("/color", require("./color"));
 router.use("/quantity", require("./quantity"));
 router.use("/location", require("./location"));
 router.use("/notification", require("./notification"));
+// IMPORTANT: mount /vendor/auth and /vendor/me BEFORE /vendor to avoid /vendor/:_id capturing "auth" / "me"
+router.use("/vendor/auth", require("./vendor/auth"));
+router.use("/vendor/me", require("./vendor/me"));
 router.use("/vendor", require("./vendor"));
 router.use("/vendor-category", require("./vendor-category"));
 router.use("/vendor-preferred-look", require("./vendor-preferred-look"));

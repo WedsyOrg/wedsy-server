@@ -613,12 +613,16 @@ const GetVendor = (req, res) => {
       res.send({ businessAddress });
     } else if (searchFor === "profile") {
       res.send({
+        name,
+        phone,
+        email,
         businessName,
         businessDescription,
         speciality,
         servicesOffered,
         groomMakeup,
         onlyHairStyling,
+        businessAddress,
       });
     } else if (searchFor === "documents") {
       res.send({ documents });

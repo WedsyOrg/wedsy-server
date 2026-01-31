@@ -1047,9 +1047,17 @@ const Update = (req, res) => {
               const notificationsList = [];
               if (profileCompleted === true) {
                 // Check if at least one document is uploaded
-                const hasDocuments = documents && documents.length > 0 && documents.some(doc => 
-                  doc.front && doc.front.url && doc.back && doc.back.url
-                );
+                // If client didn't send documents, fallback to already-saved vendor.documents
+                const docsToCheck =
+                  Array.isArray(documents) && documents.length > 0
+                    ? documents
+                    : vendor?.documents || [];
+                const hasDocuments =
+                  Array.isArray(docsToCheck) &&
+                  docsToCheck.length > 0 &&
+                  docsToCheck.some(
+                    (doc) => doc?.front?.url && doc?.back?.url
+                  );
                 
                 if (!hasDocuments) {
                   return res.status(400).send({ 

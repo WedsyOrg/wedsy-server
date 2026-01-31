@@ -57,28 +57,7 @@ const CreateOrder = async (req, res) => {
           })
         );
         
-        // Create notifications for all vendors about new package booking
-        const user = await User.findById(user_id).lean();
-        const userName = user?.name || "A user";
-        
-        const notificationPromises = vendors.map(vendor => {
-          return new Notification({
-            category: "New Package Booking",
-            title: "New Package Booking",
-            message: `${userName} has booked a new package. Check it out!`,
-            vendor: vendor._id,
-            type: "order",
-            references: {
-              order: result._id,
-              wedsyPackageBooking: packageBooking._id,
-              user: user_id
-            }
-          }).save();
-        });
-        
-        await Promise.all(notificationPromises);
-        console.log(`Created ${vendors.length} notifications for new package booking: ${result._id}`);
-        new Order({
+        const orderDoc = await new Order({
           user: user_id,
           source: "Wedsy-Package",
           wedsyPackageBooking: packageBooking?._id,
@@ -101,16 +80,37 @@ const CreateOrder = async (req, res) => {
             receivedByWedsy: 0,
             receivedByVendor: 0,
           },
-        })
-          .save()
-          .then((result) => {
-            res
-              .status(201)
-              .send({ message: "success", id: result._id, amount: total });
-          })
-          .catch((error) => {
-            res.status(400).send({ message: "error", error });
-          });
+        }).save();
+
+        // Create notifications for all vendors about new package booking
+        try {
+          const user = await User.findById(user_id).lean();
+          const userName = user?.name || "A user";
+
+          await Promise.all(
+            vendors.map((v) =>
+              new Notification({
+                category: "New Package Booking",
+                title: "New Package Booking",
+                message: `${userName} has booked a new package. Check it out!`,
+                vendor: v._id,
+                type: "order",
+                references: {
+                  order: orderDoc._id,
+                  wedsyPackageBooking: packageBooking._id,
+                  user: user_id,
+                },
+              }).save()
+            )
+          );
+          console.log(
+            `Created ${vendors.length} notifications for new package booking: ${orderDoc._id}`
+          );
+        } catch (e) {
+          console.warn("Failed to create vendor notifications:", e?.message || e);
+        }
+
+        res.status(201).send({ message: "success", id: orderDoc._id, amount: total });
       }
     } else if (source === "Personal-Package") {
       const { vendor, personalPackages, date, time, address } = req.body;
@@ -1607,6 +1607,64 @@ const GetBiddingBids = async (req, res) => {
   }
 };
 
+const GetVendorOrdersToday = async (req, res) => {
+  const { user_id, isVendor } = req.auth;
+
+  if (!isVendor) {
+    return res
+      .status(403)
+      .send({ message: "Access denied. Vendor access required." });
+  }
+
+  try {
+    const today = new Date().toISOString().split("T")[0];
+
+    const orders = await Order.find({
+      vendor: user_id,
+      "status.finalized": true,
+      "status.lost": false,
+    })
+      .populate("biddingBooking wedsyPackageBooking vendorPersonalPackageBooking")
+      .lean();
+
+    let count = 0;
+    let amount = 0;
+
+    for (const o of orders) {
+      let matchesToday = false;
+
+      if (o.source === "Wedsy-Package" && o.wedsyPackageBooking?.date) {
+        matchesToday =
+          new Date(o.wedsyPackageBooking.date).toISOString().split("T")[0] ===
+          today;
+      } else if (
+        o.source === "Personal-Package" &&
+        o.vendorPersonalPackageBooking?.date
+      ) {
+        matchesToday =
+          new Date(o.vendorPersonalPackageBooking.date)
+            .toISOString()
+            .split("T")[0] === today;
+      } else if (o.source === "Bidding" && o.biddingBooking?.events?.length) {
+        matchesToday = o.biddingBooking.events.some((ev) => {
+          if (!ev?.date) return false;
+          return new Date(ev.date).toISOString().split("T")[0] === today;
+        });
+      }
+
+      if (!matchesToday) continue;
+
+      count += 1;
+      amount += Number(o?.amount?.payableToVendor || 0);
+    }
+
+    return res.send({ message: "success", ordersToday: { count, amount } });
+  } catch (error) {
+    console.error("Error fetching vendor orders today:", error);
+    return res.status(500).send({ message: "error", error: error.message });
+  }
+};
+
 module.exports = {
   CreateOrder,
   GetOrder,
@@ -1626,4 +1684,5 @@ module.exports = {
   GetVendorStats,
   GetVendorFollowUps,
   GetVendorOngoingOrder,
+  GetVendorOrdersToday,
 };

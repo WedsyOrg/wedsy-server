@@ -44,6 +44,15 @@ const VendorSchema = new mongoose.Schema(
         type: String,
         default: "",
       },
+      // Vendor-entered address details (used by vendor profile UI)
+      flat_house_number: {
+        type: String,
+        default: "",
+      },
+      full_address: {
+        type: String,
+        default: "",
+      },
       address_components: {
         type: [
           {
