@@ -12,7 +12,7 @@ function generateToken() {
 
 function buildShareLink(eventId, token) {
   // Keep consistent with existing admin copy/share links
-  return `https://wedsy.in/event/${eventId}/view?share=${token}`;
+  return `https://www.wedsy.in/event/${eventId}/view?share=${token}`;
 }
 
 const ListShares = (req, res) => {
