@@ -14,7 +14,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           campaignName: "event_update_3",
           destination: phone,
           userName: name,
-          templateParams: [parameters?.link || "https://wedsy.in/event/"],
+          templateParams: [parameters?.link || "https://www.wedsy.in/event/"],
         });
         axios({
           method: "post",
@@ -25,7 +25,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -55,7 +55,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -81,7 +81,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -111,7 +111,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -137,7 +137,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -164,7 +164,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -191,7 +191,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending SMS", error);
           });
@@ -227,7 +227,7 @@ const SendUpdate = ({ channels, message, parameters }) => {
           body: data,
           data,
         })
-          .then(function (response) {})
+          .then(function (response) { })
           .catch(function (error) {
             console.log("Error while sending Whatsapp", error);
           });
