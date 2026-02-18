@@ -1524,7 +1524,7 @@ const SendEventToClient = (req, res) => {
           parameters: {
             name: event?.user?.name,
             phone: event?.user?.phone,
-            link: `https://www.wedsy.in/event/${event?._id}/view`,
+            link: `${process.env.USER_APP_ORIGIN || "https://www.wedsy.in"}/event/${event?._id}/view`,
           },
         });
         res.status(200).send({ message: "success" });
