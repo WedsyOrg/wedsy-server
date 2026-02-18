@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const Event = require("../models/Event");
 const User = require("../models/User");
 const { SendUpdate } = require("../utils/update");
@@ -628,36 +629,70 @@ const EditDecorAddOnsInEventDay = (req, res) => {
   }
 };
 
-const EditDecorIncludedInEventDay = (req, res) => {
+const EditDecorIncludedInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
-  const { decor_id, included } = req.body;
-  if (!decor_id || included === undefined) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
-      {
-        $set: {
-          "eventDays.$.decorItems.$[x].included": included,
-        },
-      },
-      { arrayFilters: [{ "x.decor": decor_id }] }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
+  const { decor_id, included, decorItemId } = req.body;
+  if (included === undefined) {
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  let eventObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid ID format" });
+  }
+
+  try {
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the exact dayIndex and itemIndex
+    let dayIndex = -1;
+    let itemIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      const day = event.eventDays[i];
+      // Match by dayId if provided, otherwise search all days
+      if (dayId && dayId !== "0" && day._id.toString() !== dayId) continue;
+      const idx = day.decorItems.findIndex((d) => {
+        if (decorItemId) return d._id.toString() === decorItemId;
+        return d.decor && d.decor.toString() === decor_id;
       });
+      if (idx !== -1) {
+        dayIndex = i;
+        itemIndex = idx;
+        break;
+      }
+    }
+
+    if (dayIndex === -1 || itemIndex === -1) {
+      return res.status(404).send({ message: "Decor item not found in event" });
+    }
+
+    const updateKey = `eventDays.${dayIndex}.decorItems.${itemIndex}.included`;
+    const result = await Event.collection.updateOne(
+      { _id: eventObjectId },
+      { $set: { [updateKey]: included } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.status(200).send({ message: "success" });
+    } else {
+      res.status(400).send({ message: "Failed to update included" });
+    }
+  } catch (error) {
+    console.error("EditDecorIncludedInEventDay error:", error);
+    res.status(400).send({ message: "error", error });
   }
 };
+
 
 const EditDecorSetupLocationImageInEventDay = (req, res) => {
   const { user_id, isAdmin } = req.auth;
@@ -752,37 +787,67 @@ const EditDecorSecondaryColorInEventDay = (req, res) => {
   }
 };
 
-const RemoveDecorInEventDay = (req, res) => {
+const RemoveDecorInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
-  const { _id, dayId } = req.params;
-  const { decor } = req.body;
-  if (!decor) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
-      {
-        $pull: {
-          "eventDays.$.decorItems": {
-            decor,
-          },
-        },
+  const { _id } = req.params;
+  const { decorItemId } = req.body;
+
+  if (!decorItemId) {
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  let eventObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid ID format" });
+  }
+
+  try {
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    let dayIndex = -1;
+    let actualDecorItemId = null;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      const item = event.eventDays[i].decorItems.find(
+        (d) => d._id.toString() === decorItemId
+      );
+      if (item) {
+        dayIndex = i;
+        actualDecorItemId = item._id;
+        break;
       }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+    }
+
+    if (dayIndex === -1 || actualDecorItemId === null) {
+      return res.status(404).send({ message: "Decor item not found in event" });
+    }
+
+    const updateKey = `eventDays.${dayIndex}.decorItems`;
+    const result = await Event.collection.updateOne(
+      { _id: eventObjectId },
+      { $pull: { [updateKey]: { _id: actualDecorItemId } } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.status(200).send({ message: "success" });
+    } else {
+      res.status(400).send({ message: "Failed to remove decor item" });
+    }
+  } catch (error) {
+    console.error(`RemoveDecorInEventDay error:`, error);
+    res.status(400).send({ message: "error", error });
   }
 };
+
+
 
 const AddDecorPackageInEventDay = (req, res) => {
   const { user_id } = req.auth;
@@ -1444,7 +1509,7 @@ const Get = (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id } = req.params;
   const { populate, display, share } = req.query;
-  let query = Event.findById(
+  let query = Event.findOne(
     isAdmin || display == "true" ? { _id } : { _id, user: user_id }
   );
   if (populate === "true") {
