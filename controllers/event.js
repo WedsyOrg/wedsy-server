@@ -983,96 +983,240 @@ const EditDecorIncludedInEventDay = async (req, res) => {
 };
 
 
-const EditDecorSetupLocationImageInEventDay = (req, res) => {
+const EditDecorSetupLocationImageInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const { decor_id, setupLocationImage } = req.body;
+
   if (!decor_id || !setupLocationImage) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
-      {
-        $set: {
-          "eventDays.$.decorItems.$[x].setupLocationImage": setupLocationImage,
-        },
-      },
-      { arrayFilters: [{ "x.decor": decor_id }] }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid Event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid Day ID format" });
+  }
+
+  try {
+    // Find the event first
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Find the decor item index
+    let itemIndex = -1;
+    const day = event.eventDays[dayIndex];
+    for (let i = 0; i < day.decorItems.length; i++) {
+      const item = day.decorItems[i];
+      if (item.decor && item.decor.toString() === decor_id) {
+        itemIndex = i;
+        break;
+      }
+    }
+
+    if (itemIndex === -1) {
+      return res.status(404).send({ message: "Decor item not found in event day" });
+    }
+
+    // Update using the index
+    const updateKey = `eventDays.${dayIndex}.decorItems.${itemIndex}.setupLocationImage`;
+    const result = await Event.collection.updateOne(
+      { _id: eventObjectId },
+      { $set: { [updateKey]: setupLocationImage } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.status(200).send({ message: "success" });
+    } else {
+      res.status(400).send({ message: "Failed to update setup location image" });
+    }
+  } catch (error) {
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 
-const EditDecorPrimaryColorInEventDay = (req, res) => {
+const EditDecorPrimaryColorInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const { decor_id, primaryColor } = req.body;
+
   if (!decor_id || !primaryColor) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
-      {
-        $set: {
-          "eventDays.$.decorItems.$[x].primaryColor": primaryColor,
-        },
-      },
-      { arrayFilters: [{ "x.decor": decor_id }] }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid Event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid Day ID format" });
+  }
+
+  try {
+    // Find the event first
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Find the decor item index
+    let itemIndex = -1;
+    const day = event.eventDays[dayIndex];
+    for (let i = 0; i < day.decorItems.length; i++) {
+      const item = day.decorItems[i];
+      if (item.decor && item.decor.toString() === decor_id) {
+        itemIndex = i;
+        break;
+      }
+    }
+
+    if (itemIndex === -1) {
+      return res.status(404).send({ message: "Decor item not found in event day" });
+    }
+
+    // Update using the index
+    const updateKey = `eventDays.${dayIndex}.decorItems.${itemIndex}.primaryColor`;
+    const result = await Event.collection.updateOne(
+      { _id: eventObjectId },
+      { $set: { [updateKey]: primaryColor } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.status(200).send({ message: "success" });
+    } else {
+      res.status(400).send({ message: "Failed to update primary color" });
+    }
+  } catch (error) {
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 
-const EditDecorSecondaryColorInEventDay = (req, res) => {
+const EditDecorSecondaryColorInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const { decor_id, secondaryColor } = req.body;
+
   if (!decor_id || !secondaryColor) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
-      {
-        $set: {
-          "eventDays.$.decorItems.$[x].secondaryColor": secondaryColor,
-        },
-      },
-      { arrayFilters: [{ "x.decor": decor_id }] }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid Event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    return res.status(400).send({ message: "Invalid Day ID format" });
+  }
+
+  try {
+    // Find the event first
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Find the decor item index
+    let itemIndex = -1;
+    const day = event.eventDays[dayIndex];
+    for (let i = 0; i < day.decorItems.length; i++) {
+      const item = day.decorItems[i];
+      if (item.decor && item.decor.toString() === decor_id) {
+        itemIndex = i;
+        break;
+      }
+    }
+
+    if (itemIndex === -1) {
+      return res.status(404).send({ message: "Decor item not found in event day" });
+    }
+
+    // Update using the index
+    const updateKey = `eventDays.${dayIndex}.decorItems.${itemIndex}.secondaryColor`;
+    const result = await Event.collection.updateOne(
+      { _id: eventObjectId },
+      { $set: { [updateKey]: secondaryColor } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.status(200).send({ message: "success" });
+    } else {
+      res.status(400).send({ message: "Failed to update secondary color" });
+    }
+  } catch (error) {
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 

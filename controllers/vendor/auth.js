@@ -200,24 +200,31 @@ const signup = async (req, res) => {
     };
 
     const uploadToS3 = async ({ file, key }) => {
-      const s3Client = new AWS.S3({
-        region: process.env.AWS_S3_REGION,
-        credentials: {
-          accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-          secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-        },
-      });
+      try {
+        const s3Client = new AWS.S3({
+          region: process.env.AWS_S3_REGION,
+          credentials: {
+            accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+            secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+          },
+        });
 
-      const extension = (file?.name || "").split(".").pop() || "jpg";
-      const params = {
-        Bucket: process.env.AWS_BUCKET_NAME,
-        Key: `${key}.${extension}`,
-        Body: file.data,
-        ContentType: file.mimetype,
-        ACL: "public-read",
-      };
-      await s3Client.putObject(params);
-      return `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${params.Key}`;
+        const extension = (file?.name || "").split(".").pop() || "jpg";
+        const s3Key = `${key}.${extension}`;
+        const params = {
+          Bucket: process.env.AWS_BUCKET_NAME,
+          Key: s3Key,
+          Body: file.data,
+          ContentType: file.mimetype,
+        };
+
+        const result = await s3Client.putObject(params);
+
+        const url = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${s3Key}`;
+        return url;
+      } catch (error) {
+        throw error;
+      }
     };
 
     // If multipart files provided, upload and set Vendor.documents
