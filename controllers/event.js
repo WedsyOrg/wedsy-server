@@ -383,97 +383,310 @@ const UpdateNotes = (req, res) => {
   }
 };
 
-const UpdateCustomItemsInEventDay = (req, res) => {
+const UpdateCustomItemsInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const { customItems } = req.body;
+  
   if (customItems === undefined || customItems === null) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+    console.error("UpdateCustomItemsInEventDay: Incomplete data", {
+      customItems,
+    });
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    console.error("UpdateCustomItemsInEventDay: Invalid event ID format", {
+      _id,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    console.error("UpdateCustomItemsInEventDay: Invalid dayId format", {
+      dayId,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event day ID format" });
+  }
+
+  try {
+    // First, find the event
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      console.error("UpdateCustomItemsInEventDay: Event not found", {
+        eventId: _id,
+        dayId,
+        isAdmin,
+        userId: user_id,
+      });
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      console.error("UpdateCustomItemsInEventDay: Event day not found", {
+        eventId: _id,
+        dayId,
+        availableDays: event.eventDays.map((d) => d._id.toString()),
+      });
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Update using the day index
+    const updateKey = `eventDays.${dayIndex}.customItems`;
+    const result = await Event.findOneAndUpdate(
+      { _id: eventObjectId },
       {
         $set: {
-          "eventDays.$.customItems": customItems,
+          [updateKey]: customItems,
         },
-      }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
+      },
+      { new: true }
+    );
+
+    if (result) {
+      res.status(200).send({ message: "success" });
+    } else {
+      console.error("UpdateCustomItemsInEventDay: Failed to update event", {
+        eventId: _id,
+        dayId,
       });
+      res.status(400).send({ message: "Failed to update custom items" });
+    }
+  } catch (error) {
+    console.error("UpdateCustomItemsInEventDay: Database error", {
+      eventId: _id,
+      dayId,
+      error: error.message,
+      stack: error.stack,
+    });
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 
-const UpdateCustomItemsTitleInEventDay = (req, res) => {
+const UpdateCustomItemsTitleInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const { customItemsTitle } = req.body;
+  
   if (customItemsTitle === undefined || customItemsTitle === null) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+    console.error("UpdateCustomItemsTitleInEventDay: Incomplete data", {
+      customItemsTitle,
+    });
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    console.error("UpdateCustomItemsTitleInEventDay: Invalid event ID format", {
+      _id,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    console.error("UpdateCustomItemsTitleInEventDay: Invalid dayId format", {
+      dayId,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event day ID format" });
+  }
+
+  try {
+    // First, find the event
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      console.error("UpdateCustomItemsTitleInEventDay: Event not found", {
+        eventId: _id,
+        dayId,
+        isAdmin,
+        userId: user_id,
+      });
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      console.error("UpdateCustomItemsTitleInEventDay: Event day not found", {
+        eventId: _id,
+        dayId,
+        availableDays: event.eventDays.map((d) => d._id.toString()),
+      });
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Update using the day index
+    const updateKey = `eventDays.${dayIndex}.customItemsTitle`;
+    const result = await Event.findOneAndUpdate(
+      { _id: eventObjectId },
       {
         $set: {
-          "eventDays.$.customItemsTitle": customItemsTitle,
+          [updateKey]: customItemsTitle,
         },
-      }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
+      },
+      { new: true }
+    );
+
+    if (result) {
+      res.status(200).send({ message: "success" });
+    } else {
+      console.error("UpdateCustomItemsTitleInEventDay: Failed to update event", {
+        eventId: _id,
+        dayId,
       });
+      res.status(400).send({ message: "Failed to update custom items title" });
+    }
+  } catch (error) {
+    console.error("UpdateCustomItemsTitleInEventDay: Database error", {
+      eventId: _id,
+      dayId,
+      error: error.message,
+      stack: error.stack,
+    });
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 
-const UpdateMandatoryItemsInEventDay = (req, res) => {
+const UpdateMandatoryItemsInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const { mandatoryItems } = req.body;
+  
   if (mandatoryItems === undefined || mandatoryItems === null) {
-    res.status(400).send({ message: "Incomplete Data" });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+    console.error("UpdateMandatoryItemsInEventDay: Incomplete data", {
+      mandatoryItems,
+    });
+    return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    console.error("UpdateMandatoryItemsInEventDay: Invalid event ID format", {
+      _id,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    console.error("UpdateMandatoryItemsInEventDay: Invalid dayId format", {
+      dayId,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event day ID format" });
+  }
+
+  try {
+    // First, find the event
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      console.error("UpdateMandatoryItemsInEventDay: Event not found", {
+        eventId: _id,
+        dayId,
+        isAdmin,
+        userId: user_id,
+      });
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      console.error("UpdateMandatoryItemsInEventDay: Event day not found", {
+        eventId: _id,
+        dayId,
+        availableDays: event.eventDays.map((d) => d._id.toString()),
+      });
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Update using the day index
+    const updateKey = `eventDays.${dayIndex}.mandatoryItems`;
+    const result = await Event.findOneAndUpdate(
+      { _id: eventObjectId },
       {
         $set: {
-          "eventDays.$.mandatoryItems": mandatoryItems,
+          [updateKey]: mandatoryItems,
         },
-      }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
+      },
+      { new: true }
+    );
+
+    if (result) {
+      res.status(200).send({ message: "success" });
+    } else {
+      console.error("UpdateMandatoryItemsInEventDay: Failed to update event", {
+        eventId: _id,
+        dayId,
       });
+      res.status(400).send({ message: "Failed to update mandatory items" });
+    }
+  } catch (error) {
+    console.error("UpdateMandatoryItemsInEventDay: Database error", {
+      eventId: _id,
+      dayId,
+      error: error.message,
+      stack: error.stack,
+    });
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 
-const AddDecorInEventDay = (req, res) => {
+const AddDecorInEventDay = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id, dayId } = req.params;
   const {
@@ -493,18 +706,85 @@ const AddDecorInEventDay = (req, res) => {
     productVariant,
     priceModifier,
   } = req.body;
+
+  // Validate required fields
   if (!decor || !category || !variant || !price || platform === undefined) {
-    res.status(400).send({
+    console.error("AddDecorInEventDay: Incomplete data", {
+      decor,
+      category,
+      variant,
+      price,
+      platform,
+    });
+    return res.status(400).send({
       message: "Incomplete Data",
     });
-  } else {
-    Event.findOneAndUpdate(
-      isAdmin
-        ? { _id, eventDays: { $elemMatch: { _id: dayId } } }
-        : { _id, user: user_id, eventDays: { $elemMatch: { _id: dayId } } },
+  }
+
+  // Validate ObjectIds
+  let eventObjectId, dayObjectId;
+  try {
+    eventObjectId = new mongoose.Types.ObjectId(_id);
+  } catch (e) {
+    console.error("AddDecorInEventDay: Invalid event ID format", {
+      _id,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event ID format" });
+  }
+
+  try {
+    dayObjectId = new mongoose.Types.ObjectId(dayId);
+  } catch (e) {
+    console.error("AddDecorInEventDay: Invalid dayId format", {
+      dayId,
+      error: e.message,
+    });
+    return res.status(400).send({ message: "Invalid event day ID format" });
+  }
+
+  try {
+    // First, find the event
+    const filter = isAdmin
+      ? { _id: eventObjectId }
+      : { _id: eventObjectId, user: new mongoose.Types.ObjectId(user_id) };
+
+    const event = await Event.findOne(filter).lean();
+    if (!event) {
+      console.error("AddDecorInEventDay: Event not found", {
+        eventId: _id,
+        dayId,
+        isAdmin,
+        userId: user_id,
+      });
+      return res.status(404).send({ message: "Event not found" });
+    }
+
+    // Find the day index
+    let dayIndex = -1;
+    for (let i = 0; i < event.eventDays.length; i++) {
+      if (event.eventDays[i]._id.toString() === dayId) {
+        dayIndex = i;
+        break;
+      }
+    }
+
+    if (dayIndex === -1) {
+      console.error("AddDecorInEventDay: Event day not found", {
+        eventId: _id,
+        dayId,
+        availableDays: event.eventDays.map((d) => d._id.toString()),
+      });
+      return res.status(404).send({ message: "Event day not found" });
+    }
+
+    // Update using the day index
+    const updateKey = `eventDays.${dayIndex}.decorItems`;
+    const result = await Event.findOneAndUpdate(
+      { _id: eventObjectId },
       {
         $addToSet: {
-          "eventDays.$.decorItems": {
+          [updateKey]: {
             quantity,
             unit,
             decor,
@@ -522,18 +802,27 @@ const AddDecorInEventDay = (req, res) => {
             priceModifier,
           },
         },
-      }
-    )
-      .then((result) => {
-        if (result) {
-          res.status(200).send({ message: "success" });
-        } else {
-          res.status(404).send({ message: "Event not found" });
-        }
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
+      },
+      { new: true }
+    );
+
+    if (result) {
+      res.status(200).send({ message: "success" });
+    } else {
+      console.error("AddDecorInEventDay: Failed to update event", {
+        eventId: _id,
+        dayId,
       });
+      res.status(400).send({ message: "Failed to add decor item" });
+    }
+  } catch (error) {
+    console.error("AddDecorInEventDay: Database error", {
+      eventId: _id,
+      dayId,
+      error: error.message,
+      stack: error.stack,
+    });
+    res.status(400).send({ message: "error", error: error.message });
   }
 };
 
