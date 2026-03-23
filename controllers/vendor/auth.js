@@ -7,6 +7,14 @@ const AWS = require("@aws-sdk/client-s3");
 
 const normalizePhone = (phone) => (typeof phone === "string" ? phone.trim() : "");
 
+// --- Play Store Review Static OTP Logic ---
+const isStaticOtpPhone = (phone) => {
+  if (process.env.ENABLE_STATIC_OTP !== "true") return false;
+  const testPhone = process.env.TEST_PHONE_NUMBER || "";
+  // Match with or without country code prefix
+  return phone === testPhone || phone === `+91${testPhone}`;
+};
+
 const pickOtpPayload = (body = {}) => {
   // Support both new and legacy payload keys
   return {
@@ -20,6 +28,15 @@ const sendOtp = async (req, res) => {
   const phone = normalizePhone(req.body?.phone);
   if (!phone || phone.length !== 13) {
     return res.status(400).send({ message: "incorrect phone number" });
+  }
+
+  // Play Store Review Static OTP Logic — skip SMS for test number
+  if (isStaticOtpPhone(phone)) {
+    return res.send({
+      message: "OTP sent successfully",
+      ReferenceId: "static-otp-ref",
+      referenceId: "static-otp-ref",
+    });
   }
 
   try {
@@ -39,6 +56,33 @@ const login = async (req, res) => {
   const { phone, otp, referenceId } = pickOtpPayload(req.body);
   if (!phone || phone.length !== 13 || !otp || !referenceId) {
     return res.status(400).send({ message: "Incomplete Data" });
+  }
+
+  // Play Store Review Static OTP Logic — bypass OTP verification for test number
+  const staticOtp = process.env.TEST_STATIC_OTP || "123456";
+  if (isStaticOtpPhone(phone) && otp === staticOtp) {
+    const user = await Vendor.findOne({ phone }).catch(() => null);
+    if (!user) {
+      return res.status(404).send({ message: "User not found" });
+    }
+    if (user.deleted) {
+      return res.status(403).send({
+        message: "VendorDeleted",
+        error: "Vendor account has been deleted",
+      });
+    }
+    if (user.blocked) {
+      return res.status(403).send({
+        message: "VendorBlocked",
+        error: "Vendor account is blocked",
+      });
+    }
+    const token = jwt.sign(
+      { _id: user._id, isVendor: true },
+      process.env.JWT_SECRET,
+      jwtConfig
+    );
+    return res.send({ message: "Login Successful", token });
   }
 
   // Keep existing demo bypass behavior for compatibility (can be removed later)
