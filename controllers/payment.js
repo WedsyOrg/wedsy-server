@@ -341,6 +341,26 @@ const UpdatePayment = (req, res) => {
                           }
                         }
                       );
+                      const offerDocs = await ChatContent.find({
+                        "other.order": order._id,
+                        contentType: { $in: ["BiddingOffer", "BiddingBid"] },
+                      });
+                      for (const doc of offerDocs) {
+                        const ep = doc.get("other.eventPricing");
+                        if (!Array.isArray(ep) || !ep.length) continue;
+                        const oid = String(order._id);
+                        const next = ep.map((row) => {
+                          const plain =
+                            row && typeof row.toObject === "function"
+                              ? row.toObject()
+                              : { ...row };
+                          if (plain.paid) return plain;
+                          return { ...plain, paid: true, orderId: oid };
+                        });
+                        doc.set("other.eventPricing", next);
+                        doc.markModified("other");
+                        await doc.save();
+                      }
                       res.status(200).send({ message: "success" });
                     })
                     .catch((error) => {

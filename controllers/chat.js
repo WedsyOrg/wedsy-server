@@ -5,6 +5,7 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const Vendor = require("../models/Vendor");
 const Order = require("../models/Order");
+const { normalizeBiddingOfferPayload } = require("../utils/eventPricing");
 
 // const CreateNew = (req, res) => {
 //   const { title } = req.body;
@@ -270,11 +271,15 @@ const CreateNewChatContent = async (req, res) => {
     }
 
     if (contentType === "BiddingOffer") {
+      const normalized = normalizeBiddingOfferPayload({
+        content,
+        other: other || {},
+      });
       const result = await new ChatContent({
         chat: _id,
         contentType,
-        content,
-        other,
+        content: normalized.content,
+        other: normalized.other,
         sender: {
           id: user_id,
           role: isVendor ? "vendor" : isAdmin ? "admin" : "user",
