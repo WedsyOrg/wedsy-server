@@ -9,6 +9,14 @@ const {
   GetPaymentTransactions,
 } = require("../utils/payment");
 
+function logCreateNewPaymentFailure(label, error, meta = {}) {
+  console.error("[payment:CreateNewPayment]", label, {
+    ...meta,
+    errorMessage: error?.message,
+    errorErr: error?.err || error?.error,
+  });
+}
+
 const CreateNewPayment = (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { event, paymentFor, paymentMethod, amount, user, order } = req.body;
@@ -34,10 +42,18 @@ const CreateNewPayment = (req, res) => {
             });
           })
           .catch((error) => {
+            logCreateNewPaymentFailure("event_razorpay_CreatePayment", error, {
+              userId: user_id,
+              paymentFor,
+            });
             res.status(400).send({ message: "error", error });
           });
       })
       .catch((error) => {
+        logCreateNewPaymentFailure("event_save_payment", error, {
+          userId: user_id,
+          paymentFor,
+        });
         res.status(400).send({ message: "error", error });
       });
   } else if (
@@ -66,10 +82,19 @@ const CreateNewPayment = (req, res) => {
             });
           })
           .catch((error) => {
+            logCreateNewPaymentFailure("makeup_CreatePayment", error, {
+              userId: user_id,
+              orderId: order,
+              amountInRupees: amount,
+            });
             res.status(400).send({ message: "error", error });
           });
       })
       .catch((error) => {
+        logCreateNewPaymentFailure("makeup_save_payment", error, {
+          userId: user_id,
+          orderId: order,
+        });
         res.status(400).send({ message: "error", error });
       });
   } else if (
@@ -340,6 +365,12 @@ const UpdatePayment = (req, res) => {
       }
     })
     .catch((error) => {
+      console.error("[payment:UpdatePayment] GetPaymentStatus failed", {
+        userId: user_id,
+        order_id,
+        errorMessage: error?.message,
+        errorErr: error?.err || error?.error,
+      });
       res.status(400).send({ message: "error", error });
     });
 };
