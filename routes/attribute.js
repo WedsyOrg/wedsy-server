@@ -4,6 +4,7 @@ const router = express.Router();
 const attribute = require("../controllers/attribute");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 
+router.get("/public", attribute.GetAll);
 router.post("/", CheckAdminLogin, attribute.CreateNew);
 router.get("/", CheckAdminLogin, attribute.GetAll);
 router.get("/:_id", CheckAdminLogin, attribute.Get);
