@@ -317,6 +317,40 @@ const CreateNewChatContent = async (req, res) => {
       return res.status(404).send({ message: "error" });
     }
 
+    const mediaTypes = ["Image", "Video", "VoiceNote", "Location", "Checklist", "Contract", "ReviewRequest", "PaymentReminder"];
+    if (mediaTypes.includes(contentType)) {
+      const { mediaUrl, metadata } = req.body;
+      const result = await new ChatContent({
+        chat: _id,
+        contentType,
+        content: content || '',
+        mediaUrl: mediaUrl || '',
+        metadata: metadata || {},
+        sender: {
+          id: user_id,
+          role: isVendor ? "vendor" : isAdmin ? "admin" : "user",
+        },
+        status: {
+          viewedByUser: !isVendor && !isAdmin,
+          viewedByVendor: isVendor,
+        },
+      }).save();
+
+      if (result) {
+        const io = socketStore.get();
+        if (io) {
+          const chat = await Chat.findById(_id).select("vendor user").lean();
+          if (chat) {
+            const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+            io.to(targetRoom).emit("message:new", result.toObject());
+          }
+        }
+        return res.status(200).send(result);
+      }
+
+      return res.status(404).send({ message: "error" });
+    }
+
     return res.status(400).send({ message: "Unsupported content type" });
   } catch (error) {
     res.status(400).send({ message: "error", error });
