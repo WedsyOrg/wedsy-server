@@ -9,6 +9,13 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const { EventCompletionChecker } = require("./utils/jobs");
+const {
+  remindVendorDMinus1,
+  remindVendorDDay,
+  reviewReminder,
+  artistDetailReminder,
+  birthdayReminder,
+} = require("./utils/notificationJobs");
 const socketStore = require("./utils/socket");
 const Chat = require("./models/Chat");
 
@@ -110,11 +117,29 @@ if (port == null || port == "") {
 httpServer.listen(port, function () {
   console.log(`--App listening on port ${port}`);
   // EventCompletionChecker();
-  // Corn Jobs
+  // Cron Jobs
   cron.schedule("0 10 * * *", () => {
     console.log(
       "This function will run at 10 AM every day according to the local timezone"
     );
     EventCompletionChecker();
   });
+
+  // Notification jobs (all times IST via Asia/Kolkata timezone)
+  const IST = { timezone: "Asia/Kolkata" };
+
+  // D-1 reminder to vendor — 1pm IST
+  cron.schedule("0 13 * * *", () => { remindVendorDMinus1(); }, IST);
+
+  // Day-of reminder to vendor — 7am and 2pm IST
+  cron.schedule("0 7,14 * * *", () => { remindVendorDDay(); }, IST);
+
+  // Review nudge to user (event was yesterday) — 12pm, 2pm, 4pm, 6pm IST
+  cron.schedule("0 12,14,16,18 * * *", () => { reviewReminder(); }, IST);
+
+  // Artist name + contact to user (event in 2 days) — every 6 hours
+  cron.schedule("0 */6 * * *", () => { artistDetailReminder(); }, IST);
+
+  // Vendor birthday message — 9am IST
+  cron.schedule("0 9 * * *", () => { birthdayReminder(); }, IST);
 });
