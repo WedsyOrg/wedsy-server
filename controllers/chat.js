@@ -6,6 +6,7 @@ const User = require("../models/User");
 const Vendor = require("../models/Vendor");
 const Order = require("../models/Order");
 const { normalizeBiddingOfferPayload } = require("../utils/eventPricing");
+const socketStore = require("../utils/socket");
 
 // const CreateNew = (req, res) => {
 //   const { title } = req.body;
@@ -41,6 +42,12 @@ const GetAll = async (req, res) => {
       console.log("User requesting chats for user ID:", user_id, "converted to ObjectId:", match.user);
     }
 
+    const unreadMatch = isVendor
+      ? { "status.viewedByVendor": false }
+      : isAdmin
+        ? { $or: [{ "status.viewedByUser": false }, { "status.viewedByVendor": false }] }
+        : { "status.viewedByUser": false };
+
     const pipeline = [
       { $match: match },
       {
@@ -63,10 +70,7 @@ const GetAll = async (req, res) => {
             {
               $match: {
                 $expr: { $eq: ["$chat", "$$chatId"] },
-                $or: [
-                  { "status.viewedByUser": false },
-                  { "status.viewedByVendor": false },
-                ],
+                ...unreadMatch,
               },
             },
             { $count: "count" },
@@ -264,6 +268,14 @@ const CreateNewChatContent = async (req, res) => {
       }).save();
 
       if (result) {
+        const io = socketStore.get();
+        if (io) {
+          const chat = await Chat.findById(_id).select("vendor user").lean();
+          if (chat) {
+            const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+            io.to(targetRoom).emit("message:new", result.toObject());
+          }
+        }
         return res.status(200).send({ message: "success" });
       }
 
@@ -291,6 +303,14 @@ const CreateNewChatContent = async (req, res) => {
       }).save();
 
       if (result) {
+        const io = socketStore.get();
+        if (io) {
+          const chat = await Chat.findById(_id).select("vendor user").lean();
+          if (chat) {
+            const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+            io.to(targetRoom).emit("message:new", result.toObject());
+          }
+        }
         return res.status(200).send(result);
       }
 
@@ -337,6 +357,16 @@ const MarkRead = async (req, res) => {
     else return res.status(400).send({ message: "invalid role" });
 
     await ChatContent.updateMany({ chat: _id }, { $set: setUpdate });
+
+    const io = socketStore.get();
+    if (io) {
+      const chat = await Chat.findById(_id).select("vendor user").lean();
+      if (chat) {
+        const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+        io.to(targetRoom).emit("message:read", { chatId: _id });
+      }
+    }
+
     res.send({ message: "success" });
   } catch (error) {
     res.status(400).send({ message: "error", error });

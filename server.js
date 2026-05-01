@@ -4,8 +4,13 @@ const bodyParser = require("body-parser");
 const cors = require("cors");
 const helmet = require("helmet");
 const cron = require("node-cron");
+const { createServer } = require("http");
+const { Server } = require("socket.io");
+const jwt = require("jsonwebtoken");
 require("dotenv").config();
 const { EventCompletionChecker } = require("./utils/jobs");
+const socketStore = require("./utils/socket");
+const Chat = require("./models/Chat");
 
 //Creating Express App
 const app = express();
@@ -20,15 +25,15 @@ app.use(express.json());
 
 //Connecting Database
 const dbUrl = process.env.DATABASE_URL;
-mongoose.connect(dbUrl, { 
-  useNewUrlParser: true, 
+mongoose.connect(dbUrl, {
+  useNewUrlParser: true,
   useUnifiedTopology: true,
-  serverSelectionTimeoutMS: 10000, // 10 seconds
-  socketTimeoutMS: 45000, // 45 seconds
-  connectTimeoutMS: 10000, // 10 seconds
+  serverSelectionTimeoutMS: 10000,
+  socketTimeoutMS: 45000,
+  connectTimeoutMS: 10000,
   maxPoolSize: 10,
   retryWrites: true,
-  w: 'majority'
+  w: "majority",
 }).catch((error) => {
   console.log("MongoDB connection error:", error);
   process.exit(1);
@@ -45,12 +50,64 @@ database.once("connected", () => {
 //Adding routers
 app.use("/", require("./routes/router"));
 
+//Upgrading to HTTP server with Socket.io
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: "*", methods: ["GET", "POST"] },
+});
+socketStore.set(io);
+
+//Socket.io JWT authentication middleware
+io.use((socket, next) => {
+  const token = socket.handshake.auth.token;
+  if (!token) return next(new Error("No token"));
+  try {
+    const result = jwt.verify(token, process.env.JWT_SECRET);
+    const { _id, isVendor = false, isAdmin = false } = result;
+    socket.data.userId = _id;
+    socket.data.isVendor = isVendor;
+    socket.data.isAdmin = isAdmin;
+    next();
+  } catch (err) {
+    next(new Error("Invalid token"));
+  }
+});
+
+//Socket.io connection handling
+io.on("connection", (socket) => {
+  const { userId, isVendor } = socket.data;
+  const room = isVendor ? `vendor:${userId}` : `user:${userId}`;
+  socket.join(room);
+
+  socket.on("typing:start", async ({ chatId }) => {
+    try {
+      const chat = await Chat.findById(chatId).select("vendor user").lean();
+      if (!chat) return;
+      const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+      socket.to(targetRoom).emit("typing:start", { chatId });
+    } catch (_) {}
+  });
+
+  socket.on("typing:stop", async ({ chatId }) => {
+    try {
+      const chat = await Chat.findById(chatId).select("vendor user").lean();
+      if (!chat) return;
+      const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+      socket.to(targetRoom).emit("typing:stop", { chatId });
+    } catch (_) {}
+  });
+
+  socket.on("disconnect", () => {
+    socket.broadcast.emit("user:offline", { room, userId });
+  });
+});
+
 //Setting up the Ports and starting the app
 let port = process.env.PORT;
 if (port == null || port == "") {
   port = 8090; // Changed from 8000 to 8090 to match frontend configuration
 }
-app.listen(port, function () {
+httpServer.listen(port, function () {
   console.log(`--App listening on port ${port}`);
   // EventCompletionChecker();
   // Corn Jobs
