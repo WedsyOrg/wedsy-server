@@ -1163,7 +1163,7 @@ const AcceptVendorPersonalPackageBooking = (req, res) => {
                 User.findById(orderResult.user).select('phone email name').lean(),
               ]);
               send('MUA_PRSNL_PKG_CONFRM', { phone: vendorForPrsnlConfirm?.phone, email: vendorForPrsnlConfirm?.email, name: vendorForPrsnlConfirm?.businessName || vendorForPrsnlConfirm?.name });
-              send('cx_prsnl_pkg_cnfrm', { phone: userForPrsnlConfirm?.phone, email: userForPrsnlConfirm?.email, name: userForPrsnlConfirm?.name });
+              send('cust_prslpkg_accpt', { phone: userForPrsnlConfirm?.phone, email: userForPrsnlConfirm?.email, name: userForPrsnlConfirm?.name });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });
