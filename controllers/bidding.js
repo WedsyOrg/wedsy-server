@@ -8,6 +8,7 @@ const VendorReview = require("../models/VendorReview");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
 const mongoose = require("mongoose");
+const { send } = require("../services/NotificationService");
 
 /**
  * CreateNew - Creates a new bidding and sends it to verified, visible vendors
@@ -82,7 +83,15 @@ const CreateNew = (req, res) => {
         
         await Promise.all(notificationPromises);
         console.log(`Created ${vendors.length} notifications for bidding: ${result._id}`);
-        
+
+        // Confirm to user that their bid request was submitted
+        send('cust_bidreqs_send', { phone: user?.phone, email: user?.email, name: user?.name || '', variables: [user?.name || ''] });
+
+        // Notify each eligible vendor of the new bid request
+        vendors.forEach(vendor => {
+          send('MUA_BID_REQS', { phone: vendor.phone, email: vendor.email, name: vendor.businessName || vendor.name, variables: [vendor.businessName || vendor.name] });
+        });
+
         res.status(201).send({ message: "success", id: result._id });
       })
       .catch((error) => {
@@ -474,7 +483,11 @@ const UserAcceptBiddingBid = async (req, res) => {
         }).save();
         
         console.log("Created vendor notification:", vendorNotification._id);
-        
+
+        const userForBidNotify = await User.findById(user_id).select('phone email name').lean();
+        send('mua_bid_accept', { phone: result.vendor?.phone, email: result.vendor?.email, name: result.vendor?.businessName || result.vendor?.name, variables: [result.vendor?.businessName || result.vendor?.name || ''] });
+        send('cx_bid_cnfrm', { phone: userForBidNotify?.phone, email: userForBidNotify?.email, name: userForBidNotify?.name, variables: [userForBidNotify?.name || ''] });
+
         res.status(200).send({ message: "success", chat: chat?._id });
       } else {
         res.status(404).send({ message: "Bidding bid not found" });

@@ -3,6 +3,7 @@ const Community = require("../models/Community");
 const CommunityReply = require("../models/CommunityReply");
 const User = require("../models/User");
 const Vendor = require("../models/Vendor");
+const { send } = require("../services/NotificationService");
 
 const removeByIdAndRole = (array, id, role) => {
   const index = array.findIndex(
@@ -62,6 +63,9 @@ const CreateNew = (req, res) => {
     })
       .save()
       .then((result) => {
+        Vendor.find({}, 'phone email name businessName').lean().then(vendors => {
+          vendors.forEach(v => send('Community_new_topic', { phone: v.phone, email: v.email, name: v.businessName || v.name }));
+        });
         res.status(201).send({ message: "success", id: result._id });
       })
       .catch((error) => {
@@ -324,6 +328,20 @@ const AddReply = (req, res) => {
       })
         .save()
         .then((result) => {
+          Community.findById(_id).then(async (post) => {
+            if (!post?.author) return;
+            let recipientEmail, recipientName;
+            if (post.author.role === 'vendor') {
+              const v = await Vendor.findById(post.author.id).select('email name businessName').lean();
+              recipientEmail = v?.email;
+              recipientName = v?.businessName || v?.name;
+            } else if (post.author.role === 'user') {
+              const u = await User.findById(post.author.id).select('email name').lean();
+              recipientEmail = u?.email;
+              recipientName = u?.name;
+            }
+            if (recipientEmail) send('Community_new_reply', { email: recipientEmail, name: recipientName || '' });
+          });
           res.status(200).send({ message: "success" });
         })
         .catch((error) => {

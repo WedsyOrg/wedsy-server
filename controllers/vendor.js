@@ -1,6 +1,7 @@
 const Vendor = require("../models/Vendor");
 const { createObjectCsvStringifier } = require("csv-writer");
 const { CreateNotification } = require("../utils/notification");
+const { send } = require("../services/NotificationService");
 const jwt = require("jsonwebtoken");
 const _ = require("lodash");
 const jwtConfig = require("../config/jwt");
@@ -495,6 +496,10 @@ const Update = (req, res) => {
               category: "Vendor",
               references: { vendor: _id },
             });
+            if (profileVerified === true || profileVerified === 'true') {
+              send('mua_account_verify_success', { phone: result.phone, email: result.email, name: result.businessName || result.name });
+              send('mua_app_install', { email: result.email, name: result.businessName || result.name });
+            }
             res.status(200).send({ message: "success" });
           } else {
             res.status(404).send({ message: "not found" });

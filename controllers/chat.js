@@ -7,6 +7,25 @@ const Vendor = require("../models/Vendor");
 const Order = require("../models/Order");
 const { normalizeBiddingOfferPayload } = require("../utils/eventPricing");
 const socketStore = require("../utils/socket");
+const { send } = require("../services/NotificationService");
+
+// Sends mua_new_chat to the other party if they have no active socket connection.
+async function notifyOffline(chatId, io, isVendor) {
+  try {
+    const chat = await Chat.findById(chatId).select('vendor user').lean();
+    if (!chat) return;
+    const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
+    const room = io.sockets.adapter.rooms.get(targetRoom);
+    if (room && room.size > 0) return;
+    if (isVendor) {
+      const u = await User.findById(chat.user).select('phone email name').lean();
+      send('mua_new_chat', { phone: u?.phone, email: u?.email, name: u?.name });
+    } else {
+      const v = await Vendor.findById(chat.vendor).select('phone email name businessName').lean();
+      send('mua_new_chat', { phone: v?.phone, email: v?.email, name: v?.businessName || v?.name });
+    }
+  } catch (_) {}
+}
 
 // const CreateNew = (req, res) => {
 //   const { title } = req.body;
@@ -274,6 +293,7 @@ const CreateNewChatContent = async (req, res) => {
           if (chat) {
             const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
             io.to(targetRoom).emit("message:new", result.toObject());
+            notifyOffline(_id, io, isVendor);
           }
         }
         return res.status(200).send({ message: "success" });
@@ -309,6 +329,7 @@ const CreateNewChatContent = async (req, res) => {
           if (chat) {
             const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
             io.to(targetRoom).emit("message:new", result.toObject());
+            notifyOffline(_id, io, isVendor);
           }
         }
         return res.status(200).send(result);
@@ -343,6 +364,7 @@ const CreateNewChatContent = async (req, res) => {
           if (chat) {
             const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
             io.to(targetRoom).emit("message:new", result.toObject());
+            notifyOffline(_id, io, isVendor);
           }
         }
         return res.status(200).send(result);

@@ -11,6 +11,7 @@ const ChatContent = require("../models/ChatContent");
 const BiddingBooking = require("../models/BiddingBooking");
 const Notification = require("../models/Notification");
 const router = require("../routes/order");
+const { send } = require("../services/NotificationService");
 
 const CreateOrder = async (req, res) => {
   const { user_id, isVendor, isAdmin } = req.auth;
@@ -110,6 +111,11 @@ const CreateOrder = async (req, res) => {
           console.warn("Failed to create vendor notifications:", e?.message || e);
         }
 
+        // Notify each vendor with packageStatus of the new booking request
+        vendors.forEach(v => {
+          send('MUA_PKG_REQS', { phone: v.phone, email: v.email, name: v.businessName || v.name });
+        });
+
         res.status(201).send({ message: "success", id: orderDoc._id, amount: total });
       }
     } else if (source === "Personal-Package") {
@@ -191,7 +197,11 @@ const CreateOrder = async (req, res) => {
             }).save();
             
             console.log(`Created notification for new personal package booking: ${result._id}`);
-            
+
+            const vendorForPkgNotify = await Vendor.findById(vendor).select('phone email name businessName').lean();
+            send('MUA_PRSNL_PKG_REQS', { phone: vendorForPkgNotify?.phone, email: vendorForPkgNotify?.email, name: vendorForPkgNotify?.businessName || vendorForPkgNotify?.name });
+            send('cx_prslpkg_req_send', { phone: user?.phone, email: user?.email, name: user?.name });
+
             res
               .status(201)
               .send({ message: "success", id: result._id, amount: total });
@@ -313,7 +323,10 @@ const CreateOrder = async (req, res) => {
                 { sort: { createdAt: -1 } } // Update the most recent matching message
               );
             }
-            
+
+            const vendorForBidConfirm = await Vendor.findById(vendor).select('phone email name businessName').lean();
+            send('MUA_BID_CONFRM', { phone: vendorForBidConfirm?.phone, email: vendorForBidConfirm?.email, name: vendorForBidConfirm?.businessName || vendorForBidConfirm?.name });
+
             res.status(201).send({
               message: "success",
               id: result._id,
@@ -1145,6 +1158,12 @@ const AcceptVendorPersonalPackageBooking = (req, res) => {
                 content: orderResult?.amount?.total,
                 other: { order: orderResult?._id },
               }).save();
+              const [vendorForPrsnlConfirm, userForPrsnlConfirm] = await Promise.all([
+                Vendor.findById(user_id).select('phone email name businessName').lean(),
+                User.findById(orderResult.user).select('phone email name').lean(),
+              ]);
+              send('MUA_PRSNL_PKG_CONFRM', { phone: vendorForPrsnlConfirm?.phone, email: vendorForPrsnlConfirm?.email, name: vendorForPrsnlConfirm?.businessName || vendorForPrsnlConfirm?.name });
+              send('cx_prsnl_pkg_cnfrm', { phone: userForPrsnlConfirm?.phone, email: userForPrsnlConfirm?.email, name: userForPrsnlConfirm?.name });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });
@@ -1190,8 +1209,10 @@ const RejectVendorPersonalPackageBooking = (req, res) => {
                 "status.lost": true,
               },
             }
-          ).then((orderResult) => {
+          ).then(async (orderResult) => {
             if (orderResult) {
+              const userForPrsnlReject = await User.findById(orderResult.user).select('phone email name').lean();
+              send('cust_prslpkg_dcln', { phone: userForPrsnlReject?.phone, email: userForPrsnlReject?.email, name: userForPrsnlReject?.name });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });
@@ -1240,6 +1261,12 @@ const AcceptWedsyPackageBooking = (req, res) => {
             { new: true }
           ).then(async (orderResult) => {
             if (orderResult) {
+              const [vendorForWedsy, userForWedsy] = await Promise.all([
+                Vendor.findById(user_id).select('phone email name businessName').lean(),
+                User.findById(orderResult.user).select('phone email name').lean(),
+              ]);
+              send('MUA_PKG_CNFRM', { phone: vendorForWedsy?.phone, email: vendorForWedsy?.email, name: vendorForWedsy?.businessName || vendorForWedsy?.name });
+              send('cx_pkg_cnfrm', { phone: userForWedsy?.phone, email: userForWedsy?.email, name: userForWedsy?.name });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });

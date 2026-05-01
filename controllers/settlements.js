@@ -2,6 +2,7 @@ const axios = require("axios");
 const Vendor = require("../models/Vendor");
 const Order = require("../models/Order");
 const Settlement = require("../models/Settlement");
+const { send } = require("../services/NotificationService");
 
 const CreateVendorSettlementAccount = (req, res) => {
   const { user_id, user } = req.auth;
@@ -339,6 +340,10 @@ const CreateSettlement = (req, res) => {
                 tempOrder.amount.total - amount;
               tempOrder.amount.receivedByVendor = amount;
               const updatedOrder = await tempOrder.save();
+              const vendorForSettle = await Vendor.findById(vendor).select('phone email name businessName').lean();
+              if (vendorForSettle) {
+                send('mua_settlement', { phone: vendorForSettle.phone, email: vendorForSettle.email, name: vendorForSettle.businessName || vendorForSettle.name });
+              }
               res.status(201).send({ message: "success" });
             })
             .catch((error) => {

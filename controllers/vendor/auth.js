@@ -3,6 +3,7 @@ const jwtConfig = require("../../config/jwt");
 const Vendor = require("../../models/Vendor");
 const { SendOTP, VerifyOTP } = require("../../utils/otp");
 const { CreateNotification } = require("../../utils/notification");
+const { send } = require("../../services/NotificationService");
 const AWS = require("@aws-sdk/client-s3");
 
 const normalizePhone = (phone) => (typeof phone === "string" ? phone.trim() : "");
@@ -326,6 +327,8 @@ const signup = async (req, res) => {
       process.env.JWT_SECRET,
       jwtConfig
     );
+
+    send('mua_account_create_success', { email: created.email, name: created.businessName || created.name });
 
     return res.status(201).send({ message: "success", id: created._id, token });
   } catch (err) {
