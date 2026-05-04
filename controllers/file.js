@@ -1,28 +1,6 @@
 const AWS = require("@aws-sdk/client-s3");
 const sharp = require("sharp");
 
-const ALLOWED_MIME_TYPES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "image/heic",
-  "image/heif",
-];
-
-const HEIC_MIME_TYPES = ["image/heic", "image/heif"];
-const HEIC_EXTENSIONS = ["heic", "heif"];
-
-const isHeicFile = (mimetype, extension) => {
-  const normalizedMime = (mimetype || "").toLowerCase();
-  const normalizedExt = (extension || "").toLowerCase();
-  return (
-    HEIC_MIME_TYPES.includes(normalizedMime) ||
-    HEIC_EXTENSIONS.includes(normalizedExt)
-  );
-};
-
 const CreateNew = async (req, res) => {
   const { path, id } = req.body;
 
@@ -39,6 +17,14 @@ const CreateNew = async (req, res) => {
   }
 
   try {
+    // Normalize any image format to JPEG so all uploads render consistently
+    // across browsers (HEIC/HEIF/WebP/AVIF are not universally supported).
+    if (mimetype && mimetype.startsWith("image/")) {
+      data = await sharp(data).jpeg({ quality: 90 }).toBuffer();
+      mimetype = "image/jpeg";
+      name = name.replace(/\.[^.]+$/, ".jpg");
+    }
+
     const s3Client = new AWS.S3({
       region: process.env.AWS_S3_REGION,
       credentials: {
@@ -47,15 +33,7 @@ const CreateNew = async (req, res) => {
       },
     });
 
-    let extension = name.split(".").pop();
-
-    // Convert HEIC/HEIF to JPEG before uploading — most browsers don't render HEIC.
-    if (isHeicFile(mimetype, extension)) {
-      data = await sharp(data).jpeg({ quality: 90 }).toBuffer();
-      mimetype = "image/jpeg";
-      extension = "jpg";
-    }
-
+    const extension = name.split(".").pop();
     const s3Key = `${path}/${id}.${extension}`;
 
     const params = {
@@ -86,4 +64,4 @@ const CreateNew = async (req, res) => {
   }
 };
 
-module.exports = { CreateNew, ALLOWED_MIME_TYPES };
+module.exports = { CreateNew };
