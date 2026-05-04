@@ -16,6 +16,52 @@ const parseImageDataUri = (input) => {
   return { mediaType: "image/jpeg", data: input };
 };
 
+// Translate Anthropic SDK errors → admin-friendly response.
+const sendAnthropicError = (res, err, label) => {
+  console.error(`[${label}] Anthropic call failed:`, {
+    name: err?.name,
+    status: err?.status,
+    message: err?.message,
+    error: err?.error,
+  });
+  const status = err?.status;
+  const text = String(err?.message || "").toLowerCase();
+  const isAuthOrBilling =
+    status === 401 ||
+    status === 402 ||
+    status === 403 ||
+    text.includes("credit") ||
+    text.includes("billing") ||
+    text.includes("api key") ||
+    text.includes("invalid x-api-key") ||
+    text.includes("authentication");
+  if (isAuthOrBilling) {
+    return res.status(502).send({
+      message: "AI service error: Please check API credits or key",
+      error: err?.message || String(err),
+      status,
+    });
+  }
+  if (status === 429) {
+    return res.status(502).send({
+      message: "AI service is rate-limited. Please try again in a moment.",
+      error: err?.message || String(err),
+      status,
+    });
+  }
+  if (err?.name === "APIConnectionError" || text.includes("network")) {
+    return res.status(502).send({
+      message: "Could not reach AI service. Check network and try again.",
+      error: err?.message || String(err),
+    });
+  }
+  return res.status(502).send({
+    message: "AI service error",
+    error: err?.message || String(err),
+    status: status || 500,
+  });
+};
+
 const CreateNew = (req, res) => {
   const {
     category,
@@ -708,42 +754,49 @@ ${JSON.stringify(existingNames)}
 attribute_options (use ONLY these values for the matching fields; return [] if unsure):
 ${JSON.stringify(attributeOptions)}`;
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1024,
-      system: AI_SYSTEM_PROMPT,
-      messages: [
-        {
-          role: "user",
-          content: [
-            {
-              type: "image",
-              source: {
-                type: "base64",
-                media_type: img.mediaType,
-                data: img.data,
+    let message;
+    try {
+      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      message = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1024,
+        system: AI_SYSTEM_PROMPT,
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "image",
+                source: {
+                  type: "base64",
+                  media_type: img.mediaType,
+                  data: img.data,
+                },
               },
-            },
-            { type: "text", text: userText },
-          ],
-        },
-      ],
-    });
+              { type: "text", text: userText },
+            ],
+          },
+        ],
+      });
+    } catch (apiErr) {
+      return sendAnthropicError(res, apiErr, "AiAnalyze");
+    }
 
     const text = (message.content || [])
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("\n");
-    let parsed;
     try {
-      parsed = JSON.parse(stripJsonFence(text));
+      const parsed = JSON.parse(stripJsonFence(text));
+      return res.send(parsed);
     } catch (e) {
-      return res
-        .status(502)
-        .send({ message: "AI returned non-JSON", raw: text });
+      console.error("[AiAnalyze] JSON parse failed. Raw response:\n", text);
+      return res.status(502).send({
+        message: "AI returned an unexpected response format",
+        error: e?.message || String(e),
+        raw: text,
+      });
     }
-    return res.send(parsed);
   } catch (err) {
     console.error("AiAnalyze error:", err?.message || err);
     return res
@@ -785,26 +838,33 @@ NAMING RULES:
 Return ONLY valid JSON:
 { name: string, description: string, seoKeywords: string[] }`;
 
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-    const message = await client.messages.create({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 512,
-      messages: [{ role: "user", content: userText }],
-    });
+    let message;
+    try {
+      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+      message = await client.messages.create({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 512,
+        messages: [{ role: "user", content: userText }],
+      });
+    } catch (apiErr) {
+      return sendAnthropicError(res, apiErr, "AiRegenerate");
+    }
 
     const text = (message.content || [])
       .filter((b) => b.type === "text")
       .map((b) => b.text)
       .join("\n");
-    let parsed;
     try {
-      parsed = JSON.parse(stripJsonFence(text));
+      const parsed = JSON.parse(stripJsonFence(text));
+      return res.send(parsed);
     } catch (e) {
-      return res
-        .status(502)
-        .send({ message: "AI returned non-JSON", raw: text });
+      console.error("[AiRegenerate] JSON parse failed. Raw response:\n", text);
+      return res.status(502).send({
+        message: "AI returned an unexpected response format",
+        error: e?.message || String(e),
+        raw: text,
+      });
     }
-    return res.send(parsed);
   } catch (err) {
     console.error("AiRegenerate error:", err?.message || err);
     return res.status(500).send({
