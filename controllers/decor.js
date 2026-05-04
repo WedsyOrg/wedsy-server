@@ -704,30 +704,6 @@ ATTRIBUTE RULES:
 - ONLY use values from attribute_options provided
 - If unsure → return empty array, never invent values
 
-INCLUDED LIST RULES — also analyze the image and generate an 'included' array:
-
-ALWAYS INCLUDE (first two entries):
-- 'LED PAR Cans'
-- 'Seater (subject to selection)'
-
-ANALYZE THE IMAGE — include ONLY what is ON the main stage/setup:
-- Main backdrop if present
-- Hanging floral or decorative elements above the stage
-- Floral arrangements that are physically part of the stage structure
-- Any structural decor elements on the stage
-
-IF YOU SEE decor OUTSIDE the main stage (pathways, entrance arches, mirror decor, aisle florals) — add a line: '[item] not included'
-
-ALWAYS ADD AT END:
-- 'Platform (subject to size)'
-- 'Flooring (subject to selection)'
-
-FORMAT:
-- Max 4-5 words per point
-- Short catalog-style language
-- Return as array of strings
-- No full sentences, no paragraphs
-
 TAGS RULES — also generate searchable tags for the 'tags' field by analyzing the image:
 - Decor style tags (floral, royal, modern, traditional, fusion etc)
 - Color tags (pink, gold, white, red etc)
@@ -752,7 +728,6 @@ Return ONLY valid JSON no markdown:
   colors: string[],
   flowers: string[],
   occasions: string[],
-  included: string[],
   tags: string[],
   detectedAesthetic: 'traditional' | 'modern' | 'fusion'
 }`;
@@ -828,6 +803,31 @@ ${JSON.stringify(attributeOptions)}`;
       .join("\n");
     try {
       const parsed = JSON.parse(stripJsonFence(text));
+
+      // Hardcode the 'included' list based on category — the AI is no
+      // longer asked to think about it.
+      const cat = (category || "").toLowerCase();
+      const seaterCategories = ["stage", "mandap"];
+      const ledCategories = [
+        "stage",
+        "mandap",
+        "photobooth",
+        "pathway",
+        "nameboard",
+        "entrance arch",
+      ];
+      const included = [
+        "Decor as shown in image",
+        "Props as shown in image",
+      ];
+      if (seaterCategories.some((c) => cat.includes(c))) {
+        included.unshift("Seaters included");
+      }
+      if (ledCategories.some((c) => cat.includes(c))) {
+        included.unshift("LED PAR Cans included");
+      }
+      parsed.included = included;
+
       return res.send(parsed);
     } catch (e) {
       console.error("[AiAnalyze] JSON parse failed. Raw response:\n", text);
