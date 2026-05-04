@@ -728,6 +728,20 @@ FORMAT:
 - Return as array of strings
 - No full sentences, no paragraphs
 
+TAGS RULES — also generate searchable tags for the 'tags' field by analyzing the image:
+- Decor style tags (floral, royal, modern, traditional, fusion etc)
+- Color tags (pink, gold, white, red etc)
+- Occasion tags (wedding, reception, engagement etc)
+- Structural tags (backdrop, arch, mandap, stage, canopy etc)
+- Mood/aesthetic tags (romantic, grand, minimal, vibrant, elegant etc)
+- Material tags if visible (fabric, fresh flowers, LED, mirror, drapes etc)
+
+TAGS FORMAT:
+- Short single or double word tags only
+- 8-12 tags per product
+- All lowercase
+- Return as array of strings
+
 Return ONLY valid JSON no markdown:
 {
   name: string,
@@ -739,6 +753,7 @@ Return ONLY valid JSON no markdown:
   flowers: string[],
   occasions: string[],
   included: string[],
+  tags: string[],
   detectedAesthetic: 'traditional' | 'modern' | 'fusion'
 }`;
 
