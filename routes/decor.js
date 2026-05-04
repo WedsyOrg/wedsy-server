@@ -7,7 +7,7 @@ const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 
 // Large parser only for the AI image upload route — base64 of a photo can be
 // several MB, well past the default 100kb json limit.
-const largeJson = bodyParser.json({ limit: "20mb" });
+const largeJson = bodyParser.json({ limit: "50mb" });
 
 router.post("/ai-analyze", largeJson, CheckAdminLogin, decor.AiAnalyze);
 router.post("/ai-regenerate", CheckAdminLogin, decor.AiRegenerate);
