@@ -704,6 +704,30 @@ ATTRIBUTE RULES:
 - ONLY use values from attribute_options provided
 - If unsure → return empty array, never invent values
 
+INCLUDED LIST RULES — also analyze the image and generate an 'included' array:
+
+ALWAYS INCLUDE (first two entries):
+- 'LED PAR Cans'
+- 'Seater (subject to selection)'
+
+ANALYZE THE IMAGE — include ONLY what is ON the main stage/setup:
+- Main backdrop if present
+- Hanging floral or decorative elements above the stage
+- Floral arrangements that are physically part of the stage structure
+- Any structural decor elements on the stage
+
+IF YOU SEE decor OUTSIDE the main stage (pathways, entrance arches, mirror decor, aisle florals) — add a line: '[item] not included'
+
+ALWAYS ADD AT END:
+- 'Platform (subject to size)'
+- 'Flooring (subject to selection)'
+
+FORMAT:
+- Max 4-5 words per point
+- Short catalog-style language
+- Return as array of strings
+- No full sentences, no paragraphs
+
 Return ONLY valid JSON no markdown:
 {
   name: string,
@@ -714,6 +738,7 @@ Return ONLY valid JSON no markdown:
   colors: string[],
   flowers: string[],
   occasions: string[],
+  included: string[],
   detectedAesthetic: 'traditional' | 'modern' | 'fusion'
 }`;
 
