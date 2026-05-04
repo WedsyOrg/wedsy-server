@@ -1,4 +1,20 @@
 const Decor = require("../models/Decor");
+const Attribute = require("../models/Attribute");
+const Anthropic = require("@anthropic-ai/sdk");
+
+const stripJsonFence = (text = "") =>
+  String(text)
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+const parseImageDataUri = (input) => {
+  if (typeof input !== "string") return null;
+  const m = /^data:([^;]+);base64,(.+)$/.exec(input);
+  if (m) return { mediaType: m[1], data: m[2] };
+  return { mediaType: "image/jpeg", data: input };
+};
 
 const CreateNew = (req, res) => {
   const {
@@ -623,4 +639,179 @@ const Delete = (req, res) => {
     });
 };
 
-module.exports = { CreateNew, GetAll, Get, Update, Delete };
+// ─── AI listing helpers ──────────────────────────────────────────────────────
+
+const AI_SYSTEM_PROMPT = `You are a luxury Indian wedding decor product naming expert. Analyze the uploaded product image carefully.
+
+Detect: decor style (traditional Indian / modern contemporary / fusion), color palette, floral types, ambience, structure, lighting, occasions it suits.
+
+NAMING RULES:
+- Traditional/Indian aesthetic → royal, classic, cultural names (e.g. Ivory Grace, Regal Flora, Marigold Grandeur)
+- Modern/contemporary aesthetic → sleek, premium, aesthetic names (e.g. Velvet Aura, Opal Pavilion, Celestial Bloom)
+- Fusion → blend both styles
+- STRICTLY 2 words (3 only if absolutely necessary)
+- Must NOT be similar to any name in existing_names list
+- Luxury Indian wedding catalog feel, non-generic, premium
+- Avoid: color-only names, generic names, basic/local vendor-style names
+
+ATTRIBUTE RULES:
+- ONLY use values from attribute_options provided
+- If unsure → return empty array, never invent values
+
+Return ONLY valid JSON no markdown:
+{
+  name: string,
+  description: string (2-3 sentences, luxury emotional language),
+  seoKeywords: string[],
+  category: string,
+  style: string[],
+  colors: string[],
+  flowers: string[],
+  occasions: string[],
+  detectedAesthetic: 'traditional' | 'modern' | 'fusion'
+}`;
+
+const AiAnalyze = async (req, res) => {
+  try {
+    const { imageBase64, category } = req.body || {};
+    if (!imageBase64 || !category) {
+      return res
+        .status(400)
+        .send({ message: "imageBase64 and category are required" });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res
+        .status(500)
+        .send({ message: "ANTHROPIC_API_KEY not configured" });
+    }
+
+    const img = parseImageDataUri(imageBase64);
+    if (!img) {
+      return res.status(400).send({ message: "invalid imageBase64" });
+    }
+
+    const [existing, attrs] = await Promise.all([
+      Decor.find({ category }, "name").lean(),
+      Attribute.find({}, "name list").lean(),
+    ]);
+    const existingNames = existing.map((d) => d.name).filter(Boolean);
+    const attributeOptions = {};
+    attrs.forEach((a) => {
+      attributeOptions[a.name] = a.list || [];
+    });
+
+    const userText = `Category: ${category}
+
+existing_names (avoid similarity):
+${JSON.stringify(existingNames)}
+
+attribute_options (use ONLY these values for the matching fields; return [] if unsure):
+${JSON.stringify(attributeOptions)}`;
+
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1024,
+      system: AI_SYSTEM_PROMPT,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: img.mediaType,
+                data: img.data,
+              },
+            },
+            { type: "text", text: userText },
+          ],
+        },
+      ],
+    });
+
+    const text = (message.content || [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    let parsed;
+    try {
+      parsed = JSON.parse(stripJsonFence(text));
+    } catch (e) {
+      return res
+        .status(502)
+        .send({ message: "AI returned non-JSON", raw: text });
+    }
+    return res.send(parsed);
+  } catch (err) {
+    console.error("AiAnalyze error:", err?.message || err);
+    return res
+      .status(500)
+      .send({ message: "ai_analyze_failed", error: err?.message || String(err) });
+  }
+};
+
+const AiRegenerate = async (req, res) => {
+  try {
+    const { currentAttributes } = req.body || {};
+    if (!currentAttributes || typeof currentAttributes !== "object") {
+      return res.status(400).send({ message: "currentAttributes is required" });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res
+        .status(500)
+        .send({ message: "ANTHROPIC_API_KEY not configured" });
+    }
+
+    const category = currentAttributes.category || "";
+    const existing = category
+      ? await Decor.find({ category }, "name").lean()
+      : [];
+    const existingNames = existing.map((d) => d.name).filter(Boolean);
+
+    const userText = `Based ONLY on these manually selected attributes, generate a new luxury name and description.
+Do NOT imagine from any image.
+
+Attributes: ${JSON.stringify(currentAttributes)}
+Existing names to avoid: ${JSON.stringify(existingNames)}
+
+NAMING RULES:
+- style array determines aesthetic: Traditional → royal/cultural, Modern → sleek/aesthetic
+- STRICTLY 2 words (3 only if necessary)
+- Must NOT be similar to existing names
+- Luxury Indian wedding catalog feel
+
+Return ONLY valid JSON:
+{ name: string, description: string, seoKeywords: string[] }`;
+
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const message = await client.messages.create({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 512,
+      messages: [{ role: "user", content: userText }],
+    });
+
+    const text = (message.content || [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    let parsed;
+    try {
+      parsed = JSON.parse(stripJsonFence(text));
+    } catch (e) {
+      return res
+        .status(502)
+        .send({ message: "AI returned non-JSON", raw: text });
+    }
+    return res.send(parsed);
+  } catch (err) {
+    console.error("AiRegenerate error:", err?.message || err);
+    return res.status(500).send({
+      message: "ai_regenerate_failed",
+      error: err?.message || String(err),
+    });
+  }
+};
+
+module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate };
