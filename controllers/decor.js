@@ -758,7 +758,7 @@ ${JSON.stringify(attributeOptions)}`;
     try {
       const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
       message = await client.messages.create({
-        model: "claude-sonnet-4-5-20251001",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 1024,
         system: AI_SYSTEM_PROMPT,
         messages: [
@@ -842,7 +842,7 @@ Return ONLY valid JSON:
     try {
       const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
       message = await client.messages.create({
-        model: "claude-sonnet-4-5-20251001",
+        model: "claude-sonnet-4-5-20250929",
         max_tokens: 512,
         messages: [{ role: "user", content: userText }],
       });
