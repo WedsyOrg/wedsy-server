@@ -3,6 +3,7 @@ const router = express.Router();
 
 const { CheckLogin } = require("../middlewares/auth");
 const auth = require("../controllers/auth");
+const authInternational = require("../controllers/auth.international");
 
 // Admin Auth
 router.post("/admin", auth.AdminLogin);
@@ -16,6 +17,8 @@ router.get("/vendor", CheckLogin, auth.GetVendor);
 router.post("/", auth.Login);
 router.get("/", CheckLogin, auth.Get);
 router.post("/otp", auth.GetOTP);
+router.post("/otp/international", authInternational.SendInternationalOTP);
+router.post("/verify/international", authInternational.VerifyInternationalOTP);
 
 // User management (admin)
 router.put("/user/block", CheckLogin, auth.BlockUser);
