@@ -19,17 +19,24 @@ const SendOTP = (phone) => {
         .then(async (result) => {
           let ReferenceId = result._id;
 
+          const data = JSON.stringify({
+            route: "dlt",
+            sender_id: "WEDSYY",
+            message: "163317",
+            variables_values: `${otp}`,
+            flash: 0,
+            numbers: phone.replace("+91", ""),
+          });
+
           const [smsResult, waResult] = await Promise.allSettled([
-            axios.get("https://www.fast2sms.com/dev/bulkV2", {
-              params: {
+            axios({
+              method: "post",
+              url: process.env.FAST2SMS_API_URL,
+              headers: {
                 authorization: process.env.FAST2SMS_API_KEY,
-                route: "dlt",
-                sender_id: "WEDSYY",
-                message: "178506",
-                variables_values: `${otp}`,
-                flash: 0,
-                numbers: phone.replace("+91", ""),
+                "Content-Type": "application/json",
               },
+              data,
             }),
             axios({
               method: "post",
