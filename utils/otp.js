@@ -16,9 +16,10 @@ const SendOTP = (phone) => {
       const otp = Math.floor(100000 + Math.random() * 900000);
       new OTP({ phone, otp })
         .save()
-        .then((result) => {
+        .then(async (result) => {
           let ReferenceId = result._id;
-          const data = JSON.stringify({
+
+          const smsData = JSON.stringify({
             route: "dlt",
             sender_id: "WEDSYY",
             message: "1207173659316115296",
@@ -26,41 +27,52 @@ const SendOTP = (phone) => {
             flash: 0,
             numbers: phone.replace("+91", ""),
           });
-          axios({
-            method: "post",
-            url: `${process.env.FAST2SMS_API_URL}`,
-            headers: {
-              authorization: process.env.FAST2SMS_API_KEY,
-              "Content-Type": "application/json",
-            },
-            body: data,
-            data,
-          })
-            .then(function (response) {
-              resolve({ ...response.data, ReferenceId });
-            })
-            .catch(async (smsError) => {
-              console.log('Fast2SMS failed, trying WhatsApp OTP fallback:', smsError?.response?.data || smsError?.message);
-              try {
-                await axios({
-                  method: 'post',
-                  url: process.env.AISENSY_API_URL,
-                  headers: { 'Content-Type': 'application/json' },
-                  data: {
-                    apiKey: process.env.AISENSY_API_KEY,
-                    campaignName: 'otp_verification',
-                    destination: phone,
-                    userName: 'User',
-                    templateParams: [`${otp}`]
-                  }
-                });
-                console.log('WhatsApp OTP sent successfully as fallback');
-                resolve({ message: 'otp sent via whatsapp', ReferenceId });
-              } catch (waError) {
-                console.log('WhatsApp OTP also failed:', waError?.response?.data || waError?.message);
-                reject({ message: 'error', error: smsError });
-              }
-            });
+
+          const [smsResult, waResult] = await Promise.allSettled([
+            axios({
+              method: "post",
+              url: process.env.FAST2SMS_API_URL,
+              headers: {
+                authorization: process.env.FAST2SMS_API_KEY,
+                "Content-Type": "application/json",
+              },
+              data: smsData,
+            }),
+            axios({
+              method: "post",
+              url: process.env.AISENSY_API_URL,
+              headers: { "Content-Type": "application/json" },
+              data: {
+                apiKey: process.env.AISENSY_API_KEY,
+                campaignName: "otp_verification",
+                destination: phone,
+                userName: "User",
+                templateParams: [otp.toString()],
+              },
+            }),
+          ]);
+
+          if (smsResult.status === "rejected") {
+            console.log(
+              "Fast2SMS failed:",
+              smsResult.reason?.response?.data || smsResult.reason?.message
+            );
+          }
+          if (waResult.status === "rejected") {
+            console.log(
+              "WhatsApp OTP failed:",
+              waResult.reason?.response?.data || waResult.reason?.message
+            );
+          }
+
+          if (
+            smsResult.status === "fulfilled" ||
+            waResult.status === "fulfilled"
+          ) {
+            resolve({ ReferenceId });
+          } else {
+            reject({ message: "error", error: smsResult.reason });
+          }
         })
         .catch((error) => {
           reject({ message: "error", error });
