@@ -15,15 +15,19 @@ const SendInternationalOTP = async (req, res) => {
 
   // Capture unverified lead before sending OTP. Continue even if this fails —
   // lead capture is best-effort and must not block OTP delivery.
-  // name: "" satisfies Enquiry's required-name validator on the insert path.
+  // $setOnInsert so a repeat OTP request for an already-verified lead does
+  // not flip verified back to false. name: "" is needed because Enquiry.name
+  // is required with no default.
   try {
     await Enquiry.findOneAndUpdate(
       { phone: fullPhone },
       {
-        phone: fullPhone,
-        name: "",
-        verified: false,
-        source: "International Signup",
+        $setOnInsert: {
+          phone: fullPhone,
+          name: "",
+          verified: false,
+          source: "International Signup",
+        },
       },
       { upsert: true, new: true }
     );
@@ -81,9 +85,16 @@ const VerifyInternationalOTP = async (req, res) => {
 
     const user = await User.findOne({ phone: fullPhone });
     if (!user) {
-      return res
-        .status(200)
-        .send({ userExists: false, message: "Account not found" });
+      const signupToken = jwt.sign(
+        { phone: fullPhone, purpose: "international_signup" },
+        process.env.JWT_SECRET,
+        { expiresIn: "10m" }
+      );
+      return res.status(200).send({
+        userExists: false,
+        signupToken,
+        message: "Account not found",
+      });
     }
 
     if (user.blocked) {
@@ -111,12 +122,30 @@ const VerifyInternationalOTP = async (req, res) => {
 };
 
 const SignupInternational = async (req, res) => {
-  const { phone, countryCode, name, email } = req.body || {};
-  if (!phone || !countryCode || !name || !email) {
+  const { phone, countryCode, name, email, signupToken } = req.body || {};
+  if (!phone || !countryCode || !name || !email || !signupToken) {
     return res.status(400).send({ message: "Missing required fields" });
   }
 
   const fullPhone = `${countryCode}${phone}`;
+
+  let decoded;
+  try {
+    decoded = jwt.verify(signupToken, process.env.JWT_SECRET);
+  } catch (e) {
+    return res.status(401).send({
+      message: "Invalid or expired signup session. Please request OTP again.",
+    });
+  }
+
+  if (
+    decoded?.purpose !== "international_signup" ||
+    decoded?.phone !== fullPhone
+  ) {
+    return res.status(401).send({
+      message: "Invalid or expired signup session. Please request OTP again.",
+    });
+  }
 
   try {
     const existing = await User.findOne({ phone: fullPhone });

@@ -49,7 +49,7 @@ const SendOTP = (phone) => {
                   data: {
                     apiKey: process.env.AISENSY_API_KEY,
                     campaignName: 'otp_verification',
-                    destination: phone.replace('+91', ''),
+                    destination: phone,
                     userName: 'User',
                     templateParams: [`${otp}`]
                   }
