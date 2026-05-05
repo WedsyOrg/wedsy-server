@@ -22,7 +22,7 @@ const SendOTP = (phone) => {
           const smsData = JSON.stringify({
             route: "dlt",
             sender_id: "WEDSYY",
-            message: "1207173659316115296",
+            message: "1201166876211748929",
             variables_values: `${otp}`,
             flash: 0,
             numbers: phone.replace("+91", ""),
@@ -43,7 +43,7 @@ const SendOTP = (phone) => {
               url: process.env.AISENSY_API_URL,
               headers: { "Content-Type": "application/json" },
               data: {
-                apiKey: process.env.AISENSY_API_KEY,
+                apiKey: process.env.AISENSY_API_KEY_V2,
                 campaignName: "otp_verification",
                 destination: phone,
                 userName: "User",

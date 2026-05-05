@@ -6,7 +6,7 @@ const { Client: MailjetClient } = require("node-mailjet");
 // sms.senderId defaults to "WEDSYY" when omitted.
 // send() fires all channels in parallel; callers do not need to await.
 const TRIGGERS = {
-  otp_std:                    { sms: { templateId: "1207173659316115296" }, email: { templateId: 6647480 } },
+  otp_std:                    { sms: { templateId: "1201166876211748929" }, email: { templateId: 6647480 } },
   event_link:                 { sms: { templateId: "1207173659242837764" }, whatsapp: { campaign: "eventtool_link" } },
   user_event_create:          { whatsapp: { campaign: "user_event_create" }, email: { templateId: 6647516 } },
   event_Reciept:              { sms: { templateId: "1207173659265948967" }, whatsapp: { campaign: "et_reciept" }, email: { templateId: 664758 } },
@@ -82,7 +82,7 @@ function sendWhatsApp(phone, campaignName, variables = [], name = "") {
     url: process.env.AISENSY_API_URL,
     headers: { "Content-Type": "application/json" },
     data: JSON.stringify({
-      apiKey: process.env.AISENSY_API_KEY,
+      apiKey: process.env.AISENSY_API_KEY_V2,
       campaignName,
       destination: phone,
       userName: name,
