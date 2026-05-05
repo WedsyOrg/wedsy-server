@@ -22,7 +22,7 @@ const SendOTP = (phone) => {
           const data = JSON.stringify({
             route: "dlt",
             sender_id: "WEDSYY",
-            message: "163317",
+            message: "178506",
             variables_values: `${otp}`,
             flash: 0,
             numbers: phone.replace("+91", ""),
