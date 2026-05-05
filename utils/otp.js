@@ -39,9 +39,27 @@ const SendOTP = (phone) => {
             .then(function (response) {
               resolve({ ...response.data, ReferenceId });
             })
-            .catch(function (error) {
-              console.log(error);
-              reject({ message: "error", error });
+            .catch(async (smsError) => {
+              console.log('Fast2SMS failed, trying WhatsApp OTP fallback:', smsError?.response?.data || smsError?.message);
+              try {
+                await axios({
+                  method: 'post',
+                  url: process.env.AISENSY_API_URL,
+                  headers: { 'Content-Type': 'application/json' },
+                  data: {
+                    apiKey: process.env.AISENSY_API_KEY,
+                    campaignName: 'otp_verification',
+                    destination: phone.replace('+91', ''),
+                    userName: 'User',
+                    templateParams: [`${otp}`]
+                  }
+                });
+                console.log('WhatsApp OTP sent successfully as fallback');
+                resolve({ message: 'otp sent via whatsapp', ReferenceId });
+              } catch (waError) {
+                console.log('WhatsApp OTP also failed:', waError?.response?.data || waError?.message);
+                reject({ message: 'error', error: smsError });
+              }
             });
         })
         .catch((error) => {
