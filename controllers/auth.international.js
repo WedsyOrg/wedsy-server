@@ -44,7 +44,7 @@ const SendInternationalOTP = async (req, res) => {
       url: process.env.AISENSY_API_URL,
       headers: { "Content-Type": "application/json" },
       data: {
-        apiKey: process.env.AISENSY_API_KEY,
+        apiKey: process.env.AISENSY_API_KEY_V2,
         campaignName: "otp_verification",
         destination: fullPhone,
         userName: "User",
