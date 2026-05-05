@@ -784,7 +784,7 @@ ${JSON.stringify(attributeOptions)}`;
                 type: "image",
                 source: {
                   type: "base64",
-                  media_type: img.mediaType,
+                  media_type: "image/jpeg",
                   data: img.data,
                 },
               },
