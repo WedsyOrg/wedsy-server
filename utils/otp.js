@@ -40,14 +40,35 @@ const SendOTP = (phone) => {
             }),
             axios({
               method: "post",
-              url: process.env.AISENSY_API_URL,
-              headers: { "Content-Type": "application/json" },
+              url: `https://graph.facebook.com/v19.0/${process.env.META_WA_PHONE_NUMBER_ID}/messages`,
+              headers: {
+                Authorization: `Bearer ${process.env.META_WA_ACCESS_TOKEN}`,
+                "Content-Type": "application/json",
+              },
               data: {
-                apiKey: process.env.AISENSY_API_KEY_V2,
-                campaignName: "otp_verification",
-                destination: phone,
-                userName: "User",
-                templateParams: [otp.toString()],
+                messaging_product: "whatsapp",
+                to: `91${phone.replace("+91", "")}`,
+                type: "template",
+                template: {
+                  name: "otp_verification",
+                  language: { code: "en" },
+                  components: [
+                    {
+                      type: "body",
+                      parameters: [
+                        { type: "text", text: otp.toString() },
+                      ],
+                    },
+                    {
+                      type: "button",
+                      sub_type: "url",
+                      index: 0,
+                      parameters: [
+                        { type: "text", text: otp.toString() },
+                      ],
+                    },
+                  ],
+                },
               },
             }),
           ]);
