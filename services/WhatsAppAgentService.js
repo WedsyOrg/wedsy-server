@@ -74,7 +74,7 @@ const sendWhatsAppReply = async (phone, message) => {
       }
     );
   } catch (err) {
-    console.error('[WhatsAppAgent] Failed to send reply:', err.response?.data || err.message);
+    console.error('[WhatsAppAgent] Failed to send reply:', JSON.stringify(err.response?.data || err.message));
   }
 };
 
@@ -178,7 +178,7 @@ const receiveMessage = async (phone, message) => {
       await appendToGoogleSheet(phone, qualification.data);
     }
   } catch (err) {
-    console.error('[WhatsAppAgent] receiveMessage error:', err.message);
+    console.error('[WhatsAppAgent] receiveMessage error:', JSON.stringify(err.response?.data || err.message));
   }
 };
 
