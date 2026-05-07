@@ -53,6 +53,7 @@ router.use("/vendor-makeup-style", require("./vendor-makeup-style"));
 router.use("/vendor-add-ons", require("./vendor-add-ons"));
 router.use("/tag", require("./tag"));
 router.use("/webhook", require("./webhook"));
+router.use("/webhook", require("./whatsappAgent"));
 router.use("/vendor-personal-lead", require("./vendor-personal-lead"));
 router.use("/vendor-personal-package", require("./vendor-personal-package"));
 router.use("/community", require("./community"));
