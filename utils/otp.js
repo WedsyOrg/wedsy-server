@@ -1,5 +1,6 @@
 const axios = require("axios");
 const OTP = require("../models/OTP");
+const { sendWhatsApp } = require("./whatsapp");
 
 const SendOTP = (phone) => {
   return new Promise(async (resolve, reject) => {
@@ -38,39 +39,12 @@ const SendOTP = (phone) => {
               },
               data,
             }),
-            axios({
-              method: "post",
-              url: `https://graph.facebook.com/v19.0/${process.env.META_WA_PHONE_NUMBER_ID}/messages`,
-              headers: {
-                Authorization: `Bearer ${process.env.META_WA_ACCESS_TOKEN}`,
-                "Content-Type": "application/json",
-              },
-              data: {
-                messaging_product: "whatsapp",
-                to: `91${phone.replace("+91", "")}`,
-                type: "template",
-                template: {
-                  name: "otp_verification",
-                  language: { code: "en" },
-                  components: [
-                    {
-                      type: "body",
-                      parameters: [
-                        { type: "text", text: otp.toString() },
-                      ],
-                    },
-                    {
-                      type: "button",
-                      sub_type: "url",
-                      index: 0,
-                      parameters: [
-                        { type: "text", text: otp.toString() },
-                      ],
-                    },
-                  ],
-                },
-              },
-            }),
+            sendWhatsApp(
+              `91${phone.replace("+91", "").replace(/\s/g, "")}`,
+              "otp_verification",
+              [otp.toString()],
+              { sub_type: "url", index: 0, parameters: [{ type: "text", text: otp.toString() }] }
+            ),
           ]);
 
           if (smsResult.status === "rejected") {

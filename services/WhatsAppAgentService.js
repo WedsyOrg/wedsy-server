@@ -1,6 +1,8 @@
+const { sendWhatsAppText } = require('../utils/whatsapp');
+const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
+const NotificationFailureLog = require('../models/NotificationFailureLog');
 const axios = require('axios');
 const { google } = require('googleapis');
-const WAAgentMessage = require('../models/WAAgentMessage');
 
 const SYSTEM_PROMPT = `You are Kiara, a wedding planner assistant from Wedsy. Wedsy is a Bengaluru-based wedding planning and decor company specializing in end-to-end wedding and engagement planning.
 
@@ -25,14 +27,14 @@ If the user is a potential client, collect these details in order:
 
 1. Type of event
    - Ask if it is a wedding or engagement.
-   - If Birthday → inform we specialize only in weddings and engagements and politely close.
-   - If Corporate → inform our corporate events specialist will connect and politely close.
+   - If Birthday: inform we specialize only in weddings and engagements and politely close.
+   - If Corporate: inform our corporate events specialist will connect and politely close.
 
 2. City of event
-   - If Bengaluru (including Bangalore, blr, blore, etc.) → continue.
-   - If outside Bengaluru → inform it will be treated as a destination wedding and ask if they are comfortable working with a Bengaluru-based planner.
-     - If yes → inform our destination wedding specialist will connect shortly and close politely.
-     - If no → politely close.
+   - If Bengaluru (including Bangalore, blr, blore, etc.): continue.
+   - If outside Bengaluru: inform it will be treated as a destination wedding and ask if they are comfortable working with a Bengaluru-based planner.
+     - If yes: inform our destination wedding specialist will connect shortly and close politely.
+     - If no: politely close.
 
 3. Event date
    - Collect full date. If unsure, ask approximate month.
@@ -40,9 +42,9 @@ If the user is a potential client, collect these details in order:
 4. Number of events planned (for weddings)
 
 5. Venue status
-   - If booked → collect venue name.
-   - If not booked → ask if they would like venue assistance.
-     - If yes → ask preferred venue type (resort, banquet hall, or 5-star hotel) and preferred area in Bengaluru.
+   - If booked: collect venue name.
+   - If not booked: ask if they would like venue assistance.
+     - If yes: ask preferred venue type (resort, banquet hall, or 5-star hotel) and preferred area in Bengaluru.
 
 6. Services required
    - Full wedding planning, decor only, or specific services (catering, photography, makeup, logistics, live artists, etc.)
@@ -56,129 +58,157 @@ Once all required details are collected:
 - Inform them that our team will carefully review everything and connect within the next 24 hours.
 - End warmly and confidently.`;
 
-const sendWhatsAppReply = async (phone, message) => {
-  try {
-    await axios.post(
-      `https://graph.facebook.com/v19.0/${process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: phone,
-        type: 'text',
-        text: { body: message }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.META_WA_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json'
+const sendToClaude = async (history) => {
+  const MAX_RETRIES = 2;
+  let attempt = 0;
+
+  while (attempt <= MAX_RETRIES) {
+    try {
+      const response = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model: 'claude-sonnet-4-5',
+          max_tokens: 500,
+          system: SYSTEM_PROMPT,
+          messages: history
+        },
+        {
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json'
+          }
         }
+      );
+      return response.data.content[0].text;
+    } catch (error) {
+      attempt++;
+      if (attempt > MAX_RETRIES) {
+        await NotificationFailureLog.create({
+          service: 'Anthropic',
+          error: error.message,
+          attempts: attempt,
+          createdAt: new Date()
+        });
+        console.error(`[WhatsAppAgent] Claude API failed after ${attempt} attempts:`, error.message);
+        return null;
       }
-    );
-  } catch (err) {
-    console.error('[WhatsAppAgent] Failed to send reply:', JSON.stringify(err.response?.data || err.message));
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
   }
 };
 
-const getConversationHistory = async (phone) => {
-  const messages = await WAAgentMessage.find({ phone }).sort({ createdAt: 1 }).limit(30);
-  return messages.map(m => ({ role: m.role, content: m.message }));
-};
-
-const saveMessage = async (phone, role, message) => {
-  await new WAAgentMessage({ phone, role, message }).save();
-};
-
-const sendToClaude = async (history) => {
-  const response = await axios.post(
-    'https://api.anthropic.com/v1/messages',
-    {
-      model: 'claude-sonnet-4-5',
-      max_tokens: 500,
-      system: SYSTEM_PROMPT,
-      messages: history
-    },
-    {
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      }
-    }
-  );
-  return response.data.content[0].text;
-};
-
 const checkQualified = async (history) => {
-  const response = await axios.post(
-    'https://api.anthropic.com/v1/messages',
-    {
-      model: 'claude-sonnet-4-5',
-      max_tokens: 400,
-      system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the assistant has thanked the user and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": ""}}',
-      messages: history
-    },
-    {
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
+  const MAX_RETRIES = 2;
+  let attempt = 0;
+
+  while (attempt <= MAX_RETRIES) {
+    try {
+      const response = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model: 'claude-sonnet-4-5',
+          max_tokens: 400,
+          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the assistant has thanked the user and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": ""}}',
+          messages: history
+        },
+        {
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+      const text = response.data.content[0].text;
+      try {
+        return JSON.parse(text);
+      } catch {
+        return { qualified: false };
       }
+    } catch (error) {
+      attempt++;
+      if (attempt > MAX_RETRIES) {
+        await NotificationFailureLog.create({
+          service: 'Anthropic',
+          error: error.message,
+          attempts: attempt,
+          createdAt: new Date()
+        });
+        console.error(`[WhatsAppAgent] Qualification check failed after ${attempt} attempts:`, error.message);
+        return { qualified: false };
+      }
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
-  );
-  const text = response.data.content[0].text;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { qualified: false };
   }
 };
 
 const appendToGoogleSheet = async (phone, data) => {
-  try {
-    const auth = new google.auth.GoogleAuth({
-      keyFile: process.env.GOOGLE_SHEETS_KEY_PATH,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
-    });
-    const sheets = google.sheets({ version: 'v4', auth });
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-      range: 'Sheet1!A:K',
-      valueInputOption: 'USER_ENTERED',
-      requestBody: {
-        values: [[
-          data.name || '',
+  const MAX_RETRIES = 2;
+  let attempt = 0;
+
+  while (attempt <= MAX_RETRIES) {
+    try {
+      const auth = new google.auth.GoogleAuth({
+        keyFile: process.env.GOOGLE_SHEETS_KEY_PATH,
+        scopes: ['https://www.googleapis.com/auth/spreadsheets']
+      });
+      const sheets = google.sheets({ version: 'v4', auth });
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: process.env.GOOGLE_SHEETS_ID,
+        range: 'Sheet1!A:K',
+        valueInputOption: 'USER_ENTERED',
+        requestBody: {
+          values: [[
+            data.name || '',
+            phone,
+            data.eventType || '',
+            data.city || '',
+            data.eventDate || '',
+            data.numberOfEvents || '',
+            data.venueStatus || '',
+            data.venueName || '',
+            data.servicesRequired || '',
+            data.budget || '',
+            new Date().toISOString()
+          ]]
+        }
+      });
+      console.log('[WhatsAppAgent] Lead appended to Google Sheet:', phone);
+      return true;
+    } catch (error) {
+      attempt++;
+      if (attempt > MAX_RETRIES) {
+        await NotificationFailureLog.create({
+          service: 'GoogleSheets',
           phone,
-          data.eventType || '',
-          data.city || '',
-          data.eventDate || '',
-          data.numberOfEvents || '',
-          data.venueStatus || '',
-          data.venueName || '',
-          data.servicesRequired || '',
-          data.budget || '',
-          new Date().toISOString()
-        ]]
+          error: error.message,
+          attempts: attempt,
+          createdAt: new Date()
+        });
+        console.error(`[WhatsAppAgent] Google Sheet append failed after ${attempt} attempts:`, error.message);
+        return null;
       }
-    });
-    console.log('[WhatsAppAgent] Lead appended to Google Sheet:', phone);
-  } catch (err) {
-    console.error('[WhatsAppAgent] Google Sheet append failed:', err.message);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
   }
 };
 
 const receiveMessage = async (phone, message) => {
   try {
-    await saveMessage(phone, 'user', message);
-    const history = await getConversationHistory(phone);
+    await WAAgentMessageRepository.saveMessage(phone, 'user', message);
+    const history = await WAAgentMessageRepository.getHistory(phone);
     const reply = await sendToClaude(history);
-    await saveMessage(phone, 'assistant', reply);
-    await sendWhatsAppReply(phone, reply);
-    const updatedHistory = await getConversationHistory(phone);
+    if (!reply) return;
+    await WAAgentMessageRepository.saveMessage(phone, 'assistant', reply);
+    await sendWhatsAppText(phone, reply, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
+    const updatedHistory = await WAAgentMessageRepository.getHistory(phone);
     const qualification = await checkQualified(updatedHistory);
-    if (qualification.qualified) {
+    if (qualification && qualification.qualified) {
       await appendToGoogleSheet(phone, qualification.data);
     }
-  } catch (err) {
-    console.error('[WhatsAppAgent] receiveMessage error:', JSON.stringify(err.response?.data || err.message));
+  } catch (error) {
+    console.error('[WhatsAppAgent] receiveMessage error:', error.message);
   }
 };
 
