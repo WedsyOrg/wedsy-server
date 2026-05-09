@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const enquiry = require("../controllers/enquiry");
+const enquiryPipeline = require("../controllers/enquiry-pipeline");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 
 router.post("/", enquiry.CreateNew);
@@ -24,5 +25,7 @@ router.delete(
 router.put("/:_id/", CheckAdminLogin, enquiry.UpdateLead);
 router.put("/:_id/notes", CheckAdminLogin, enquiry.UpdateNotes);
 router.put("/:_id/call", CheckAdminLogin, enquiry.UpdateCallSchedule);
+router.put("/:_id/stage", CheckAdminLogin, enquiryPipeline.UpdateStage);
+router.put("/:_id/assign", CheckAdminLogin, enquiryPipeline.UpdateAssignedTo);
 
 module.exports = router;
