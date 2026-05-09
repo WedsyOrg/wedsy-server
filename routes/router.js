@@ -15,6 +15,7 @@ router.use("/decor", require("./decor"));
 router.use("/decor-package", require("./decor-package"));
 router.use("/search", require("./search"));
 router.use("/event", require("./event"));
+router.use("/event/:eventId/wedding-timeline", require("./weddingTimeline"));
 router.use("/payment", require("./payment"));
 router.use("/file", require("./file"));
 router.use("/quotation", require("./quotation"));
