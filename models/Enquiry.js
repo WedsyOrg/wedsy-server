@@ -10,6 +10,11 @@ const ObjectId = mongoose.Schema.Types.ObjectId;
 // Cold Lead: Event is beyond 20 Weeks or not yet decided.
 // Lost Lead: Waste Lead.
 // Interested
+//
+// Wedsy OS pipeline (Phase 1 addition):
+// stage: "new" | "contacted" | "meeting_scheduled" — manually progressed by sales team
+// assignedTo: Admin _id — lead owner (auto-assigned via routing rules in Wedsy OS)
+// marketingSource: free-form string — marketing channel ("Website", "Instagram DM", etc)
 
 // Note: When new field is added update it in get all enquiry api
 
@@ -36,6 +41,22 @@ const EnquirySchema = new mongoose.Schema(
       callSchedule: { type: Date, default: "" },
     },
     additionalInfo: { type: Object, default: {} },
+    // Wedsy OS pipeline tracking (added Phase 1 — additive only)
+    stage: {
+      type: String,
+      enum: ["new", "contacted", "meeting_scheduled"],
+      default: "new",
+      required: true,
+    },
+    assignedTo: {
+      type: ObjectId,
+      ref: "Admin",
+      default: null,
+    },
+    marketingSource: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true }
 );
