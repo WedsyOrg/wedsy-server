@@ -1,4 +1,5 @@
 const WeddingTimelineService = require('../services/WeddingTimelineService');
+const AITimelineService = require('../services/AITimelineService');
 
 function mapErrorToStatus(message) {
   if (message === 'Event not found' || message === 'Milestone not found') return 404;
@@ -61,4 +62,18 @@ const DeleteMilestone = async (req, res) => {
   }
 };
 
-module.exports = { GetTimeline, CreateMilestone, UpdateMilestone, DeleteMilestone };
+const RegenerateTimeline = async (req, res) => {
+  try {
+    const suggestions = await AITimelineService.regenerate(
+      req.params.eventId,
+      req.auth.user_id,
+      req.auth.isAdmin
+    );
+    res.status(200).send({ message: 'success', suggestions });
+  } catch (error) {
+    const status = error.message === 'AI service unavailable' ? 503 : mapErrorToStatus(error.message);
+    res.status(status).send({ message: 'error', error: error.message });
+  }
+};
+
+module.exports = { GetTimeline, CreateMilestone, RegenerateTimeline, UpdateMilestone, DeleteMilestone };
