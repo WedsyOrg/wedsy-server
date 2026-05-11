@@ -67,5 +67,6 @@ router.use("/chat", require("./chat"));
 router.use("/settlements", require("./settlements"));
 router.use("/stats", require("./stats"));
 router.use("/vendor-review", require("./vendor-review"));
+router.use("/admin", require("./admin"));
 
 module.exports = router;
