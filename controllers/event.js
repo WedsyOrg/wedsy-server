@@ -39,13 +39,33 @@ const CreateNew = (req, res) => {
 const Update = (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { _id } = req.params;
-  const { name, community, eventNotes, eventType, eventDate } = req.body;
+  const { name, community, eventNotes, eventType, eventDate, eventDays } = req.body;
+
+  // Bulk eventDays update: validate format before any DB work.
+  // Each day must carry name/date/time/venue, matching the schema's required
+  // fields and the per-day endpoint's validation contract.
+  if (eventDays !== undefined) {
+    if (!Array.isArray(eventDays)) {
+      res.status(400).send({ message: "eventDays must be an array" });
+      return;
+    }
+    const invalidDay = eventDays.find(
+      (d) => !d || !d.name || !d.date || !d.time || !d.venue
+    );
+    if (invalidDay) {
+      res
+        .status(400)
+        .send({ message: "Each event day must have name, date, time, and venue" });
+      return;
+    }
+  }
 
   const hasMetaUpdate =
     name !== undefined ||
     community !== undefined ||
     eventType !== undefined ||
-    eventDate !== undefined;
+    eventDate !== undefined ||
+    eventDays !== undefined;
 
   if (eventNotes === undefined && !hasMetaUpdate) {
     res.status(400).send({ message: "Incomplete Data" });
@@ -68,6 +88,7 @@ const Update = (req, res) => {
     if (community !== undefined) update.community = community;
     if (eventType !== undefined) update.eventType = eventType;
     if (eventDate !== undefined) update.eventDate = eventDate;
+    if (eventDays !== undefined) update.eventDays = eventDays;
 
     Event.findOneAndUpdate(
       isAdmin ? { _id } : { _id, user: user_id },
