@@ -6,6 +6,8 @@ const EventSchema = new mongoose.Schema(
     user: {type: ObjectId, ref: "User", required: true},
     eventAccess: {type: [String], default: []},
     name: {type: String, required: true},
+    brideName: {type: String, default: null},
+    groomName: {type: String, default: null},
     community: {type: String, default: ""},
     lostResponse: {type: String, default: ""},
     eventPlanner: {type: String, default: ""},
