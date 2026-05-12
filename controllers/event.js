@@ -7,7 +7,12 @@ const { sha256 } = require("./eventShare");
 
 const CreateNew = (req, res) => {
   const { user_id, isAdmin } = req.auth;
-  const { name, community, eventDay, date, time, venue, user } = req.body;
+  // Auto-derive name from groomName + brideName if both provided and name is missing.
+  // Keeps downstream code that reads `name` working unchanged.
+  if (req.body.brideName && req.body.groomName && !req.body.name) {
+    req.body.name = `${req.body.groomName} x ${req.body.brideName}`;
+  }
+  const { name, community, eventDay, date, time, venue, user, brideName, groomName } = req.body;
   if (!name || !community || !eventDay || !date || !time || !venue) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
@@ -15,6 +20,8 @@ const CreateNew = (req, res) => {
     new Event({
       user: isAdmin ? user : user_id,
       name,
+      brideName: brideName || null,
+      groomName: groomName || null,
       community,
       eventDate: date, // Add the eventDate field explicitly
       eventDays: [{ name: eventDay, date, time, venue }],
