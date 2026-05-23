@@ -7,10 +7,12 @@ const saveMessage = async (phone, role, message) => {
 const getHistory = async (phone, limit = 30) => {
   const messages = await WAAgentMessage
     .find({ phone })
-    .sort({ createdAt: 1 })
+    .sort({ createdAt: -1 })
     .limit(limit)
     .lean();
-  return messages.map(m => ({ role: m.role, content: m.message }));
+  return messages
+    .reverse()
+    .map(m => ({ role: m.role, content: m.message }));
 };
 
 module.exports = { saveMessage, getHistory };

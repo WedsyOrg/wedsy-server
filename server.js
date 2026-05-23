@@ -27,8 +27,12 @@ const app = express();
 app.use(cors({ origin: "*" })); //Temporary Change
 app.use(helmet());
 app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
-app.use(bodyParser.json({ limit: "50mb" }));
-app.use(express.json({ limit: "50mb" }));
+app.use(bodyParser.json({
+  limit: "50mb",
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 //Connecting Database
 const dbUrl = process.env.DATABASE_URL;

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { receiveMessage } = require('../services/WhatsAppAgentService');
 
 const VerifyWebhook = (req, res) => {
@@ -13,7 +14,32 @@ const VerifyWebhook = (req, res) => {
 };
 
 const ReceiveMessage = (req, res) => {
+  const signature = req.headers['x-hub-signature-256'];
+  if (!signature) {
+    console.error('[WhatsAppAgent] Missing signature — request rejected');
+    return res.sendStatus(403);
+  }
+
+  const expectedSignature = 'sha256=' + crypto
+    .createHmac('sha256', process.env.WHATSAPP_AGENT_APP_SECRET)
+    .update(req.rawBody || '')
+    .digest('hex');
+
+  try {
+    const sigBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expectedSignature);
+    if (sigBuffer.length !== expectedBuffer.length ||
+        !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+      console.error('[WhatsAppAgent] Invalid signature — request rejected');
+      return res.sendStatus(403);
+    }
+  } catch {
+    console.error('[WhatsAppAgent] Signature comparison failed');
+    return res.sendStatus(403);
+  }
+
   res.sendStatus(200);
+
   try {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];

@@ -1,6 +1,7 @@
 const { sendWhatsAppText } = require('../utils/whatsapp');
 const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
+const QualifiedLead = require('../models/QualifiedLead');
 const axios = require('axios');
 const { google } = require('googleapis');
 
@@ -143,7 +144,44 @@ const checkQualified = async (history) => {
   }
 };
 
-const appendToGoogleSheet = async (phone, data) => {
+const saveQualifiedLead = async (phone, data) => {
+  const existing = await QualifiedLead.findOne({ phone });
+  if (existing && existing.googleSheetSynced) {
+    console.log('[WhatsAppAgent] Lead already qualified and synced, skipping:', phone);
+    return existing;
+  }
+
+  let leadDoc = existing;
+  if (!leadDoc) {
+    try {
+      leadDoc = await QualifiedLead.create({
+        phone,
+        name: data.name || '',
+        eventType: data.eventType || '',
+        city: data.city || '',
+        eventDate: data.eventDate || '',
+        numberOfEvents: data.numberOfEvents || '',
+        venueStatus: data.venueStatus || '',
+        venueName: data.venueName || '',
+        servicesRequired: data.servicesRequired || '',
+        budget: data.budget || ''
+      });
+      console.log('[WhatsAppAgent] Lead saved to MongoDB:', phone);
+    } catch (error) {
+      await NotificationFailureLog.create({
+        service: 'QualifiedLeadDB',
+        phone,
+        error: error.message,
+        attempts: 1,
+        createdAt: new Date()
+      });
+      console.error('[WhatsAppAgent] MongoDB save failed:', error.message);
+      return null;
+    }
+  } else {
+    console.log('[WhatsAppAgent] Lead exists but not synced, retrying Sheets:', phone);
+  }
+
   const MAX_RETRIES = 2;
   let attempt = 0;
 
@@ -160,20 +198,22 @@ const appendToGoogleSheet = async (phone, data) => {
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [[
-            data.name || '',
-            phone,
-            data.eventType || '',
-            data.city || '',
-            data.eventDate || '',
-            data.numberOfEvents || '',
-            data.venueStatus || '',
-            data.venueName || '',
-            data.servicesRequired || '',
-            data.budget || '',
-            new Date().toISOString()
+            leadDoc.name || '',
+            leadDoc.phone,
+            leadDoc.eventType || '',
+            leadDoc.city || '',
+            leadDoc.eventDate || '',
+            leadDoc.numberOfEvents || '',
+            leadDoc.venueStatus || '',
+            leadDoc.venueName || '',
+            leadDoc.servicesRequired || '',
+            leadDoc.budget || '',
+            leadDoc.qualifiedAt ? leadDoc.qualifiedAt.toISOString() : new Date().toISOString()
           ]]
         }
       });
+      leadDoc.googleSheetSynced = true;
+      await leadDoc.save();
       console.log('[WhatsAppAgent] Lead appended to Google Sheet:', phone);
       return true;
     } catch (error) {
@@ -205,7 +245,7 @@ const receiveMessage = async (phone, message) => {
     const updatedHistory = await WAAgentMessageRepository.getHistory(phone);
     const qualification = await checkQualified(updatedHistory);
     if (qualification && qualification.qualified) {
-      await appendToGoogleSheet(phone, qualification.data);
+      await saveQualifiedLead(phone, qualification.data);
     }
   } catch (error) {
     console.error('[WhatsAppAgent] receiveMessage error:', error.message);
