@@ -81,7 +81,7 @@ const sendWhatsAppText = async (phone, message, agentPhoneNumberId = null) => {
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${process.env.META_WA_ACCESS_TOKEN}`,
+            'Authorization': `Bearer ${agentPhoneNumberId ? process.env.META_WA_AGENT_ACCESS_TOKEN : process.env.META_WA_ACCESS_TOKEN}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
