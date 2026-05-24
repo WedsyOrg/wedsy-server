@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const NotificationFailureLogSchema = new mongoose.Schema({
   service: {
     type: String,
-    enum: ['WhatsApp', 'SMS', 'Email', 'Razorpay', 'S3', 'Anthropic', 'GoogleSheets', 'Instagram'],
+    enum: ['WhatsApp', 'SMS', 'Email', 'Razorpay', 'S3', 'Anthropic', 'GoogleSheets', 'Instagram', 'QualifiedLeadDB'],
     required: true
   },
   template: {
