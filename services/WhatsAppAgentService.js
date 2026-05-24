@@ -27,7 +27,7 @@ Your goal is to naturally collect these details through conversation — don't m
 - Type of event (wedding or engagement)
 - City
 - Date or approximate month
-- Number of events (for weddings — sangeet, mehendi, reception etc.)
+- How many functions they're planning (just ask naturally, like "how many functions are you planning?" — don't list examples unless they ask)
 - Venue (booked or need help finding one)
 - Services needed (full planning, decor only, specific things)
 - Budget (ask softly, totally fine if they skip it)
