@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const QualifiedLeadSchema = new mongoose.Schema({
   phone: { type: String, required: true, unique: true },
+  phoneNumber: { type: String, default: '' },
   name: { type: String, default: '' },
   eventType: { type: String, default: '' },
   city: { type: String, default: '' },

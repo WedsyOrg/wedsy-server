@@ -1,11 +1,11 @@
-const { sendWhatsAppText } = require('../utils/whatsapp');
+const { sendInstagramDM } = require('../utils/instagram');
 const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 const QualifiedLead = require('../models/QualifiedLead');
 const axios = require('axios');
 const { google } = require('googleapis');
 
-const SYSTEM_PROMPT = `You are Kiara, a wedding planner at Wedsy in Bengaluru. You're texting a potential client on WhatsApp.
+const SYSTEM_PROMPT = `You are Kiara, a wedding planner at Wedsy in Bengaluru. You're chatting with a potential client on Instagram DM.
 
 Your personality:
 - You text like a real human — short, warm, casual but professional
@@ -23,12 +23,12 @@ About Wedsy:
 - Primary city is Bengaluru. Outside Bengaluru = destination wedding (handled by a specialist)
 - Only weddings and engagements. No birthdays. Corporate events handled separately.
 
-Your goal is to naturally collect these details through conversation — don't make it feel like a form:
+Your goal is to naturally collect these details through conversation:
 - Type of event (wedding or engagement)
 - City
 - Date or approximate month
-- For weddings: how many days/functions (weddings can be 2-5 days — ask naturally like "how many days is the wedding going to be?")
-- Wedding style/theme preference — South Indian, North Indian, fusion, destination, etc. If they're unsure, suggest a few options casually and help them think through it. This is important for decor and planning style.
+- For weddings: how many days/functions
+- Wedding style/theme (South Indian, North Indian, fusion, destination etc. — help them if unsure)
 - Venue (booked or need help finding one)
 - Services needed (full planning, decor only, specific things)
 - Budget (ask softly, totally fine if they skip it)
@@ -41,11 +41,12 @@ How to handle edge cases:
 - Destination confirmed → "Perfect, I'll have our destination wedding team reach out to you shortly 😊" then end
 
 When you have all the details:
-- Thank them warmly in 1-2 casual sentences
+- Ask for their phone number so the team can reach out — keep it casual, like "What's the best number to reach you on?"
+- Once they share it, thank them warmly in 1-2 casual sentences
 - Tell them the team will be in touch within 24 hours
-- End the conversation naturally, like a human would
+- End the conversation naturally
 
-Remember: you're texting, not writing an email. Keep it short, keep it real.`;
+Important: never close the conversation without getting their phone number first. If they're hesitant, reassure them it's just so the team can call/WhatsApp them directly.`;
 
 const sendToClaude = async (history) => {
   const MAX_RETRIES = 2;
@@ -79,7 +80,7 @@ const sendToClaude = async (history) => {
           attempts: attempt,
           createdAt: new Date()
         });
-        console.error(`[WhatsAppAgent] Claude API failed after ${attempt} attempts:`, error.message);
+        console.error(`[InstagramAgent] Claude API failed after ${attempt} attempts:`, error.message);
         return null;
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -98,7 +99,7 @@ const checkQualified = async (history) => {
         {
           model: 'claude-sonnet-4-5',
           max_tokens: 400,
-          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the assistant has thanked the user and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
+          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the user has provided their phone number AND the assistant has thanked them and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "phoneNumber": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
           messages: history
         },
         {
@@ -124,7 +125,7 @@ const checkQualified = async (history) => {
           attempts: attempt,
           createdAt: new Date()
         });
-        console.error(`[WhatsAppAgent] Qualification check failed after ${attempt} attempts:`, error.message);
+        console.error(`[InstagramAgent] Qualification check failed after ${attempt} attempts:`, error.message);
         return { qualified: false };
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -132,10 +133,10 @@ const checkQualified = async (history) => {
   }
 };
 
-const saveQualifiedLead = async (phone, data) => {
-  const existing = await QualifiedLead.findOne({ phone });
+const saveQualifiedLead = async (instagramId, data) => {
+  const existing = await QualifiedLead.findOne({ phone: instagramId });
   if (existing && existing.googleSheetSynced) {
-    console.log('[WhatsAppAgent] Lead already qualified and synced, skipping:', phone);
+    console.log('[InstagramAgent] Lead already qualified and synced, skipping:', instagramId);
     return existing;
   }
 
@@ -143,8 +144,8 @@ const saveQualifiedLead = async (phone, data) => {
   if (!leadDoc) {
     try {
       leadDoc = await QualifiedLead.create({
-        phone,
-        phoneNumber: phone,
+        phone: instagramId,
+        phoneNumber: data.phoneNumber || '',
         name: data.name || '',
         eventType: data.eventType || '',
         city: data.city || '',
@@ -154,22 +155,23 @@ const saveQualifiedLead = async (phone, data) => {
         venueName: data.venueName || '',
         servicesRequired: data.servicesRequired || '',
         budget: data.budget || '',
-        weddingStyle: data.weddingStyle || ''
+        weddingStyle: data.weddingStyle || '',
+        source: 'Instagram DM'
       });
-      console.log('[WhatsAppAgent] Lead saved to MongoDB:', phone);
+      console.log('[InstagramAgent] Lead saved to MongoDB:', instagramId);
     } catch (error) {
       await NotificationFailureLog.create({
         service: 'QualifiedLeadDB',
-        phone,
+        phone: instagramId,
         error: error.message,
         attempts: 1,
         createdAt: new Date()
       });
-      console.error('[WhatsAppAgent] MongoDB save failed:', error.message);
+      console.error('[InstagramAgent] MongoDB save failed:', error.message);
       return null;
     }
   } else {
-    console.log('[WhatsAppAgent] Lead exists but not synced, retrying Sheets:', phone);
+    console.log('[InstagramAgent] Lead exists but not synced, retrying Sheets:', instagramId);
   }
 
   const MAX_RETRIES = 2;
@@ -207,19 +209,19 @@ const saveQualifiedLead = async (phone, data) => {
       });
       leadDoc.googleSheetSynced = true;
       await leadDoc.save();
-      console.log('[WhatsAppAgent] Lead appended to Google Sheet:', phone);
+      console.log('[InstagramAgent] Lead appended to Google Sheet:', instagramId);
       return true;
     } catch (error) {
       attempt++;
       if (attempt > MAX_RETRIES) {
         await NotificationFailureLog.create({
           service: 'GoogleSheets',
-          phone,
+          phone: instagramId,
           error: error.message,
           attempts: attempt,
           createdAt: new Date()
         });
-        console.error(`[WhatsAppAgent] Google Sheet append failed after ${attempt} attempts:`, error.message);
+        console.error(`[InstagramAgent] Google Sheet append failed after ${attempt} attempts:`, error.message);
         return null;
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -227,21 +229,21 @@ const saveQualifiedLead = async (phone, data) => {
   }
 };
 
-const receiveMessage = async (phone, message) => {
+const receiveMessage = async (instagramId, message) => {
   try {
-    await WAAgentMessageRepository.saveMessage(phone, 'user', message);
-    const history = await WAAgentMessageRepository.getHistory(phone);
+    await WAAgentMessageRepository.saveMessage(instagramId, 'user', message);
+    const history = await WAAgentMessageRepository.getHistory(instagramId);
     const reply = await sendToClaude(history);
     if (!reply) return;
-    await WAAgentMessageRepository.saveMessage(phone, 'assistant', reply);
-    await sendWhatsAppText(phone, reply, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
-    const updatedHistory = await WAAgentMessageRepository.getHistory(phone);
+    await WAAgentMessageRepository.saveMessage(instagramId, 'assistant', reply);
+    await sendInstagramDM(instagramId, reply);
+    const updatedHistory = await WAAgentMessageRepository.getHistory(instagramId);
     const qualification = await checkQualified(updatedHistory);
     if (qualification && qualification.qualified) {
-      await saveQualifiedLead(phone, qualification.data);
+      await saveQualifiedLead(instagramId, qualification.data);
     }
   } catch (error) {
-    console.error('[WhatsAppAgent] receiveMessage error:', error.message);
+    console.error('[InstagramAgent] receiveMessage error:', error.message);
   }
 };
 
