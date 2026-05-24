@@ -7,7 +7,7 @@ const sendInstagramDM = async (recipientId, message) => {
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await fetch(
-        'https://graph.facebook.com/v19.0/me/messages',
+        'https://graph.instagram.com/v25.0/me/messages',
         {
           method: 'POST',
           headers: {
