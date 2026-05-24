@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { receiveMessage } = require('../services/InstagramAgentService');
 
 const VerifyWebhook = (req, res) => {
@@ -12,7 +13,32 @@ const VerifyWebhook = (req, res) => {
 };
 
 const ReceiveMessage = (req, res) => {
+  const signature = req.headers['x-hub-signature-256'];
+  if (!signature) {
+    console.error('[InstagramAgent] Missing signature — request rejected');
+    return res.sendStatus(403);
+  }
+
+  const expectedSignature = 'sha256=' + crypto
+    .createHmac('sha256', process.env.INSTAGRAM_AGENT_APP_SECRET)
+    .update(req.rawBody || '')
+    .digest('hex');
+
+  try {
+    const sigBuffer = Buffer.from(signature);
+    const expectedBuffer = Buffer.from(expectedSignature);
+    if (sigBuffer.length !== expectedBuffer.length ||
+        !crypto.timingSafeEqual(sigBuffer, expectedBuffer)) {
+      console.error('[InstagramAgent] Invalid signature — request rejected');
+      return res.sendStatus(403);
+    }
+  } catch {
+    console.error('[InstagramAgent] Signature comparison failed');
+    return res.sendStatus(403);
+  }
+
   res.sendStatus(200);
+
   try {
     const entry = req.body?.entry?.[0];
     const messaging = entry?.messaging?.[0];
