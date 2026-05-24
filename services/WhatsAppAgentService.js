@@ -98,7 +98,7 @@ const checkQualified = async (history) => {
         {
           model: 'claude-sonnet-4-5',
           max_tokens: 400,
-          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the assistant has thanked the user and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": ""}}',
+          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the assistant has thanked the user and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
           messages: history
         },
         {
@@ -152,7 +152,8 @@ const saveQualifiedLead = async (phone, data) => {
         venueStatus: data.venueStatus || '',
         venueName: data.venueName || '',
         servicesRequired: data.servicesRequired || '',
-        budget: data.budget || ''
+        budget: data.budget || '',
+        weddingStyle: data.weddingStyle || ''
       });
       console.log('[WhatsAppAgent] Lead saved to MongoDB:', phone);
     } catch (error) {
@@ -182,7 +183,7 @@ const saveQualifiedLead = async (phone, data) => {
       const sheets = google.sheets({ version: 'v4', auth });
       await sheets.spreadsheets.values.append({
         spreadsheetId: process.env.GOOGLE_SHEETS_ID,
-        range: 'Sheet1!A:K',
+        range: 'Sheet1!A:L',
         valueInputOption: 'USER_ENTERED',
         requestBody: {
           values: [[
@@ -196,6 +197,7 @@ const saveQualifiedLead = async (phone, data) => {
             leadDoc.venueName || '',
             leadDoc.servicesRequired || '',
             leadDoc.budget || '',
+            leadDoc.weddingStyle || '',
             leadDoc.qualifiedAt ? leadDoc.qualifiedAt.toISOString() : new Date().toISOString()
           ]]
         }

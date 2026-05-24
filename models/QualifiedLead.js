@@ -11,6 +11,7 @@ const QualifiedLeadSchema = new mongoose.Schema({
   venueName: { type: String, default: '' },
   servicesRequired: { type: String, default: '' },
   budget: { type: String, default: '' },
+  weddingStyle: { type: String, default: '' },
   source: { type: String, default: 'WhatsApp' },
   qualifiedAt: { type: Date, default: Date.now },
   googleSheetSynced: { type: Boolean, default: false }
