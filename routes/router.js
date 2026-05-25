@@ -70,5 +70,6 @@ router.use("/stats", require("./stats"));
 router.use("/vendor-review", require("./vendor-review"));
 router.use("/admin", require("./admin"));
 router.use("/venues", require("./venue"));
+router.use("/venue-owner", require("./venueOwner"));
 
 module.exports = router;
