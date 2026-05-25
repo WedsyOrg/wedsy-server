@@ -11,32 +11,136 @@ const getVenueBySlug = async (slug) => {
   return venue;
 };
 
+const SCALAR_TOP_LEVEL = [
+  "name", "tagline", "description", "venueType", "established",
+  "city", "address", "phone", "email", "website",
+  "coverPhoto", "featurePhoto",
+];
+
+const ARRAY_TOP_LEVEL = ["areas", "blockedDates", "spaces"];
+
+const ACCOMMODATION_SCALARS = ["available", "totalCapacity"];
+
+const PRICING_SCALARS = [
+  "minimumDuration", "securityDeposit", "advancePercent", "peakSeasonMarkup", "note",
+];
+
+const CATERING_SCALARS = [
+  "type", "outsideKitchenFee", "outsideSetupFrom", "minPerPlate",
+];
+
+const CATERING_ARRAYS = ["dietaryOptions", "cuisines"];
+
+const DECOR_FIELDS = ["outsideAllowed", "inHouseAvailable", "setupAccessFrom", "restrictions"];
+
+const MUSIC_FIELDS = [
+  "liveMusicAllowed", "djAllowed", "outdoorCurfew", "indoorCurfew", "inHouseSoundSystem",
+];
+
+const AMENITY_BOOLEANS = [
+  "swimmingPool", "generatorBackup", "parking", "helipad", "garden",
+  "airConditioning", "cctv", "wifi", "elevator", "bridalSuite",
+  "groomRoom", "makeupRoom", "changingRooms", "prayerRoom", "fireNOC",
+  "liquorLicense", "dayOfCoordinator", "securityStaff", "housekeeping",
+  "valetParking", "shuttleService", "petFriendly", "smokingAllowed",
+];
+
+const PHOTO_BUCKETS = ["venue", "decor", "rooms", "spaces"];
+
+const POLICY_FIELDS = ["cancellation", "refund", "otherRestrictions"];
+
+const CONTACT_SCALARS = [
+  "primaryName", "primaryPhone", "secondaryPhone", "email", "website", "bestTimeToReach",
+];
+
 const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
   if (!slug) throw new Error("Slug is required");
   const venue = await VenueRepository.findBySlug(slug);
   if (!venue) throw new Error("Venue not found");
   if (String(venue._id) !== String(ownerVenueId)) throw new Error("Forbidden");
 
-  const payload = {};
-  if (updates.name !== undefined) payload.name = updates.name;
-  if (updates.description !== undefined) payload.description = updates.description;
-  if (updates.phone !== undefined) payload.phone = updates.phone;
-  if (updates.website !== undefined) payload.website = updates.website;
-  if (updates.catering !== undefined) payload.catering = updates.catering;
-  if (updates.venueType !== undefined) payload.venueType = updates.venueType;
-  if (updates.capacity && typeof updates.capacity === "object") {
-    if (updates.capacity.min !== undefined) payload["capacity.min"] = updates.capacity.min;
-    if (updates.capacity.max !== undefined) payload["capacity.max"] = updates.capacity.max;
+  const $set = {};
+
+  for (const k of SCALAR_TOP_LEVEL) {
+    if (updates[k] !== undefined) $set[k] = updates[k];
   }
-  if (updates.accommodation && typeof updates.accommodation === "object") {
-    if (updates.accommodation.available !== undefined) payload["accommodation.available"] = updates.accommodation.available;
-    if (updates.accommodation.rooms !== undefined) payload["accommodation.rooms"] = updates.accommodation.rooms;
-  }
-  if (updates.pricing && typeof updates.pricing === "object" && updates.pricing.note !== undefined) {
-    payload["pricing.note"] = updates.pricing.note;
+  for (const k of ARRAY_TOP_LEVEL) {
+    if (Array.isArray(updates[k])) $set[k] = updates[k];
   }
 
-  return VenueRepository.updateBySlug(slug, payload);
+  if (updates.accommodation && typeof updates.accommodation === "object") {
+    for (const k of ACCOMMODATION_SCALARS) {
+      if (updates.accommodation[k] !== undefined) $set[`accommodation.${k}`] = updates.accommodation[k];
+    }
+    if (Array.isArray(updates.accommodation.roomTypes)) {
+      $set["accommodation.roomTypes"] = updates.accommodation.roomTypes;
+    }
+  }
+
+  if (updates.pricing && typeof updates.pricing === "object") {
+    for (const k of PRICING_SCALARS) {
+      if (updates.pricing[k] !== undefined) $set[`pricing.${k}`] = updates.pricing[k];
+    }
+    if (Array.isArray(updates.pricing.tiers)) $set["pricing.tiers"] = updates.pricing.tiers;
+    if (updates.pricing.perPlate && typeof updates.pricing.perPlate === "object") {
+      if (updates.pricing.perPlate.veg !== undefined) $set["pricing.perPlate.veg"] = updates.pricing.perPlate.veg;
+      if (updates.pricing.perPlate.nonVeg !== undefined) $set["pricing.perPlate.nonVeg"] = updates.pricing.perPlate.nonVeg;
+    }
+  }
+
+  if (updates.cateringPolicy && typeof updates.cateringPolicy === "object") {
+    for (const k of CATERING_SCALARS) {
+      if (updates.cateringPolicy[k] !== undefined) $set[`cateringPolicy.${k}`] = updates.cateringPolicy[k];
+    }
+    for (const k of CATERING_ARRAYS) {
+      if (Array.isArray(updates.cateringPolicy[k])) $set[`cateringPolicy.${k}`] = updates.cateringPolicy[k];
+    }
+  }
+
+  if (updates.decorPolicy && typeof updates.decorPolicy === "object") {
+    for (const k of DECOR_FIELDS) {
+      if (updates.decorPolicy[k] !== undefined) $set[`decorPolicy.${k}`] = updates.decorPolicy[k];
+    }
+  }
+
+  if (updates.musicPolicy && typeof updates.musicPolicy === "object") {
+    for (const k of MUSIC_FIELDS) {
+      if (updates.musicPolicy[k] !== undefined) $set[`musicPolicy.${k}`] = updates.musicPolicy[k];
+    }
+  }
+
+  if (updates.amenities && typeof updates.amenities === "object") {
+    for (const k of AMENITY_BOOLEANS) {
+      if (updates.amenities[k] !== undefined) $set[`amenities.${k}`] = updates.amenities[k];
+    }
+    if (updates.amenities.parkingCapacity !== undefined) {
+      $set["amenities.parkingCapacity"] = updates.amenities.parkingCapacity;
+    }
+    if (updates.amenities.outsideAlcohol !== undefined) {
+      $set["amenities.outsideAlcohol"] = updates.amenities.outsideAlcohol;
+    }
+  }
+
+  if (updates.photos && typeof updates.photos === "object") {
+    for (const k of PHOTO_BUCKETS) {
+      if (Array.isArray(updates.photos[k])) $set[`photos.${k}`] = updates.photos[k];
+    }
+  }
+
+  if (updates.policies && typeof updates.policies === "object") {
+    for (const k of POLICY_FIELDS) {
+      if (updates.policies[k] !== undefined) $set[`policies.${k}`] = updates.policies[k];
+    }
+  }
+
+  if (updates.contact && typeof updates.contact === "object") {
+    for (const k of CONTACT_SCALARS) {
+      if (updates.contact[k] !== undefined) $set[`contact.${k}`] = updates.contact[k];
+    }
+    if (Array.isArray(updates.contact.languages)) $set["contact.languages"] = updates.contact.languages;
+  }
+
+  return VenueRepository.updateBySlug(slug, $set);
 };
 
 module.exports = { getAllVenues, getVenueBySlug, updateVenueBySlug };
