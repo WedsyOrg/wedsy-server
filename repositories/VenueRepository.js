@@ -23,4 +23,8 @@ const findById = async (id) => {
   return Venue.findById(id).lean();
 };
 
-module.exports = { findAll, findBySlug, findById };
+const updateBySlug = async (slug, updates) => {
+  return Venue.findOneAndUpdate({ slug }, { $set: updates }, { new: true }).lean();
+};
+
+module.exports = { findAll, findBySlug, findById, updateBySlug };

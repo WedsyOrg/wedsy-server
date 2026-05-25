@@ -27,4 +27,20 @@ const getVenueBySlug = async (req, res) => {
   }
 };
 
-module.exports = { getVenues, getVenueBySlug };
+const updateVenue = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const venue = await VenueService.updateVenueBySlug(
+      slug,
+      req.venueOwner.venueId,
+      req.body || {}
+    );
+    return res.status(200).json({ venue });
+  } catch (err) {
+    if (err.message === "Venue not found") return res.status(404).json({ message: err.message });
+    if (err.message === "Forbidden") return res.status(403).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getVenues, getVenueBySlug, updateVenue };

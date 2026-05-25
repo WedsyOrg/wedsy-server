@@ -40,4 +40,21 @@ const createEnquiry = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry };
+const getVenueEnquiries = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const enquiries = await VenueEnquiry.find({ venueId: venue._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.status(200).json({ enquiries, total: enquiries.length });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { createEnquiry, getVenueEnquiries };

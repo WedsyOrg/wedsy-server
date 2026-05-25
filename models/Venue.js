@@ -63,6 +63,7 @@ const VenueSchema = new mongoose.Schema(
     outreachChannel: { type: String },
     vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
     enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],
+    blockedDates: [{ type: String }],
   },
   { timestamps: true }
 );
