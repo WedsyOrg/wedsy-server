@@ -33,15 +33,17 @@ const refreshReviews = async (req, res) => {
       time: r.time,
       profilePhotoUrl: r.profile_photo_url,
     }));
-    venue.googleReviews = reviews;
-    venue.googleReviewsRefreshedAt = new Date();
-    if (typeof data?.result?.rating === "number") venue.googleRating = data.result.rating;
-    if (typeof data?.result?.user_ratings_total === "number") venue.googleReviewCount = data.result.user_ratings_total;
-    await venue.save();
+    // Use updateOne with $set so existing unrelated validation drift on the
+    // venue doc (e.g. amenities.outsideAlcohol: "") doesn't block this
+    // partial enrichment write.
+    const setFields = { googleReviews: reviews, googleReviewsRefreshedAt: new Date() };
+    if (typeof data?.result?.rating === "number") setFields.googleRating = data.result.rating;
+    if (typeof data?.result?.user_ratings_total === "number") setFields.googleReviewCount = data.result.user_ratings_total;
+    await Venue.updateOne({ _id: venue._id }, { $set: setFields });
     return res.status(200).json({
       reviews,
-      rating: venue.googleRating,
-      total: venue.googleReviewCount,
+      rating: setFields.googleRating ?? venue.googleRating ?? null,
+      total: setFields.googleReviewCount ?? venue.googleReviewCount ?? 0,
     });
   } catch (err) {
     return res.status(200).json({ reviews: [], rating: null, total: 0, error: err.message });

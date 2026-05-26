@@ -29,9 +29,13 @@ const refreshNearby = async (req, res) => {
       priceLevel: typeof r.price_level === "number" ? r.price_level : undefined,
       photoReference: r.photos?.[0]?.photo_reference,
     }));
-    venue.nearbyAccommodation = results;
-    venue.nearbyAccommodationRefreshedAt = new Date();
-    await venue.save();
+    // Use updateOne with $set so existing unrelated validation drift on the
+    // venue doc (e.g. amenities.outsideAlcohol: "") doesn't block this
+    // partial enrichment write.
+    await Venue.updateOne(
+      { _id: venue._id },
+      { $set: { nearbyAccommodation: results, nearbyAccommodationRefreshedAt: new Date() } }
+    );
     return res.status(200).json({ results });
   } catch (err) {
     return res.status(200).json({ results: [], error: err.message });
