@@ -128,6 +128,23 @@ const VenueSchema = new mongoose.Schema({
   status: { type: String, enum: ["draft", "published", "pending_outreach", "outreach_sent", "verified", "rejected"], default: "draft" },
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
   enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],
+  nearbyAccommodation: [{
+    placeId: { type: String },
+    name: { type: String },
+    rating: { type: Number },
+    vicinity: { type: String },
+    priceLevel: { type: Number },
+    photoReference: { type: String },
+  }],
+  nearbyAccommodationRefreshedAt: { type: Date },
+  googleReviews: [{
+    authorName: { type: String },
+    rating: { type: Number },
+    text: { type: String },
+    time: { type: Number },
+    profilePhotoUrl: { type: String },
+  }],
+  googleReviewsRefreshedAt: { type: Date },
 }, { timestamps: true });
 
 VenueSchema.index({ location: "2dsphere" }, { sparse: true });

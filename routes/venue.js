@@ -4,6 +4,8 @@ const { getVenues, getVenueBySlug, updateVenue } = require("../controllers/venue
 const { createEnquiry, getVenueEnquiries, updateEnquiry } = require("../controllers/venueEnquiry");
 const { saveAvailability } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
+const { refreshNearby } = require("../controllers/venueNearby");
+const { refreshReviews } = require("../controllers/venueReviews");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { CheckLogin } = require("../middlewares/auth");
 
@@ -16,5 +18,7 @@ router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
+router.post("/:slug/nearby", refreshNearby);
+router.post("/:slug/reviews", refreshReviews);
 
 module.exports = router;
