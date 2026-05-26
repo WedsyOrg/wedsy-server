@@ -1,5 +1,6 @@
 const VenueEnquiry = require("../models/VenueEnquiry");
 const Venue = require("../models/Venue");
+const { createOrGetConversation } = require("./venueConversation");
 
 const createEnquiry = async (req, res) => {
   try {
@@ -18,7 +19,10 @@ const createEnquiry = async (req, res) => {
       stage,
       estimatedValue,
       notes,
+      userId: bodyUserId,
     } = req.body;
+
+    const userId = bodyUserId || (req.auth && req.auth.user_id) || null;
 
     const effectiveName = coupleName || name;
     const effectivePhone = couplePhone || phone;
@@ -43,6 +47,7 @@ const createEnquiry = async (req, res) => {
 
     const enquiry = await VenueEnquiry.create({
       venueId: venue._id,
+      userId: userId || undefined,
       name: effectiveName,
       phone: effectivePhone,
       coupleName: coupleName || effectiveName,
@@ -60,10 +65,24 @@ const createEnquiry = async (req, res) => {
       status: "new",
     });
 
+    let conversation = null;
+    if (userId) {
+      try {
+        conversation = await createOrGetConversation({
+          venueId: venue._id,
+          enquiryId: enquiry._id,
+          userId,
+        });
+      } catch (convErr) {
+        console.error("Failed to create conversation for enquiry:", convErr.message);
+      }
+    }
+
     return res.status(201).json({
       success: true,
       enquiryId: enquiry._id,
       enquiry,
+      conversationId: conversation ? conversation._id : null,
       message: "Enquiry sent successfully",
     });
   } catch (err) {
