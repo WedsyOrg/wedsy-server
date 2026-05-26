@@ -135,6 +135,7 @@ const VenueSchema = new mongoose.Schema({
     vicinity: { type: String },
     priceLevel: { type: Number },
     photoReference: { type: String },
+    distanceKm: { type: Number },
   }],
   nearbyAccommodationRefreshedAt: { type: Date },
   googleReviews: [{
