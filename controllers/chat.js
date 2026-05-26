@@ -15,7 +15,7 @@ async function notifyOffline(chatId, io, isVendor) {
     const chat = await Chat.findById(chatId).select('vendor user').lean();
     if (!chat) return;
     const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
-    const room = io.sockets.adapter.rooms.get(targetRoom);
+    const room = io ? io.sockets.adapter.rooms.get(targetRoom) : null;
     if (room && room.size > 0) return;
     if (isVendor) {
       const u = await User.findById(chat.user).select('phone email name').lean();
