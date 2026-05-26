@@ -249,14 +249,77 @@ Return ONLY this JSON:
   }
 };
 
-// POST /venue-owner/claim/manual — Tier 4 manual review form
+// POST /venue-owner/claim/manual — Tier 4 manual review form, OR self
+// sign-up for venues that aren't in the database yet.
+//
+// Branching:
+//   - slug present  → existing-venue manual claim (legacy Tier 4 flow). Venue
+//                     must resolve; duplicate pending requests are deduped by
+//                     venueId.
+//   - slug missing + newVenueName present → self sign-up for a brand-new
+//                     venue. No Venue lookup; dedupe by phone+email instead;
+//                     tier is "new_venue_signup".
 const submitManualClaim = async (req, res) => {
   try {
-    const { slug, name, designation, phone, email, howHeard, message } = req.body;
-    if (!slug || !name || !phone || !email) {
+    const {
+      slug,
+      name,
+      designation,
+      phone,
+      email,
+      howHeard,
+      message,
+      newVenueName,
+      newVenueType,
+      newVenueAddress,
+    } = req.body;
+
+    if (!name || !phone || !email) {
       return res.status(400).json({ message: "name, phone, and email are required" });
     }
 
+    // --- Self sign-up branch (new venue, not in DB) ---
+    if (!slug) {
+      if (!newVenueName) {
+        return res.status(400).json({ message: "newVenueName is required when slug is not provided" });
+      }
+
+      // Dedupe by phone+email so the same owner double-submitting gets a
+      // friendly "already under review" rather than a stack of duplicates.
+      const existingSelf = await VenueClaimRequest.findOne({
+        phone,
+        email,
+        tier: "new_venue_signup",
+        status: "pending_manual_review",
+      }).lean();
+      if (existingSelf) {
+        return res.status(200).json({
+          success: true,
+          message: "Your request is already under review. We'll reach out within 24 hours.",
+        });
+      }
+
+      await VenueClaimRequest.create({
+        newVenueName,
+        newVenueType: newVenueType || "",
+        newVenueAddress: newVenueAddress || "",
+        name,
+        designation: designation || "owner",
+        phone,
+        email,
+        howHeard: howHeard || "",
+        message: message || "",
+        tier: "new_venue_signup",
+        status: "pending_manual_review",
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: "Request submitted. Our team will reach out within 24 hours.",
+      });
+    }
+
+    // --- Existing-venue manual claim branch (unchanged behavior) ---
     const venue = await Venue.findOne({ slug }).select("_id name").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
 
