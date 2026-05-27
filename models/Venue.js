@@ -5,7 +5,7 @@ const VenueSchema = new mongoose.Schema({
   slug: { type: String, required: true, unique: true },
   tagline: { type: String, default: "" },
   description: { type: String, default: "" },
-  venueType: { type: String, enum: ["resort", "farmhouse", "villa", "hotel", "heritage", "other"], default: "resort" },
+  venueType: { type: String, enum: ["resort", "farmhouse", "villa", "hotel", "heritage", "banquet_hall", "club", "other"], default: "resort" },
   established: { type: Number },
   city: { type: String, default: "Bangalore" },
   address: { type: String, default: "" },
