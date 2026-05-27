@@ -175,6 +175,24 @@ function parseOutsideAlcohol(text) {
   return null;
 }
 
+// Slug-first venue lookup with a case-insensitive name fallback. The slug
+// regex turns "magnolia-by-jade" into /magnolia.*by.*jade/i so a venue stored
+// with a slightly different slug (e.g. punctuation, "and" vs "&") still
+// resolves. Returns the lean venue doc or null.
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+async function findVenue(slug) {
+  const bySlug = await Venue.findOne({ slug }).select("_id slug name photos scrapedFrom").lean();
+  if (bySlug) return bySlug;
+  const words = slug.split("-").filter(Boolean).map(escapeRegex);
+  if (words.length === 0) return null;
+  const pattern = words.join(".*");
+  return Venue.findOne({ name: { $regex: pattern, $options: "i" } })
+    .select("_id slug name photos scrapedFrom")
+    .lean();
+}
+
 (async () => {
   await mongoose.connect(MONGO_URI);
   console.log(`Connected. Rescraping ${FAILED_SLUGS.length} Meragi venues.\n`);
@@ -190,11 +208,16 @@ function parseOutsideAlcohol(text) {
       const tag = `[${idx + 1}/${FAILED_SLUGS.length}] ${slug}`;
       console.log(tag);
 
-      const venue = await Venue.findOne({ slug }).select("_id slug name photos").lean();
+      const venue = await findVenue(slug);
       if (!venue) {
-        console.warn(`  ⚠  not in DB — skipping`);
+        console.warn(`  ⚠  not in DB (slug or name) — skipping`);
         failures.push({ slug, error: "not in DB" });
         continue;
+      }
+      if (venue.slug !== slug) {
+        console.log(`  ↪ matched by name: ${venue.name} (db slug: ${venue.slug})`);
+      } else {
+        console.log(`  ↪ ${venue.name}`);
       }
 
       const url = `https://www.meragi.com/venue-blog/${slug}/`;
@@ -251,7 +274,17 @@ function parseOutsideAlcohol(text) {
         continue;
       }
 
-      await Venue.updateOne({ _id: venue._id }, { $set: update });
+      // Tag the source on every successful rescrape. Uses "Meragi" (capital M)
+      // to match existing data — venues from the prior seed run already carry
+      // that exact string, so lowercase would create duplicate-with-different-
+      // casing entries in the array.
+      const mongoUpdate = { $set: update, $addToSet: { scrapedFrom: "Meragi" } };
+      const existingScrapedFrom = Array.isArray(venue.scrapedFrom) ? venue.scrapedFrom : [];
+      if (!existingScrapedFrom.includes("Meragi")) {
+        wrote.push('scrapedFrom += "Meragi"');
+      }
+
+      await Venue.updateOne({ _id: venue._id }, mongoUpdate);
       console.log(`  ✓ updated: ${wrote.join(", ")}`);
       updatedCount++;
 

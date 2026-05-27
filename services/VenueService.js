@@ -1,7 +1,7 @@
 const VenueRepository = require("../repositories/VenueRepository");
 
-const getAllVenues = async ({ status, limit, skip } = {}) => {
-  return VenueRepository.findAll({ status, limit, skip });
+const getAllVenues = async ({ status, limit, skip, zone, area } = {}) => {
+  return VenueRepository.findAll({ status, limit, skip, zone, area });
 };
 
 const getVenueBySlug = async (slug) => {
