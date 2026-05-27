@@ -36,6 +36,7 @@
     "node-mailjet": "^6.0.6",
     "nodemon": "^3.1.10",
     "pdfkit": "^0.14.0",
+    "puppeteer": "^24.43.1",
     "razorpay": "^2.9.2",
     "sharp": "^0.34.5",
     "socket.io": "^4.8.3",
