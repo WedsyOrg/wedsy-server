@@ -20,13 +20,22 @@ if (!MONGO_URI) {
 // Constants
 // ============================================================================
 
+// WedMeGood category URLs. The Resort and Farm House URLs are confirmed to
+// work; the Hotels/Clubs/Heritage/Outdoor URLs previously returned 0, so we
+// also try short-form `cat=` variants (Hotel/Clubs/Heritage) — WedMeGood seems
+// to redirect or accept multiple aliases. Dedup is handled by the `seen` set
+// downstream, so overlap between aliases is harmless.
 const WMG_URLS = [
   { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Resort", category: "Resort" },
   { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Farm+House", category: "Farm House" },
   { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Hotels", category: "Hotels" },
+  { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Hotel", category: "Hotel (alt)" },
   { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Clubs+%26+Resorts", category: "Clubs & Resorts" },
+  { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Clubs", category: "Clubs (alt)" },
   { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Heritage+Venues", category: "Heritage Venues" },
+  { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Heritage", category: "Heritage (alt)" },
   { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Outdoor+Venues", category: "Outdoor Venues" },
+  { url: "https://www.wedmegood.com/search/?item_type=Venues&city=Bangalore&cat=Outdoor", category: "Outdoor (alt)" },
 ];
 
 const MERAGI_LIST_URL = "https://www.meragi.com/venue-catalogue/bangalore/";
@@ -134,8 +143,22 @@ async function scrapeWedMeGood(browser) {
       while (true) {
         const cards = await page.evaluate(() => {
           const results = [];
-          // Best-guess: WedMeGood listing cards are anchors that point to /vendors/profile/ or /venues/profile/.
-          const anchors = Array.from(document.querySelectorAll('a[href*="/vendors/"], a[href*="/venues/"], a[href*="/profile/"]'));
+          // Primary: known venue/vendor profile path patterns.
+          let anchors = Array.from(document.querySelectorAll('a[href*="/vendors/"], a[href*="/venues/"], a[href*="/profile/"]'));
+          // Fallback: if the primary selector finds nothing (e.g. Hotels/Clubs/
+          // Heritage layouts have changed), detect cards structurally — any
+          // anchor sitting in a container that has BOTH an image and a heading
+          // is almost certainly a venue card on WedMeGood.
+          if (anchors.length === 0) {
+            const all = Array.from(document.querySelectorAll('a[href]'));
+            anchors = all.filter((a) => {
+              const href = a.getAttribute("href") || "";
+              if (!href || href.startsWith("#") || href.startsWith("javascript:")) return false;
+              const card = a.closest('[class*="card"], [class*="listing"], [class*="vendor"], [class*="venue"], li, article');
+              if (!card) return false;
+              return !!card.querySelector("img") && !!card.querySelector("h1,h2,h3,h4,h5");
+            });
+          }
           const seenHrefs = new Set();
           for (const a of anchors) {
             const href = a.href;
