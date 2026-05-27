@@ -3,7 +3,7 @@
 // Three layers, applied in order:
 //   1. If venue.googlePlaceId exists → Place Details
 //   2. Else → Find Place from Text (name + " Bangalore") → Place Details
-//   3. Else → parse address against LOCALITY_MAP for zone/locality
+//   3. Else → parse locality + address against ZONE_MAP for zone
 //
 // Persists with Venue.updateOne($set). Always sets `enrichedAt` so the script
 // can detect already-processed rows on later runs.
@@ -16,33 +16,99 @@ const Venue = require("../models/Venue");
 
 const KEY = process.env.GOOGLE_PLACES_API_KEY;
 
-// Address-substring → { zone, locality }. Match is longest-key-first so
-// "magadi road" beats "magadi" when both are present.
-const LOCALITY_MAP = {
-  yelahanka: { zone: "north", locality: "Yelahanka" },
-  devanahalli: { zone: "airport", locality: "Devanahalli" },
-  jakkur: { zone: "north", locality: "Jakkur" },
-  hebbal: { zone: "north", locality: "Hebbal" },
-  thanisandra: { zone: "north", locality: "Thanisandra" },
-  kogilu: { zone: "north", locality: "Kogilu" },
-  bagalur: { zone: "airport", locality: "Bagalur" },
-  whitefield: { zone: "east", locality: "Whitefield" },
-  marathahalli: { zone: "east", locality: "Marathahalli" },
-  sarjapur: { zone: "east", locality: "Sarjapur" },
-  varthur: { zone: "east", locality: "Varthur" },
-  bannerghatta: { zone: "south", locality: "Bannerghatta" },
-  "electronic city": { zone: "south", locality: "Electronic City" },
-  kanakapura: { zone: "south", locality: "Kanakapura" },
-  jigani: { zone: "south", locality: "Jigani" },
-  anekal: { zone: "south", locality: "Anekal" },
-  "magadi road": { zone: "west", locality: "Magadi Road" },
-  tumkur: { zone: "west", locality: "Tumkur" },
-  rajajinagar: { zone: "west", locality: "Rajajinagar" },
-  yeshwanthpur: { zone: "west", locality: "Yeshwanthpur" },
-  "jp nagar": { zone: "central", locality: "JP Nagar" },
-  koramangala: { zone: "central", locality: "Koramangala" },
-  indiranagar: { zone: "central", locality: "Indiranagar" },
-  "hsr layout": { zone: "central", locality: "HSR Layout" },
+// Comprehensive Bangalore zone → area-list map. Match is zone-order-first
+// (airport → north → east → south → west → central) so the most specific /
+// peripheral zones win when an address mentions multiple substrings.
+const ZONE_MAP = {
+  airport: [
+    "devanahalli", "bagalur", "budigere", "doddaballapur", "nandi hills",
+    "kempegowda international", "kial", "sonnenahalli", "chikkajala",
+    "kannurhobli", "sadahalli", "sulibele",
+  ],
+  north: [
+    "yelahanka", "jakkur", "hebbal", "thanisandra", "kogilu",
+    "sahakara nagar", "sahakar nagar", "jalahalli", "ms palya",
+    "vidyaranyapura", "kalyan nagar", "rt nagar", "hennur",
+    "nagawara", "kothanur", "byrathi", "amruthahalli", "anandnagar",
+    "attur", "byatarayanapura", "chagalatti", "chikkabettahalli",
+    "dollar colony", "geddalahalli", "hesaraghatta", "hmt layout",
+    "kannur", "kodigehalli", "mathikere", "ms ramaiah",
+    "manyata tech park", "new bel road", "palace orchards",
+    "puttenahalli north", "sanjay nagar", "sanjaynagar",
+    "chikkabanavara", "gokula", "soladevanahalli",
+    "air force", "yelahanka new town", "lingarajapuram",
+    "bsf camp", "kogilu main road", "doddaballapur road",
+  ],
+  east: [
+    "whitefield", "marathahalli", "marthahalli", "varthur", "brookefield",
+    "kadugodi", "mahadevapura", "bellandur", "carmelaram", "haralur",
+    "harlur", "dommasandra", "panathur", "kadubeesanahalli", "thubarahalli",
+    "kundalahalli", "ramagondanahalli", "soukya road", "virgonagar",
+    "hoodi", "itpl", "hope farm", "doddanekundi", "medahalli",
+    "garudacharpalya", "krishnarajapuram", "kr puram", "k r puram",
+    "benniganahalli", "tin factory", "old madras road",
+    "indiranagar", "domlur", "hal airport road",
+    "hal 2nd stage", "hal 3rd stage", "hal layout",
+    "cambridge layout", "ulsoor", "babusapalaya", "nagondanahalli",
+    "gunjur", "ambalipura", "sarjapur road", "sarjapur",
+    "hagadur", "immadihalli", "nallurhalli",
+    "banaswadi", "horamavu", "hormavu",
+    "ramamurthy nagar", "kammanahalli", "bhattarahalli",
+    "hoysalanagar", "ithangur", "hosa road",
+    "aecs layout east", "electronic city phase 2 east",
+  ],
+  south: [
+    "bannerghatta", "electronic city", "jigani", "kanakapura", "anekal",
+    "begur", "gottigere", "hulimavu", "arekere", "akshayanagar",
+    "akshaya nagar", "hongasandra", "uttarahalli", "jp nagar",
+    "jayanagar", "btm layout", "hsr layout", "bommanahalli",
+    "singasandra", "kudlu", "chandapura", "attibele", "silkboard",
+    "konankunte", "konanakunte", "sarakki", "padmanabhanagar",
+    "banashankari", "basavanagudi", "hanumanthanagar", "thyagarajanagar",
+    "chandra layout", "kengeri", "rajarajeshwari nagar", "mysore road",
+    "bidadi", "dollars colony", "puttenahalli south", "subramanyapura",
+    "kumaraswamy layout", "girinagar", "katriguppe", "vidyapeeta",
+    "ideal homes", "nayandahalli", "hosakerehalli", "pattanagere",
+    "mailasandra", "ullal", "talaghattapura", "nice road",
+    "hebbagodi", "bommasandra", "marsur road", "chandapura anekal",
+    "kodichikkanahalli", "munnekollal", "gattahalli", "choodasandra",
+    "parappana agrahara", "koramangala", "bilekahalli",
+    "hongasandra south", "begur road", "aecs layout south",
+    "haralur road", "harlur road", "jakkasandra", "maruthi nagar",
+  ],
+  west: [
+    "rajajinagar", "vijayanagar", "peenya", "magadi road", "tumkur road",
+    "nagarbhavi", "nagarabhavi", "naagarabhaavi", "mahalakshmi layout",
+    "prakash nagar", "nandini layout", "laggere", "dasarahalli",
+    "t dasarahalli", "bagalgunte", "basaveshwaranagar", "basaveshwara nagar",
+    "chord road", "rajgopal nagar", "bhel layout",
+    "chikkabanavara west", "kengeri west",
+    "rajarajeshwari nagar west", "mysore road west",
+    "nagarbhavi west", "vijayanagar west",
+    "mahalakshmi layout west", "srirampura west",
+    "laggere west", "nandini layout west", "yeshwanthpur",
+    "peenya industrial", "jalahalli cross",
+  ],
+  central: [
+    "mg road", "brigade road", "commercial street", "cubbon park",
+    "palace grounds", "lavelle road", "richmond road", "cunningham road",
+    "sankey road", "infantry road", "museum road", "residency road",
+    "church street", "st marks road", "langford road", "millers road",
+    "richmond circle", "kasturba road", "raj bhavan", "high court",
+    "vidhana soudha", "city market", "majestic", "kempegowda bus stand",
+    "city railway station", "gandhinagar bangalore", "chickpet",
+    "avenue road", "cottonpet", "balepet", "nagarathpet", "sultanpet",
+    "taragupet", "upparpet", "cubbonpet", "mamulpet",
+    "malleshwaram", "malleswaram", "sadashivanagar", "seshadripuram",
+    "palace guttahalli", "subramanyanagar", "wilson garden",
+    "cox town", "cooke town", "fraser town", "frazer town",
+    "benson town", "cantonment", "jayamahal", "st johns road",
+    "richmond town", "cleveland town", "langford town", "shivajinagar",
+    "tasker town", "johnson market", "vasanth nagar",
+    "behind ulsoor lake", "ulsoor central", "palace road",
+    "raj bhavan road", "shivajinagar central", "infantry road",
+    "richmond road", "ulsoor lake", "halasuru",
+  ],
 };
 
 // Coordinate → zone bucket. Order matters: airport sits north of the "north"
@@ -57,14 +123,20 @@ function zoneFromCoords(lng, lat) {
   return "central";
 }
 
-function localityFromAddress(address) {
-  if (!address) return null;
-  const lower = String(address).toLowerCase();
-  const keys = Object.keys(LOCALITY_MAP).sort((a, b) => b.length - a.length);
-  for (const k of keys) {
-    if (lower.includes(k)) return LOCALITY_MAP[k];
+// Pick a zone for a venue by scanning both its (Google-derived) locality and
+// raw address for any of the substring markers in ZONE_MAP. Order matters —
+// airport is checked first so Devanahalli wins over "north", then north,
+// east, south, west, central. Returns "" when no marker matches.
+function localityToZone(locality, address) {
+  if (!locality && !address) return "";
+  const text = ((locality || "") + " " + (address || "")).toLowerCase();
+  const zoneOrder = ["airport", "north", "east", "south", "west", "central"];
+  for (const zone of zoneOrder) {
+    for (const area of ZONE_MAP[zone]) {
+      if (text.includes(area)) return zone;
+    }
   }
-  return null;
+  return "";
 }
 
 function extractLocality(addressComponents) {
@@ -191,13 +263,12 @@ async function enrichVenue(venueOrId) {
     }
   }
 
-  // Layer 3 — locality + zone fallback from address keywords
-  if (!update.locality && venue.address) {
-    const fallback = localityFromAddress(venue.address);
-    if (fallback) {
-      update.locality = fallback.locality;
-      if (!update.zone) update.zone = fallback.zone;
-    }
+  // Layer 3 — zone fallback from locality + address keywords. (Locality
+  // itself is no longer derived here — it's already filled in Layer 1 from
+  // Google's sublocality. ZONE_MAP only knows zones.)
+  if (!update.zone) {
+    const z = localityToZone(update.locality || venue.locality, venue.address);
+    if (z) update.zone = z;
   }
 
   // Real coordinates win over the address-keyword zone fallback above
@@ -215,5 +286,5 @@ async function enrichVenue(venueOrId) {
 
 module.exports = enrichVenue;
 module.exports.zoneFromCoords = zoneFromCoords;
-module.exports.localityFromAddress = localityFromAddress;
-module.exports.LOCALITY_MAP = LOCALITY_MAP;
+module.exports.localityToZone = localityToZone;
+module.exports.ZONE_MAP = ZONE_MAP;
