@@ -11,6 +11,18 @@ const VenueSchema = new mongoose.Schema({
   address: { type: String, default: "" },
   location: { type: { type: String }, coordinates: [Number] },
   locationDescription: { type: String, default: "" },
+  // Coarse Bangalore region — drives the zone tabs on the public browse page.
+  // Computed by utils/enrichVenue.js from Google-resolved coordinates (or
+  // address as fallback). "" is the not-yet-classified sentinel.
+  zone: { type: String, enum: ["north", "south", "east", "west", "central", "airport", ""], default: "" },
+  // Neighbourhood label — Google sublocality_level_1 (or fallback). Powers the
+  // area free-text search alongside venue.address.
+  locality: { type: String, default: "" },
+  // Up to 10 final image URLs resolved from Google Places photo_references.
+  googlePhotos: [{ type: String }],
+  // When the Google enrichment was last run for this venue. Drives the
+  // 7-day staleness check in scripts/enrich-venues-google.js.
+  enrichedAt: { type: Date },
   areas: [{ type: String }],
   spaces: [{
     name: String,

@@ -5,6 +5,7 @@ const Venue = require("../models/Venue");
 const VenueClaimRequest = require("../models/VenueClaimRequest");
 const NotificationFailureLog = require("../models/NotificationFailureLog");
 const { SendOTP, VerifyOTP } = require("../utils/otp");
+const enrichVenue = require("../utils/enrichVenue");
 
 // Helper — mask phone number: 9876543210 → 98•••••210
 const maskPhone = (phone) => {
@@ -385,6 +386,13 @@ const login = async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "30d" }
     );
+    // Fire-and-forget Google enrichment so the owner sees fresh photos/zone
+    // next time they hit the dashboard. Never block the login response on it.
+    setImmediate(() => {
+      enrichVenue(venueOwner.venueId._id).catch((err) => {
+        console.warn(`[enrichVenue] login enrichment failed for venue ${venueOwner.venueId._id}: ${err.message}`);
+      });
+    });
     return res.status(200).json({ success: true, token, venueOwner: { id: venueOwner._id, name: venueOwner.name, phone: venueOwner.phone, role: venueOwner.role, venue: venueOwner.venueId } });
   } catch (err) {
     return res.status(500).json({ message: err.message });

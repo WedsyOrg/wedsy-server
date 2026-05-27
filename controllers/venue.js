@@ -2,11 +2,13 @@ const VenueService = require("../services/VenueService");
 
 const getVenues = async (req, res) => {
   try {
-    const { status, limit = 100, skip = 0 } = req.query;
+    const { status, limit = 100, skip = 0, zone, area } = req.query;
     const result = await VenueService.getAllVenues({
       status: status || "published",
       limit: parseInt(limit),
       skip: parseInt(skip),
+      zone: typeof zone === "string" && zone.trim() ? zone.trim() : undefined,
+      area: typeof area === "string" && area.trim() ? area.trim() : undefined,
     });
     return res.status(200).json(result);
   } catch (err) {
