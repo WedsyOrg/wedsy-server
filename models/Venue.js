@@ -90,6 +90,8 @@ const VenueSchema = new mongoose.Schema({
     wifi: { type: Boolean, default: false },
     elevator: { type: Boolean, default: false },
     bridalSuite: { type: Boolean, default: false },
+    kalyanMandap: { type: Boolean },
+    floatingMandap: { type: Boolean },
     groomRoom: { type: Boolean, default: false },
     makeupRoom: { type: Boolean, default: false },
     changingRooms: { type: Boolean, default: false },
