@@ -337,45 +337,64 @@ async function scrapeMeragiDetail(browser, url) {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await sleep(1500);
 
-    // Try clicking "Read More" so the full description renders.
+    // Try clicking "Read More" within the description section so the full
+    // paragraph renders. Scoped to the "A perfect setting…" anchor — the old
+    // page-wide search clicked unrelated Read More buttons (FAQ, amenities)
+    // and the description it then captured was the whole page.
     try {
       const clicked = await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll("button, a, span, div"));
-        const btn = buttons.find((el) => /^\s*read more\s*$/i.test(el.innerText || ""));
-        if (btn) {
-          btn.click();
-          return true;
+        const PERFECT_SETTING_RE = /^\s*a perfect setting for your dream wedding\.?\s*$/i;
+        const heading = Array.from(document.querySelectorAll("*")).find((el) =>
+          PERFECT_SETTING_RE.test((el.innerText || el.textContent || "").trim())
+        );
+        if (!heading) return false;
+        let scope = heading.parentElement;
+        for (let i = 0; i < 5 && scope; i++) {
+          const candidates = Array.from(scope.querySelectorAll("button, a, span, div"));
+          const btn = candidates.find((el) =>
+            /^\s*read\s*more\s*$/i.test((el.innerText || el.textContent || "").trim())
+          );
+          if (btn) {
+            btn.click();
+            return true;
+          }
+          scope = scope.parentElement;
         }
         return false;
       });
-      if (clicked) await sleep(1000);
+      if (clicked) await sleep(1500);
     } catch (_) { /* ignore */ }
 
     return await page.evaluate(() => {
-      // ---- description ----
-      const bodyText = document.body.innerText || "";
+      // ---- description (anchored to "A perfect setting for your dream wedding.") ----
+      // Meragi has no "About" heading — the description sits right after this
+      // specific marquee line. Walk forward in document order from that
+      // element until the next heading, taking the first substantial <p>.
+      // Returning "" when the anchor isn't found is by design: better empty
+      // than the entire page text leaking in.
       let description = "";
-      const descHeading = Array.from(document.querySelectorAll("h1,h2,h3,h4")).find((h) =>
-        /about|description|overview/i.test(h.innerText || "")
+      const PERFECT_SETTING_RE = /^\s*a perfect setting for your dream wedding\.?\s*$/i;
+      const heading = Array.from(document.querySelectorAll("*")).find((el) =>
+        PERFECT_SETTING_RE.test((el.innerText || el.textContent || "").trim())
       );
-      if (descHeading) {
-        let node = descHeading.nextElementSibling;
-        const chunks = [];
-        while (node && !/^h[1-4]$/i.test(node.tagName)) {
-          const t = (node.innerText || "").trim();
-          if (t) chunks.push(t);
-          node = node.nextElementSibling;
+      if (heading) {
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+        walker.currentNode = heading;
+        let node = walker.nextNode();
+        while (node) {
+          if (/^H[1-6]$/.test(node.tagName)) break;
+          if (node.tagName === "P") {
+            const t = (node.innerText || "").trim();
+            if (t.length >= 80 && t.length < 3000) {
+              description = t;
+              break;
+            }
+          }
+          node = walker.nextNode();
         }
-        description = chunks.join("\n\n").trim();
       }
-      if (!description) {
-        // Fallback: longest paragraph.
-        const paragraphs = Array.from(document.querySelectorAll("p, div"))
-          .map((p) => (p.innerText || "").trim())
-          .filter((t) => t.length > 120);
-        paragraphs.sort((a, b) => b.length - a.length);
-        description = paragraphs[0] || "";
-      }
+
+      const bodyText = document.body.innerText || "";
 
       // ---- photos from CloudFront CDN ----
       const photos = Array.from(document.querySelectorAll("img"))
