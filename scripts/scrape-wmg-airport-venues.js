@@ -11,7 +11,23 @@ if (!MONGO_URI) {
   process.exit(1);
 }
 
-const LISTING_URL = "https://www.wedmegood.com/vendors/bangalore/wedding-venues/near-bangalore-airport";
+// Location-based listing pages on WedMeGood. Each is paginated independently;
+// cross-listing duplicates (e.g. a Yelahanka venue also tagged North) are
+// deduped on normalized name before we visit detail pages.
+const LISTING_URLS = [
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/near-bangalore-airport/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/bannerghatta-main-road/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/yelahanka/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/whitefield/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/sarjapur-road/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/hebbal/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/koramangala/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/jp-nagar/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/electronic-city/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/north-bangalore/",
+  "https://www.wedmegood.com/vendors/bangalore/wedding-venues/south-bangalore/",
+];
+
 const DIRECT_DETAIL_URLS = [
   "https://www.wedmegood.com/wedding-venues/Crown-Estate-25860475",
   "https://www.wedmegood.com/wedding-venues/ritam--the-wedding-venue--24885789",
@@ -106,6 +122,15 @@ async function scrapeListing(browser, url) {
   await page.setUserAgent(UA);
   const all = [];
   const seen = new Set();
+
+  // Capture any query params (e.g. ?venue_type=64,67) on the original URL.
+  // WMG's pagination links sometimes drop these — we re-attach them after
+  // each Next-button navigation so the filter survives across pages.
+  let originalParams = null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.search) originalParams = parsed.searchParams;
+  } catch (_) { /* malformed URL — skip preservation */ }
 
   try {
     await page.goto(url, { waitUntil: "networkidle2", timeout: 90000 });
@@ -209,6 +234,27 @@ async function scrapeListing(browser, url) {
 
       if (!advanced) break;
       await sleep(2500);
+
+      // Re-attach any query params that WMG's Next click stripped off.
+      if (originalParams) {
+        try {
+          const current = new URL(page.url());
+          let missing = false;
+          for (const [k, v] of originalParams) {
+            if (!current.searchParams.has(k)) {
+              current.searchParams.set(k, v);
+              missing = true;
+            }
+          }
+          if (missing) {
+            await page.goto(current.toString(), { waitUntil: "networkidle2", timeout: 90000 });
+            await sleep(1500);
+          }
+        } catch (e) {
+          console.warn(`  [listing] could not preserve query params: ${e.message}`);
+        }
+      }
+
       pageNum++;
       if (pageNum > 30) break; // safety
     }
@@ -545,11 +591,27 @@ async function upsertVenue(scraped) {
   let published = 0;
 
   try {
-    // 1) Listing → detail pages.
-    const cards = await scrapeListing(browser, LISTING_URL);
+    // 1) Walk every location-based listing and merge their cards. Dedupe on
+    //    normalized name so a venue appearing in both e.g. "yelahanka" and
+    //    "north-bangalore" is only visited once.
+    const cardsByKey = new Map();
+    for (const listingUrl of LISTING_URLS) {
+      try {
+        const cards = await scrapeListing(browser, listingUrl);
+        for (const c of cards) {
+          const key = normalizeName(c.name);
+          if (!key || cardsByKey.has(key)) continue;
+          cardsByKey.set(key, c);
+        }
+      } catch (err) {
+        console.warn(`[listing] ${listingUrl} failed: ${err.message}`);
+      }
+    }
+    const allCards = Array.from(cardsByKey.values());
+    console.log(`\n[overall] ${allCards.length} unique cards across ${LISTING_URLS.length} listings`);
 
     const detailJobs = [
-      ...cards.map((c) => ({ url: c.detailUrl, hint: c })),
+      ...allCards.map((c) => ({ url: c.detailUrl, hint: c })),
       ...DIRECT_DETAIL_URLS.map((u) => ({ url: u, hint: null })),
     ];
 
