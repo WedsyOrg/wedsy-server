@@ -589,6 +589,7 @@ async function upsertVenue(scraped) {
   let created = 0;
   let updated = 0;
   let published = 0;
+  let skippedComplete = 0;
 
   try {
     // 1) Walk every location-based listing and merge their cards. Dedupe on
@@ -621,6 +622,30 @@ async function upsertVenue(scraped) {
     for (const job of detailJobs) {
       i++;
       try {
+        // Skip if we already have a complete WMG-sourced record for this venue.
+        // Saves a Puppeteer load per skip — the main thing keeping us under
+        // Cloudflare's rate limit on big runs.
+        const candidateName = job.hint?.name || nameFromDetailUrl(job.url);
+        if (candidateName) {
+          const existing = await Venue.findOne({
+            name: { $regex: new RegExp(`^${escapeRegex(candidateName)}$`, "i") },
+          }).select("scrapedFrom description coverPhoto").lean();
+          // Relaxed for this run: skip anything already touched by WMG that has
+          // a cover photo, regardless of description state. Lets us blow past
+          // the ~110 already-processed venues and resume at the error-streak
+          // ones that never got written.
+          if (
+            existing &&
+            Array.isArray(existing.scrapedFrom) &&
+            existing.scrapedFrom.includes("wedmegood") &&
+            existing.coverPhoto && existing.coverPhoto.trim()
+          ) {
+            skippedComplete++;
+            console.log(`  [${i}/${detailJobs.length}] · skip (already complete): ${candidateName}`);
+            continue;
+          }
+        }
+
         const detail = await scrapeDetail(browser, job.url);
 
         // Cloudflare or other block: skip without writing anything.
@@ -672,7 +697,7 @@ async function upsertVenue(scraped) {
       } catch (err) {
         console.warn(`  [${i}/${detailJobs.length}] error on ${job.url}: ${err.message}`);
       }
-      await sleep(2500);
+      await sleep(9000);
     }
   } finally {
     await browser.close();
@@ -680,10 +705,11 @@ async function upsertVenue(scraped) {
   }
 
   console.log("\n=== Summary ===");
-  console.log(`Total scraped: ${scraped}`);
-  console.log(`New added:     ${created}`);
-  console.log(`Updated:       ${updated}`);
-  console.log(`Published:     ${published}`);
+  console.log(`Total scraped:     ${scraped}`);
+  console.log(`New added:         ${created}`);
+  console.log(`Updated:           ${updated}`);
+  console.log(`Published:         ${published}`);
+  console.log(`Skipped (complete): ${skippedComplete}`);
 })().catch((err) => {
   console.error("Failed:", err);
   process.exit(1);
