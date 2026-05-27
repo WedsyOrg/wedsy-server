@@ -6,6 +6,7 @@ const { saveAvailability } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
+const { generateLocationDescription } = require("../controllers/venueLocation");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { CheckLogin } = require("../middlewares/auth");
 
@@ -20,5 +21,6 @@ router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
 router.post("/:slug/nearby", refreshNearby);
 router.post("/:slug/reviews", refreshReviews);
+router.post("/:slug/generate-location-description", generateLocationDescription);
 
 module.exports = router;

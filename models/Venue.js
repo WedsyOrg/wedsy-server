@@ -10,6 +10,7 @@ const VenueSchema = new mongoose.Schema({
   city: { type: String, default: "Bangalore" },
   address: { type: String, default: "" },
   location: { type: { type: String }, coordinates: [Number] },
+  locationDescription: { type: String, default: "" },
   areas: [{ type: String }],
   spaces: [{
     name: String,
