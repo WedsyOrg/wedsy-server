@@ -17,7 +17,7 @@ const findAll = async ({ status, limit = 100, skip = 0, zone, area } = {}) => {
   }
   const [venues, total] = await Promise.all([
     Venue.find(query)
-      .select("name slug address city venueType capacity accommodation amenities catering pricing photos coverPhoto phone googlePlaceId googleRating googleReviewCount description seoKeywords dataCompleteness status zone locality googlePhotos")
+      .select("name slug address city venueType capacity accommodation amenities catering pricing photos coverPhoto phone googlePlaceId googleRating googleReviewCount description seoKeywords dataCompleteness status zone locality googlePhotos featured")
       .sort({ dataCompleteness: -1, googleRating: -1 })
       .skip(skip)
       .limit(limit)

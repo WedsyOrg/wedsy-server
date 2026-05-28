@@ -140,6 +140,7 @@ const VenueSchema = new mongoose.Schema({
   scrapedFrom: [String],
   seoKeywords: [String],
   dataCompleteness: { type: Number, default: 1 },
+  featured: { type: Boolean, default: false },
   status: { type: String, enum: ["draft", "published", "pending_outreach", "outreach_sent", "verified", "rejected"], default: "draft" },
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
   enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],

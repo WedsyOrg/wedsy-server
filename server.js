@@ -3,6 +3,7 @@ const mongoose = require("mongoose");
 const bodyParser = require("body-parser");
 const cors = require("cors");
 const helmet = require("helmet");
+const rateLimit = require('express-rate-limit');
 const cron = require("node-cron");
 const { createServer } = require("http");
 const { Server } = require("socket.io");
@@ -33,6 +34,17 @@ app.use(bodyParser.json({
     req.rawBody = buf;
   }
 }));
+
+//Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  message: { error: 'Too many requests, please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.ip === '127.0.0.1', // skip localhost
+});
+app.use(limiter);
 
 //Connecting Database
 const dbUrl = process.env.DATABASE_URL;
