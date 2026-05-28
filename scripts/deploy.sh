@@ -1,7 +1,7 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 cd /var/www/wedsy-server
 git pull origin main
-npm ci --omit=dev
+npm install --omit=dev
 pm2 restart wedsy-prod --update-env
 pm2 status
