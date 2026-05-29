@@ -5,3 +5,4 @@
 google-sheets-key.json
 ecosystem.config.js
 *.swp
+.env.prod-backup
