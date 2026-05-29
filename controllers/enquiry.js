@@ -270,11 +270,19 @@ const GetAll = async (req, res) => {
       eventMonth,
       bidRequest,
       storeAccess,
+      assignedTo,
     } = req.query;
     const query = {};
     const sortQuery = {};
     if (source) {
       query.source = source;
+    }
+    if (assignedTo) {
+      if (assignedTo === "unassigned") {
+        query.assignedTo = null;
+      } else {
+        query.assignedTo = assignedTo;
+      }
     }
     if (date) {
       const startDate = new Date(date);
