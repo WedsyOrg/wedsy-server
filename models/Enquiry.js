@@ -53,6 +53,11 @@ const EnquirySchema = new mongoose.Schema(
       ref: "Admin",
       default: null,
     },
+    updatedBy: {
+      type: ObjectId,
+      ref: "Admin",
+      default: null,
+    },
     marketingSource: {
       type: String,
       default: null,

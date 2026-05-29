@@ -6,7 +6,7 @@ const VALID_STAGES = ["new", "contacted", "meeting_scheduled"];
 
 // Update an enquiry's pipeline stage.
 // Throws { status, message } shaped errors for the controller to map to HTTP responses.
-const updateStage = async (enquiryId, stage) => {
+const updateStage = async (enquiryId, stage, updatedBy) => {
   if (typeof stage !== "string" || stage.length === 0) {
     const err = new Error("Stage is required");
     err.status = 400;
@@ -24,7 +24,11 @@ const updateStage = async (enquiryId, stage) => {
     err.status = 400;
     throw err;
   }
-  const updated = await EnquiryRepository.updateStageById(enquiryId, stage);
+  const updated = await EnquiryRepository.updateStageById(
+    enquiryId,
+    stage,
+    updatedBy
+  );
   if (!updated) {
     const err = new Error("Enquiry not found");
     err.status = 404;
@@ -34,7 +38,7 @@ const updateStage = async (enquiryId, stage) => {
 };
 
 // Assign an enquiry to an admin (or unassign by passing null).
-const updateAssignedTo = async (enquiryId, assignedTo) => {
+const updateAssignedTo = async (enquiryId, assignedTo, updatedBy) => {
   if (assignedTo === undefined) {
     const err = new Error("assignedTo is required (use null to unassign)");
     err.status = 400;
@@ -62,7 +66,8 @@ const updateAssignedTo = async (enquiryId, assignedTo) => {
   }
   const updated = await EnquiryRepository.updateAssignedToById(
     enquiryId,
-    assignedTo
+    assignedTo,
+    updatedBy
   );
   if (!updated) {
     const err = new Error("Enquiry not found");
