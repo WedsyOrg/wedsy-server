@@ -6,5 +6,6 @@ const { CheckAdminLogin } = require("../middlewares/auth");
 const { requirePermission } = require("../middlewares/requirePermission");
 
 router.get("/", CheckAdminLogin, requirePermission("roles:view:all"), role.GetAll);
+router.put("/:id", CheckAdminLogin, requirePermission("roles:edit:all"), role.UpdatePermissions);
 
 module.exports = router;
