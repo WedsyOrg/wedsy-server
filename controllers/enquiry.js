@@ -271,6 +271,8 @@ const GetAll = async (req, res) => {
       bidRequest,
       storeAccess,
       assignedTo,
+      dateFrom,
+      dateTo,
     } = req.query;
     const query = {};
     const sortQuery = {};
@@ -293,6 +295,26 @@ const GetAll = async (req, res) => {
         $gte: startDate,
         $lt: endDate,
       };
+    }
+    if (!date && (dateFrom || dateTo)) {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        if (!isNaN(start.getTime())) {
+          start.setHours(0, 0, 0, 0);
+          range.$gte = start;
+        }
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          range.$lte = end;
+        }
+      }
+      if (Object.keys(range).length > 0) {
+        query.createdAt = range;
+      }
     }
     if (search) {
       const safeSearch = escapeRegExp(search);
