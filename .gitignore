@@ -4,4 +4,4 @@
 /config/serviceAccountKey.json
 google-sheets-key.json
 ecosystem.config.js
-*.swp
+*.swp.env.prod-backup
