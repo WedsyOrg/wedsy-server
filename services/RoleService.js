@@ -9,7 +9,7 @@ const getAll = async () => {
 };
 
 // Update a role's permissions (and optionally description). Permissions-only:
-// name / departmentId / isSystem are never changed here. The Founder role is protected.
+// name / departmentId / isSystem are never changed here. Protected roles cannot be edited.
 const updatePermissions = async (_id, { permissions, description } = {}) => {
   if (!mongoose.Types.ObjectId.isValid(_id)) {
     throw err(400, "Invalid role id.");
@@ -18,8 +18,8 @@ const updatePermissions = async (_id, { permissions, description } = {}) => {
   if (!role || role.deletedAt) {
     throw err(404, "Role not found.");
   }
-  if (role.name === "Founder") {
-    throw err(403, "The Founder role is protected and cannot be edited.");
+  if (role.protected === true) {
+    throw err(403, "This role is protected and cannot be edited.");
   }
   const { valid, errors } = validatePermissions(permissions);
   if (!valid) {

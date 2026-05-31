@@ -8,6 +8,7 @@ const RoleSchema = new mongoose.Schema(
     description: { type: String, default: "" },
     permissions: { type: [String], default: [] },
     isSystem: { type: Boolean, default: false },
+    protected: { type: Boolean, default: false },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true }
