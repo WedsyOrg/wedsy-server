@@ -14,7 +14,11 @@ const GetAll = async (req, res) => {
 const Create = async (req, res) => {
   try {
     const { name, color, category } = req.body || {};
-    const stage = await StageService.createStage({ name, color, category });
+    const actorId = req.auth && req.auth.user_id;
+    const stage = await StageService.createStage(
+      { name, color, category },
+      actorId
+    );
     res.status(201).json(stage);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });
@@ -25,12 +29,12 @@ const Create = async (req, res) => {
 const Update = async (req, res) => {
   try {
     const { name, color, category, order } = req.body || {};
-    const stage = await StageService.updateStage(req.params.id, {
-      name,
-      color,
-      category,
-      order,
-    });
+    const actorId = req.auth && req.auth.user_id;
+    const stage = await StageService.updateStage(
+      req.params.id,
+      { name, color, category, order },
+      actorId
+    );
     res.status(200).json(stage);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });
@@ -41,7 +45,8 @@ const Update = async (req, res) => {
 const Reorder = async (req, res) => {
   try {
     const { orderedIds } = req.body || {};
-    const result = await StageService.reorderStages(orderedIds);
+    const actorId = req.auth && req.auth.user_id;
+    const result = await StageService.reorderStages(orderedIds, actorId);
     res.status(200).json(result);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });
@@ -52,7 +57,8 @@ const Reorder = async (req, res) => {
 const Delete = async (req, res) => {
   try {
     const moveTo = (req.query && req.query.moveTo) || (req.body && req.body.moveTo);
-    const result = await StageService.deleteStage(req.params.id, moveTo);
+    const actorId = req.auth && req.auth.user_id;
+    const result = await StageService.deleteStage(req.params.id, moveTo, actorId);
     res.status(200).json(result);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });

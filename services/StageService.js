@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const StageRepository = require("../repositories/StageRepository");
+const ActivityLogService = require("./ActivityLogService");
 
 const VALID_CATEGORIES = ["open", "won", "lost"];
 
@@ -22,7 +23,7 @@ const getAllStages = async () => {
   return { stages };
 };
 
-const createStage = async ({ name, color, category } = {}) => {
+const createStage = async ({ name, color, category } = {}, actorId) => {
   if (typeof name !== "string" || name.trim().length === 0) {
     throw err(400, "name is required");
   }
@@ -43,12 +44,23 @@ const createStage = async ({ name, color, category } = {}) => {
   const order = (await StageRepository.maxOrder()) + 1;
   const doc = { name: name.trim(), slug, category: cat, order };
   if (typeof color === "string" && color.length) doc.color = color;
-  return await StageRepository.create(doc);
+  const created = await StageRepository.create(doc);
+
+  await ActivityLogService.record({
+    actorId,
+    action: "stage.created",
+    entityType: "stage",
+    entityId: created.slug,
+    summary: `Created stage "${created.name}"`,
+    meta: { slug: created.slug, name: created.name },
+  });
+
+  return created;
 };
 
 // Rename / recolor / reorder a single stage. NEVER changes slug — leads store the slug,
 // so renaming is display-only to keep existing leads valid.
-const updateStage = async (id, { name, color, category, order } = {}) => {
+const updateStage = async (id, { name, color, category, order } = {}, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid stage id");
   const existing = await StageRepository.findById(id);
   if (!existing) throw err(404, "Stage not found");
@@ -74,11 +86,25 @@ const updateStage = async (id, { name, color, category, order } = {}) => {
   }
 
   if (Object.keys(fields).length === 0) return existing;
-  return await StageRepository.updateById(id, fields);
+  const updated = await StageRepository.updateById(id, fields);
+
+  const renamed = "name" in fields && fields.name !== existing.name;
+  await ActivityLogService.record({
+    actorId,
+    action: renamed ? "stage.renamed" : "stage.updated",
+    entityType: "stage",
+    entityId: updated.slug,
+    summary: renamed
+      ? `Renamed stage to "${updated.name}"`
+      : `Updated stage "${updated.name}"`,
+    meta: { changed: fields, previousName: existing.name },
+  });
+
+  return updated;
 };
 
 // Bulk reorder. Sets each stage's order to its index in the provided id array.
-const reorderStages = async (orderedIds) => {
+const reorderStages = async (orderedIds, actorId) => {
   if (!Array.isArray(orderedIds) || orderedIds.length === 0) {
     throw err(400, "orderedIds must be a non-empty array");
   }
@@ -91,10 +117,20 @@ const reorderStages = async (orderedIds) => {
     await StageRepository.updateById(orderedIds[i], { order: i });
   }
   const stages = await StageRepository.findAll();
+
+  await ActivityLogService.record({
+    actorId,
+    action: "stage.reordered",
+    entityType: "stage",
+    entityId: null,
+    summary: "Reordered pipeline stages",
+    meta: { order: stages.map((s) => s.slug) },
+  });
+
   return { stages };
 };
 
-const deleteStage = async (id, moveToSlug) => {
+const deleteStage = async (id, moveToSlug, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid stage id");
   const existing = await StageRepository.findById(id);
   if (!existing) throw err(404, "Stage not found");
@@ -118,6 +154,15 @@ const deleteStage = async (id, moveToSlug) => {
     moveToSlug
   );
   await StageRepository.softDeleteById(id);
+
+  await ActivityLogService.record({
+    actorId,
+    action: "stage.deleted",
+    entityType: "stage",
+    entityId: existing.slug,
+    summary: `Deleted stage "${existing.name}", moved ${movedLeads} leads to "${moveToSlug}"`,
+    meta: { movedLeads, movedTo: moveToSlug, deletedName: existing.name },
+  });
 
   return { deleted: String(id), movedLeads, movedTo: moveToSlug };
 };
