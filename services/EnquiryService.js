@@ -1,8 +1,7 @@
 const mongoose = require("mongoose");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const AdminRepository = require("../repositories/AdminRepository");
-
-const VALID_STAGES = ["new", "contacted", "meeting_scheduled"];
+const StageRepository = require("../repositories/StageRepository");
 
 // Update an enquiry's pipeline stage.
 // Throws { status, message } shaped errors for the controller to map to HTTP responses.
@@ -12,10 +11,9 @@ const updateStage = async (enquiryId, stage, updatedBy) => {
     err.status = 400;
     throw err;
   }
-  if (!VALID_STAGES.includes(stage)) {
-    const err = new Error(
-      `Invalid stage. Must be one of: ${VALID_STAGES.join(", ")}`
-    );
+  const validStage = await StageRepository.findBySlug(stage);
+  if (!validStage) {
+    const err = new Error(`Invalid stage: ${stage}`);
     err.status = 400;
     throw err;
   }
