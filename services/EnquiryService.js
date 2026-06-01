@@ -3,6 +3,12 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
+// Shared eligibility helpers — imported here (not from controllers/disqualify) so there is
+// no controller <-> service circular require.
+const {
+  isManagerOfAssigned,
+  actorHasApprovePermission,
+} = require("./ApprovalEligibility");
 
 // Fixed set of disqualification reasons. Kept as a plain constant (no enum on the field).
 const LOST_REASONS = ["budget", "competitor", "not_responsive", "not_a_fit", "other"];
@@ -231,10 +237,53 @@ const updateAssignedTo = async (enquiryId, assignedTo, updatedBy) => {
   return updated;
 };
 
+// Map a populated admin ref (or null) to a trimmed { _id, name } shape.
+const trimAdminRef = (ref) =>
+  ref && ref._id ? { _id: ref._id, name: ref.name } : null;
+
+// List pending-disqualification leads the given admin is allowed to approve.
+// - leads:approve holders see ALL pending leads.
+// - otherwise, only pending leads where the admin is the assigned person's manager.
+//   (Pending leads with no assignedTo are not visible to manager-only viewers.)
+const listPendingForApprover = async (actorId) => {
+  const pending = await EnquiryRepository.findPendingDisqualifications();
+  const canAll = await actorHasApprovePermission(actorId);
+
+  let filtered;
+  if (canAll) {
+    filtered = pending;
+  } else {
+    // isManagerOfAssigned is async — use a sequential loop, not Array.filter.
+    filtered = [];
+    for (const lead of pending) {
+      if (
+        lead.assignedTo &&
+        lead.assignedTo._id &&
+        (await isManagerOfAssigned(actorId, lead.assignedTo._id))
+      ) {
+        filtered.push(lead);
+      }
+    }
+  }
+
+  return filtered.map((lead) => ({
+    _id: lead._id,
+    name: lead.name,
+    phone: lead.phone,
+    stage: lead.stage,
+    assignedTo: trimAdminRef(lead.assignedTo),
+    lostReason: lead.lostReason,
+    lostNote: lead.lostNote,
+    lostRequestedBy: trimAdminRef(lead.lostRequestedBy),
+    lostRequestedAt: lead.lostRequestedAt,
+  }));
+};
+
 module.exports = {
   updateStage,
   updateAssignedTo,
   requestDisqualification,
   decideDisqualification,
+  listPendingForApprover,
   LOST_REASONS,
 };

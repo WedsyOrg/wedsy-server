@@ -1,38 +1,11 @@
 const EnquiryService = require("../services/EnquiryService");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
-const AdminRepository = require("../repositories/AdminRepository");
-const RoleRepository = require("../repositories/RoleRepository");
-const { permissionSatisfies } = require("../middlewares/requirePermission");
-
-// Walk UP the assigned admin's reportingManagerId chain and check whether `actorId`
-// appears anywhere in it (i.e. is the assigned person's manager, transitively).
-// Depth-capped and cycle-safe.
-const isManagerOfAssigned = async (actorId, assignedToId) => {
-  if (!actorId || !assignedToId) return false;
-  let currentId = assignedToId;
-  const seen = new Set();
-  for (let depth = 0; depth < 10 && currentId; depth++) {
-    const key = String(currentId);
-    if (seen.has(key)) break;
-    seen.add(key);
-    const admin = await AdminRepository.findById(currentId);
-    if (!admin || !admin.reportingManagerId) break;
-    if (String(admin.reportingManagerId) === String(actorId)) return true;
-    currentId = admin.reportingManagerId;
-  }
-  return false;
-};
-
-// Does this admin's role grant a leads:approve permission at any scope?
-// (own is the lowest rank, so any leads:approve:* — or a broader wildcard — satisfies it.)
-const actorHasApprovePermission = async (actorId) => {
-  if (!actorId) return false;
-  const admin = await AdminRepository.findById(actorId);
-  if (!admin || !admin.roleId) return false;
-  const role = await RoleRepository.findById(admin.roleId);
-  if (!role || !Array.isArray(role.permissions)) return false;
-  return permissionSatisfies(role.permissions, "leads:approve:own").allowed;
-};
+// Eligibility helpers live in the shared module so the controller and EnquiryService
+// both import them from there — no controller <-> service circular require.
+const {
+  isManagerOfAssigned,
+  actorHasApprovePermission,
+} = require("../services/ApprovalEligibility");
 
 // POST /enquiry/:_id/disqualify
 const RequestDisqualify = async (req, res) => {
@@ -82,9 +55,26 @@ const DecideDisqualify = async (req, res) => {
   }
 };
 
+// GET /enquiry/pending-disqualifications
+// Lists pending-disqualification leads the current admin is allowed to approve.
+// No requirePermission gate — eligibility is computed inside the service. Items are
+// already trimmed to the API shape by the service.
+const ListPendingDisqualifications = async (req, res) => {
+  try {
+    const result = await EnquiryService.listPendingForApprover(req.auth.user_id);
+    res.status(200).json({ items: result, total: result.length });
+  } catch (error) {
+    const status = error.status || 500;
+    const message = status === 500 ? "Server error" : error.message;
+    res.status(status).json({ message });
+  }
+};
+
 module.exports = {
   RequestDisqualify,
   DecideDisqualify,
+  ListPendingDisqualifications,
+  // Re-exported from the shared eligibility module so existing importers keep working.
   isManagerOfAssigned,
   actorHasApprovePermission,
 };

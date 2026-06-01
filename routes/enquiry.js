@@ -11,6 +11,14 @@ router.post("/", enquiry.CreateNew);
 router.get("/", CheckAdminLogin, enquiry.GetAll);
 router.put("/", CheckAdminLogin, enquiry.Update);
 router.delete("/", CheckAdminLogin, enquiry.Delete);
+// Static path — MUST be declared BEFORE "/:_id" or Express captures
+// "pending-disqualifications" as an :_id and Mongoose throws a CastError.
+// No requirePermission gate; eligibility is computed inside the service.
+router.get(
+  "/pending-disqualifications",
+  CheckAdminLogin,
+  disqualify.ListPendingDisqualifications
+);
 router.get("/:_id", CheckAdminLogin, enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);

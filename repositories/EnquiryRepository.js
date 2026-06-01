@@ -33,9 +33,20 @@ const updateFieldsById = async (_id, fields) => {
   );
 };
 
+// All leads currently awaiting a disqualification decision, newest request first.
+// assignedTo / lostRequestedBy are populated with the admin's name for display.
+const findPendingDisqualifications = async () => {
+  return await Enquiry.find({ lostStatus: "pending" })
+    .populate("assignedTo", "name")
+    .populate("lostRequestedBy", "name")
+    .sort({ lostRequestedAt: -1 })
+    .lean();
+};
+
 module.exports = {
   findById,
   updateStageById,
   updateAssignedToById,
   updateFieldsById,
+  findPendingDisqualifications,
 };
