@@ -108,6 +108,7 @@ function haversineMeters(lng1, lat1, lng2, lat2) {
 // for a venue from its name (slugify: strip specials, spaces→hyphens, collapse,
 // trim).
 const MERAGI_DETAIL_BASE = "https://www.meragi.com/venue-details/";
+const MERAGI_BLOG_BASE = "https://www.meragi.com/venue-blog/"; // fallback pattern
 const MERAGI_SITEMAP_URL = "https://www.meragi.com/sitemap.xml";
 
 function buildMeragiUrl(name) {
@@ -171,7 +172,9 @@ async function resolveWorkingMeragiUrl(name, preferredUrl) {
   const candidates = [];
   if (preferredUrl) candidates.push(preferredUrl);
   for (const slug of buildSlugVariants(name || "")) {
+    // Try /venue-details/ first, then /venue-blog/ as a fallback pattern.
     candidates.push(`${MERAGI_DETAIL_BASE}${slug}/`);
+    candidates.push(`${MERAGI_BLOG_BASE}${slug}/`);
   }
   const seen = new Set();
   for (const url of candidates) {
@@ -209,6 +212,15 @@ const KNOWN_MERAGI_SLUGS = [
   "royalton-leisure-aria",
   "the-quad-club-resort-and-spa",
   "mantra-the-luxury-wedding-destination",
+  // Additional known slugs (some are shorter variants of the above; the
+  // duplicates already present in this list are intentionally omitted).
+  "sahasra-vaibogham",
+  "the-beginning-wedding-venue",
+  "chairman-s-jade",
+  "mlr-convention-centre",
+  "naveraa-resort",
+  "fiestaa-resort",
+  "ankit-vista",
 ];
 
 // Turn a /venue-details/<slug>/ URL into a { name, url } record.
