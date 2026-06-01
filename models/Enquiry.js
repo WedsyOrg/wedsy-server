@@ -61,6 +61,20 @@ const EnquirySchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    // Wedsy OS disqualify + approval (Stage 3a — additive only). isLost above is unchanged.
+    lostStatus: {
+      type: String,
+      enum: ["none", "pending", "approved", "rejected"],
+      default: "none",
+    },
+    lostReason: { type: String, default: "" },
+    lostNote: { type: String, default: "" },
+    lostRequestedBy: { type: ObjectId, ref: "Admin", default: null },
+    lostRequestedAt: { type: Date, default: null },
+    lostDecidedBy: { type: ObjectId, ref: "Admin", default: null },
+    lostDecidedAt: { type: Date, default: null },
+    lostDecisionNote: { type: String, default: "" },
+    stageBeforeLost: { type: String, default: "" },
   },
   { timestamps: true }
 );
