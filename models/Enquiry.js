@@ -44,7 +44,6 @@ const EnquirySchema = new mongoose.Schema(
     // Wedsy OS pipeline tracking (added Phase 1 — additive only)
     stage: {
       type: String,
-      enum: ["new", "contacted", "meeting_scheduled"],
       default: "new",
       required: true,
     },
