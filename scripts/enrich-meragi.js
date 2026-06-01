@@ -104,16 +104,16 @@ function haversineMeters(lng1, lat1, lng2, lat2) {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
-// Meragi venue detail pages live at /venue-details/<slug>/. Construct the URL
-// for a venue from its name (slugify: strip specials, spaces→hyphens, collapse,
-// trim).
-const MERAGI_DETAIL_BASE = "https://www.meragi.com/venue-details/";
-const MERAGI_BLOG_BASE = "https://www.meragi.com/venue-blog/"; // fallback pattern
+// Meragi venue pages live under /venue-blog/<slug>/ (primary) or
+// /venue-details/<slug>/ (fallback). Construct the URL for a venue from its
+// name (slugify: strip specials, spaces→hyphens, collapse, trim).
+const MERAGI_BLOG_BASE = "https://www.meragi.com/venue-blog/"; // primary pattern
+const MERAGI_DETAIL_BASE = "https://www.meragi.com/venue-details/"; // fallback pattern
 const MERAGI_SITEMAP_URL = "https://www.meragi.com/sitemap.xml";
 
 function buildMeragiUrl(name) {
   return (
-    MERAGI_DETAIL_BASE +
+    MERAGI_BLOG_BASE +
     name
       .toLowerCase()
       .replace(/[^a-z0-9\s-]/g, "") // remove special chars
@@ -172,9 +172,9 @@ async function resolveWorkingMeragiUrl(name, preferredUrl) {
   const candidates = [];
   if (preferredUrl) candidates.push(preferredUrl);
   for (const slug of buildSlugVariants(name || "")) {
-    // Try /venue-details/ first, then /venue-blog/ as a fallback pattern.
-    candidates.push(`${MERAGI_DETAIL_BASE}${slug}/`);
+    // Try /venue-blog/ first (primary pattern), then /venue-details/ as fallback.
     candidates.push(`${MERAGI_BLOG_BASE}${slug}/`);
+    candidates.push(`${MERAGI_DETAIL_BASE}${slug}/`);
   }
   const seen = new Set();
   for (const url of candidates) {
@@ -221,6 +221,19 @@ const KNOWN_MERAGI_SLUGS = [
   "naveraa-resort",
   "fiestaa-resort",
   "ankit-vista",
+  // Newly discovered (/venue-blog/ pattern).
+  "moongate-events-venue",
+  "prangana",
+  "sahasra-vaibogham-the-events-celebrations-venue",
+  "jkr-farm-and-resort",
+  "melam-wedding-hall",
+  "royal-lotus-view-restol",
+  "chathurthi-farms",
+  "sambrama-by-swanlines",
+  "nakshatra-events-venue",
+  "aaditya-greens",
+  "harikaa-resorts",
+  "ananda-farm",
 ];
 
 // Turn a /venue-details/<slug>/ URL into a { name, url } record.
@@ -277,7 +290,7 @@ async function resolveMeragiVenueList(dbVenues) {
   console.log("  Sitemap unavailable — falling back to known slugs + DB names");
   const byUrl = new Map();
   for (const slug of KNOWN_MERAGI_SLUGS) {
-    const url = `${MERAGI_DETAIL_BASE}${slug}/`;
+    const url = `${MERAGI_BLOG_BASE}${slug}/`;
     byUrl.set(url, { name: slug.replace(/-/g, " ").trim(), url });
   }
   // Also construct URLs directly from our 23 Meragi DB venue names.
