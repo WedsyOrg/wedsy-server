@@ -33,6 +33,8 @@ try {
 const puppeteer = require("puppeteer");
 
 const Venue = require("../models/Venue");
+const enrichVenue = require("../utils/enrichVenue"); // Google Places enrichment + persist
+const { callWithTool } = require("../utils/anthropic"); // Claude tool-call helper
 
 const MONGO_URI = process.env.MONGODB_ATLAS_URL || process.env.DATABASE_URL;
 if (!MONGO_URI) {
@@ -113,29 +115,29 @@ async function scrapeMeragiListing(browser) {
   const out = [];
   try {
     await page.goto(MERAGI_LISTING_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    // Wait for venue cards (anchors into /venue-catalogue/bangalore/<slug>).
+    // Wait for venue cards to render — links point at /venue-details/<slug>/.
     try {
-      await page.waitForSelector('a[href*="/venue-catalogue/bangalore/"]', { timeout: 15000 });
+      await page.waitForSelector('a[href*="/venue-details/"]', { timeout: 15000 });
     } catch (_) {
       // Selector never appeared — fall through and try whatever rendered.
     }
-    // Scroll to trigger lazy-loaded cards.
-    for (let i = 0; i < 8; i++) {
+    // Scroll a few times (2s each) to trigger lazy-loaded cards.
+    for (let i = 0; i < 4; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      await sleep(600);
+      await sleep(2000);
     }
 
     const items = await page.evaluate(() => {
       const results = [];
       const seen = new Set();
-      const anchors = Array.from(document.querySelectorAll('a[href*="/venue-catalogue/bangalore/"]'));
+      const anchors = Array.from(document.querySelectorAll('a[href*="/venue-details/"]'));
       for (const a of anchors) {
         const href = a.href;
         if (!href) continue;
         let path = "";
         try { path = new URL(href).pathname.replace(/\/+$/, ""); } catch (_) { continue; }
-        // Must be a venue detail under the listing, not the listing root itself.
-        if (!/\/venue-catalogue\/bangalore\/[^/]+$/i.test(path)) continue;
+        // Must be a venue-details page with a slug segment.
+        if (!/\/venue-details\/[^/]+$/i.test(path)) continue;
         if (seen.has(href)) continue;
         seen.add(href);
 
@@ -295,6 +297,36 @@ async function scrapeMeragiPage(browser, url) {
         // ---- Name (single h1) ----
         const name = ((document.querySelector("h1")?.innerText || "").trim().split("\n")[0]) || "";
 
+        // ---- Cover photo (og:image, else first large content image) ----
+        let coverPhoto = "";
+        const og = document.querySelector('meta[property="og:image"]');
+        if (og) coverPhoto = (og.getAttribute("content") || "").trim();
+        if (!coverPhoto) {
+          const img = Array.from(document.querySelectorAll("img")).find((im) => {
+            const s = im.src || im.getAttribute("data-src") || "";
+            return /^https?:/.test(s) && /\.(jpe?g|png|webp)(\?|$)/i.test(s) && (im.naturalWidth || 0) >= 300;
+          });
+          if (img) coverPhoto = img.src || img.getAttribute("data-src") || "";
+        }
+
+        // ---- Address (line mentioning Bangalore/Bengaluru) ----
+        let address = "";
+        const addrLine = lines.find(
+          (l) => /bangalore|bengaluru|karnataka/i.test(l) && l.length > 10 && l.length < 160,
+        );
+        if (addrLine) address = addrLine;
+
+        // ---- Description (meta description, else first substantial paragraph) ----
+        let description = "";
+        const metaDesc = document.querySelector('meta[name="description"]');
+        if (metaDesc) description = (metaDesc.getAttribute("content") || "").trim();
+        if (!description || description.length < 60) {
+          const para = Array.from(document.querySelectorAll("p"))
+            .map((p) => (p.innerText || "").trim())
+            .find((t) => t.length > 80 && t.length < 1200);
+          if (para) description = para;
+        }
+
         // ---- Amenities ----
         const amenities = {};
         for (const { key, re } of amenityRules) {
@@ -356,7 +388,7 @@ async function scrapeMeragiPage(browser, url) {
           }
         }
 
-        return { name, amenities, capacityMax, capacitySeated, spaces, perPlate, accommodation };
+        return { name, coverPhoto, address, description, amenities, capacityMax, capacitySeated, spaces, perPlate, accommodation };
       },
       AMENITY_KEYWORDS.map((a) => ({ key: a.key, source: a.re.source, flags: a.re.flags })),
       { source: INDOOR_HINT.source, flags: INDOOR_HINT.flags },
@@ -456,6 +488,95 @@ function buildMerge(venue, scraped) {
 }
 
 // ---------------------------------------------------------------------------
+// New-venue creation helpers (for Meragi venues not already in our DB)
+// ---------------------------------------------------------------------------
+
+// Generate a unique slug for a new venue, suffixing on collision.
+async function uniqueSlug(name) {
+  const base =
+    String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 80) || `venue-${Date.now()}`;
+  let slug = base;
+  let n = 2;
+  // eslint-disable-next-line no-await-in-loop
+  while (await Venue.exists({ slug })) {
+    slug = `${base}-${n}`;
+    n += 1;
+    if (n > 50) { slug = `${base}-${Date.now()}`; break; }
+  }
+  return slug;
+}
+
+// Generate a short factual description via Claude when Meragi gave us none.
+// Returns "" on any failure (callWithTool already retries + logs).
+async function generateVenueDescription(name, address) {
+  try {
+    const out = await callWithTool({
+      system:
+        "You write concise, factual 2-3 sentence descriptions of Indian wedding venues. " +
+        "No marketing superlatives, no invented amenities or capacities.",
+      messages: [
+        {
+          role: "user",
+          content:
+            `Write a 2-3 sentence description for a Bangalore wedding venue named "${name}"` +
+            `${address ? ` located at ${address}` : ""}. Keep it general and factual if specifics are unknown.`,
+        },
+      ],
+      tool: {
+        name: "venue_description",
+        description: "Return the venue description text.",
+        input_schema: {
+          type: "object",
+          properties: { description: { type: "string", description: "2-3 sentence description" } },
+          required: ["description"],
+        },
+      },
+      callerId: "enrich-meragi:description",
+    });
+    return out && out.description ? String(out.description).trim() : "";
+  } catch (_) {
+    return "";
+  }
+}
+
+// Assemble a new Venue document from scraped Meragi data. status: draft —
+// promoted to published later, after Google Places enrichment, if it has a
+// name + coverPhoto.
+async function buildNewVenueDoc(scraped, name, sourceUrl) {
+  let description = (scraped.description || "").trim();
+  if (!description) description = await generateVenueDescription(name, scraped.address);
+
+  const amenities =
+    scraped.amenities && Object.keys(scraped.amenities).length > 0 ? scraped.amenities : {};
+
+  return {
+    name,
+    slug: await uniqueSlug(name),
+    description,
+    venueType: "resort",
+    city: "Bangalore",
+    address: scraped.address || "",
+    coverPhoto: scraped.coverPhoto || "",
+    amenities,
+    spaces: Array.isArray(scraped.spaces) ? scraped.spaces : [],
+    pricing: {
+      perPlate: {
+        veg: scraped.perPlate?.veg || 0,
+        nonVeg: scraped.perPlate?.nonVeg || 0,
+      },
+    },
+    accommodation: scraped.accommodation || { available: false, totalCapacity: 0, roomTypes: [] },
+    scrapedFrom: ["Meragi"],
+    status: "draft",
+    website: sourceUrl || "",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -472,7 +593,11 @@ async function main() {
     enrichedPricing: 0,
     enrichedSpaces: 0,
     listingUrls: 0,
-    unmatched: 0,
+    existingMatched: 0,
+    existingEnriched: 0,
+    newVenuesCreated: 0,
+    googleEnriched: 0,
+    published: 0,
     notFound: 0,
     errors: 0,
   };
@@ -484,83 +609,96 @@ async function main() {
   report.amenitiesShapeFixes = await fixAmenitiesShape(DRY_RUN);
   console.log(`  amenities shape fixes:    ${report.amenitiesShapeFixes}${DRY_RUN ? " (would apply)" : ""}\n`);
 
-  // ---- PART 2: Meragi page scraping + merge ----
-  console.log("PART 2 — Meragi page scraping");
-  const venues = await Venue.find({ scrapedFrom: "Meragi" }).lean();
-  console.log(`  Meragi venues to process: ${venues.length}\n`);
+  // ---- PART 2: Meragi listing scrape → create-or-enrich every venue ----
+  console.log("PART 2 — Meragi listing scrape + create/enrich");
+
+  // Load ALL DB venues once for fuzzy name matching (not just Meragi ones —
+  // a listing venue may already exist under a different source).
+  const dbVenues = await Venue.find({}).lean();
 
   const browser = await puppeteer.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
 
-  const dryRows = []; // { name, set } collected for the dry-run table
+  const dryRows = [];       // { name, set } for the dry-run table (existing-venue updates)
+  const newVenueIds = [];   // ids of venues created this run (for enrich + publish)
 
   try {
-    // Step 1 — discover real Meragi venue URLs from the catalogue listing.
-    console.log("  Discovering real Meragi venue URLs from the listing page...");
+    // Step 1 — scrape ALL Meragi Bangalore venue URLs from the listing page.
+    console.log("  Discovering Meragi venue URLs from the listing page...");
     const listing = await scrapeMeragiListing(browser);
     report.listingUrls = listing.length;
-    console.log(`  Listing venue URLs found: ${listing.length}\n`);
+    console.log(`  Found ${listing.length} Meragi venues on listing page\n`);
 
-    for (const venue of venues) {
+    // Step 2 — visit each venue page; enrich if it exists in our DB, else create.
+    for (const item of listing) {
       report.processed++;
-      // Step 2 — match this DB venue to a listing URL by fuzzy name score.
-      let best = null;
-      let bestScore = 0;
-      for (const item of listing) {
-        const s = nameMatchScore(venue.name, item.name);
-        if (s > bestScore) { bestScore = s; best = item; }
-      }
-      if (!best || bestScore <= NAME_MATCH_THRESHOLD) {
-        report.unmatched++;
-        console.log(`  [unmatched] ${venue.name} — no Meragi listing match (best ${bestScore.toFixed(2)})`);
-        continue;
-      }
-      const url = best.url;
       try {
-        // Step 3 — scrape the matched venue page.
-        const scraped = await scrapeMeragiPage(browser, url);
+        const scraped = await scrapeMeragiPage(browser, item.url);
 
         if (scraped.__notFound) {
           report.notFound++;
-          console.log(`  [404]  ${venue.name} — ${url}`);
+          console.log(`  [404]  ${item.name} — ${item.url}`);
           continue;
         }
         if (scraped.__error) {
           report.errors++;
-          console.log(`  [err]  ${venue.name} — ${scraped.__error}`);
+          console.log(`  [err]  ${item.name} — ${scraped.__error}`);
           continue;
         }
 
-        // Verify the page is actually this venue before merging.
-        if (!isSameVenue(venue, scraped, null)) {
+        const scrapedName = (scraped.name || item.name || "").trim();
+        if (!scrapedName) {
           report.errors++;
-          console.log(`  [skip] ${venue.name} — page name "${scraped.name}" did not match`);
+          console.log(`  [err]  ${item.url} — no name found`);
           continue;
         }
 
-        const { set, enriched } = buildMerge(venue, scraped);
-        if (Object.keys(set).length === 0) {
-          console.log(`  [ok]   ${venue.name} — nothing new to add`);
-          continue;
+        // Match against existing DB venues by fuzzy name score.
+        let match = null;
+        let bestScore = 0;
+        for (const v of dbVenues) {
+          const s = nameMatchScore(scrapedName, v.name);
+          if (s > bestScore) { bestScore = s; match = v; }
         }
 
-        // Tally enrichment in both modes so the report reflects what would/did happen.
-        if (enriched.amenities) report.enrichedAmenities++;
-        if (enriched.pricing) report.enrichedPricing++;
-        if (enriched.spaces) report.enrichedSpaces++;
-
-        if (DRY_RUN) {
-          dryRows.push({ name: venue.name, set });
-          console.log(`  [dry]  ${venue.name} — would set: ${Object.keys(set).join(", ")}`);
+        if (match && bestScore > NAME_MATCH_THRESHOLD) {
+          // ---- Existing venue → additive enrich ----
+          report.existingMatched++;
+          const { set, enriched } = buildMerge(match, scraped);
+          if (Object.keys(set).length === 0) {
+            console.log(`  [ok]   ${scrapedName} — exists, nothing new`);
+          } else {
+            if (enriched.amenities) report.enrichedAmenities++;
+            if (enriched.pricing) report.enrichedPricing++;
+            if (enriched.spaces) report.enrichedSpaces++;
+            report.existingEnriched++;
+            if (DRY_RUN) {
+              dryRows.push({ name: match.name, set });
+              console.log(`  [dry]  ${scrapedName} — would enrich: ${Object.keys(set).join(", ")}`);
+            } else {
+              await Venue.updateOne({ _id: match._id }, { $set: set });
+              console.log(`  [+]    ${scrapedName} — enriched: ${Object.keys(set).join(", ")}`);
+            }
+          }
         } else {
-          await Venue.updateOne({ _id: venue._id }, { $set: set });
-          console.log(`  [+]    ${venue.name} — ${Object.keys(set).join(", ")}`);
+          // ---- Not in DB → create new draft venue ----
+          report.newVenuesCreated++;
+          if (DRY_RUN) {
+            console.log(`  [dry]  ${scrapedName} — would CREATE new draft venue`);
+          } else {
+            const doc = await buildNewVenueDoc(scraped, scrapedName, item.url);
+            const created = await Venue.create(doc);
+            newVenueIds.push(created._id);
+            // Keep the in-memory list current so later listing dupes match this one.
+            dbVenues.push({ _id: created._id, name: created.name });
+            console.log(`  [new]  ${scrapedName} — created draft (${created._id})`);
+          }
         }
       } catch (e) {
         report.errors++;
-        console.log(`  [err]  ${venue.name} — ${e.message}`);
+        console.log(`  [err]  ${item.name} — ${e.message}`);
       }
       await sleep(PAGE_DELAY_MS);
     }
@@ -568,16 +706,50 @@ async function main() {
     await browser.close();
   }
 
+  // Step 3 — Google Places enrichment on new venues, then publish those that
+  // ended up with a name + coverPhoto. (Writes — skipped entirely in dry-run.)
+  if (DRY_RUN) {
+    console.log(`\n  [dry] would Google-enrich + publish ${report.newVenuesCreated} new venue(s)`);
+  } else if (newVenueIds.length > 0) {
+    console.log(`\n  Google Places enrichment on ${newVenueIds.length} new venue(s)...`);
+    for (const id of newVenueIds) {
+      try {
+        await enrichVenue(id);
+        report.googleEnriched++;
+      } catch (e) {
+        console.log(`  [google-err] ${id} — ${e.message}`);
+      }
+      await sleep(PAGE_DELAY_MS);
+    }
+    // Publish new venues that now have a name + coverPhoto.
+    for (const id of newVenueIds) {
+      try {
+        const v = await Venue.findById(id).select("name coverPhoto").lean();
+        if (v && v.name && v.coverPhoto) {
+          await Venue.updateOne({ _id: id }, { $set: { status: "published" } });
+          report.published++;
+        }
+      } catch (e) {
+        console.log(`  [publish-err] ${id} — ${e.message}`);
+      }
+    }
+    console.log(`  Published ${report.published}/${newVenueIds.length} new venue(s)`);
+  }
+
   // ---- PART 3: report ----
   console.log("\n──────── REPORT ────────");
-  console.log(`Total Meragi venues processed:   ${report.processed}`);
-  console.log(`Meragi listing URLs discovered:  ${report.listingUrls}`);
-  console.log(`Venues unmatched (skipped):      ${report.unmatched}`);
+  console.log(`Meragi listing URLs found:       ${report.listingUrls}`);
+  console.log(`Venue pages processed:           ${report.processed}`);
+  console.log(`Existing venues matched:         ${report.existingMatched}`);
+  console.log(`Existing venues enriched:        ${report.existingEnriched}`);
+  console.log(`New venues created from Meragi:  ${report.newVenuesCreated}`);
+  console.log(`New venues Google-enriched:      ${report.googleEnriched}`);
+  console.log(`New venues published:            ${report.published}`);
   console.log(`scrapedFrom fixes applied:       ${report.scrapedFromFixes}`);
   console.log(`amenities shape fixes applied:   ${report.amenitiesShapeFixes}`);
-  console.log(`Venues enriched (amenities):     ${report.enrichedAmenities}`);
-  console.log(`Venues enriched (pricing):       ${report.enrichedPricing}`);
-  console.log(`Venues enriched (spaces):        ${report.enrichedSpaces}`);
+  console.log(`  ↳ enriched amenities:          ${report.enrichedAmenities}`);
+  console.log(`  ↳ enriched pricing:            ${report.enrichedPricing}`);
+  console.log(`  ↳ enriched spaces:             ${report.enrichedSpaces}`);
   console.log(`Pages not found (404):           ${report.notFound}`);
   console.log(`Errors / skips:                  ${report.errors}`);
   console.log("────────────────────────");
