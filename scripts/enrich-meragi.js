@@ -21,6 +21,7 @@
 //
 require("dotenv").config();
 const mongoose = require("mongoose");
+const axios = require("axios");
 
 // Fail fast with a friendly message if puppeteer isn't installed (it's not a
 // committed dependency on every branch).
@@ -103,70 +104,120 @@ function haversineMeters(lng1, lat1, lng2, lat2) {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
-// Discover real Meragi venue URLs from the Bangalore catalogue listing page.
-// Meragi's detail-page slugs don't match our venue names, so we must read the
-// actual hrefs off the listing rather than constructing URLs. Returns an array
-// of { name, url }.
-const MERAGI_LISTING_URL = "https://www.meragi.com/venue-catalogue/bangalore/";
+// Meragi venue detail pages live at /venue-details/<slug>/. Construct the URL
+// for a venue from its name (slugify: strip specials, spaces→hyphens, collapse,
+// trim).
+const MERAGI_DETAIL_BASE = "https://www.meragi.com/venue-details/";
+const MERAGI_SITEMAP_URL = "https://www.meragi.com/sitemap.xml";
 
-async function scrapeMeragiListing(browser) {
-  const page = await browser.newPage();
-  await page.setUserAgent(UA);
-  const out = [];
+function buildMeragiUrl(name) {
+  return (
+    MERAGI_DETAIL_BASE +
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, "") // remove special chars
+      .replace(/\s+/g, "-") // spaces to hyphens
+      .replace(/-+/g, "-") // collapse multiple hyphens
+      .replace(/^-|-$/g, "") + // trim leading/trailing hyphens
+    "/"
+  );
+}
+
+// Known Meragi Bangalore slugs (from prior search results) — fallback when the
+// sitemap can't be fetched/parsed.
+const KNOWN_MERAGI_SLUGS = [
+  "eden-farms",
+  "royalton-leisure-jiva",
+  "tridalam",
+  "ananda-farms",
+  "the-lily-pond",
+  "naveraa-resort-and-event-centre",
+  "milana-greens",
+  "brindavan-bliss",
+  "devprayag",
+  "socials-farm",
+  "olde-bangalore-resort",
+  "srishti-vilasa",
+  "suvi-retreat",
+  "magnolia-by-jade",
+  "fiestaa-resort-n-events-venue",
+  "mlr-convention-centre-j-p-nagar",
+  "the-park-bangalore",
+  "gokulam-grand-hotel-and-spa",
+  "chairmans-jade-devanahalli",
+  "ankit-vista-green-village-resorts-and-hotels",
+  "royalton-leisure-aria",
+  "the-quad-club-resort-and-spa",
+  "mantra-the-luxury-wedding-destination",
+];
+
+// Turn a /venue-details/<slug>/ URL into a { name, url } record.
+function urlToVenueRecord(url) {
+  let slug = "";
   try {
-    await page.goto(MERAGI_LISTING_URL, { waitUntil: "networkidle2", timeout: 60000 });
-    // Wait for venue cards to render — links point at /venue-details/<slug>/.
-    try {
-      await page.waitForSelector('a[href*="/venue-details/"]', { timeout: 15000 });
-    } catch (_) {
-      // Selector never appeared — fall through and try whatever rendered.
-    }
-    // Scroll a few times (2s each) to trigger lazy-loaded cards.
-    for (let i = 0; i < 4; i++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      await sleep(2000);
-    }
-
-    const items = await page.evaluate(() => {
-      const results = [];
-      const seen = new Set();
-      const anchors = Array.from(document.querySelectorAll('a[href*="/venue-details/"]'));
-      for (const a of anchors) {
-        const href = a.href;
-        if (!href) continue;
-        let path = "";
-        try { path = new URL(href).pathname.replace(/\/+$/, ""); } catch (_) { continue; }
-        // Must be a venue-details page with a slug segment.
-        if (!/\/venue-details\/[^/]+$/i.test(path)) continue;
-        if (seen.has(href)) continue;
-        seen.add(href);
-
-        // Name: anchor text, else nearest heading/img alt within the card, else slug.
-        let name = (a.innerText || "").trim().split("\n")[0];
-        if (!name) {
-          const card = a.closest('[class*="card"], li, article, div') || a;
-          const h = card.querySelector("h1, h2, h3, h4");
-          if (h) name = (h.innerText || "").trim();
-        }
-        if (!name) {
-          const img = a.querySelector("img");
-          if (img) name = (img.getAttribute("alt") || "").trim();
-        }
-        if (!name) {
-          const slug = path.split("/").filter(Boolean).pop() || "";
-          name = slug.replace(/-/g, " ").trim();
-        }
-        if (name) results.push({ name, url: href });
-      }
-      return results;
-    });
-    out.push(...items);
-  } catch (err) {
-    console.warn(`  [listing] error: ${err.message}`);
-  } finally {
-    await page.close();
+    slug = new URL(url).pathname.replace(/\/+$/, "").split("/").filter(Boolean).pop() || "";
+  } catch (_) {
+    slug = "";
   }
-  return out;
+  return { name: slug.replace(/-/g, " ").trim(), url };
+}
+
+// Fetch ALL Meragi venue URLs from their sitemap (axios, no Puppeteer).
+// Handles a sitemap-index (one level of nested sitemaps). Returns [{name,url}].
+async function fetchSitemapVenueUrls() {
+  const venueUrls = new Set();
+
+  async function loadSitemap(url, depth) {
+    try {
+      const res = await axios.get(url, { timeout: 30000, headers: { "User-Agent": UA } });
+      const xml = typeof res.data === "string" ? res.data : String(res.data);
+      const locs = (xml.match(/<loc>\s*([^<\s]+)\s*<\/loc>/gi) || []).map((m) =>
+        m.replace(/<\/?loc>/gi, "").trim(),
+      );
+      locs.filter((u) => /\/venue-details\//i.test(u)).forEach((u) => venueUrls.add(u));
+      // Recurse one level into nested sitemaps (sitemap-index files).
+      if (depth < 1) {
+        const subs = locs.filter((u) => /\.xml(\?|$)/i.test(u));
+        for (const sub of subs) {
+          // eslint-disable-next-line no-await-in-loop
+          await loadSitemap(sub, depth + 1);
+        }
+      }
+    } catch (e) {
+      console.warn(`  [sitemap] ${url} — ${e.message}`);
+    }
+  }
+
+  await loadSitemap(MERAGI_SITEMAP_URL, 0);
+  return Array.from(venueUrls).map(urlToVenueRecord);
+}
+
+// Resolve the working list of Meragi venues to scrape: sitemap first, else the
+// known-slug fallback (also merged with URLs built from our own DB Meragi
+// venue names). Returns a deduped [{ name, url }].
+async function resolveMeragiVenueList(dbVenues) {
+  let list = await fetchSitemapVenueUrls();
+  if (list.length > 0) {
+    console.log(`  Sitemap: ${list.length} venue URLs`);
+    return list;
+  }
+
+  console.log("  Sitemap unavailable — falling back to known slugs + DB names");
+  const byUrl = new Map();
+  for (const slug of KNOWN_MERAGI_SLUGS) {
+    const url = `${MERAGI_DETAIL_BASE}${slug}/`;
+    byUrl.set(url, { name: slug.replace(/-/g, " ").trim(), url });
+  }
+  // Also construct URLs directly from our 23 Meragi DB venue names.
+  for (const v of dbVenues) {
+    if (Array.isArray(v.scrapedFrom) && v.scrapedFrom.includes("Meragi") && v.name) {
+      const url = buildMeragiUrl(v.name);
+      if (!byUrl.has(url)) byUrl.set(url, { name: v.name, url });
+    }
+  }
+  list = Array.from(byUrl.values());
+  console.log(`  Fallback: ${list.length} venue URLs`);
+  return list;
 }
 
 // Map free-text amenity labels found on a Meragi page → Venue.amenities keys.
@@ -625,11 +676,12 @@ async function main() {
   const newVenueIds = [];   // ids of venues created this run (for enrich + publish)
 
   try {
-    // Step 1 — scrape ALL Meragi Bangalore venue URLs from the listing page.
-    console.log("  Discovering Meragi venue URLs from the listing page...");
-    const listing = await scrapeMeragiListing(browser);
+    // Step 1 — resolve ALL Meragi venue URLs: sitemap first (axios), else the
+    // known-slug + DB-name fallback. No Puppeteer needed for discovery.
+    console.log("  Resolving Meragi venue URLs (sitemap → fallback)...");
+    const listing = await resolveMeragiVenueList(dbVenues);
     report.listingUrls = listing.length;
-    console.log(`  Found ${listing.length} Meragi venues on listing page\n`);
+    console.log(`  Found ${listing.length} Meragi venues to scrape\n`);
 
     // Step 2 — visit each venue page; enrich if it exists in our DB, else create.
     for (const item of listing) {
