@@ -123,6 +123,66 @@ function buildMeragiUrl(name) {
   );
 }
 
+// Slugify a string the same way buildMeragiUrl does (without the base/trailing).
+function slugify(s) {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+// Candidate slug variants to try when the primary URL 404s. Order matters —
+// most-likely first.
+function buildSlugVariants(name) {
+  const variants = [];
+  const add = (s) => {
+    const slug = slugify(s);
+    if (slug && !variants.includes(slug)) variants.push(slug);
+  };
+  add(name);                                    // 1. standard
+  add(name.replace(/&/g, " and "));             // 2. "and" instead of "&"
+  add(name.replace(/^\s*(the|a|an)\s+/i, ""));  // 3. drop leading article
+  add(name.split(/\s+/).slice(0, 4).join(" ")); // 4. first 4 words
+  add(name.split(/\s+/).slice(0, 3).join(" ")); //    first 3 words
+  return variants;
+}
+
+// HEAD-probe a URL; true on a 2xx (following redirects). Never throws.
+async function headOk(url) {
+  try {
+    const res = await axios.head(url, {
+      timeout: 15000,
+      maxRedirects: 5,
+      headers: { "User-Agent": UA },
+      validateStatus: () => true,
+    });
+    return res.status >= 200 && res.status < 300;
+  } catch (_) {
+    return false;
+  }
+}
+
+// Resolve a working /venue-details/ URL for a venue: probe the preferred URL,
+// then each slug variant, via cheap HEAD requests — so Puppeteer is only
+// launched for a URL that actually exists. Returns the URL or null.
+async function resolveWorkingMeragiUrl(name, preferredUrl) {
+  const candidates = [];
+  if (preferredUrl) candidates.push(preferredUrl);
+  for (const slug of buildSlugVariants(name || "")) {
+    candidates.push(`${MERAGI_DETAIL_BASE}${slug}/`);
+  }
+  const seen = new Set();
+  for (const url of candidates) {
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    // eslint-disable-next-line no-await-in-loop
+    if (await headOk(url)) return url;
+  }
+  return null;
+}
+
 // Known Meragi Bangalore slugs (from prior search results) — fallback when the
 // sitemap can't be fetched/parsed.
 const KNOWN_MERAGI_SLUGS = [
@@ -336,8 +396,13 @@ async function scrapeMeragiPage(browser, url) {
     await page.evaluate(() => window.scrollBy(0, 1200));
     await sleep(400);
 
+    // Primary name source: the <title> tag, e.g.
+    // "Eden Farms - House of Celebration | Meragi" → "Eden Farms".
+    const pageTitle = await page.title();
+    const nameFromTitle = (pageTitle || "").split(/\s*[-|]\s*/)[0].trim();
+
     const data = await page.evaluate(
-      (AMENITY_SRC, INDOOR_SRC, OUTDOOR_SRC) => {
+      (AMENITY_SRC, INDOOR_SRC, OUTDOOR_SRC, NAME_FROM_TITLE) => {
         const amenityRules = AMENITY_SRC.map((a) => ({ key: a.key, re: new RegExp(a.source, a.flags) }));
         const indoorHint = new RegExp(INDOOR_SRC.source, INDOOR_SRC.flags);
         const outdoorHint = new RegExp(OUTDOOR_SRC.source, OUTDOOR_SRC.flags);
@@ -345,8 +410,12 @@ async function scrapeMeragiPage(browser, url) {
         const bodyText = (document.body.innerText || "").replace(/ /g, " ");
         const lines = bodyText.split("\n").map((l) => l.trim()).filter(Boolean);
 
-        // ---- Name (single h1) ----
-        const name = ((document.querySelector("h1")?.innerText || "").trim().split("\n")[0]) || "";
+        // ---- Name ----
+        // Prefer the title-derived name; fall back to the single h1. Strip a
+        // leading "Welcome to " that some detail pages prepend.
+        const h1Name = (document.querySelector("h1")?.innerText || "").trim().split("\n")[0] || "";
+        let name = (NAME_FROM_TITLE || h1Name || "").trim();
+        name = name.replace(/^Welcome\s+to\s+/i, "").trim();
 
         // ---- Cover photo (og:image, else first large content image) ----
         let coverPhoto = "";
@@ -444,6 +513,7 @@ async function scrapeMeragiPage(browser, url) {
       AMENITY_KEYWORDS.map((a) => ({ key: a.key, source: a.re.source, flags: a.re.flags })),
       { source: INDOOR_HINT.source, flags: INDOOR_HINT.flags },
       { source: OUTDOOR_HINT.source, flags: OUTDOOR_HINT.flags },
+      nameFromTitle,
     );
 
     return data;
@@ -687,11 +757,19 @@ async function main() {
     for (const item of listing) {
       report.processed++;
       try {
-        const scraped = await scrapeMeragiPage(browser, item.url);
+        // HEAD-probe the URL + slug variants before launching Puppeteer, so we
+        // don't waste a browser navigation on a 404.
+        const workingUrl = await resolveWorkingMeragiUrl(item.name, item.url);
+        if (!workingUrl) {
+          report.notFound++;
+          console.log(`  [404]  ${item.name} — no working URL (tried variants)`);
+          continue;
+        }
+        const scraped = await scrapeMeragiPage(browser, workingUrl);
 
         if (scraped.__notFound) {
           report.notFound++;
-          console.log(`  [404]  ${item.name} — ${item.url}`);
+          console.log(`  [404]  ${item.name} — ${workingUrl}`);
           continue;
         }
         if (scraped.__error) {
