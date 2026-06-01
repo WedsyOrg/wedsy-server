@@ -100,7 +100,7 @@ function buildMeragiUrl(venue) {
   const sites = [venue.website, venue.contact && venue.contact.website].filter(Boolean);
   const direct = sites.find((s) => /meragi\.com/i.test(s));
   if (direct) return direct;
-  return `https://meragi.com/venues/bangalore/${generateSlug(venue.name)}`;
+  return `https://www.meragi.com/venue-catalogue/bangalore/${generateSlug(venue.name)}`;
 }
 
 // Map free-text amenity labels found on a Meragi page → Venue.amenities keys.
