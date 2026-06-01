@@ -21,6 +21,15 @@
 //
 require("dotenv").config();
 const mongoose = require("mongoose");
+
+// Fail fast with a friendly message if puppeteer isn't installed (it's not a
+// committed dependency on every branch).
+try {
+  require("puppeteer");
+} catch (e) {
+  console.error("puppeteer not installed. Run: npm install puppeteer");
+  process.exit(1);
+}
 const puppeteer = require("puppeteer");
 
 const Venue = require("../models/Venue");
@@ -60,26 +69,24 @@ function normalizeName(name) {
     .trim();
 }
 
-// Meragi slug per spec: lowercase, non-alnum → single dash, trim edge dashes.
-function generateSlug(name) {
-  return String(name || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
-}
-
-// Loose name match: substring either way, else positional char-overlap ratio.
-// Mirrors the fuzzyMatch heuristic used on the venues listing page.
-function fuzzyMatch(input, target) {
+// Name-match score in [0, 1]: 1.0 for substring-either-way, else positional
+// char-overlap ratio. Used to match DB venues against scraped listing names.
+function nameMatchScore(input, target) {
   const a = normalizeName(input).replace(/\s+/g, "");
   const b = normalizeName(target).replace(/\s+/g, "");
-  if (!a || !b) return false;
-  if (b.includes(a) || a.includes(b)) return true;
+  if (!a || !b) return 0;
+  if (b.includes(a) || a.includes(b)) return 1;
   let matches = 0;
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
     if (a[i] === b[i]) matches++;
   }
-  return matches / Math.max(a.length, b.length) > NAME_MATCH_THRESHOLD;
+  return matches / Math.max(a.length, b.length);
+}
+
+// Loose boolean name match (≥ threshold). Used to re-verify a scraped detail
+// page actually corresponds to the DB venue before merging.
+function fuzzyMatch(input, target) {
+  return nameMatchScore(input, target) > NAME_MATCH_THRESHOLD;
 }
 
 // Great-circle distance in metres between two [lng, lat] pairs.
@@ -94,13 +101,70 @@ function haversineMeters(lng1, lat1, lng2, lat2) {
   return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
-// Build the Meragi URL for a venue: prefer an existing meragi.com website,
-// otherwise fall back to the city/slug pattern.
-function buildMeragiUrl(venue) {
-  const sites = [venue.website, venue.contact && venue.contact.website].filter(Boolean);
-  const direct = sites.find((s) => /meragi\.com/i.test(s));
-  if (direct) return direct;
-  return `https://www.meragi.com/venue-catalogue/bangalore/${generateSlug(venue.name)}`;
+// Discover real Meragi venue URLs from the Bangalore catalogue listing page.
+// Meragi's detail-page slugs don't match our venue names, so we must read the
+// actual hrefs off the listing rather than constructing URLs. Returns an array
+// of { name, url }.
+const MERAGI_LISTING_URL = "https://www.meragi.com/venue-catalogue/bangalore/";
+
+async function scrapeMeragiListing(browser) {
+  const page = await browser.newPage();
+  await page.setUserAgent(UA);
+  const out = [];
+  try {
+    await page.goto(MERAGI_LISTING_URL, { waitUntil: "networkidle2", timeout: 60000 });
+    // Wait for venue cards (anchors into /venue-catalogue/bangalore/<slug>).
+    try {
+      await page.waitForSelector('a[href*="/venue-catalogue/bangalore/"]', { timeout: 15000 });
+    } catch (_) {
+      // Selector never appeared — fall through and try whatever rendered.
+    }
+    // Scroll to trigger lazy-loaded cards.
+    for (let i = 0; i < 8; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
+      await sleep(600);
+    }
+
+    const items = await page.evaluate(() => {
+      const results = [];
+      const seen = new Set();
+      const anchors = Array.from(document.querySelectorAll('a[href*="/venue-catalogue/bangalore/"]'));
+      for (const a of anchors) {
+        const href = a.href;
+        if (!href) continue;
+        let path = "";
+        try { path = new URL(href).pathname.replace(/\/+$/, ""); } catch (_) { continue; }
+        // Must be a venue detail under the listing, not the listing root itself.
+        if (!/\/venue-catalogue\/bangalore\/[^/]+$/i.test(path)) continue;
+        if (seen.has(href)) continue;
+        seen.add(href);
+
+        // Name: anchor text, else nearest heading/img alt within the card, else slug.
+        let name = (a.innerText || "").trim().split("\n")[0];
+        if (!name) {
+          const card = a.closest('[class*="card"], li, article, div') || a;
+          const h = card.querySelector("h1, h2, h3, h4");
+          if (h) name = (h.innerText || "").trim();
+        }
+        if (!name) {
+          const img = a.querySelector("img");
+          if (img) name = (img.getAttribute("alt") || "").trim();
+        }
+        if (!name) {
+          const slug = path.split("/").filter(Boolean).pop() || "";
+          name = slug.replace(/-/g, " ").trim();
+        }
+        if (name) results.push({ name, url: href });
+      }
+      return results;
+    });
+    out.push(...items);
+  } catch (err) {
+    console.warn(`  [listing] error: ${err.message}`);
+  } finally {
+    await page.close();
+  }
+  return out;
 }
 
 // Map free-text amenity labels found on a Meragi page → Venue.amenities keys.
@@ -407,6 +471,8 @@ async function main() {
     enrichedAmenities: 0,
     enrichedPricing: 0,
     enrichedSpaces: 0,
+    listingUrls: 0,
+    unmatched: 0,
     notFound: 0,
     errors: 0,
   };
@@ -431,10 +497,29 @@ async function main() {
   const dryRows = []; // { name, set } collected for the dry-run table
 
   try {
+    // Step 1 — discover real Meragi venue URLs from the catalogue listing.
+    console.log("  Discovering real Meragi venue URLs from the listing page...");
+    const listing = await scrapeMeragiListing(browser);
+    report.listingUrls = listing.length;
+    console.log(`  Listing venue URLs found: ${listing.length}\n`);
+
     for (const venue of venues) {
       report.processed++;
-      const url = buildMeragiUrl(venue);
+      // Step 2 — match this DB venue to a listing URL by fuzzy name score.
+      let best = null;
+      let bestScore = 0;
+      for (const item of listing) {
+        const s = nameMatchScore(venue.name, item.name);
+        if (s > bestScore) { bestScore = s; best = item; }
+      }
+      if (!best || bestScore <= NAME_MATCH_THRESHOLD) {
+        report.unmatched++;
+        console.log(`  [unmatched] ${venue.name} — no Meragi listing match (best ${bestScore.toFixed(2)})`);
+        continue;
+      }
+      const url = best.url;
       try {
+        // Step 3 — scrape the matched venue page.
         const scraped = await scrapeMeragiPage(browser, url);
 
         if (scraped.__notFound) {
@@ -486,6 +571,8 @@ async function main() {
   // ---- PART 3: report ----
   console.log("\n──────── REPORT ────────");
   console.log(`Total Meragi venues processed:   ${report.processed}`);
+  console.log(`Meragi listing URLs discovered:  ${report.listingUrls}`);
+  console.log(`Venues unmatched (skipped):      ${report.unmatched}`);
   console.log(`scrapedFrom fixes applied:       ${report.scrapedFromFixes}`);
   console.log(`amenities shape fixes applied:   ${report.amenitiesShapeFixes}`);
   console.log(`Venues enriched (amenities):     ${report.enrichedAmenities}`);
