@@ -24,8 +24,18 @@ const updateAssignedToById = async (_id, assignedTo, updatedBy) => {
   );
 };
 
+// Set arbitrary fields on an enquiry by _id. Returns the updated document or null.
+const updateFieldsById = async (_id, fields) => {
+  return await Enquiry.findByIdAndUpdate(
+    _id,
+    { $set: fields },
+    { new: true, runValidators: true, context: "query" }
+  );
+};
+
 module.exports = {
   findById,
   updateStageById,
   updateAssignedToById,
+  updateFieldsById,
 };

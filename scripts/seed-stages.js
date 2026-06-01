@@ -14,6 +14,7 @@ const SEED = [
   { name: "New", slug: "new", order: 0, color: "#4B1528", category: "open", isSystem: true },
   { name: "Contacted", slug: "contacted", order: 1, color: "#8B5A00", category: "open", isSystem: false },
   { name: "Meeting Scheduled", slug: "meeting_scheduled", order: 2, color: "#2D5F3F", category: "open", isSystem: false },
+  { name: "Lost", slug: "lost", order: 99, color: "#8B0000", category: "lost", isSystem: true },
 ];
 (async () => {
   await mongoose.connect(dbUrl);
