@@ -113,6 +113,9 @@ const VenueSchema = new mongoose.Schema({
     website: { type: String, default: "" },
     bestTimeToReach: { type: String, default: "anytime" },
     languages: [String],
+    whatsappPhone: { type: String },
+    whatsappSameAsPrimary: { type: Boolean, default: false },
+    phones: [{ number: { type: String }, name: { type: String } }],
   },
   blockedDates: [String],
   // backward compat
