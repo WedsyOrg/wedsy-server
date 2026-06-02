@@ -15,6 +15,8 @@ const SCALAR_TOP_LEVEL = [
   "name", "tagline", "description", "venueType", "established",
   "city", "address", "phone", "email", "website",
   "coverPhoto", "featurePhoto",
+  // Places-enrich location fields (additive)
+  "state", "pincode", "googlePlaceId", "formattedAddress",
 ];
 
 const ARRAY_TOP_LEVEL = ["areas", "blockedDates", "spaces"];
@@ -66,6 +68,11 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
   }
   for (const k of ARRAY_TOP_LEVEL) {
     if (Array.isArray(updates[k])) $set[k] = updates[k];
+  }
+
+  // Places-enrich: persist the GeoJSON location object when provided.
+  if (updates.location && typeof updates.location === "object") {
+    $set.location = updates.location;
   }
 
   if (updates.accommodation && typeof updates.accommodation === "object") {

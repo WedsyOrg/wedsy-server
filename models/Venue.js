@@ -11,6 +11,9 @@ const VenueSchema = new mongoose.Schema({
   address: { type: String, default: "" },
   location: { type: { type: String }, coordinates: [Number] },
   areas: [{ type: String }],
+  state: { type: String },
+  pincode: { type: String },
+  formattedAddress: { type: String },
   spaces: [{
     name: String,
     type: { type: String, enum: ["indoor", "outdoor", "semi-outdoor"] },
