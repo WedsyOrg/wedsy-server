@@ -1,7 +1,7 @@
 const jwt = require("jsonwebtoken");
 
-// Accepts EITHER an admin token (type "admin") OR a venue_owner token
-// (type "venue_owner"). Mirrors venueOwnerAuth's style and secret.
+// Accepts EITHER an admin token (payload.isAdmin === true, matching CheckAdminLogin)
+// OR a venue_owner token (type "venue_owner"). Mirrors venueOwnerAuth's style and secret.
 function adminOrVenueOwnerAuth(req, res, next) {
   if (!req.headers.authorization) {
     return res.status(401).json({ message: "No Auth Token" });
@@ -14,7 +14,7 @@ function adminOrVenueOwnerAuth(req, res, next) {
     if (err) {
       return res.status(401).json({ message: "Invalid token", error: err.message });
     }
-    if (payload && payload.type === "admin") {
+    if (payload && payload.isAdmin === true) {
       req.admin = payload;
       return next();
     }

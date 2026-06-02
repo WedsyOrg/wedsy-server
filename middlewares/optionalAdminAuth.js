@@ -9,7 +9,7 @@ function optionalAdminAuth(req, res, next) {
     const token = req.headers.authorization.split(" ")[1];
     if (!token || token === "null") return next();
     jwt.verify(token, process.env.JWT_SECRET, function (err, payload) {
-      if (!err && payload && payload.type === "admin") {
+      if (!err && payload && payload.isAdmin === true) {
         req.admin = payload;
       }
       // Always continue — invalid / non-admin tokens are silently ignored.
