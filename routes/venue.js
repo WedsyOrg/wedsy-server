@@ -7,11 +7,13 @@ const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
+const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
+const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
 const { CheckLogin } = require("../middlewares/auth");
 
-router.get("/", getVenues);
+router.get("/", optionalAdminAuth, getVenues);
 router.get("/:slug", getVenueBySlug);
-router.put("/:slug", venueOwnerAuth, updateVenue);
+router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
 router.post("/:slug/enquiry", createEnquiry);
 router.post("/:slug/enquiries", createEnquiry);
 router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
