@@ -6,21 +6,30 @@ const findById = async (_id) => {
 };
 
 // Update an enquiry's stage by _id. Returns the updated document or null.
-const updateStageById = async (_id, stage) => {
+const updateStageById = async (_id, stage, updatedBy) => {
   return await Enquiry.findByIdAndUpdate(
     _id,
-    { stage },
-    { new: true, runValidators: true }
+    { stage, updatedBy },
+    { new: true, runValidators: true, context: "query" }
   );
 };
 
 // Update an enquiry's assignedTo by _id. assignedTo can be an Admin _id or null.
 // Returns the updated document or null.
-const updateAssignedToById = async (_id, assignedTo) => {
+const updateAssignedToById = async (_id, assignedTo, updatedBy) => {
   return await Enquiry.findByIdAndUpdate(
     _id,
-    { assignedTo },
-    { new: true, runValidators: true }
+    { assignedTo, updatedBy },
+    { new: true, runValidators: true, context: "query" }
+  );
+};
+
+// Set arbitrary fields on an enquiry by _id. Returns the updated document or null.
+const updateFieldsById = async (_id, fields) => {
+  return await Enquiry.findByIdAndUpdate(
+    _id,
+    { $set: fields },
+    { new: true, runValidators: true, context: "query" }
   );
 };
 
@@ -28,4 +37,5 @@ module.exports = {
   findById,
   updateStageById,
   updateAssignedToById,
+  updateFieldsById,
 };

@@ -69,7 +69,12 @@ router.use("/settlements", require("./settlements"));
 router.use("/stats", require("./stats"));
 router.use("/vendor-review", require("./vendor-review"));
 router.use("/admin", require("./admin"));
+router.use("/department", require("./department"));
+router.use("/role", require("./role"));
+router.use("/stages", require("./stage"));
+router.use("/activity", require("./activity"));
 router.use("/venues", require("./venue"));
+router.use("/places", require("./places"));
 router.use("/venue-owner", require("./venueOwner"));
 router.use("/conversations", require("./conversation"));
 

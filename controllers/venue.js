@@ -3,8 +3,11 @@ const VenueService = require("../services/VenueService");
 const getVenues = async (req, res) => {
   try {
     const { status, limit = 100, skip = 0, zone, area } = req.query;
+    // Admin: use the status query as-is (undefined = all statuses, no filter).
+    // Non-admin (public/couples): keep the current default-to-published behavior.
+    const effectiveStatus = req.admin ? status : status || "published";
     const result = await VenueService.getAllVenues({
-      status: status || "published",
+      status: effectiveStatus,
       limit: parseInt(limit),
       skip: parseInt(skip),
       zone: typeof zone === "string" && zone.trim() ? zone.trim() : undefined,
@@ -32,9 +35,19 @@ const getVenueBySlug = async (req, res) => {
 const updateVenue = async (req, res) => {
   try {
     const { slug } = req.params;
+    // Admin: bypass the venue-ownership check by resolving the venue's own _id and
+    // passing it as the owner id (so the service check passes) — no service change.
+    // Non-admin (venue_owner): keep the existing ownership check via req.venueOwner.venueId.
+    let ownerVenueId;
+    if (req.admin) {
+      const existing = await VenueService.getVenueBySlug(slug);
+      ownerVenueId = existing._id;
+    } else {
+      ownerVenueId = req.venueOwner.venueId;
+    }
     const venue = await VenueService.updateVenueBySlug(
       slug,
-      req.venueOwner.venueId,
+      ownerVenueId,
       req.body || {}
     );
     return res.status(200).json({ venue });

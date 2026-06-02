@@ -270,11 +270,21 @@ const GetAll = async (req, res) => {
       eventMonth,
       bidRequest,
       storeAccess,
+      assignedTo,
+      dateFrom,
+      dateTo,
     } = req.query;
     const query = {};
     const sortQuery = {};
     if (source) {
       query.source = source;
+    }
+    if (assignedTo) {
+      if (assignedTo === "unassigned") {
+        query.assignedTo = null;
+      } else {
+        query.assignedTo = assignedTo;
+      }
     }
     if (date) {
       const startDate = new Date(date);
@@ -285,6 +295,26 @@ const GetAll = async (req, res) => {
         $gte: startDate,
         $lt: endDate,
       };
+    }
+    if (!date && (dateFrom || dateTo)) {
+      const range = {};
+      if (dateFrom) {
+        const start = new Date(dateFrom);
+        if (!isNaN(start.getTime())) {
+          start.setHours(0, 0, 0, 0);
+          range.$gte = start;
+        }
+      }
+      if (dateTo) {
+        const end = new Date(dateTo);
+        if (!isNaN(end.getTime())) {
+          end.setHours(23, 59, 59, 999);
+          range.$lte = end;
+        }
+      }
+      if (Object.keys(range).length > 0) {
+        query.createdAt = range;
+      }
     }
     if (search) {
       const safeSearch = escapeRegExp(search);
@@ -620,14 +650,50 @@ const Update = (req, res) => {
 // UPDATE: previously this endpoint only updated the lead name.
 // Now it can also persist selected fields under `additionalInfo` via `additionalInfoUpdates`,
 // which is used by the admin lead-details page for things like Store Access and Client Budget.
-const UpdateLead = (req, res) => {
+const UpdateLead = async (req, res) => {
   const { _id } = req.params;
-  const { name, additionalInfoUpdates } = req.body;
+  const { name, phone, email, marketingSource, additionalInfoUpdates } =
+    req.body;
 
   const updateFields = {};
 
   if (name) {
     updateFields.name = name;
+  }
+
+  if (typeof phone === "string" && phone.trim().length > 0) {
+    updateFields.phone = phone.trim();
+  }
+
+  // Defensive app-layer dedup: schema's `unique: true` on phone is not
+  // enforced at the DB layer (existing duplicates in collection).
+  if (updateFields.phone) {
+    try {
+      const existing = await Enquiry.findOne({
+        phone: updateFields.phone,
+        _id: { $ne: _id },
+      }).lean();
+      if (existing) {
+        return res.status(409).send({
+          message: "duplicate",
+          field: "phone",
+          detail: "A lead with this phone number already exists.",
+        });
+      }
+    } catch (err) {
+      return res.status(500).send({
+        message: "error",
+        error: err.message,
+      });
+    }
+  }
+
+  if (typeof email === "string") {
+    updateFields.email = email.trim();
+  }
+
+  if (typeof marketingSource === "string") {
+    updateFields.marketingSource = marketingSource.trim() || null;
   }
 
   if (
@@ -640,13 +706,21 @@ const UpdateLead = (req, res) => {
     });
   }
 
+  if (Object.keys(updateFields).length > 0) {
+    updateFields.updatedBy = req.auth.user_id;
+  }
+
   // Guard: avoid accidental empty updates so existing behaviour is preserved
   if (Object.keys(updateFields).length === 0) {
     res.status(400).send({ message: "No valid fields to update" });
     return;
   }
 
-  Enquiry.findByIdAndUpdate({ _id }, { $set: updateFields })
+  Enquiry.findByIdAndUpdate(
+    { _id },
+    { $set: updateFields },
+    { new: true, runValidators: true, context: "query" }
+  )
     .then((result) => {
       if (!result) {
         res.status(404).send();
@@ -655,7 +729,18 @@ const UpdateLead = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      if (error && error.code === 11000) {
+        res.status(409).send({
+          message: "duplicate",
+          field: "phone",
+          detail: "A lead with this phone number already exists.",
+        });
+        return;
+      }
+      res.status(400).send({
+        message: "error",
+        error,
+      });
     });
 };
 

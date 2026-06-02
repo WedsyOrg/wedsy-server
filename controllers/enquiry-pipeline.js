@@ -5,7 +5,8 @@ const UpdateStage = async (req, res) => {
   try {
     const updated = await EnquiryService.updateStage(
       req.params._id,
-      req.body.stage
+      req.body.stage,
+      req.auth.user_id
     );
     res.status(200).json(updated);
   } catch (error) {
@@ -20,7 +21,8 @@ const UpdateAssignedTo = async (req, res) => {
   try {
     const updated = await EnquiryService.updateAssignedTo(
       req.params._id,
-      req.body.assignedTo
+      req.body.assignedTo,
+      req.auth.user_id
     );
     res.status(200).json(updated);
   } catch (error) {
