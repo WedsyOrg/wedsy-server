@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { getVenues, getVenueBySlug, updateVenue } = require("../controllers/venue");
+const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
 const { createEnquiry, getVenueEnquiries, updateEnquiry } = require("../controllers/venueEnquiry");
 const { saveAvailability } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
@@ -10,9 +10,11 @@ const { generateLocationDescription } = require("../controllers/venueLocation");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
-const { CheckLogin } = require("../middlewares/auth");
+const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 
 router.get("/", optionalAdminAuth, getVenues);
+// Admin-only: create a new venue (venue owners must NOT create venues).
+router.post("/", CheckAdminLogin, createVenue);
 router.get("/:slug", getVenueBySlug);
 router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
 router.post("/:slug/enquiry", createEnquiry);

@@ -39,4 +39,9 @@ const updateBySlug = async (slug, updates) => {
   return Venue.findOneAndUpdate({ slug }, { $set: updates }, { new: true }).lean();
 };
 
-module.exports = { findAll, findBySlug, findById, updateBySlug };
+const create = async (doc) => {
+  const created = await Venue.create(doc);
+  return created.toObject();
+};
+
+module.exports = { findAll, findBySlug, findById, updateBySlug, create };

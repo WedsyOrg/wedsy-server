@@ -11,6 +11,57 @@ const getVenueBySlug = async (slug) => {
   return venue;
 };
 
+// Mirror of models/Venue.js venueType enum (do not add/alter schema fields).
+const VENUE_TYPE_ENUM = [
+  "resort", "farmhouse", "villa", "hotel", "heritage", "banquet_hall", "club", "other",
+];
+
+const badRequest = (message) => {
+  const err = new Error(message);
+  err.status = 400;
+  return err;
+};
+
+// URL-safe slug from a name: lowercase, non-alphanumerics → single hyphen, trimmed.
+const slugify = (s) =>
+  String(s)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+// Create a new venue. Always status "draft"; slug auto-generated + made unique
+// (append -2, -3, … on collision). Throws a 400-style error on validation failure.
+const createVenue = async (input = {}) => {
+  const name = typeof input.name === "string" ? input.name.trim() : "";
+  if (!name) throw badRequest("name is required");
+  const { venueType } = input;
+  if (!venueType || !VENUE_TYPE_ENUM.includes(venueType)) {
+    throw badRequest("venueType is required and must be one of: " + VENUE_TYPE_ENUM.join(", "));
+  }
+
+  const baseSlug = slugify(name) || "venue";
+  const doc = {
+    ...input,
+    name,
+    venueType,
+    city: typeof input.city === "string" && input.city.trim() ? input.city.trim() : "Bangalore",
+    status: "draft", // new venues are never auto-published
+  };
+  delete doc.slug; // slug is service-controlled, never taken from input
+
+  for (let attempt = 1; attempt <= 50; attempt++) {
+    const slug = attempt === 1 ? baseSlug : `${baseSlug}-${attempt}`;
+    try {
+      return await VenueRepository.create({ ...doc, slug });
+    } catch (err) {
+      // Duplicate slug (unique index) → try the next suffix; rethrow anything else.
+      if (err && err.code === 11000 && attempt < 50) continue;
+      throw err;
+    }
+  }
+  throw new Error("Could not generate a unique slug for venue");
+};
+
 const SCALAR_TOP_LEVEL = [
   "name", "tagline", "description", "venueType", "established",
   "city", "address", "phone", "email", "website",
@@ -151,4 +202,4 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
   return VenueRepository.updateBySlug(slug, $set);
 };
 
-module.exports = { getAllVenues, getVenueBySlug, updateVenueBySlug };
+module.exports = { getAllVenues, getVenueBySlug, updateVenueBySlug, createVenue };

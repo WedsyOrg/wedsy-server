@@ -58,4 +58,16 @@ const updateVenue = async (req, res) => {
   }
 };
 
-module.exports = { getVenues, getVenueBySlug, updateVenue };
+const createVenue = async (req, res) => {
+  try {
+    const venue = await VenueService.createVenue(req.body || {});
+    return res.status(201).json({ venue });
+  } catch (err) {
+    if (err.status === 400 || err.name === "ValidationError") {
+      return res.status(400).json({ message: err.message });
+    }
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getVenues, getVenueBySlug, updateVenue, createVenue };
