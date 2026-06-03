@@ -42,6 +42,7 @@ const MUSIC_FIELDS = [
 const AMENITY_BOOLEANS = [
   "swimmingPool", "generatorBackup", "parking", "helipad", "garden",
   "airConditioning", "cctv", "wifi", "elevator", "bridalSuite",
+  "kalyanMandap", "floatingMandap",
   "groomRoom", "makeupRoom", "changingRooms", "prayerRoom", "fireNOC",
   "liquorLicense", "dayOfCoordinator", "securityStaff", "housekeeping",
   "valetParking", "shuttleService", "petFriendly", "smokingAllowed",
