@@ -4,7 +4,7 @@ const Venue = require("../models/Venue");
 // abuse) the query — runs server-side on every public browse search.
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-const findAll = async ({ status, limit = 100, skip = 0, zone, area } = {}) => {
+const findAll = async ({ status, limit = 100, skip = 0, zone, area, search } = {}) => {
   const query = {};
   if (status) query.status = status;
   if (zone) query.zone = zone;
@@ -14,6 +14,11 @@ const findAll = async ({ status, limit = 100, skip = 0, zone, area } = {}) => {
   if (area) {
     const re = { $regex: escapeRegex(area), $options: "i" };
     query.$or = [{ locality: re }, { address: re }];
+  }
+  // Name search — case-insensitive substring match. Escaped like `area` above
+  // so user input can't inject regex. Absent/empty search → no key added.
+  if (search) {
+    query.name = { $regex: escapeRegex(search), $options: "i" };
   }
   const [venues, total] = await Promise.all([
     Venue.find(query)
