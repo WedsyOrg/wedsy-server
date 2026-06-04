@@ -105,6 +105,7 @@ const POLICY_FIELDS = ["cancellation", "refund", "otherRestrictions"];
 
 const CONTACT_SCALARS = [
   "primaryName", "primaryPhone", "secondaryPhone", "email", "website", "bestTimeToReach",
+  "whatsappPhone", "whatsappSameAsPrimary",
 ];
 
 const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
