@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, getVenueEnquiries, updateEnquiry } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry } = require("../controllers/venueEnquiry");
 const { saveAvailability } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
@@ -19,6 +19,8 @@ router.get("/:slug", getVenueBySlug);
 router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
 router.post("/:slug/enquiry", createEnquiry);
 router.post("/:slug/enquiries", createEnquiry);
+// Gated manual lead creation (venue owners only) — must precede none, distinct path.
+router.post("/:slug/enquiries/manual", venueOwnerAuth, createManualLead);
 router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
