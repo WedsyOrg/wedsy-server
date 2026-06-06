@@ -11,6 +11,7 @@ require("dotenv").config();
 const mongoose = require("mongoose");
 const Department = require("../models/Department");
 const Role = require("../models/Role");
+const { DEPARTMENTS, ROLES } = require("./rbac-seed-data");
 
 // --- HARD PROD GUARD: this script must never touch prod ---
 const dbUrl = process.env.DATABASE_URL || "";
@@ -19,24 +20,6 @@ if (!dbUrl.startsWith("mongodb://localhost")) {
   console.error(`DATABASE_URL = ${dbUrl || "(empty)"}`);
   process.exit(1);
 }
-
-const DEPARTMENTS = [
-  { name: "Founders", description: "Founders and company leadership" },
-  { name: "Sales", description: "Lead conversion and pipeline" },
-  { name: "Operations", description: "Project execution and delivery" },
-  { name: "Client Servicing", description: "Client relationship and account management" },
-];
-
-const ROLES = [
-  { name: "Founder", department: "Founders", permissions: ["*:*:all"] },
-  { name: "CRM Admin", department: "Founders", permissions: ["users:*:all", "roles:*:all", "settings:*:all"] },
-  { name: "Sales Manager", department: "Sales", permissions: ["leads:view:team", "leads:edit:team", "leads:assign:team"] },
-  { name: "Sales Executive", department: "Sales", permissions: ["leads:view:own", "leads:edit:own"] },
-  { name: "Operations Manager", department: "Operations", permissions: ["projects:view:department", "tasks:view:department"] },
-  { name: "Operations Executive", department: "Operations", permissions: ["projects:view:own", "tasks:view:own"] },
-  { name: "Client Servicing Manager", department: "Client Servicing", permissions: ["projects:view:team", "tasks:view:team"] },
-  { name: "Client Servicing Executive", department: "Client Servicing", permissions: ["projects:view:own", "tasks:view:own"] },
-];
 
 (async () => {
   try {
