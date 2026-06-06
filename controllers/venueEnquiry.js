@@ -10,6 +10,7 @@ const createEnquiry = async (req, res) => {
       phone,
       coupleName,
       couplePhone,
+      email,
       eventDate,
       guestCount,
       budget,
@@ -19,6 +20,8 @@ const createEnquiry = async (req, res) => {
       stage,
       estimatedValue,
       notes,
+      followUpDate,
+      assignedTo,
       userId: bodyUserId,
     } = req.body;
 
@@ -52,6 +55,7 @@ const createEnquiry = async (req, res) => {
       phone: effectivePhone,
       coupleName: coupleName || effectiveName,
       couplePhone: couplePhone || effectivePhone,
+      email: email || "",
       eventDate: eventDate || null,
       guestCount: guestCount || null,
       budget: budget || "",
@@ -61,6 +65,8 @@ const createEnquiry = async (req, res) => {
       stage: stage || "new",
       estimatedValue: estimatedValue || 0,
       notes: notesArray,
+      followUpDate: followUpDate || null,
+      assignedTo: assignedTo || "",
       activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
       status: "new",
     });
