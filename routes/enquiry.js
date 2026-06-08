@@ -8,10 +8,10 @@ const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 const { requirePermission } = require("../middlewares/requirePermission");
 
 router.post("/", enquiry.CreateNew);
-router.get("/", CheckAdminLogin, enquiry.GetAll);
+router.get("/", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.GetAll);
 router.put("/", CheckAdminLogin, enquiry.Update);
 router.delete("/", CheckAdminLogin, enquiry.Delete);
-router.get("/:_id", CheckAdminLogin, enquiry.Get);
+router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
 router.put(

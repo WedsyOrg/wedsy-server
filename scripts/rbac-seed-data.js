@@ -20,6 +20,7 @@ const DEPARTMENTS = [
 const ROLES = [
   { name: "Founder", department: "Founders", permissions: ["*:*:all"] },
   { name: "CRM Admin", department: "Founders", permissions: ["users:*:all", "roles:*:all", "settings:*:all"] },
+  { name: "Revenue Head", department: "Sales", permissions: ["leads:view:team", "leads:edit:team", "leads:assign:team"] },
   { name: "Sales Manager", department: "Sales", permissions: ["leads:view:team", "leads:edit:team", "leads:assign:team"] },
   { name: "Sales Executive", department: "Sales", permissions: ["leads:view:own", "leads:edit:own"] },
   { name: "Operations Manager", department: "Operations", permissions: ["projects:view:department", "tasks:view:department"] },
