@@ -253,10 +253,72 @@ const createManualLead = async (req, res) => {
   }
 };
 
+// Shared bulk-create core (reused by CSV/Excel import AND Google Sheets sync).
+// Given a venueId and an array of mapped rows, dedups by couplePhone (digits-only)
+// against existing venue leads and within the batch, coerces dates/numbers safely,
+// defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
+// errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
+async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
+  const existing = await VenueEnquiry.find({ venueId }).select("couplePhone").lean();
+  const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
+
+  let created = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || {};
+    try {
+      const coupleName = toStr(row.coupleName);
+      const couplePhone = toStr(row.couplePhone);
+      if (!coupleName || !couplePhone) {
+        errors.push({ row: i, reason: "Missing required coupleName or couplePhone" });
+        continue;
+      }
+
+      const key = digitsOnly(couplePhone);
+      if (key && seenPhones.has(key)) {
+        skipped += 1; // duplicate of an existing lead or an earlier row in this batch
+        continue;
+      }
+
+      const sourceRaw = toStr(row.source).toLowerCase();
+      const stageRaw = toStr(row.stage).toLowerCase();
+      const source = sourceRaw && SOURCE_ENUM.includes(sourceRaw) ? sourceRaw : "other";
+      const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
+
+      const notesStr = toStr(row.notes);
+      await VenueEnquiry.create({
+        venueId,
+        name: coupleName,
+        phone: couplePhone,
+        coupleName,
+        couplePhone,
+        email: toStr(row.email),
+        eventDate: toDateOrNull(row.eventDate),
+        guestCount: toNumberOrNull(row.guestCount),
+        source,
+        stage,
+        estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
+        notes: notesStr ? [{ text: notesStr }] : [],
+        followUpDate: toDateOrNull(row.followUpDate),
+        assignedTo: toStr(row.assignedTo),
+        activities: [{ type: "created", description: activityDescription, timestamp: new Date() }],
+        status: "new",
+      });
+
+      if (key) seenPhones.add(key);
+      created += 1;
+    } catch (rowErr) {
+      errors.push({ row: i, reason: rowErr.message });
+    }
+  }
+
+  return { created, skipped, errors };
+}
+
 // Bulk CSV/Excel lead import — venue owners only, ownership-checked.
 // Body: { rows: [mappedRow], fileName } (also tolerates a bare array of rows).
-// Per row: require coupleName + couplePhone; dedup by couplePhone within the venue
-// (and within the batch); coerce dates/numbers safely; default stage/source.
 const importLeads = async (req, res) => {
   try {
     const { slug } = req.params;
@@ -270,61 +332,7 @@ const importLeads = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    // Existing phones for this venue → dedup set (digits-only). Batch dups added as we go.
-    const existing = await VenueEnquiry.find({ venueId: venue._id }).select("couplePhone").lean();
-    const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
-
-    let created = 0;
-    let skipped = 0;
-    const errors = [];
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i] || {};
-      try {
-        const coupleName = toStr(row.coupleName);
-        const couplePhone = toStr(row.couplePhone);
-        if (!coupleName || !couplePhone) {
-          errors.push({ row: i, reason: "Missing required coupleName or couplePhone" });
-          continue;
-        }
-
-        const key = digitsOnly(couplePhone);
-        if (key && seenPhones.has(key)) {
-          skipped += 1; // duplicate of an existing lead or an earlier row in this file
-          continue;
-        }
-
-        const sourceRaw = toStr(row.source).toLowerCase();
-        const stageRaw = toStr(row.stage).toLowerCase();
-        const source = sourceRaw && SOURCE_ENUM.includes(sourceRaw) ? sourceRaw : "other";
-        const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
-
-        const notesStr = toStr(row.notes);
-        await VenueEnquiry.create({
-          venueId: venue._id,
-          name: coupleName,
-          phone: couplePhone,
-          coupleName,
-          couplePhone,
-          email: toStr(row.email),
-          eventDate: toDateOrNull(row.eventDate),
-          guestCount: toNumberOrNull(row.guestCount),
-          source,
-          stage,
-          estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
-          notes: notesStr ? [{ text: notesStr }] : [],
-          followUpDate: toDateOrNull(row.followUpDate),
-          assignedTo: toStr(row.assignedTo),
-          activities: [{ type: "created", description: "Lead imported", timestamp: new Date() }],
-          status: "new",
-        });
-
-        if (key) seenPhones.add(key);
-        created += 1;
-      } catch (rowErr) {
-        errors.push({ row: i, reason: rowErr.message });
-      }
-    }
+    const { created, skipped, errors } = await importLeadRows(venue._id, rows);
 
     await VenueLeadImport.create({
       venue: venue._id,
@@ -359,4 +367,4 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports, importLeadRows };

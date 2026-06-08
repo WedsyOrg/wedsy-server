@@ -19,6 +19,7 @@ const {
 } = require("./utils/notificationJobs");
 const socketStore = require("./utils/socket");
 const Chat = require("./models/Chat");
+const { runScheduledSheetSync } = require("./controllers/venueSheetsSync");
 
 //Creating Express App
 const app = express();
@@ -161,4 +162,8 @@ httpServer.listen(port, function () {
 
   // Vendor birthday message — 9am IST
   cron.schedule("0 9 * * *", () => { birthdayReminder(); }, IST);
+
+  // Google Sheets one-way sync (sheet → leads) for every connected venue — every 15 min.
+  // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).
+  cron.schedule("*/15 * * * *", () => { runScheduledSheetSync(); }, IST);
 });

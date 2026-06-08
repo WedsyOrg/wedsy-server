@@ -9,6 +9,7 @@ const { refreshReviews } = require("../controllers/venueReviews");
 const { generateLocationDescription } = require("../controllers/venueLocation");
 const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { addInteraction, getInteractions } = require("../controllers/venueLeadInteraction");
+const sheets = require("../controllers/venueSheetsSync");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
@@ -34,6 +35,16 @@ router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
 // Per-lead communication log (4-segment paths — no shadowing of the routes above).
 router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, addInteraction);
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
+// Google Sheets integration (MVP one-way sheet→leads). callback is public — it is
+// authorized by the signed OAuth state, since Google's redirect carries no Bearer token.
+router.get("/:slug/integrations/google-sheets", venueOwnerAuth, sheets.getIntegration);
+router.get("/:slug/integrations/google-sheets/connect", venueOwnerAuth, sheets.connect);
+router.get("/:slug/integrations/google-sheets/callback", sheets.callback);
+router.post("/:slug/integrations/google-sheets/disconnect", venueOwnerAuth, sheets.disconnect);
+router.get("/:slug/integrations/google-sheets/sheets", venueOwnerAuth, sheets.listSheets);
+router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, sheets.saveMapping);
+router.post("/:slug/integrations/google-sheets/sync", venueOwnerAuth, sheets.syncNow);
+
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
 router.post("/:slug/nearby", refreshNearby);
