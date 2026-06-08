@@ -1,6 +1,7 @@
 const VenueEnquiry = require("../models/VenueEnquiry");
 const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
+const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { createOrGetConversation } = require("./venueConversation");
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
@@ -90,6 +91,19 @@ const createEnquiry = async (req, res) => {
       activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
       status: "new",
     });
+
+    // Seed the communication log with the initial 'enquiry' interaction so the
+    // timeline isn't empty on first contact. Never let this break enquiry creation.
+    try {
+      await VenueLeadInteraction.create({
+        enquiry: enquiry._id,
+        venue: venue._id,
+        type: "enquiry",
+        note: message || "",
+      });
+    } catch (interactionErr) {
+      console.error("Failed to seed lead interaction:", interactionErr.message);
+    }
 
     let conversation = null;
     if (userId) {
