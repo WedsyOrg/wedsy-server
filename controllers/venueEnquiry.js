@@ -1,6 +1,27 @@
 const VenueEnquiry = require("../models/VenueEnquiry");
 const Venue = require("../models/Venue");
+const VenueLeadImport = require("../models/VenueLeadImport");
 const { createOrGetConversation } = require("./venueConversation");
+
+// Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
+const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
+const STAGE_ENUM = ["new", "contacted", "site_visit_scheduled", "site_visit_done", "proposal_sent", "negotiating", "booked", "lost"];
+
+// ── Import coercion helpers ──
+const toStr = (v) => (v == null ? "" : String(v).trim());
+const digitsOnly = (v) => toStr(v).replace(/\D/g, ""); // dedup key for couplePhone
+function toDateOrNull(v) {
+  const s = toStr(v);
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function toNumberOrNull(v) {
+  const s = toStr(v);
+  if (!s) return null;
+  const n = Number(s.replace(/[,₹\s]/g, ""));
+  return Number.isNaN(n) ? null : n;
+}
 
 const createEnquiry = async (req, res) => {
   try {
@@ -218,4 +239,110 @@ const createManualLead = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry };
+// Bulk CSV/Excel lead import — venue owners only, ownership-checked.
+// Body: { rows: [mappedRow], fileName } (also tolerates a bare array of rows).
+// Per row: require coupleName + couplePhone; dedup by couplePhone within the venue
+// (and within the batch); coerce dates/numbers safely; default stage/source.
+const importLeads = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const body = req.body || {};
+    const rows = Array.isArray(body) ? body : Array.isArray(body.rows) ? body.rows : [];
+    const fileName = Array.isArray(body) ? "" : toStr(body.fileName);
+
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    // Existing phones for this venue → dedup set (digits-only). Batch dups added as we go.
+    const existing = await VenueEnquiry.find({ venueId: venue._id }).select("couplePhone").lean();
+    const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
+
+    let created = 0;
+    let skipped = 0;
+    const errors = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] || {};
+      try {
+        const coupleName = toStr(row.coupleName);
+        const couplePhone = toStr(row.couplePhone);
+        if (!coupleName || !couplePhone) {
+          errors.push({ row: i, reason: "Missing required coupleName or couplePhone" });
+          continue;
+        }
+
+        const key = digitsOnly(couplePhone);
+        if (key && seenPhones.has(key)) {
+          skipped += 1; // duplicate of an existing lead or an earlier row in this file
+          continue;
+        }
+
+        const sourceRaw = toStr(row.source).toLowerCase();
+        const stageRaw = toStr(row.stage).toLowerCase();
+        const source = sourceRaw && SOURCE_ENUM.includes(sourceRaw) ? sourceRaw : "other";
+        const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
+
+        const notesStr = toStr(row.notes);
+        await VenueEnquiry.create({
+          venueId: venue._id,
+          name: coupleName,
+          phone: couplePhone,
+          coupleName,
+          couplePhone,
+          email: toStr(row.email),
+          eventDate: toDateOrNull(row.eventDate),
+          guestCount: toNumberOrNull(row.guestCount),
+          source,
+          stage,
+          estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
+          notes: notesStr ? [{ text: notesStr }] : [],
+          followUpDate: toDateOrNull(row.followUpDate),
+          assignedTo: toStr(row.assignedTo),
+          activities: [{ type: "created", description: "Lead imported", timestamp: new Date() }],
+          status: "new",
+        });
+
+        if (key) seenPhones.add(key);
+        created += 1;
+      } catch (rowErr) {
+        errors.push({ row: i, reason: rowErr.message });
+      }
+    }
+
+    await VenueLeadImport.create({
+      venue: venue._id,
+      importedBy: req.venueOwner.venueOwnerId,
+      fileName,
+      total: rows.length,
+      created,
+      skipped,
+    });
+
+    return res.status(200).json({ created, skipped, errors });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// Import history for a venue (most recent first).
+const getImports = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const imports = await VenueLeadImport.find({ venue: venue._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    return res.status(200).json({ imports, total: imports.length });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports };
