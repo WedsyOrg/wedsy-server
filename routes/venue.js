@@ -7,6 +7,7 @@ const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
 const { generateLocationDescription } = require("../controllers/venueLocation");
+const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
@@ -15,6 +16,9 @@ const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 router.get("/", optionalAdminAuth, getVenues);
 // Admin-only: create a new venue (venue owners must NOT create venues).
 router.post("/", CheckAdminLogin, createVenue);
+// Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
+// Declared before "/:slug" so the literal path is never shadowed by the slug param.
+router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
 router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
 router.post("/:slug/enquiry", createEnquiry);
