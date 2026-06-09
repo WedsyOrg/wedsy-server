@@ -11,7 +11,7 @@ const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { addInteraction, getInteractions } = require("../controllers/venueLeadInteraction");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
-const { requireCapability } = require("../middlewares/venueRole");
+const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
@@ -23,7 +23,9 @@ router.post("/", CheckAdminLogin, createVenue);
 // Declared before "/:slug" so the literal path is never shadowed by the slug param.
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
-router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
+// Listing edit: admins bypass; venue tokens need the "listing" capability
+// (sales blocked; marketing/listing_manager/manager/owner allowed).
+router.put("/:slug", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("listing"), updateVenue);
 router.post("/:slug/enquiry", createEnquiry);
 router.post("/:slug/enquiries", createEnquiry);
 // Gated manual lead creation (venue owners only) — must precede none, distinct path.
