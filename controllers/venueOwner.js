@@ -1,6 +1,8 @@
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const VenueOwner = require("../models/VenueOwner");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const VenueTeamActivity = require("../models/VenueTeamActivity");
 const Venue = require("../models/Venue");
 const VenueClaimRequest = require("../models/VenueClaimRequest");
 const NotificationFailureLog = require("../models/NotificationFailureLog");
@@ -358,8 +360,12 @@ const sendLoginOTP = async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ message: "Phone is required" });
+    // Owner account OR an active team member with this phone may log in.
     const venueOwner = await VenueOwner.findOne({ phone }).lean();
-    if (!venueOwner) return res.status(404).json({ message: "No venue account found for this phone number" });
+    const member = venueOwner ? null : await VenueTeamMember.findOne({ phone, isActive: true }).lean();
+    if (!venueOwner && !member) {
+      return res.status(404).json({ message: "No venue account found for this phone number" });
+    }
     const { ReferenceId } = await SendOTP(phone);
     return res.status(200).json({ success: true, referenceId: ReferenceId });
   } catch (err) {
@@ -378,7 +384,38 @@ const login = async (req, res) => {
       : await VerifyOTP(phone, referenceId, otp);
     if (!result.Valid) return res.status(400).json({ message: "Invalid or expired OTP" });
     const venueOwner = await VenueOwner.findOne({ phone }).populate("venueId", "name slug status");
-    if (!venueOwner) return res.status(404).json({ message: "No venue account found" });
+
+    // No owner account for this phone → try an active team member (per-member login).
+    if (!venueOwner) {
+      const member = await VenueTeamMember.findOne({ phone, isActive: true }).populate("venueId", "name slug status");
+      if (!member) return res.status(404).json({ message: "No venue account found" });
+      member.lastLoginAt = new Date();
+      await member.save();
+      const memberToken = jwt.sign(
+        {
+          type: "venue_owner", // same type — owner = member with role "owner"
+          venueId: member.venueId._id,
+          memberId: member._id,
+          ownerId: member.ownerId,
+          role: member.role,
+        },
+        process.env.JWT_SECRET,
+        { expiresIn: "30d" }
+      );
+      VenueTeamActivity.create({
+        venueId: member.venueId._id,
+        actorId: String(member._id),
+        actorName: member.name,
+        action: "member_login",
+        targetMemberId: String(member._id),
+      }).catch((e) => console.error("Failed to log member login:", e.message));
+      return res.status(200).json({
+        success: true,
+        token: memberToken,
+        venueOwner: { id: member._id, name: member.name, phone: member.phone, role: member.role, venue: member.venueId, isMember: true },
+      });
+    }
+
     venueOwner.lastLoginAt = new Date();
     await venueOwner.save();
     const token = jwt.sign(

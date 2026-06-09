@@ -159,7 +159,7 @@ const updateEnquiry = async (req, res) => {
     const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id });
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
-    const { stage, estimatedValue, lostReason, followUpDate, addNote } = req.body || {};
+    const { stage, estimatedValue, lostReason, followUpDate, addNote, assignedTo } = req.body || {};
 
     if (stage !== undefined && stage !== enquiry.stage) {
       enquiry.activities.push({
@@ -172,6 +172,16 @@ const updateEnquiry = async (req, res) => {
     if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
     if (followUpDate !== undefined) enquiry.followUpDate = followUpDate || null;
+    // assignedTo stays a String holding a VenueTeamMember._id (so OS can read/resolve
+    // it); not converted to an ObjectId ref yet. Empty = unassigned.
+    if (assignedTo !== undefined) {
+      enquiry.assignedTo = assignedTo ? String(assignedTo) : "";
+      enquiry.activities.push({
+        type: "assigned",
+        description: assignedTo ? "Lead assigned" : "Lead unassigned",
+        timestamp: new Date(),
+      });
+    }
     if (typeof addNote === "string" && addNote.trim()) {
       enquiry.notes.push({ text: addNote.trim(), addedAt: new Date() });
       enquiry.activities.push({

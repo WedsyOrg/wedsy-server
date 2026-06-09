@@ -1,13 +1,16 @@
 const mongoose = require("mongoose");
+const { VENUE_ROLES } = require("../utils/venueRoles");
 
 const VenueOwnerSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
     email: { type: String, trim: true, default: "" },
+    // Unified venue role vocabulary (shared with VenueTeamMember). Widened additively
+    // from owner|manager|marketing — existing values and the default are unchanged.
     role: {
       type: String,
-      enum: ["owner", "manager", "marketing"],
+      enum: VENUE_ROLES,
       default: "owner",
     },
     venueId: {
