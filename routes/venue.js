@@ -10,6 +10,7 @@ const { generateLocationDescription } = require("../controllers/venueLocation");
 const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { addInteraction, getInteractions } = require("../controllers/venueLeadInteraction");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
+const { enquiryIpLimiter, enquiryPhoneLimiter } = require("../utils/venueEnquiryRateLimit");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
@@ -22,8 +23,10 @@ router.post("/", CheckAdminLogin, createVenue);
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
 router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
-router.post("/:slug/enquiry", createEnquiry);
-router.post("/:slug/enquiries", createEnquiry);
+// Public enquiry submission — rate-limited per IP and per phone+venue.
+// (The gated /enquiries/manual route below is intentionally NOT limited.)
+router.post("/:slug/enquiry", enquiryIpLimiter, enquiryPhoneLimiter, createEnquiry);
+router.post("/:slug/enquiries", enquiryIpLimiter, enquiryPhoneLimiter, createEnquiry);
 // Gated manual lead creation (venue owners only) — must precede none, distinct path.
 router.post("/:slug/enquiries/manual", venueOwnerAuth, createManualLead);
 // CSV/Excel bulk import + import history (venue owners only).
