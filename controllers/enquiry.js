@@ -11,6 +11,8 @@ const Bidding = require("../models/Bidding");
 const Order = require("../models/Order");
 const { SendUpdate } = require("../utils/update");
 const { GetPaymentTransactions } = require("../utils/payment");
+const { computeLeadHealth } = require("../utils/leadHealth");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const CreateNew = (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
@@ -810,7 +812,12 @@ const Get = (req, res) => {
           User.findOne({ phone: result.phone })
             .then((user) => {
               if (!user) {
-                res.send({ ...finalResultObj, userCreated: false });
+                res.send({
+                  ...finalResultObj,
+                  userCreated: false,
+                  // Derived on read, never stored (no events without a linked user).
+                  leadHealth: computeLeadHealth(finalResultObj, []),
+                });
               } else {
                 Event.find({ user: user._id })
                   .then((events) => {
@@ -882,6 +889,11 @@ const Get = (req, res) => {
                                     userCreated: true,
                                     user,
                                     events,
+                                    // Derived on read, never stored.
+                                    leadHealth: computeLeadHealth(
+                                      finalResultObj,
+                                      events
+                                    ),
                                     payments: updatedPayments,
                                     paymentStats: {
                                       totalAmount,
@@ -1102,6 +1114,28 @@ const UpdateCallSchedule = (req, res) => {
     });
 };
 
+// First-call TAT anchor: stamp firstCalledAt the FIRST time a lead is called.
+// Idempotent + set-once — if it is already set we leave the original timestamp
+// untouched and simply return the current lead document.
+const SetFirstCall = async (req, res) => {
+  const { _id } = req.params;
+  try {
+    // Set-once semantics live in EnquiryRepository.stampFirstCalledAt (shared with
+    // the cockpit's call-log endpoint): only a never-called lead gets stamped.
+    let result = await EnquiryRepository.stampFirstCalledAt(_id);
+    // No match means it was already stamped (or the lead is missing) — re-read it.
+    if (!result) {
+      result = await Enquiry.findById({ _id });
+    }
+    if (!result) {
+      return res.status(404).send();
+    }
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({ message: "error", error });
+  }
+};
+
 module.exports = {
   CreateNew,
   GetAll,
@@ -1115,4 +1149,5 @@ module.exports = {
   UpdateConversation,
   UpdateNotes,
   UpdateCallSchedule,
+  SetFirstCall,
 };

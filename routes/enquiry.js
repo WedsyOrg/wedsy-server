@@ -4,6 +4,7 @@ const router = express.Router();
 const enquiry = require("../controllers/enquiry");
 const enquiryPipeline = require("../controllers/enquiry-pipeline");
 const disqualify = require("../controllers/disqualify");
+const cockpit = require("../controllers/enquiry-cockpit");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 const { requirePermission } = require("../middlewares/requirePermission");
 
@@ -27,6 +28,44 @@ router.delete(
 router.put("/:_id/", CheckAdminLogin, enquiry.UpdateLead);
 router.put("/:_id/notes", CheckAdminLogin, enquiry.UpdateNotes);
 router.put("/:_id/call", CheckAdminLogin, enquiry.UpdateCallSchedule);
+router.put(
+  "/:_id/first-call",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  enquiry.SetFirstCall
+);
+// First-call cockpit (Phase 1A). Same gate as the disqualify request below:
+// edit rights on leads (Sales Executive has leads:edit:own).
+router.post(
+  "/:_id/call-log",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.LogCall
+);
+router.post(
+  "/:_id/follow-up",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.AddFollowUp
+);
+router.put(
+  "/:_id/qualification",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.UpdateQualification
+);
+router.post(
+  "/:_id/call-complete",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.CompleteCall
+);
+router.get(
+  "/:_id/internal-events",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.GetInternalEvents
+);
 router.put("/:_id/stage", CheckAdminLogin, enquiryPipeline.UpdateStage);
 router.put("/:_id/assign", CheckAdminLogin, enquiryPipeline.UpdateAssignedTo);
 // Requesting a disqualification needs edit rights on the lead (Sales Executive has leads:edit:own).

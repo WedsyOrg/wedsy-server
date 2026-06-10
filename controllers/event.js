@@ -12,7 +12,7 @@ const CreateNew = (req, res) => {
   if (req.body.brideName && req.body.groomName && !req.body.name) {
     req.body.name = `${req.body.groomName} x ${req.body.brideName}`;
   }
-  const { name, community, eventDay, date, time, venue, user, brideName, groomName } = req.body;
+  const { name, community, eventDay, date, time, venue, user, brideName, groomName, eventSpace } = req.body;
   if (!name || !community || !eventDay || !date || !time || !venue) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
@@ -24,7 +24,8 @@ const CreateNew = (req, res) => {
       groomName: groomName || null,
       community,
       eventDate: date, // Add the eventDate field explicitly
-      eventDays: [{ name: eventDay, date, time, venue }],
+      // eventSpace is optional (additive) — existing callers that omit it get the schema default "".
+      eventDays: [{ name: eventDay, date, time, venue, eventSpace: eventSpace || "" }],
     })
       .save()
       .then((result) => {
