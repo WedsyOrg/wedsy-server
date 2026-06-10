@@ -182,6 +182,37 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
     throw httpError(400, "This lead is closed — no next action can be scheduled on it");
   }
 
+  // PRE-validate the chosen action BEFORE any write: a bad payload must fail the
+  // whole request, never leave the follow-up marked completed with no next step.
+  if (nextActions.length === 1) {
+    const [name, value] = nextActions[0];
+    if (name === "nextFollowUp") {
+      const d = new Date(value && value.scheduledAt);
+      if (!value || !["meet", "call", "visit"].includes(value.type) || !value.scheduledAt || Number.isNaN(d.getTime())) {
+        throw httpError(400, "nextFollowUp needs a valid type (meet/call/visit) and scheduledAt");
+      }
+    } else if (name === "stageAdvance") {
+      if (value !== "meeting_scheduled") {
+        throw httpError(400, "stageAdvance only supports meeting_scheduled");
+      }
+    } else if (name === "requestDisqualify") {
+      if (!value || !EnquiryService.LOST_REASONS.includes(value.reason)) {
+        throw httpError(400, "requestDisqualify needs a valid reason");
+      }
+      if (lead.lostStatus === "pending") {
+        throw httpError(400, "A disqualification is already pending on this lead");
+      }
+    } else if (name === "recycle") {
+      const d = new Date(value && value.revisitAt);
+      if (!value || !RECYCLE_REASONS.includes(value.reason)) {
+        throw httpError(400, `recycle needs a valid reason (${RECYCLE_REASONS.join(", ")})`);
+      }
+      if (!value.revisitAt || Number.isNaN(d.getTime()) || d <= new Date()) {
+        throw httpError(422, "recycle.revisitAt is required and must be in the future");
+      }
+    }
+  }
+
   // 1. Mark the follow-up completed (positional update on the subdoc).
   await Enquiry.updateOne(
     { _id: enquiryId, "followUps._id": followUpId },
