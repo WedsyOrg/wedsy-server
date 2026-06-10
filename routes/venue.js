@@ -17,72 +17,80 @@ const { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf } = 
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const sheets = require("../controllers/venueSheetsSync");
+const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
+const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
 const { enquiryIpLimiter, enquiryPhoneLimiter } = require("../utils/venueEnquiryRateLimit");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 
+// Capability gating convention (integration ruling):
+//   leads  → lead/booking/quote/invoice WRITES (manual, import POST, bulk POST,
+//            bulk-whatsapp, PATCH enquiry, interaction POST, template writes,
+//            booking/quote/invoice/payment writes)
+//   open   → reads (venueOwnerAuth only): enquiries/imports/interactions/templates
+//            list, bookings/quotes/invoices reads + PDFs, payments, analytics,
+//            dashboard overview  [bookings/quotes/invoices reads + sheets routes are
+//            NOT in the explicit ruling — left open under venueOwnerAuth; FLAGGED]
+//   listing→ PUT /:slug (requireCapabilityOrAdmin)   team → team routes   availability → availability
+
 router.get("/", optionalAdminAuth, getVenues);
 // Admin-only: create a new venue (venue owners must NOT create venues).
 router.post("/", CheckAdminLogin, createVenue);
 // Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
-// Declared before "/:slug" so the literal path is never shadowed by the slug param.
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
-router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
-// Public enquiry submission — rate-limited per IP and per phone+venue.
-// (The gated /enquiries/manual route below is intentionally NOT limited.)
+// Listing edit: admins bypass; venue tokens need the "listing" capability.
+router.put("/:slug", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("listing"), updateVenue);
+// Public enquiry submission — rate-limited per IP and per phone+venue (NOT capability-gated; public).
 router.post("/:slug/enquiry", enquiryIpLimiter, enquiryPhoneLimiter, createEnquiry);
 router.post("/:slug/enquiries", enquiryIpLimiter, enquiryPhoneLimiter, createEnquiry);
-// Gated manual lead creation (venue owners only) — must precede none, distinct path.
-router.post("/:slug/enquiries/manual", venueOwnerAuth, createManualLead);
-// CSV/Excel bulk import + import history (venue owners only).
-router.post("/:slug/enquiries/import", venueOwnerAuth, importLeads);
+// Gated manual lead creation.
+router.post("/:slug/enquiries/manual", venueOwnerAuth, requireCapability("leads"), createManualLead);
+// CSV/Excel bulk import (write=leads) + import history (open read).
+router.post("/:slug/enquiries/import", venueOwnerAuth, requireCapability("leads"), importLeads);
 router.get("/:slug/enquiries/imports", venueOwnerAuth, getImports);
-// Bulk actions over selected leads (literal "bulk" segments — declared before
-// the /:enquiryId param routes so they are never shadowed).
-router.post("/:slug/enquiries/bulk", venueOwnerAuth, bulkAction);
-router.post("/:slug/enquiries/bulk-whatsapp", venueOwnerAuth, bulkWhatsApp);
-router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
-router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
-// Per-lead communication log (4-segment paths — no shadowing of the routes above).
-router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, addInteraction);
+// Bulk actions over selected leads (literal "bulk" segments — before /:enquiryId).
+router.post("/:slug/enquiries/bulk", venueOwnerAuth, requireCapability("leads"), bulkAction);
+router.post("/:slug/enquiries/bulk-whatsapp", venueOwnerAuth, requireCapability("leads"), bulkWhatsApp);
+router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries); // read: all roles
+router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, requireCapability("leads"), updateEnquiry);
+// Per-lead communication log — write=leads, read open.
+router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, requireCapability("leads"), addInteraction);
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
-// Message templates CRUD (venue owners only).
+// Message templates — list open, writes=leads.
 router.get("/:slug/templates", venueOwnerAuth, listTemplates);
-router.post("/:slug/templates", venueOwnerAuth, createTemplate);
-router.patch("/:slug/templates/:templateId", venueOwnerAuth, updateTemplate);
-router.delete("/:slug/templates/:templateId", venueOwnerAuth, deleteTemplate);
+router.post("/:slug/templates", venueOwnerAuth, requireCapability("leads"), createTemplate);
+router.patch("/:slug/templates/:templateId", venueOwnerAuth, requireCapability("leads"), updateTemplate);
+router.delete("/:slug/templates/:templateId", venueOwnerAuth, requireCapability("leads"), deleteTemplate);
 
-// ── Phase 3: bookings (3.1) ──
+// ── Phase 3: bookings (3.1) — reads open (FLAGGED: not in explicit ruling), writes=leads ──
 router.get("/:slug/bookings", venueOwnerAuth, listBookings);
-router.post("/:slug/bookings", venueOwnerAuth, createBooking);
+router.post("/:slug/bookings", venueOwnerAuth, requireCapability("leads"), createBooking);
 router.get("/:slug/bookings/:bookingId", venueOwnerAuth, getBooking);
-router.patch("/:slug/bookings/:bookingId", venueOwnerAuth, updateBooking);
+router.patch("/:slug/bookings/:bookingId", venueOwnerAuth, requireCapability("leads"), updateBooking);
 
-// ── Phase 3: quotes (3.2) — /pdf before /:quoteId is unnecessary (distinct suffix) ──
+// ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
-router.post("/:slug/quotes", venueOwnerAuth, createQuote);
+router.post("/:slug/quotes", venueOwnerAuth, requireCapability("leads"), createQuote);
 router.get("/:slug/quotes/:quoteId/pdf", venueOwnerAuth, quotePdf);
 router.get("/:slug/quotes/:quoteId", venueOwnerAuth, getQuote);
-router.patch("/:slug/quotes/:quoteId", venueOwnerAuth, updateQuote);
+router.patch("/:slug/quotes/:quoteId", venueOwnerAuth, requireCapability("leads"), updateQuote);
 
-// ── Phase 3: invoices (3.3) ──
+// ── Phase 3: invoices (3.3) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/invoices", venueOwnerAuth, listInvoices);
-router.post("/:slug/invoices", venueOwnerAuth, createFromBooking);
+router.post("/:slug/invoices", venueOwnerAuth, requireCapability("leads"), createFromBooking);
 router.get("/:slug/invoices/:invoiceId/pdf", venueOwnerAuth, invoicePdf);
 router.get("/:slug/invoices/:invoiceId", venueOwnerAuth, getInvoice);
-router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, addPayment);
+router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapability("leads"), addPayment);
 
-// ── Phase 3: payments summary (3.4) ──
+// ── Phase 3.4: payments summary + Phase 4.1: analytics — open reads ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
-
-// ── Phase 4.1: analytics ──
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
 
-// Google Sheets integration (MVP one-way sheet→leads). callback is public — it is
-// authorized by the signed OAuth state, since Google's redirect carries no Bearer token.
+// Google Sheets integration — venueOwnerAuth only (FLAGGED: no capability ruling).
+// callback is public — authorized by the signed OAuth state (no Bearer on Google's redirect).
 router.get("/:slug/integrations/google-sheets", venueOwnerAuth, sheets.getIntegration);
 router.get("/:slug/integrations/google-sheets/connect", venueOwnerAuth, sheets.connect);
 router.get("/:slug/integrations/google-sheets/callback", sheets.callback);
@@ -91,7 +99,14 @@ router.get("/:slug/integrations/google-sheets/sheets", venueOwnerAuth, sheets.li
 router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, sheets.saveMapping);
 router.post("/:slug/integrations/google-sheets/sync", venueOwnerAuth, sheets.syncNow);
 
-router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
+// ── Team members — team capability ──
+router.get("/:slug/team", venueOwnerAuth, requireCapability("team"), listMembers);
+router.post("/:slug/team", venueOwnerAuth, requireCapability("team"), inviteMember);
+router.get("/:slug/team/activity", venueOwnerAuth, requireCapability("team"), getActivity);
+router.patch("/:slug/team/:memberId", venueOwnerAuth, requireCapability("team"), updateMember);
+
+// Availability — availability capability.
+router.post("/:slug/availability", venueOwnerAuth, requireCapability("availability"), saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
 router.post("/:slug/nearby", refreshNearby);
 router.post("/:slug/reviews", refreshReviews);

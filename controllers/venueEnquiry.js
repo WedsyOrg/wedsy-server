@@ -185,12 +185,13 @@ const updateEnquiry = async (req, res) => {
     if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
     if (followUpDate !== undefined) enquiry.followUpDate = followUpDate || null;
-    // assignedTo on the single-enquiry PATCH (the harness caught this was dropped).
+    // assignedTo: a String holding a VenueTeamMember._id (so OS can read/resolve it);
+    // not an ObjectId ref yet. Empty = unassigned. (Harness caught it was dropped.)
     if (assignedTo !== undefined) {
       enquiry.assignedTo = assignedTo ? String(assignedTo) : "";
       enquiry.activities.push({
         type: "assigned",
-        description: assignedTo ? `Lead assigned to ${assignedTo}` : "Lead unassigned",
+        description: assignedTo ? "Lead assigned" : "Lead unassigned",
         timestamp: new Date(),
       });
     }

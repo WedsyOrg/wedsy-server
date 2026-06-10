@@ -12,7 +12,15 @@ function venueOwnerAuth(req, res, next) {
     if (err) {
       return res.status(401).json({ message: "Invalid token", error: err.message });
     }
-    if (!payload || payload.type !== "venue_owner" || !payload.venueOwnerId || !payload.venueId) {
+    // Gate by venueId, accepting BOTH owner tokens (venueOwnerId) and team-member
+    // tokens (memberId). req.venueOwner surfaces venueId + role + memberId/venueOwnerId
+    // for the downstream role gate. Owner = a member with role "owner".
+    if (
+      !payload ||
+      payload.type !== "venue_owner" ||
+      !payload.venueId ||
+      (!payload.venueOwnerId && !payload.memberId)
+    ) {
       return res.status(401).json({ message: "Invalid token" });
     }
     req.venueOwner = payload;
