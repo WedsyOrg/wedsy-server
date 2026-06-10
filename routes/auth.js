@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const rateLimit = require("express-rate-limit");
 
 const { CheckLogin } = require("../middlewares/auth");
 const auth = require("../controllers/auth");
@@ -8,6 +9,16 @@ const authInternational = require("../controllers/auth.international");
 // Admin Auth
 router.post("/admin", auth.AdminLogin);
 router.get("/admin", CheckLogin, auth.GetAdmin);
+// Password reset (Lifecycle Slice G). Forgot is rate-limited (5/hour/IP) and
+// always answers generically — no user enumeration.
+const forgotLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+router.post("/admin/forgot", forgotLimiter, auth.ForgotPassword);
+router.post("/admin/reset", auth.ResetPassword);
 
 // Vendor Auth
 router.post("/vendor", auth.VendorLogin);
