@@ -89,15 +89,16 @@ router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapabi
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
 
-// Google Sheets integration — venueOwnerAuth only (FLAGGED: no capability ruling).
-// callback is public — authorized by the signed OAuth state (no Bearer on Google's redirect).
-router.get("/:slug/integrations/google-sheets", venueOwnerAuth, sheets.getIntegration);
-router.get("/:slug/integrations/google-sheets/connect", venueOwnerAuth, sheets.connect);
+// Google Sheets integration — ALL routes require the "leads" capability (ruling),
+// since the sync brings leads in. callback is public — authorized by the signed
+// OAuth state (Google's redirect carries no Bearer token).
+router.get("/:slug/integrations/google-sheets", venueOwnerAuth, requireCapability("leads"), sheets.getIntegration);
+router.get("/:slug/integrations/google-sheets/connect", venueOwnerAuth, requireCapability("leads"), sheets.connect);
 router.get("/:slug/integrations/google-sheets/callback", sheets.callback);
-router.post("/:slug/integrations/google-sheets/disconnect", venueOwnerAuth, sheets.disconnect);
-router.get("/:slug/integrations/google-sheets/sheets", venueOwnerAuth, sheets.listSheets);
-router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, sheets.saveMapping);
-router.post("/:slug/integrations/google-sheets/sync", venueOwnerAuth, sheets.syncNow);
+router.post("/:slug/integrations/google-sheets/disconnect", venueOwnerAuth, requireCapability("leads"), sheets.disconnect);
+router.get("/:slug/integrations/google-sheets/sheets", venueOwnerAuth, requireCapability("leads"), sheets.listSheets);
+router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, requireCapability("leads"), sheets.saveMapping);
+router.post("/:slug/integrations/google-sheets/sync", venueOwnerAuth, requireCapability("leads"), sheets.syncNow);
 
 // ── Team members — team capability ──
 router.get("/:slug/team", venueOwnerAuth, requireCapability("team"), listMembers);

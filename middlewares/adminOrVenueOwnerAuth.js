@@ -18,8 +18,10 @@ function adminOrVenueOwnerAuth(req, res, next) {
       req.admin = payload;
       return next();
     }
-    // Keep the venue_owner path identical to venueOwnerAuth (same required claims).
-    if (payload && payload.type === "venue_owner" && payload.venueOwnerId && payload.venueId) {
+    // Venue_owner path mirrors venueOwnerAuth: accept BOTH owner tokens
+    // (venueOwnerId) and team-member tokens (memberId) so members with the
+    // relevant capability pass the downstream requireCapabilityOrAdmin gate.
+    if (payload && payload.type === "venue_owner" && payload.venueId && (payload.venueOwnerId || payload.memberId)) {
       req.venueOwner = payload;
       return next();
     }

@@ -393,6 +393,42 @@ async function run() {
     check("member-login: single-identity returns token directly (no picker)", single.status === 200 && single.json.token && !single.json.multiple, `status ${single.status}`);
   }
 
+  // ================= Polish: role-gated sheets + member listing edit =================
+  if (process.env.E2E_ROLES === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const loginToken = async (phone) => {
+      const r = await api("POST", "/venue-owner/auth", { body: { phone, otp: "000000", referenceId: "dev" } });
+      return r.json && r.json.token;
+    };
+    // listing_manager (single-identity member: listing+availability, NO leads).
+    const lmToken = await loginToken("9700000002");
+    // sales token via 8888888888's member identity (sales: leads only, NO listing).
+    const multi = await api("POST", "/venue-owner/auth", { body: { phone: "8888888888", otp: "000000", referenceId: "dev" } });
+    const memId = (multi.json.identities || []).find((i) => i.kind === "member");
+    const salesSel = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: multi.json.selectionToken, kind: "member", id: memId && memId.id } });
+    const salesToken = salesSel.json && salesSel.json.token;
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // (b) member listing edit via adminOrVenueOwnerAuth member-token support.
+    const lmPut = await api("PUT", `/venues/${SLUG}`, { token: lmToken, body: { tagline: "lm-edit" } });
+    check("roles: listing_manager listing PUT -> 200", lmPut.status === 200, `status ${lmPut.status}`);
+    const salesPut = await api("PUT", `/venues/${SLUG}`, { token: salesToken, body: { tagline: "sales-edit" } });
+    check("roles: sales listing PUT -> 403 (no listing cap)", salesPut.status === 403, `status ${salesPut.status}`);
+    const adminPut = await api("PUT", `/venues/${SLUG}`, { token: adminToken, body: { tagline: "admin-edit" } });
+    check("roles: admin listing PUT -> 200", adminPut.status === 200, `status ${adminPut.status}`);
+
+    // (a) sheets routes now require leads -> listing_manager 403; open reads -> 200.
+    const lmSheets = await api("GET", `/venues/${SLUG}/integrations/google-sheets`, { token: lmToken });
+    check("roles: listing_manager sheets GET -> 403", lmSheets.status === 403, `status ${lmSheets.status}`);
+    const lmSync = await api("POST", `/venues/${SLUG}/integrations/google-sheets/sync`, { token: lmToken });
+    check("roles: listing_manager sheets sync -> 403", lmSync.status === 403, `status ${lmSync.status}`);
+    const lmBookings = await api("GET", `/venues/${SLUG}/bookings`, { token: lmToken });
+    check("roles: listing_manager bookings GET -> 200 (open read)", lmBookings.status === 200, `status ${lmBookings.status}`);
+    const lmPayments = await api("GET", `/venues/${SLUG}/payments/summary`, { token: lmToken });
+    check("roles: listing_manager payments GET -> 200 (open read)", lmPayments.status === 200, `status ${lmPayments.status}`);
+  }
+
   finish();
 }
 
