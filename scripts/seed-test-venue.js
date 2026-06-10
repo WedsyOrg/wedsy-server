@@ -18,10 +18,13 @@ const VenueOwner = require("../models/VenueOwner");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 // Phase 3 collections (optional — only present on Phase 3+ branches).
-let VenueBooking, VenueQuote, VenueInvoice;
+let VenueBooking, VenueQuote, VenueInvoice, VenueMessageTemplate, VenueTeamMember, computeTotals;
 try { VenueBooking = require("../models/VenueBooking"); } catch (_) {}
 try { VenueQuote = require("../models/VenueQuote"); } catch (_) {}
 try { VenueInvoice = require("../models/VenueInvoice"); } catch (_) {}
+try { VenueMessageTemplate = require("../models/VenueMessageTemplate"); } catch (_) {}
+try { VenueTeamMember = require("../models/VenueTeamMember"); } catch (_) {}
+try { ({ computeTotals } = require("../utils/venueMoney")); } catch (_) {}
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 
@@ -187,15 +190,24 @@ async function run() {
   }
   console.log(`[seed] created ${interactionSeeds.length} interactions`);
 
-  // 5. Multi-identity login scenario (only on team-derived branches that have
-  //    VenueTeamMember). Phone 8888888888 is BOTH an OWNER of a second venue and
-  //    an ACTIVE MEMBER of Test Palace → 2 identities. 9999999999 stays single.
-  let VenueTeamMember;
-  try { VenueTeamMember = require("../models/VenueTeamMember"); } catch (_) {}
+  // 5. Templates (Test Palace) — safe for the e2e (it creates/deletes its own).
+  if (VenueMessageTemplate) {
+    await VenueMessageTemplate.deleteMany({ venue: venue._id });
+    await VenueMessageTemplate.create([
+      { venue: venue._id, name: "Site visit invite", body: "Hi {{name}}, we'd love to host you for a site visit at Test Palace. When works?", createdBy: owner._id },
+      { venue: venue._id, name: "Quote follow-up", body: "Hi {{name}}, following up on your quote — happy to answer any questions!", createdBy: owner._id },
+    ]);
+    console.log("[seed] 2 message templates (test-palace)");
+  }
+
+  // 6. Multi-identity login + team members in all 5 roles (team-derived branches).
+  //    Phone 8888888888 is BOTH an OWNER of a second venue and an ACTIVE MEMBER of
+  //    Test Palace → 2 identities. 9999999999 stays single.
+  let venue2 = null;
   if (VenueTeamMember) {
     const MULTI_PHONE = "8888888888";
-    let venue2 = await Venue.findOne({ slug: "test-palace-two" });
-    const v2 = { name: "Test Palace Two", slug: "test-palace-two", status: "published", city: "Bangalore", venueType: "banquet_hall" };
+    venue2 = await Venue.findOne({ slug: "test-palace-two" });
+    const v2 = { name: "Test Palace Two", slug: "test-palace-two", status: "verified", city: "Bangalore", venueType: "banquet_hall", invoicePrefix: "TP2-", gstin: "29ABCDE1234F1Z5", pan: "ABCDE1234F" };
     if (!venue2) venue2 = await Venue.create(v2);
     else { Object.assign(venue2, v2); await venue2.save(); }
 
@@ -204,9 +216,79 @@ async function run() {
     if (!owner2) owner2 = await VenueOwner.create(o2);
     else { Object.assign(owner2, o2); await owner2.save(); }
 
-    await VenueTeamMember.deleteMany({ phone: MULTI_PHONE });
-    await VenueTeamMember.create({ venueId: venue._id, ownerId: owner._id, name: "Multi Identity", phone: MULTI_PHONE, role: "sales", isActive: true });
-    console.log("[seed] multi-identity 8888888888 -> owner(test-palace-two) + member(test-palace)");
+    // Reset + seed team members across all 5 roles on Test Palace (8888888888 is the
+    // shared "sales" member that drives the multi-identity scenario).
+    await VenueTeamMember.deleteMany({ venueId: venue._id });
+    const teamSpecs = [
+      { phone: MULTI_PHONE, name: "Multi Identity", role: "sales" },
+      { phone: "9700000001", name: "Maya Manager", role: "manager" },
+      { phone: "9700000002", name: "Lina Listing", role: "listing_manager" },
+      { phone: "9700000003", name: "Mira Marketing", role: "marketing" },
+      { phone: "9700000004", name: "Otis Owner", role: "owner" },
+    ];
+    for (const t of teamSpecs) {
+      await VenueTeamMember.create({ venueId: venue._id, ownerId: owner._id, name: t.name, phone: t.phone, role: t.role, isActive: true });
+    }
+    console.log(`[seed] ${teamSpecs.length} team members (all 5 roles) + multi-identity 8888888888`);
+  }
+
+  // 7. Rich Phase-3 demo data on Test Palace Two (kept OFF test-palace so the e2e
+  //    money math on test-palace stays deterministic): bookings in all 4 statuses,
+  //    quotes in 2 versions, invoices paid / partially_paid / unpaid.
+  if (venue2 && VenueBooking && VenueQuote && VenueInvoice && computeTotals) {
+    await VenueBooking.deleteMany({ venue: venue2._id });
+    await VenueQuote.deleteMany({ venue: venue2._id });
+    await VenueInvoice.deleteMany({ venue: venue2._id });
+    await VenueEnquiry.deleteMany({ venueId: venue2._id });
+
+    const statuses = ["confirmed", "in_progress", "completed", "cancelled"];
+    const bookings = [];
+    for (let i = 0; i < statuses.length; i++) {
+      const enq = await VenueEnquiry.create({
+        venueId: venue2._id, coupleName: `Demo Couple ${i + 1}`, couplePhone: `9760000${i}01`,
+        name: `Demo Couple ${i + 1}`, phone: `9760000${i}01`, stage: "booked", source: "wedsy",
+        estimatedValue: 500000 + i * 100000, eventDate: daysFromNow(40 + i * 10), guestCount: 250,
+      });
+      const b = await VenueBooking.create({
+        venue: venue2._id, enquiry: enq._id, coupleName: enq.coupleName, couplePhone: enq.couplePhone,
+        days: [{ date: daysFromNow(40 + i * 10), eventType: "Wedding", guestCount: 250, spaces: ["Main Lawn"] }],
+        totalValue: 500000 + i * 100000, status: statuses[i],
+        paymentSchedule: [
+          { label: "Advance", dueDate: daysFromNow(-5), amount: 150000 },
+          { label: "Balance", dueDate: daysFromNow(30), amount: (500000 + i * 100000) - 150000 },
+        ],
+        createdBy: owner._id,
+      });
+      bookings.push(b);
+    }
+    console.log(`[seed] 4 bookings (all statuses) on test-palace-two`);
+
+    // Quotes in 2 versions for the first booking's enquiry (v1 superseded, v2 sent).
+    const lineItems = [{ label: "Venue hire", category: "venue_hire", qty: 1, unitPrice: 400000 }, { label: "Catering", category: "catering", qty: 250, unitPrice: 1500, perDay: false }];
+    const t1 = computeTotals(lineItems, 18, 0);
+    await VenueQuote.create({ venue: venue2._id, enquiry: bookings[0].enquiry, version: 1, lineItems, gstPercent: 18, discount: 0, totals: t1, status: "superseded" });
+    const t2 = computeTotals(lineItems, 18, 25000);
+    await VenueQuote.create({ venue: venue2._id, enquiry: bookings[0].enquiry, version: 2, lineItems, gstPercent: 18, discount: 25000, totals: t2, status: "sent" });
+    console.log(`[seed] 2 quote versions on test-palace-two`);
+
+    // Invoices: paid / partially_paid / unpaid, with auto-incrementing numbers.
+    const prefix = venue2.invoicePrefix || "INV-";
+    const invSpecs = [
+      { booking: bookings[0], kind: "advance", unit: 200000, pay: 236000, status: "paid" },        // 200000+18% = 236000 fully paid
+      { booking: bookings[1], kind: "advance", unit: 300000, pay: 150000, status: "partially_paid" },
+      { booking: bookings[2], kind: "final", unit: 400000, pay: 0, status: "unpaid" },
+    ];
+    for (let i = 0; i < invSpecs.length; i++) {
+      const s = invSpecs[i];
+      const items = [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: s.unit }];
+      const totals = computeTotals(items, 18, 0);
+      const payments = s.pay > 0 ? [{ date: daysFromNow(-2), amount: s.pay, mode: "bank_transfer", note: "Seed payment" }] : [];
+      await VenueInvoice.create({
+        venue: venue2._id, booking: s.booking._id, invoiceNumber: `${prefix}${String(i + 1).padStart(4, "0")}`,
+        seq: i + 1, kind: s.kind, lineItems: items, gstPercent: 18, discount: 0, totals, status: s.status, payments,
+      });
+    }
+    console.log(`[seed] 3 invoices (paid / partial / unpaid) on test-palace-two`);
   }
 
   console.log("[seed] DONE");
