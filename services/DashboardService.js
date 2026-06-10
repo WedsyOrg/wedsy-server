@@ -206,7 +206,17 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   const counts = {};
   for (const c of stageCounts) counts[c._id || "unknown"] = c.count;
 
+  // Mission progress: follow-ups completed today in scope ("X of Y done").
+  const completedTodayDocs = await Enquiry.aggregate([
+    { $match: { ...scopeFilter } },
+    { $unwind: "$followUps" },
+    { $match: { "followUps.completedAt": { $gte: todayStart, $lte: todayEnd } } },
+    { $count: "n" },
+  ]);
+  const completedToday = completedTodayDocs.length ? completedTodayDocs[0].n : 0;
+
   const payload = {
+    completedToday,
     generatedAt: now,
     scope,
     todaysMission,
