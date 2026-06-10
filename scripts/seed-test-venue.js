@@ -17,6 +17,11 @@ const Venue = require("../models/Venue");
 const VenueOwner = require("../models/VenueOwner");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
+// Phase 3 collections (optional — only present on Phase 3+ branches).
+let VenueBooking, VenueQuote, VenueInvoice;
+try { VenueBooking = require("../models/VenueBooking"); } catch (_) {}
+try { VenueQuote = require("../models/VenueQuote"); } catch (_) {}
+try { VenueInvoice = require("../models/VenueInvoice"); } catch (_) {}
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 
@@ -136,6 +141,10 @@ async function run() {
   // 3. Reset enquiries + interactions for this venue (idempotent rebuild).
   await VenueLeadInteraction.deleteMany({ venue: venue._id });
   await VenueEnquiry.deleteMany({ venueId: venue._id });
+  // Clear Phase 3 collections too (keeps invoice sequences + revenue math deterministic).
+  if (VenueBooking) await VenueBooking.deleteMany({ venue: venue._id });
+  if (VenueQuote) await VenueQuote.deleteMany({ venue: venue._id });
+  if (VenueInvoice) await VenueInvoice.deleteMany({ venue: venue._id });
 
   const enquiries = [];
   for (const spec of LEAD_SPECS) {

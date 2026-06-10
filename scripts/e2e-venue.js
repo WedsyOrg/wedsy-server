@@ -43,6 +43,15 @@ async function api(method, path, { token, body } = {}) {
   return { status: res.status, json };
 }
 
+// Fetch a binary endpoint (e.g. PDF). Returns { status, contentType, bytes, head }.
+async function apiBinary(path, { token } = {}) {
+  const headers = {};
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API}${path}`, { method: "GET", headers });
+  const buf = Buffer.from(await res.arrayBuffer());
+  return { status: res.status, contentType: res.headers.get("content-type") || "", bytes: buf.length, head: buf.slice(0, 5).toString("latin1") };
+}
+
 async function login() {
   // Dev OTP bypass: login accepts otp "000000" with any non-empty referenceId
   // when NODE_ENV !== "production". Avoids hitting external OTP senders.
@@ -223,6 +232,102 @@ async function run() {
         token, body: { enquiryIds: ids, body: "hello from e2e" },
       });
       check("bulk-whatsapp unconfigured -> 503 {configured:false}", status === 503 && json && json.configured === false, `status ${status}`);
+    }
+  }
+
+  // ================= Task 7 (Phase 3): lost reason, bookings, quotes, invoices, payments =================
+  if (process.env.E2E_PHASE3 === "1") {
+    const mk = async (name, estimatedValue) => {
+      const r = await api("POST", `/venues/${SLUG}/enquiries/manual`, {
+        token, body: { coupleName: name, couplePhone: `98${Math.floor(Math.random() * 1e8)}`.slice(0, 10), estimatedValue },
+      });
+      return r.json && (r.json.enquiryId || (r.json.enquiry && r.json.enquiry._id));
+    };
+
+    // 7a — lost reason
+    {
+      const L = await mk("P3 Lost", 100000);
+      const ok = await api("PATCH", `/venues/${SLUG}/enquiries/${L}`, { token, body: { stage: "lost", lostReason: "too_expensive" } });
+      check("7a lost reason set", ok.status === 200 && ok.json.enquiry.lostReason === "too_expensive", `status ${ok.status}`);
+      const bad = await api("PATCH", `/venues/${SLUG}/enquiries/${L}`, { token, body: { lostReason: "banana" } });
+      check("7a invalid lostReason -> 400", bad.status === 400, `status ${bad.status}`);
+    }
+
+    // 7b — booked -> auto-booking (idempotent)
+    let bookingBV = null;
+    const B = await mk("P3 Booked", 200000);
+    {
+      const r1 = await api("PATCH", `/venues/${SLUG}/enquiries/${B}`, { token, body: { stage: "booked" } });
+      check("7b booked PATCH returns booking", r1.status === 200 && r1.json.booking && r1.json.booking._id, `status ${r1.status}`);
+      const list1 = await api("GET", `/venues/${SLUG}/bookings`, { token });
+      const forB = list1.json.bookings.filter((b) => String(b.enquiry) === String(B));
+      bookingBV = forB[0] && forB[0]._id;
+      check("7b exactly one booking for enquiry", forB.length === 1, `count ${forB.length}`);
+      // idempotent: re-book
+      await api("PATCH", `/venues/${SLUG}/enquiries/${B}`, { token, body: { stage: "negotiating" } });
+      await api("PATCH", `/venues/${SLUG}/enquiries/${B}`, { token, body: { stage: "booked" } });
+      const list2 = await api("GET", `/venues/${SLUG}/bookings`, { token });
+      check("7b auto-booking idempotent (still one)", list2.json.bookings.filter((b) => String(b.enquiry) === String(B)).length === 1);
+    }
+
+    // 7c — quote create/version/totals/pdf + accept->booking
+    let quoteV2 = null, bookingQV = null;
+    const Q = await mk("P3 Quote", 0);
+    {
+      const c1 = await api("POST", `/venues/${SLUG}/quotes`, {
+        token, body: { enquiry: Q, lineItems: [{ label: "Venue hire", category: "venue_hire", qty: 1, unitPrice: 100000 }], gstPercent: 18, discount: 5000 },
+      });
+      const t = c1.json.quote && c1.json.quote.totals;
+      check("7c quote v1 totals (100000 / 18% / -5000 => 17100 / 112100)",
+        c1.status === 201 && c1.json.quote.version === 1 && t.subtotal === 100000 && t.gst === 17100 && t.grandTotal === 112100,
+        t && `subtotal=${t.subtotal} gst=${t.gst} grand=${t.grandTotal}`);
+      const c2 = await api("POST", `/venues/${SLUG}/quotes`, {
+        token, body: { enquiry: Q, lineItems: [{ label: "Venue hire", qty: 1, unitPrice: 100000 }], gstPercent: 18, discount: 5000 },
+      });
+      quoteV2 = c2.json.quote && c2.json.quote._id;
+      check("7c new version supersedes prior", c2.json.quote.version === 2, `version ${c2.json.quote && c2.json.quote.version}`);
+      const listQ = await api("GET", `/venues/${SLUG}/quotes?enquiry=${Q}`, { token });
+      const v1 = listQ.json.quotes.find((x) => x.version === 1);
+      check("7c prior version marked superseded", v1 && v1.status === "superseded", v1 && v1.status);
+      const pdf = await apiBinary(`/venues/${SLUG}/quotes/${quoteV2}/pdf`, { token });
+      check("7c quote PDF returns bytes", pdf.status === 200 && pdf.contentType.includes("pdf") && pdf.bytes > 500 && pdf.head.startsWith("%PDF"), `bytes=${pdf.bytes} ct=${pdf.contentType}`);
+      const acc = await api("PATCH", `/venues/${SLUG}/quotes/${quoteV2}`, { token, body: { status: "accepted" } });
+      bookingQV = acc.json.booking && acc.json.booking._id;
+      check("7c accept quote -> booking (totalValue=grandTotal)", acc.status === 200 && acc.json.booking && acc.json.booking.totalValue === 112100, `tv=${acc.json.booking && acc.json.booking.totalValue}`);
+    }
+
+    // 7d — invoices: number increment, payments, status transitions, pdf
+    {
+      const i1 = await api("POST", `/venues/${SLUG}/invoices`, { token, body: { booking: bookingBV, kind: "advance" } });
+      check("7d invoice create from booking", i1.status === 201 && i1.json.invoice.invoiceNumber, `#${i1.json.invoice && i1.json.invoice.invoiceNumber}`);
+      const i1seq = i1.json.invoice.seq;
+      const i1grand = i1.json.invoice.totals.grandTotal; // 200000 + 18% = 236000
+      check("7d invoice totals from booking (200000 => 236000)", i1.json.invoice.totals.subtotal === 200000 && i1grand === 236000, `grand=${i1grand}`);
+      const i2 = await api("POST", `/venues/${SLUG}/invoices`, { token, body: { booking: bookingQV } });
+      check("7d invoice number increments", i2.json.invoice.seq === i1seq + 1, `seq ${i1seq} -> ${i2.json.invoice.seq}`);
+
+      const invId = i1.json.invoice._id;
+      const p1 = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token, body: { amount: 100000, mode: "upi" } });
+      check("7d partial payment -> partially_paid", p1.status === 200 && p1.json.invoice.status === "partially_paid" && p1.json.balance === 136000, `status=${p1.json.invoice.status} bal=${p1.json.balance}`);
+      const p2 = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token, body: { amount: 136000, mode: "bank_transfer" } });
+      check("7d final payment -> paid (balance 0)", p2.status === 200 && p2.json.invoice.status === "paid" && p2.json.balance === 0, `status=${p2.json.invoice.status} bal=${p2.json.balance}`);
+      const pdf = await apiBinary(`/venues/${SLUG}/invoices/${invId}/pdf`, { token });
+      check("7d invoice PDF returns bytes", pdf.status === 200 && pdf.contentType.includes("pdf") && pdf.bytes > 500 && pdf.head.startsWith("%PDF"), `bytes=${pdf.bytes}`);
+    }
+
+    // 7e — payments summary math + overview revenue
+    {
+      const s = await api("GET", `/venues/${SLUG}/payments/summary`, { token });
+      const t = s.json.totals;
+      // confirmed = 200000 (BV) + 112100 (QV) = 312100 ; received = 236000 (BV invoice) ; pending = 76100
+      check("7e payments summary math (312100 / 236000 / 76100)",
+        s.status === 200 && t.confirmedValue === 312100 && t.received === 236000 && t.pending === 76100,
+        `confirmed=${t.confirmedValue} received=${t.received} pending=${t.pending}`);
+      const ov = await api("GET", `/venues/dashboard/overview`, { token });
+      const r = ov.json.revenue;
+      check("7e overview revenue shape + matches summary",
+        r && r.confirmedValue === 312100 && r.received === 236000 && r.pending === 76100,
+        r && `confirmed=${r.confirmedValue} received=${r.received} pending=${r.pending}`);
     }
   }
 

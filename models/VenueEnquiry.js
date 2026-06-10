@@ -34,7 +34,13 @@ const VenueEnquirySchema = new mongoose.Schema(
       default: "new",
     },
     estimatedValue: { type: Number, default: 0 },
-    lostReason: { type: String, default: "" },
+    // Phase 3 (3.x): structured lost reason. "" allowed (legacy/none) so the
+    // pre-existing free-text String data never fails validation on save.
+    lostReason: {
+      type: String,
+      enum: ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"],
+      default: "",
+    },
     followUpDate: { type: Date },
     assignedTo: { type: String, default: "" },
     notes: [{ text: String, addedAt: { type: Date, default: Date.now } }],

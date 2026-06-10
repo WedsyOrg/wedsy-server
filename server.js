@@ -17,6 +17,7 @@ const {
   artistDetailReminder,
   birthdayReminder,
 } = require("./utils/notificationJobs");
+const { runDailyFollowUpReminders } = require("./utils/venueReminderJob");
 const socketStore = require("./utils/socket");
 const Chat = require("./models/Chat");
 
@@ -162,4 +163,8 @@ httpServer.listen(port, function () {
 
   // Vendor birthday message — 9am IST
   cron.schedule("0 9 * * *", () => { birthdayReminder(); }, IST);
+
+  // Venue owner follow-up reminders (Phase 1.4) — 9am IST. Env-gated + log-only
+  // by default (REMINDERS_LOG_ONLY); no-ops gracefully without WhatsApp creds.
+  cron.schedule("0 9 * * *", () => { runDailyFollowUpReminders(); }, IST);
 });

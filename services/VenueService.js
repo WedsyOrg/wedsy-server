@@ -68,6 +68,8 @@ const SCALAR_TOP_LEVEL = [
   "coverPhoto", "featurePhoto",
   // Places-enrich location fields (additive)
   "state", "pincode", "googlePlaceId", "formattedAddress",
+  // Phase 3 invoicing profile (additive)
+  "gstin", "pan", "invoicePrefix",
 ];
 
 const ARRAY_TOP_LEVEL = ["areas", "blockedDates", "spaces"];

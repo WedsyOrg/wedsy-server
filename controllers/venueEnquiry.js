@@ -3,6 +3,10 @@ const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { createOrGetConversation } = require("./venueConversation");
+const { createDraftBookingForEnquiry } = require("./venueBooking");
+
+// Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
+const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
@@ -161,12 +165,18 @@ const updateEnquiry = async (req, res) => {
 
     const { stage, estimatedValue, lostReason, followUpDate, addNote, assignedTo } = req.body || {};
 
+    if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
+      return res.status(400).json({ message: `lostReason must be one of ${LOST_REASON_ENUM.filter(Boolean).join(", ")}` });
+    }
+
+    let movedToBooked = false;
     if (stage !== undefined && stage !== enquiry.stage) {
       enquiry.activities.push({
         type: "stage_changed",
         description: `Stage changed from ${enquiry.stage} to ${stage}`,
         timestamp: new Date(),
       });
+      if (stage === "booked") movedToBooked = true;
       enquiry.stage = stage;
     }
     if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
@@ -191,7 +201,19 @@ const updateEnquiry = async (req, res) => {
     }
 
     await enquiry.save();
-    return res.status(200).json({ enquiry });
+
+    // Phase 3.1: moving a lead to "booked" auto-creates a draft booking (idempotent,
+    // one per enquiry). Failure here must not fail the stage update.
+    let booking = null;
+    if (movedToBooked) {
+      try {
+        booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
+      } catch (bookingErr) {
+        console.error("Auto-create booking failed for enquiry", String(enquiry._id), bookingErr.message);
+      }
+    }
+
+    return res.status(200).json({ enquiry, booking: booking ? { _id: booking._id } : undefined });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }

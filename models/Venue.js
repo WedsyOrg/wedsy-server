@@ -149,6 +149,10 @@ const VenueSchema = new mongoose.Schema({
   featured: { type: Boolean, default: false },
   status: { type: String, enum: ["draft", "published", "pending_outreach", "outreach_sent", "verified", "rejected"], default: "draft" },
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
+  // Phase 3 (3.3) invoicing profile — venue-owned, editable from listing/settings.
+  gstin: { type: String, default: "" },
+  pan: { type: String, default: "" },
+  invoicePrefix: { type: String, default: "" },
   enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],
   nearbyAccommodation: [{
     placeId: { type: String },
