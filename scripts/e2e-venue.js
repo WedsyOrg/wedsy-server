@@ -90,6 +90,27 @@ async function run() {
     check("dashboard overview shape", ok, `status ${status}`);
   }
 
+  // ================= Task 8 (Analytics 4.1) — runs FIRST, against pristine seed =================
+  if (process.env.E2E_ANALYTICS === "1") {
+    const { status, json } = await api("GET", `/venues/${SLUG}/analytics`, { token });
+    check("analytics: total === 20 (seed)", status === 200 && json.total === 20, `total ${json && json.total}`);
+    const volSum = (json.volume && json.volume.byMonth || []).reduce((s, r) => s + r.count, 0);
+    check("analytics: volume byMonth sums to 20", volSum === 20, `sum ${volSum}`);
+    check("analytics: funnel new=20 / site_visit_done=9 / booked=2",
+      json.funnel && json.funnel.new === 20 && json.funnel.site_visit_done === 9 && json.funnel.booked === 2,
+      json.funnel && `new=${json.funnel.new} svd=${json.funnel.site_visit_done} booked=${json.funnel.booked}`);
+    check("analytics: funnel bookingRate = 10%", json.funnel && json.funnel.conversion.bookingRate === 10, json.funnel && `${json.funnel.conversion.bookingRate}`);
+    const wedsy = (json.sources || []).find((s) => s.source === "wedsy");
+    const srcSum = (json.sources || []).reduce((s, r) => s + r.count, 0);
+    check("analytics: 8 sources, sum 20, wedsy count 3", json.sources.length === 8 && srcSum === 20 && wedsy && wedsy.count === 3, `len ${json.sources.length} sum ${srcSum} wedsy ${wedsy && wedsy.count}`);
+    const lostTotal = (json.lostReasons || []).reduce((s, r) => s + r.count, 0);
+    check("analytics: lost reasons total 2 (too_expensive + chose_competitor)", lostTotal === 2 && json.lostReasons.length === 2, `total ${lostTotal}`);
+    check("analytics: revenue.byMonth is array, responseTime omitted (null)", Array.isArray(json.revenue.byMonth) && json.responseTime === null);
+  }
+
+  // The remaining checks mutate data, so when running analytics-only we stop here.
+  if (process.env.E2E_ANALYTICS_ONLY === "1") return finish();
+
   // --- Check: manual lead create ---
   let manualId = null;
   {
