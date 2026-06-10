@@ -6,6 +6,7 @@ const Venue = require("../models/Venue");
 const VenueInvoice = require("../models/VenueInvoice");
 const VenueBooking = require("../models/VenueBooking");
 const VenueQuote = require("../models/VenueQuote");
+const VenueCounter = require("../models/VenueCounter");
 const { computeTotals } = require("../utils/venueMoney");
 const { streamInvoicePdf } = require("../utils/venuePdf");
 
@@ -44,11 +45,17 @@ const createFromBooking = async (req, res) => {
     if (!items) items = [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: bookingDoc.totalValue || 0 }];
     const totals = computeTotals(items, pct, disc);
 
-    // Per-venue sequence (retry once on the unique index, in case of a race).
+    // Atomic per-venue invoice sequence (no read-modify-write race). Lazy-init the
+    // counter to the current max seq so it never collides with pre-existing/seeded
+    // invoices, then allocate via an atomic $inc.
     const prefix = venue.invoicePrefix || "INV-";
+    const counterKey = `${venue._id}:invoice`;
+    const maxDoc = await VenueInvoice.findOne({ venue: venue._id }).sort({ seq: -1 }).select("seq").lean();
+    try {
+      await VenueCounter.updateOne({ key: counterKey }, { $setOnInsert: { seq: maxDoc ? maxDoc.seq : 0 } }, { upsert: true });
+    } catch (e) { if (e.code !== 11000) throw e; } // concurrent first-init race — fine
     for (let attempt = 0; attempt < 3; attempt++) {
-      const latest = await VenueInvoice.findOne({ venue: venue._id }).sort({ seq: -1 }).select("seq").lean();
-      const seq = (latest ? latest.seq : 0) + 1;
+      const seq = await VenueCounter.next(counterKey);
       const invoiceNumber = `${prefix}${String(seq).padStart(4, "0")}`;
       try {
         const invoice = await VenueInvoice.create({
@@ -66,7 +73,7 @@ const createFromBooking = async (req, res) => {
         });
         return res.status(201).json({ invoice });
       } catch (e) {
-        if (e.code === 11000 && attempt < 2) continue; // seq raced — retry
+        if (e.code === 11000 && attempt < 2) continue; // extremely unlikely; allocate next
         throw e;
       }
     }
@@ -105,7 +112,18 @@ const addPayment = async (req, res) => {
     const { amount, mode, note, date } = req.body || {};
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ message: "amount must be a positive number" });
-    invoice.payments.push({ amount: amt, mode: mode || "bank_transfer", note: note || "", date: date ? new Date(date) : new Date() });
+    if (date != null && date !== "" && Number.isNaN(new Date(date).getTime())) {
+      return res.status(400).json({ message: "date is not valid" });
+    }
+    const ALLOWED_MODES = ["bank_transfer", "cash", "cheque", "upi", "card"];
+    if (mode != null && !ALLOWED_MODES.includes(mode)) return res.status(400).json({ message: "invalid payment mode" });
+    // Reject overpayment: a single payment may not exceed the outstanding balance.
+    const already = invoice.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const balanceBefore = invoice.totals.grandTotal - already;
+    if (amt > balanceBefore) {
+      return res.status(400).json({ message: `payment exceeds outstanding balance (${balanceBefore})`, balance: balanceBefore });
+    }
+    invoice.payments.push({ amount: amt, mode: mode || "bank_transfer", note: String(note || "").slice(0, 2000), date: date ? new Date(date) : new Date() });
     const received = invoice.payments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
     invoice.status = paymentStatus(invoice.totals.grandTotal, received);
     await invoice.save();

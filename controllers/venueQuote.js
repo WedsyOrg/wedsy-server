@@ -28,6 +28,8 @@ const createQuote = async (req, res) => {
 
     const pct = gstPercent !== undefined ? Number(gstPercent) : 18;
     const disc = Number(discount) || 0;
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) return res.status(400).json({ message: "gstPercent must be 0..100" });
+    if (!Number.isFinite(disc) || disc < 0) return res.status(400).json({ message: "discount must be >= 0" });
     const totals = computeTotals(lineItems, pct, disc);
 
     // Next version + supersede earlier non-final versions.
@@ -83,6 +85,21 @@ const updateQuote = async (req, res) => {
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id });
     if (!quote) return res.status(404).json({ message: "Quote not found" });
     const { lineItems, gstPercent, discount, status } = req.body || {};
+    const QUOTE_STATUS = ["draft", "sent", "accepted", "superseded"];
+    if (status !== undefined && !QUOTE_STATUS.includes(status)) {
+      return res.status(400).json({ message: `status must be one of ${QUOTE_STATUS.join(", ")}` });
+    }
+    if (gstPercent !== undefined && (!Number.isFinite(Number(gstPercent)) || Number(gstPercent) < 0 || Number(gstPercent) > 100)) {
+      return res.status(400).json({ message: "gstPercent must be 0..100" });
+    }
+    if (discount !== undefined && (!Number.isFinite(Number(discount)) || Number(discount) < 0)) {
+      return res.status(400).json({ message: "discount must be >= 0" });
+    }
+    // A quote with no line items cannot be accepted.
+    const effItems = lineItems !== undefined ? (Array.isArray(lineItems) ? lineItems : []) : quote.lineItems;
+    if (status === "accepted" && (!effItems || effItems.length === 0)) {
+      return res.status(400).json({ message: "cannot accept a quote with no line items" });
+    }
     if (lineItems !== undefined) quote.lineItems = Array.isArray(lineItems) ? lineItems : [];
     if (gstPercent !== undefined) quote.gstPercent = Number(gstPercent);
     if (discount !== undefined) quote.discount = Number(discount) || 0;

@@ -8,6 +8,7 @@ const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
+const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN } = require("../utils/venueInput");
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
@@ -54,12 +55,21 @@ const createEnquiry = async (req, res) => {
 
     const userId = bodyUserId || (req.auth && req.auth.user_id) || null;
 
-    const effectiveName = coupleName || name;
-    const effectivePhone = couplePhone || phone;
+    const effectiveName = cleanStr(coupleName || name);
+    const effectivePhone = cleanStr(couplePhone || phone);
 
     if (!effectiveName || !effectivePhone) {
       return res.status(400).json({ message: "Name and phone are required" });
     }
+    // Hostile-input validation on the PUBLIC endpoint (length caps, strict dates, numbers).
+    for (const [v, f, max] of [[effectiveName, "name", MAXLEN.name], [effectivePhone, "phone", MAXLEN.phone], [email, "email", MAXLEN.email], [message, "message", MAXLEN.text], [budget, "budget", MAXLEN.label]]) {
+      const r = optStr(v, f, max);
+      if (!r.ok) return res.status(400).json({ message: r.message });
+    }
+    const edPub = optDate(eventDate, "eventDate"); if (!edPub.ok) return res.status(400).json({ message: edPub.message });
+    const fuPub = optDate(followUpDate, "followUpDate"); if (!fuPub.ok) return res.status(400).json({ message: fuPub.message });
+    const gcPub = optCount(guestCount, "guestCount"); if (!gcPub.ok) return res.status(400).json({ message: gcPub.message });
+    const evPub = optNumber(estimatedValue, "estimatedValue"); if (!evPub.ok) return res.status(400).json({ message: evPub.message });
 
     const venue = await Venue.findOne({ slug }).select("_id name phone status").lean();
     if (!venue) {
@@ -80,19 +90,19 @@ const createEnquiry = async (req, res) => {
       userId: userId || undefined,
       name: effectiveName,
       phone: effectivePhone,
-      coupleName: coupleName || effectiveName,
-      couplePhone: couplePhone || effectivePhone,
-      email: email || "",
-      eventDate: eventDate || null,
-      guestCount: guestCount || null,
-      budget: budget || "",
-      vibe: vibe || [],
-      message: message || "",
+      coupleName: cleanStr(coupleName) || effectiveName,
+      couplePhone: cleanStr(couplePhone) || effectivePhone,
+      email: cleanStr(email),
+      eventDate: edPub.value,
+      guestCount: gcPub.value != null ? gcPub.value : null,
+      budget: cleanStr(budget),
+      vibe: Array.isArray(vibe) ? vibe.slice(0, 50).map((x) => String(x).slice(0, 100)) : [],
+      message: cleanStr(message),
       source: source || "wedsy",
       stage: "new", // forced server-side; client cannot set stage on the public endpoint
-      estimatedValue: estimatedValue || 0,
+      estimatedValue: evPub.value != null ? evPub.value : 0,
       notes: notesArray,
-      followUpDate: followUpDate || null,
+      followUpDate: fuPub.value,
       activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
       status: "new",
     });
@@ -169,6 +179,11 @@ const updateEnquiry = async (req, res) => {
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
       return res.status(400).json({ message: `lostReason must be one of ${LOST_REASON_ENUM.filter(Boolean).join(", ")}` });
     }
+    if (stage !== undefined && !STAGE_ENUM.includes(stage)) {
+      return res.status(400).json({ message: `stage must be one of ${STAGE_ENUM.join(", ")}` });
+    }
+    const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
+    const fuV = optDate(followUpDate, "followUpDate"); if (!fuV.ok) return res.status(400).json({ message: fuV.message });
 
     let movedToBooked = false;
     let stageChanged = false;
@@ -182,9 +197,9 @@ const updateEnquiry = async (req, res) => {
       enquiry.stage = stage;
       stageChanged = true;
     }
-    if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
+    if (evV.value !== undefined) enquiry.estimatedValue = evV.value;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
-    if (followUpDate !== undefined) enquiry.followUpDate = followUpDate || null;
+    if (followUpDate !== undefined) enquiry.followUpDate = fuV.value;
     // assignedTo: a String holding a VenueTeamMember._id (so OS can read/resolve it);
     // not an ObjectId ref yet. Empty = unassigned. (Harness caught it was dropped.)
     if (assignedTo !== undefined) {
@@ -254,9 +269,20 @@ const createManualLead = async (req, res) => {
       assignedTo,
     } = req.body || {};
 
-    if (!coupleName && !couplePhone) {
+    const nameC = cleanStr(coupleName);
+    const phoneC = cleanStr(couplePhone);
+    if (!nameC && !phoneC) {
       return res.status(400).json({ message: "Couple name or phone is required" });
     }
+    // Hostile-input validation (length caps, strict dates, non-negative numbers).
+    for (const [v, f, max] of [[coupleName, "coupleName", MAXLEN.name], [couplePhone, "couplePhone", MAXLEN.phone], [email, "email", MAXLEN.email], [message, "message", MAXLEN.text]]) {
+      const r = optStr(v, f, max);
+      if (!r.ok) return res.status(400).json({ message: r.message });
+    }
+    const edV = optDate(eventDate, "eventDate"); if (!edV.ok) return res.status(400).json({ message: edV.message });
+    const fuV = optDate(followUpDate, "followUpDate"); if (!fuV.ok) return res.status(400).json({ message: fuV.message });
+    const gcV = optCount(guestCount, "guestCount"); if (!gcV.ok) return res.status(400).json({ message: gcV.message });
+    const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
 
     const venue = await Venue.findOne({ slug }).select("_id").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
@@ -267,28 +293,29 @@ const createManualLead = async (req, res) => {
     let notesArray = [];
     if (Array.isArray(notes)) {
       notesArray = notes
-        .map((n) => (typeof n === "string" ? { text: n } : n))
-        .filter((n) => n && n.text);
+        .map((n) => (typeof n === "string" ? { text: cleanStr(n) } : n))
+        .filter((n) => n && n.text)
+        .map((n) => ({ text: String(n.text).slice(0, MAXLEN.text) }));
     } else if (typeof notes === "string" && notes.trim()) {
-      notesArray = [{ text: notes.trim() }];
+      notesArray = [{ text: notes.trim().slice(0, MAXLEN.text) }];
     }
 
     const enquiry = await VenueEnquiry.create({
       venueId: venue._id,
-      name: coupleName || "",
-      phone: couplePhone || "",
-      coupleName: coupleName || "",
-      couplePhone: couplePhone || "",
-      email: email || "",
-      eventDate: eventDate || null,
-      guestCount: guestCount || null,
-      message: message || "",
+      name: nameC,
+      phone: phoneC,
+      coupleName: nameC,
+      couplePhone: phoneC,
+      email: cleanStr(email),
+      eventDate: edV.value,
+      guestCount: gcV.value != null ? gcV.value : null,
+      message: cleanStr(message),
       source: source || "other",
       stage: stage || "new",
-      estimatedValue: estimatedValue || 0,
+      estimatedValue: evV.value != null ? evV.value : 0,
       notes: notesArray,
-      followUpDate: followUpDate || null,
-      assignedTo: assignedTo || "",
+      followUpDate: fuV.value,
+      assignedTo: cleanStr(assignedTo),
       activities: [{ type: "created", description: "Lead added manually", timestamp: new Date() }],
       status: "new",
     });
