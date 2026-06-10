@@ -365,6 +365,34 @@ async function run() {
     check("EV: toggle back to false persists", off.status >= 200 && v2 && v2.amenities && v2.amenities.evCharging === false);
   }
 
+  // ================= Task B: member login determinism =================
+  if (process.env.E2E_MEMBER_LOGIN === "1") {
+    const MULTI = "8888888888";
+    const r = await api("POST", "/venue-owner/auth", { body: { phone: MULTI, otp: "000000", referenceId: "dev" } });
+    check("member-login: multi-identity returns multiple:true (no token)", r.status === 200 && r.json && r.json.multiple === true && !r.json.token, `status ${r.status}`);
+    const ids = (r.json && r.json.identities) || [];
+    check("member-login: 2 identities (owner + member)", ids.length === 2 && ids.some((i) => i.kind === "owner") && ids.some((i) => i.kind === "member"), `n=${ids.length}`);
+    const selToken = r.json && r.json.selectionToken;
+    check("member-login: selection token issued", Boolean(selToken));
+
+    const ownerId = ids.find((i) => i.kind === "owner");
+    const selO = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: selToken, kind: "owner", id: ownerId && ownerId.id } });
+    const selOvenue = selO.json && selO.json.venueOwner && selO.json.venueOwner.venue;
+    check("member-login: select owner identity mints token (Test Palace Two)", selO.status === 200 && selO.json.token && selOvenue && /Test Palace Two/.test(selOvenue.name || ""), `status ${selO.status}`);
+    const ov = await api("GET", "/venues/dashboard/overview", { token: selO.json && selO.json.token });
+    check("member-login: minted owner token authorizes dashboard", ov.status === 200, `status ${ov.status}`);
+
+    const memId = ids.find((i) => i.kind === "member");
+    const selM = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: selToken, kind: "member", id: memId && memId.id } });
+    check("member-login: select member identity mints member token", selM.status === 200 && selM.json.token && selM.json.venueOwner && selM.json.venueOwner.isMember === true, `status ${selM.status}`);
+
+    const bad = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: selToken, kind: "owner", id: "000000000000000000000000" } });
+    check("member-login: unoffered identity -> 403", bad.status === 403, `status ${bad.status}`);
+
+    const single = await api("POST", "/venue-owner/auth", { body: { phone: OWNER_PHONE, otp: "000000", referenceId: "dev" } });
+    check("member-login: single-identity returns token directly (no picker)", single.status === 200 && single.json.token && !single.json.multiple, `status ${single.status}`);
+  }
+
   finish();
 }
 

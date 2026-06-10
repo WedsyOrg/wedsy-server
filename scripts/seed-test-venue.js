@@ -187,6 +187,28 @@ async function run() {
   }
   console.log(`[seed] created ${interactionSeeds.length} interactions`);
 
+  // 5. Multi-identity login scenario (only on team-derived branches that have
+  //    VenueTeamMember). Phone 8888888888 is BOTH an OWNER of a second venue and
+  //    an ACTIVE MEMBER of Test Palace → 2 identities. 9999999999 stays single.
+  let VenueTeamMember;
+  try { VenueTeamMember = require("../models/VenueTeamMember"); } catch (_) {}
+  if (VenueTeamMember) {
+    const MULTI_PHONE = "8888888888";
+    let venue2 = await Venue.findOne({ slug: "test-palace-two" });
+    const v2 = { name: "Test Palace Two", slug: "test-palace-two", status: "published", city: "Bangalore", venueType: "banquet_hall" };
+    if (!venue2) venue2 = await Venue.create(v2);
+    else { Object.assign(venue2, v2); await venue2.save(); }
+
+    let owner2 = await VenueOwner.findOne({ phone: MULTI_PHONE });
+    const o2 = { name: "Multi Identity", phone: MULTI_PHONE, role: "owner", venueId: venue2._id, verificationStatus: "phone_verified", isActive: true };
+    if (!owner2) owner2 = await VenueOwner.create(o2);
+    else { Object.assign(owner2, o2); await owner2.save(); }
+
+    await VenueTeamMember.deleteMany({ phone: MULTI_PHONE });
+    await VenueTeamMember.create({ venueId: venue._id, ownerId: owner._id, name: "Multi Identity", phone: MULTI_PHONE, role: "sales", isActive: true });
+    console.log("[seed] multi-identity 8888888888 -> owner(test-palace-two) + member(test-palace)");
+  }
+
   console.log("[seed] DONE");
   await mongoose.disconnect();
 }
