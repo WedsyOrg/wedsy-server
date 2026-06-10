@@ -108,6 +108,7 @@ const VenueSchema = new mongoose.Schema({
     shuttleService: { type: Boolean, default: false },
     petFriendly: { type: Boolean, default: false },
     smokingAllowed: { type: Boolean, default: false },
+    evCharging: { type: Boolean, default: false },
     outsideAlcohol: { type: String, enum: ["yes", "no", "extra_charge"], default: "no" },
   },
   photos: {
