@@ -5,6 +5,9 @@ const enquiry = require("../controllers/enquiry");
 const enquiryPipeline = require("../controllers/enquiry-pipeline");
 const disqualify = require("../controllers/disqualify");
 const cockpit = require("../controllers/enquiry-cockpit");
+const lifecycle = require("../controllers/enquiry-lifecycle");
+const enquiryImport = require("../controllers/enquiry-import");
+const fileUpload = require("express-fileupload");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 const { requirePermission } = require("../middlewares/requirePermission");
 
@@ -12,6 +15,29 @@ router.post("/", enquiry.CreateNew);
 router.get("/", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.GetAll);
 router.put("/", CheckAdminLogin, enquiry.Update);
 router.delete("/", CheckAdminLogin, enquiry.Delete);
+// Lifecycle (Slice A): role-aware dashboard. Literal path — MUST stay above /:_id.
+router.get(
+  "/dashboard",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  lifecycle.Dashboard
+);
+// Lifecycle (Slice F): founder CSV import (the Zoho migration tool). Literal
+// paths above /:_id; multipart handled per-route via express-fileupload.
+router.post(
+  "/import/preview",
+  CheckAdminLogin,
+  requirePermission("leads:create:department"),
+  fileUpload(),
+  enquiryImport.Preview
+);
+router.post(
+  "/import/commit",
+  CheckAdminLogin,
+  requirePermission("leads:create:department"),
+  fileUpload(),
+  enquiryImport.Commit
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
@@ -65,6 +91,25 @@ router.get(
   CheckAdminLogin,
   requirePermission("leads:edit:own"),
   cockpit.GetInternalEvents
+);
+// Lifecycle: follow-up completion (zero-orphan gate), recycle, convert.
+router.put(
+  "/:_id/follow-up/:followUpId/complete",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.CompleteFollowUp
+);
+router.post(
+  "/:_id/recycle",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.Recycle
+);
+router.post(
+  "/:_id/convert",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.Convert
 );
 router.put("/:_id/stage", CheckAdminLogin, enquiryPipeline.UpdateStage);
 router.put("/:_id/assign", CheckAdminLogin, enquiryPipeline.UpdateAssignedTo);
