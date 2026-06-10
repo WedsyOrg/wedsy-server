@@ -4,6 +4,11 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
 const FOLLOW_UP_TYPES = ["meet", "call", "visit"];
+// Attempt cadence (Lifecycle Slice C): day offsets from the FIRST unanswered
+// attempt for attempts #1..#4. Configurable via Settings later.
+const ATTEMPT_OFFSETS_DAYS = [0, 1, 3, 5];
+const MAX_ATTEMPTS = 4;
+const UNANSWERED_OUTCOMES = ["busy", "unknown"];
 // Whitelisted qualificationData fields a PUT may write (everything else is ignored).
 const QUALIFICATION_STRING_FIELDS = [
   "groomName",
@@ -45,6 +50,54 @@ const hasFutureFollowUp = (enquiry, now = new Date()) =>
   (enquiry.followUps || []).some(
     (f) => f.scheduledAt && new Date(f.scheduledAt) > now
   );
+
+// Attempt-cadence state for a lead's call log (Lifecycle Slice C). attempts =
+// unanswered (busy/unknown) calls so far. Below MAX: suggest the next attempt per
+// the 0/1/3/5-day rhythm anchored to the first unanswered attempt (clamped to
+// tomorrow if the rhythm date already passed). At MAX: unresponsive — rep decides.
+const cadenceFor = (callLog, now = new Date()) => {
+  const unanswered = (callLog || []).filter((e) =>
+    UNANSWERED_OUTCOMES.includes(e.outcome)
+  );
+  const attempts = unanswered.length;
+  if (attempts === 0 || attempts >= MAX_ATTEMPTS) {
+    return {
+      attempts,
+      maxAttempts: MAX_ATTEMPTS,
+      suggestedNextAttemptAt: null,
+      unresponsive: attempts >= MAX_ATTEMPTS,
+    };
+  }
+  const first = new Date(unanswered[0].startedAt);
+  let suggested = new Date(
+    first.getTime() + ATTEMPT_OFFSETS_DAYS[attempts] * 24 * 60 * 60 * 1000
+  );
+  if (suggested <= now) {
+    suggested = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  }
+  return {
+    attempts,
+    maxAttempts: MAX_ATTEMPTS,
+    suggestedNextAttemptAt: suggested,
+    unresponsive: false,
+  };
+};
+
+// Stamp unresponsiveFlaggedAt + event once attempts reach MAX (set-once on the flag).
+const flagUnresponsiveIfNeeded = async (enquiryId, callLog, actorId, alreadyFlaggedAt) => {
+  const cadence = cadenceFor(callLog);
+  if (!cadence.unresponsive || alreadyFlaggedAt) return false;
+  await EnquiryRepository.updateFieldsById(enquiryId, {
+    unresponsiveFlaggedAt: new Date(),
+  });
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "unresponsive_flagged",
+    actorId,
+    payload: { attempts: cadence.attempts },
+  });
+  return true;
+};
 
 // POST /enquiry/:_id/call-log — append-only. Stamps firstCalledAt on the first
 // call ever (set-once, via the SetFirstCall logic) and flips `qualified` when the
@@ -97,8 +150,21 @@ const logCall = async (
     },
   });
 
-  // Prefer the stamped doc (it carries the fresh firstCalledAt) when this was the first call.
-  return stamped || updated;
+  // Cadence (Slice C): on an unanswered outcome, surface the suggested next attempt
+  // (the scheduler pre-fills it) or flag the lead unresponsive at MAX attempts.
+  const doc = stamped || updated;
+  const leadObj = doc.toObject ? doc.toObject() : doc;
+  if (UNANSWERED_OUTCOMES.includes(entry.outcome)) {
+    const flaggedNow = await flagUnresponsiveIfNeeded(
+      enquiryId,
+      leadObj.callLog,
+      actorId,
+      leadObj.unresponsiveFlaggedAt
+    );
+    leadObj.cadence = cadenceFor(leadObj.callLog);
+    if (flaggedNow) leadObj.unresponsiveFlaggedAt = new Date();
+  }
+  return leadObj;
 };
 
 // POST /enquiry/:_id/follow-up
@@ -234,4 +300,9 @@ module.exports = {
   completeCall,
   listInternalEvents,
   hasFutureFollowUp,
+  cadenceFor,
+  flagUnresponsiveIfNeeded,
+  ATTEMPT_OFFSETS_DAYS,
+  MAX_ATTEMPTS,
+  UNANSWERED_OUTCOMES,
 };

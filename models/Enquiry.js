@@ -102,6 +102,11 @@ const EnquirySchema = new mongoose.Schema(
           promiseNote: { type: String, default: "" },
           createdBy: { type: ObjectId, ref: "Admin", default: null },
           createdAt: { type: Date, default: Date.now },
+          // Lifecycle (additive): completion stamp via PUT /:_id/follow-up/:followUpId/complete
+          completedAt: { type: Date, default: null },
+          completedBy: { type: ObjectId, ref: "Admin", default: null },
+          completedOutcome: { type: String, default: "" }, // connected | busy | no_answer | done
+          completedNotes: { type: String, default: "" },
         },
       ],
       default: [],
@@ -131,6 +136,25 @@ const EnquirySchema = new mongoose.Schema(
       gaps: { type: [String], default: [] },
       completedAt: { type: Date, default: null },
       completedBy: { type: ObjectId, ref: "Admin", default: null },
+    },
+    // ── Lead lifecycle (additive only) ──────────────────────────────────────
+    // Intake engine: stamped when an existing lead enquires again (dedup-merge).
+    reEnquiredAt: { type: Date, default: null },
+    // Attempt cadence: stamped when busy/unknown attempts reach MAX_ATTEMPTS.
+    unresponsiveFlaggedAt: { type: Date, default: null },
+    // CSV import marker: historical imports are excluded from auto-assignment.
+    importedAt: { type: Date, default: null },
+    // Recycle — the third terminal state. Excluded from all active views while
+    // isRecycled; lazily resurfaced (and reassigned) once revisitAt passes.
+    recycled: {
+      isRecycled: { type: Boolean, default: false },
+      reason: { type: String, default: "" }, // wedding_next_year | budget_mismatch_now | venue_not_booked | other
+      reasonNote: { type: String, default: "" },
+      revisitAt: { type: Date, default: null },
+      recycledBy: { type: ObjectId, ref: "Admin", default: null },
+      recycledAt: { type: Date, default: null },
+      originalOwnerId: { type: ObjectId, ref: "Admin", default: null },
+      resurfacedAt: { type: Date, default: null },
     },
   },
   { timestamps: true }

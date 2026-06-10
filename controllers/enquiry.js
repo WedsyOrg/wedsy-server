@@ -13,6 +13,7 @@ const { SendUpdate } = require("../utils/update");
 const { GetPaymentTransactions } = require("../utils/payment");
 const { computeLeadHealth } = require("../utils/leadHealth");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
+const LeadIntakeService = require("../services/LeadIntakeService");
 
 const CreateNew = (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
@@ -41,6 +42,11 @@ const CreateNew = (req, res) => {
                   { new: true }
                 )
                   .then(() => {
+                    // Lifecycle intake hook (additive): dedup-merge — same person enquired again.
+                    LeadIntakeService.recordReEnquiry(existingEnquiry._id, {
+                      source,
+                      message: additionalInfo?.message || "",
+                    });
                     User.findOne({ phone })
                       .then((user) => {
                         if (user) {
@@ -105,6 +111,8 @@ const CreateNew = (req, res) => {
                       })
                         .save()
                         .then((result) => {
+                          // Lifecycle intake hook (additive): auto-assign the new lead.
+                          LeadIntakeService.afterCreate(result._id);
                           SendUpdate({
                             channels: ["SMS", "Whatsapp"],
                             message: "New Lead",
@@ -140,6 +148,8 @@ const CreateNew = (req, res) => {
                           })
                             .save()
                             .then((result) => {
+                              // Lifecycle intake hook (additive): auto-assign the new lead.
+                              LeadIntakeService.afterCreate(result._id);
                               SendUpdate({
                                 channels: ["SMS", "Whatsapp"],
                                 message: "New Lead",
@@ -192,28 +202,52 @@ const CreateNew = (req, res) => {
             { new: true }
           )
             .then(() => {
+              // Lifecycle intake hook (additive): dedup-merge — same person enquired again.
+              LeadIntakeService.recordReEnquiry(existingEnquiry._id, {
+                source,
+                message: additionalInfo?.message || "",
+              });
               res.status(200).send({ message: "Enquiry Updated Successfully" });
             })
             .catch((error) => {
               res.status(400).send({ message: "error", error });
             });
         } else {
-          // Create new enquiry
-          new Enquiry({
-            name,
-            phone,
-            verified: false,
-            source,
-            additionalInfo: additionalInfo || {},
-          })
-            .save()
-            .then((result) => {
-              SendUpdate({
-                channels: ["SMS", "Whatsapp"],
-                message: "New Lead",
-                parameters: { name, phone },
-              });
-              res.status(201).send({ message: "Enquiry Added Successfully" });
+          // Lifecycle intake hook (additive): the exact-match check above misses
+          // formatting variants ("+91 98… " vs "98…"). Normalized match → treat as
+          // the same dedup-merge path, preserving the existing response contract.
+          LeadIntakeService.findExistingByNormalizedPhone(phone)
+            .then((normalizedMatch) => {
+              if (normalizedMatch) {
+                LeadIntakeService.recordReEnquiry(normalizedMatch._id, {
+                  source,
+                  message: additionalInfo?.message || "",
+                });
+                res.status(200).send({ message: "Enquiry Updated Successfully" });
+                return;
+              }
+              // Create new enquiry
+              new Enquiry({
+                name,
+                phone,
+                verified: false,
+                source,
+                additionalInfo: additionalInfo || {},
+              })
+                .save()
+                .then((result) => {
+                  // Lifecycle intake hook (additive): auto-assign the new lead.
+                  LeadIntakeService.afterCreate(result._id);
+                  SendUpdate({
+                    channels: ["SMS", "Whatsapp"],
+                    message: "New Lead",
+                    parameters: { name, phone },
+                  });
+                  res.status(201).send({ message: "Enquiry Added Successfully" });
+                })
+                .catch((error) => {
+                  res.status(400).send({ message: "error", error });
+                });
             })
             .catch((error) => {
               res.status(400).send({ message: "error", error });
@@ -286,6 +320,22 @@ const GetAll = async (req, res) => {
         query.assignedTo = null;
       } else {
         query.assignedTo = assignedTo;
+      }
+    }
+    // Lifecycle (Slice I, additive): lead-list view chips. Absent → behavior unchanged.
+    if (req.query.view) {
+      const view = req.query.view;
+      if (view === "active") {
+        query.stage = { $nin: ["won", "lost"] };
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "won") {
+        query.stage = "won";
+      } else if (view === "lost") {
+        query.stage = "lost";
+      } else if (view === "meeting") {
+        query.stage = "meeting_scheduled";
+      } else if (view === "recycled") {
+        query["recycled.isRecycled"] = true;
       }
     }
     if (date) {
