@@ -1,6 +1,8 @@
 const Venue = require("../models/Venue");
 const VenueOwner = require("../models/VenueOwner");
 const VenueEnquiry = require("../models/VenueEnquiry");
+const VenueBooking = require("../models/VenueBooking");
+const VenueInvoice = require("../models/VenueInvoice");
 
 // Stages that no longer need follow-up.
 const TERMINAL_STAGES = ["booked", "lost"];
@@ -77,10 +79,23 @@ const getDashboardOverview = async (req, res) => {
       }),
     ]);
 
+    // ── Revenue (Phase 3.4): confirmed vs received vs pending ──
+    const [bookings, invoices] = await Promise.all([
+      VenueBooking.find({ venue: venueId, status: { $ne: "cancelled" } }).select("totalValue").lean(),
+      VenueInvoice.find({ venue: venueId }).select("payments").lean(),
+    ]);
+    const confirmedValue = bookings.reduce((s, b) => s + (Number(b.totalValue) || 0), 0);
+    const received = invoices.reduce(
+      (s, inv) => s + (inv.payments || []).reduce((a, p) => a + (Number(p.amount) || 0), 0),
+      0
+    );
+    const revenue = { confirmedValue, received, pending: confirmedValue - received };
+
     return res.status(200).json({
       onboarding: { steps, completed, total, percent },
       isVerified,
       followUps: { dueToday, overdue },
+      revenue,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
