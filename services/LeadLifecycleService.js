@@ -164,15 +164,25 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
   const willFlagUnresponsive =
     CallCockpitService.cadenceFor(prospectiveLog).unresponsive && !lead.unresponsiveFlaggedAt;
 
+  // stageAdvance is a COMPOSITE action: advancing to Meeting Scheduled must be
+  // accompanied by a nextFollowUp of type meet/visit with a valid FUTURE
+  // scheduledAt in the same payload — a meeting stage without a booked meeting
+  // time is invalid (reviewed rule).
+  const stageAdvancePresent = stageAdvance !== undefined && stageAdvance !== null && stageAdvance !== false;
   const nextActions = [
     ["nextFollowUp", nextFollowUp],
     ["stageAdvance", stageAdvance],
     ["requestDisqualify", requestDisqualify],
     ["recycle", recycle],
   ].filter(([, v]) => v !== undefined && v !== null && v !== false);
+  // The stageAdvance+nextFollowUp pair counts as ONE next step.
+  const effectiveActionCount =
+    stageAdvancePresent && nextActions.some(([n]) => n === "nextFollowUp")
+      ? nextActions.length - 1
+      : nextActions.length;
 
   if (open) {
-    if (nextActions.length !== 1 && !(nextActions.length === 0 && willFlagUnresponsive)) {
+    if (effectiveActionCount !== 1 && !(effectiveActionCount === 0 && willFlagUnresponsive)) {
       throw httpError(
         422,
         "Every completed follow-up on an open lead must carry exactly one next step: nextFollowUp, stageAdvance, requestDisqualify, or recycle. A lead can never be left without a scheduled next action."
@@ -184,16 +194,27 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
 
   // PRE-validate the chosen action BEFORE any write: a bad payload must fail the
   // whole request, never leave the follow-up marked completed with no next step.
-  if (nextActions.length === 1) {
+  if (stageAdvancePresent) {
+    if (stageAdvance !== "meeting_scheduled") {
+      throw httpError(400, "stageAdvance only supports meeting_scheduled");
+    }
+    const nf = nextFollowUp;
+    const d = new Date(nf && nf.scheduledAt);
+    if (
+      !nf ||
+      !["meet", "visit"].includes(nf.type) ||
+      !nf.scheduledAt ||
+      Number.isNaN(d.getTime()) ||
+      d <= new Date()
+    ) {
+      throw httpError(422, "Advancing to Meeting Scheduled requires booking the meeting time");
+    }
+  } else if (nextActions.length === 1) {
     const [name, value] = nextActions[0];
     if (name === "nextFollowUp") {
       const d = new Date(value && value.scheduledAt);
       if (!value || !["meet", "call", "visit"].includes(value.type) || !value.scheduledAt || Number.isNaN(d.getTime())) {
         throw httpError(400, "nextFollowUp needs a valid type (meet/call/visit) and scheduledAt");
-      }
-    } else if (name === "stageAdvance") {
-      if (value !== "meeting_scheduled") {
-        throw httpError(400, "stageAdvance only supports meeting_scheduled");
       }
     } else if (name === "requestDisqualify") {
       if (!value || !EnquiryService.LOST_REASONS.includes(value.reason)) {
@@ -244,18 +265,18 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
     cadence = logged.cadence || null;
   }
 
-  // 3. Apply the single chosen next action through the existing flows.
+  // 3. Apply the chosen next action through the existing flows.
   let appliedAction = willFlagUnresponsive && nextActions.length === 0 ? "unresponsive_flagged" : null;
-  if (nextActions.length === 1) {
+  if (stageAdvancePresent) {
+    // Composite: book the meeting first, then advance the stage.
+    appliedAction = "stageAdvance";
+    await CallCockpitService.addFollowUp(enquiryId, nextFollowUp, actorId);
+    await EnquiryService.updateStage(enquiryId, "meeting_scheduled", actorId);
+  } else if (nextActions.length === 1) {
     const [name, value] = nextActions[0];
     appliedAction = name;
     if (name === "nextFollowUp") {
       await CallCockpitService.addFollowUp(enquiryId, value, actorId);
-    } else if (name === "stageAdvance") {
-      if (value !== "meeting_scheduled") {
-        throw httpError(400, "stageAdvance only supports meeting_scheduled");
-      }
-      await EnquiryService.updateStage(enquiryId, "meeting_scheduled", actorId);
     } else if (name === "requestDisqualify") {
       await EnquiryService.requestDisqualification(
         enquiryId,
