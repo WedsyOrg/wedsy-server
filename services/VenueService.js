@@ -99,6 +99,7 @@ const AMENITY_BOOLEANS = [
   "groomRoom", "makeupRoom", "changingRooms", "prayerRoom", "fireNOC",
   "liquorLicense", "dayOfCoordinator", "securityStaff", "housekeeping",
   "valetParking", "shuttleService", "petFriendly", "smokingAllowed",
+  "evCharging",
 ];
 
 const PHOTO_BUCKETS = ["venue", "decor", "rooms", "spaces"];

@@ -352,6 +352,19 @@ async function run() {
     }
   }
 
+  // ================= Task 9: EV charging amenity (toggle -> save -> public read) =================
+  if (process.env.E2E_EV === "1") {
+    const on = await api("PUT", `/venues/${SLUG}`, { token, body: { amenities: { evCharging: true } } });
+    check("EV: PUT amenities.evCharging=true", [200, 201].includes(on.status), `status ${on.status}`);
+    const pub1 = await api("GET", `/venues/${SLUG}`, {});
+    const v1 = pub1.json && (pub1.json.venue || pub1.json);
+    check("EV: public venue reflects evCharging=true", v1 && v1.amenities && v1.amenities.evCharging === true);
+    const off = await api("PUT", `/venues/${SLUG}`, { token, body: { amenities: { evCharging: false } } });
+    const pub2 = await api("GET", `/venues/${SLUG}`, {});
+    const v2 = pub2.json && (pub2.json.venue || pub2.json);
+    check("EV: toggle back to false persists", off.status >= 200 && v2 && v2.amenities && v2.amenities.evCharging === false);
+  }
+
   finish();
 }
 
