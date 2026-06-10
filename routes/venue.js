@@ -1,12 +1,13 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, getVenueEnquiries, updateEnquiry } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry } = require("../controllers/venueEnquiry");
 const { saveAvailability } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
 const { generateLocationDescription } = require("../controllers/venueLocation");
+const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
@@ -15,10 +16,15 @@ const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 router.get("/", optionalAdminAuth, getVenues);
 // Admin-only: create a new venue (venue owners must NOT create venues).
 router.post("/", CheckAdminLogin, createVenue);
+// Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
+// Declared before "/:slug" so the literal path is never shadowed by the slug param.
+router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
 router.put("/:slug", adminOrVenueOwnerAuth, updateVenue);
 router.post("/:slug/enquiry", createEnquiry);
 router.post("/:slug/enquiries", createEnquiry);
+// Gated manual lead creation (venue owners only) — must precede none, distinct path.
+router.post("/:slug/enquiries/manual", venueOwnerAuth, createManualLead);
 router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);

@@ -10,17 +10,20 @@ const createEnquiry = async (req, res) => {
       phone,
       coupleName,
       couplePhone,
+      email,
       eventDate,
       guestCount,
       budget,
       vibe,
       message,
       source,
-      stage,
       estimatedValue,
       notes,
+      followUpDate,
       userId: bodyUserId,
     } = req.body;
+    // Public endpoint: stage and assignedTo are NOT accepted from the client.
+    // Couple enquiries always start in "new"; assignment is staff-only.
 
     const userId = bodyUserId || (req.auth && req.auth.user_id) || null;
 
@@ -52,15 +55,17 @@ const createEnquiry = async (req, res) => {
       phone: effectivePhone,
       coupleName: coupleName || effectiveName,
       couplePhone: couplePhone || effectivePhone,
+      email: email || "",
       eventDate: eventDate || null,
       guestCount: guestCount || null,
       budget: budget || "",
       vibe: vibe || [],
       message: message || "",
       source: source || "wedsy",
-      stage: stage || "new",
+      stage: "new", // forced server-side; client cannot set stage on the public endpoint
       estimatedValue: estimatedValue || 0,
       notes: notesArray,
+      followUpDate: followUpDate || null,
       activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
       status: "new",
     });
@@ -148,4 +153,69 @@ const updateEnquiry = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, getVenueEnquiries, updateEnquiry };
+// Gated manual lead creation — venue owners adding walk-ins / referrals / etc.
+// from their dashboard. Authenticated (venueOwnerAuth) and ownership-checked.
+const createManualLead = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const {
+      coupleName,
+      couplePhone,
+      email,
+      eventDate,
+      guestCount,
+      message,
+      source,
+      stage,
+      estimatedValue,
+      notes,
+      followUpDate,
+      assignedTo,
+    } = req.body || {};
+
+    if (!coupleName && !couplePhone) {
+      return res.status(400).json({ message: "Couple name or phone is required" });
+    }
+
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+
+    let notesArray = [];
+    if (Array.isArray(notes)) {
+      notesArray = notes
+        .map((n) => (typeof n === "string" ? { text: n } : n))
+        .filter((n) => n && n.text);
+    } else if (typeof notes === "string" && notes.trim()) {
+      notesArray = [{ text: notes.trim() }];
+    }
+
+    const enquiry = await VenueEnquiry.create({
+      venueId: venue._id,
+      name: coupleName || "",
+      phone: couplePhone || "",
+      coupleName: coupleName || "",
+      couplePhone: couplePhone || "",
+      email: email || "",
+      eventDate: eventDate || null,
+      guestCount: guestCount || null,
+      message: message || "",
+      source: source || "other",
+      stage: stage || "new",
+      estimatedValue: estimatedValue || 0,
+      notes: notesArray,
+      followUpDate: followUpDate || null,
+      assignedTo: assignedTo || "",
+      activities: [{ type: "created", description: "Lead added manually", timestamp: new Date() }],
+      status: "new",
+    });
+
+    return res.status(201).json({ success: true, enquiryId: enquiry._id, enquiry });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry };
