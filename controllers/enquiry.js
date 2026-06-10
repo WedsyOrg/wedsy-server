@@ -400,8 +400,12 @@ const GetAll = async (req, res) => {
         };
       }
     }
+    // RBAC scope: combine req.scopeFilter (built by requirePermission with ownerField
+    // "assignedTo") as a MANDATORY $and constraint, so caller params can only narrow
+    // within scope, never widen it. For "all" scope req.scopeFilter is {} -> unchanged.
+    const scopedFilter = { $and: [query, req.scopeFilter || {}] };
     if (!(status && ["Hot", "Potential", "Cold"].includes(status))) {
-      Enquiry.countDocuments(query)
+      Enquiry.countDocuments(scopedFilter)
         .then((total) => {
           const totalPages = Math.ceil(total / limit);
           const skip = (page - 1) * limit;
@@ -483,7 +487,7 @@ const GetAll = async (req, res) => {
             //   // { $limit: limit },
             //   // { $sort: sortQuery },
             // ])
-            .find(query)
+            .find(scopedFilter)
             .sort(sortQuery)
             .skip(skip)
             .limit(limit)
@@ -549,8 +553,11 @@ const GetAll = async (req, res) => {
         {
           $match: {
             ...query,
-            $and:
-              status === "Cold"
+            // RBAC scope: append (req.scopeFilter || {}) to the existing $and so it is a
+            // MANDATORY constraint here too. This single pipeline feeds BOTH the count
+            // aggregate and the paginated aggregate, so both are scoped. "all" -> {} (unchanged).
+            $and: [
+              ...(status === "Cold"
                 ? [
                     {
                       "events.eventDays.date": {
@@ -574,7 +581,9 @@ const GetAll = async (req, res) => {
                         $lt: tempEndDate.toISOString().slice(0, 10), // Convert to ISO string and get only the date part
                       },
                     },
-                  ],
+                  ]),
+              req.scopeFilter || {},
+            ],
           },
         },
       ];
@@ -764,7 +773,9 @@ const Delete = (req, res) => {
 // - statusSummary (NEW) derived from Orders + Biddings, used by the "Makeup Report" UI boxes.
 const Get = (req, res) => {
   const { _id } = req.params;
-  Enquiry.findById({ _id })
+  // RBAC scope: the doc must also satisfy req.scopeFilter. An out-of-scope id simply
+  // yields no match -> the same 404 as a missing enquiry (does not reveal it exists).
+  Enquiry.findOne({ $and: [{ _id }, req.scopeFilter || {}] })
     .then((result) => {
       if (!result) {
         res.status(404).send();
