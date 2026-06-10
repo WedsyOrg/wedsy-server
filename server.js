@@ -23,7 +23,8 @@ const Chat = require("./models/Chat");
 //Creating Express App
 const app = express();
 // Behind nginx on EC2 (sets X-Forwarded-For) — trust the first proxy hop so
-// express-rate-limit reads the real client IP instead of throwing ValidationError.
+// express-rate-limit reads the real client IP instead of throwing
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR (its trust-proxy validation error).
 app.set('trust proxy', 1);
 
 //Applying middlewares
