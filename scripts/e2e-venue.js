@@ -172,6 +172,60 @@ async function run() {
     check("rate-limit: gated /manual still works (not limited)", [200, 201].includes(manual.status), `status ${manual.status}`);
   }
 
+  // ================= Task 3: bulk actions + templates + bulk-whatsapp =================
+  if (process.env.E2E_BULK === "1") {
+    const list = await api("GET", `/venues/${SLUG}/enquiries`, { token });
+    const ids = (list.json && list.json.enquiries ? list.json.enquiries : []).slice(0, 2).map((e) => e._id);
+    check("bulk: have >=2 enquiry ids", ids.length >= 2, `got ${ids.length}`);
+
+    {
+      const { status, json } = await api("POST", `/venues/${SLUG}/enquiries/bulk`, {
+        token, body: { enquiryIds: ids, action: "stage", value: "contacted" },
+      });
+      check("bulk action stage (updated==2)", status === 200 && json && json.updated === ids.length && Array.isArray(json.errors), `status ${status} updated=${json && json.updated}`);
+    }
+    {
+      const { status, json } = await api("POST", `/venues/${SLUG}/enquiries/bulk`, {
+        token, body: { enquiryIds: ids, action: "assign", value: "Bulk Assignee" },
+      });
+      check("bulk action assign (updated==2)", status === 200 && json && json.updated === ids.length, `status ${status} updated=${json && json.updated}`);
+    }
+    {
+      const { status, json } = await api("POST", `/venues/${SLUG}/enquiries/bulk`, {
+        token, body: { enquiryIds: ids, action: "note", value: "bulk note from e2e" },
+      });
+      check("bulk action note (updated==2)", status === 200 && json && json.updated === ids.length, `status ${status} updated=${json && json.updated}`);
+    }
+    {
+      const { status } = await api("POST", `/venues/${SLUG}/enquiries/bulk`, {
+        token, body: { enquiryIds: ids, action: "nope", value: "x" },
+      });
+      check("bulk action invalid -> 400", status === 400, `status ${status}`);
+    }
+
+    let templateId = null;
+    {
+      const create = await api("POST", `/venues/${SLUG}/templates`, { token, body: { name: "Welcome", body: "Hi, thanks for your enquiry!" } });
+      templateId = create.json && create.json.template && create.json.template._id;
+      check("template create -> 201", [200, 201].includes(create.status) && templateId, `status ${create.status}`);
+      const listT = await api("GET", `/venues/${SLUG}/templates`, { token });
+      check("template list includes created", listT.status === 200 && listT.json.templates.some((t) => t._id === templateId), `status ${listT.status}`);
+      const upd = await api("PATCH", `/venues/${SLUG}/templates/${templateId}`, { token, body: { name: "Welcome v2" } });
+      check("template update name", upd.status === 200 && upd.json.template.name === "Welcome v2", `status ${upd.status}`);
+      const del = await api("DELETE", `/venues/${SLUG}/templates/${templateId}`, { token });
+      check("template delete", del.status === 200 && del.json.success, `status ${del.status}`);
+    }
+
+    // bulk-whatsapp: e2e server instance runs with WhatsApp creds blanked so the
+    // unconfigured 503 path is exercised — no real messages are ever sent.
+    {
+      const { status, json } = await api("POST", `/venues/${SLUG}/enquiries/bulk-whatsapp`, {
+        token, body: { enquiryIds: ids, body: "hello from e2e" },
+      });
+      check("bulk-whatsapp unconfigured -> 503 {configured:false}", status === 503 && json && json.configured === false, `status ${status}`);
+    }
+  }
+
   finish();
 }
 
