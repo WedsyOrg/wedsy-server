@@ -148,6 +148,30 @@ async function run() {
     }
   }
 
+  // ================= Task 4: public enquiry rate limiting =================
+  // Run against a freshly-started server (in-memory counters reset on restart).
+  // Posts the same phone repeatedly to the PUBLIC enquiry endpoint; with the
+  // default per-phone limit of 3/day, the 4th submission must return 429.
+  if (process.env.E2E_RATELIMIT === "1") {
+    const phone = "9871239999";
+    let last = 0;
+    let earlyOk = true;
+    for (let i = 1; i <= 4; i++) {
+      const { status } = await api("POST", `/venues/${SLUG}/enquiry`, {
+        body: { coupleName: `RateLimit ${i}`, couplePhone: phone, source: "wedsy" },
+      });
+      if (i <= 3 && ![200, 201].includes(status)) earlyOk = false;
+      last = status;
+    }
+    check("rate-limit: first 3 public enquiries accepted", earlyOk);
+    check("rate-limit: 4th same-phone enquiry -> 429", last === 429, `last status ${last}`);
+    // The gated /manual route must remain unaffected by the public limiter.
+    const manual = await api("POST", `/venues/${SLUG}/enquiries/manual`, {
+      token, body: { coupleName: "Manual Not Limited", couplePhone: "9871230077" },
+    });
+    check("rate-limit: gated /manual still works (not limited)", [200, 201].includes(manual.status), `status ${manual.status}`);
+  }
+
   finish();
 }
 
