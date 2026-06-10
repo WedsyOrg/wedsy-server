@@ -4,6 +4,7 @@ const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { createOrGetConversation } = require("./venueConversation");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
+const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
@@ -170,6 +171,7 @@ const updateEnquiry = async (req, res) => {
     }
 
     let movedToBooked = false;
+    let stageChanged = false;
     if (stage !== undefined && stage !== enquiry.stage) {
       enquiry.activities.push({
         type: "stage_changed",
@@ -178,6 +180,7 @@ const updateEnquiry = async (req, res) => {
       });
       if (stage === "booked") movedToBooked = true;
       enquiry.stage = stage;
+      stageChanged = true;
     }
     if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
@@ -211,6 +214,17 @@ const updateEnquiry = async (req, res) => {
       } catch (bookingErr) {
         console.error("Auto-create booking failed for enquiry", String(enquiry._id), bookingErr.message);
       }
+    }
+
+    // Fire-and-forget: mirror a stage change back to the source Google Sheet for
+    // sheet-synced leads. Never blocks the PATCH and never surfaces errors here;
+    // no-ops gracefully when there is no integration / creds / row mapping.
+    if (stageChanged) {
+      setImmediate(() => {
+        writeBackLeadToSheet(enquiry).catch((e) =>
+          console.warn(`[writeBackLeadToSheet] enquiry ${enquiry._id}: ${e.message}`)
+        );
+      });
     }
 
     return res.status(200).json({ enquiry, booking: booking ? { _id: booking._id } : undefined });
