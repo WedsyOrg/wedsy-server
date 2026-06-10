@@ -9,6 +9,8 @@ const { refreshReviews } = require("../controllers/venueReviews");
 const { generateLocationDescription } = require("../controllers/venueLocation");
 const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { addInteraction, getInteractions } = require("../controllers/venueLeadInteraction");
+const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
+const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
@@ -29,11 +31,20 @@ router.post("/:slug/enquiries/manual", venueOwnerAuth, createManualLead);
 // CSV/Excel bulk import + import history (venue owners only).
 router.post("/:slug/enquiries/import", venueOwnerAuth, importLeads);
 router.get("/:slug/enquiries/imports", venueOwnerAuth, getImports);
+// Bulk actions over selected leads (literal "bulk" segments — declared before
+// the /:enquiryId param routes so they are never shadowed).
+router.post("/:slug/enquiries/bulk", venueOwnerAuth, bulkAction);
+router.post("/:slug/enquiries/bulk-whatsapp", venueOwnerAuth, bulkWhatsApp);
 router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
 // Per-lead communication log (4-segment paths — no shadowing of the routes above).
 router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, addInteraction);
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
+// Message templates CRUD (venue owners only).
+router.get("/:slug/templates", venueOwnerAuth, listTemplates);
+router.post("/:slug/templates", venueOwnerAuth, createTemplate);
+router.patch("/:slug/templates/:templateId", venueOwnerAuth, updateTemplate);
+router.delete("/:slug/templates/:templateId", venueOwnerAuth, deleteTemplate);
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
 router.post("/:slug/nearby", refreshNearby);
