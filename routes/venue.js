@@ -8,6 +8,7 @@ const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
 const { generateLocationDescription } = require("../controllers/venueLocation");
 const { getDashboardOverview } = require("../controllers/venueDashboard");
+const { addInteraction, getInteractions } = require("../controllers/venueLeadInteraction");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
@@ -30,6 +31,9 @@ router.post("/:slug/enquiries/import", venueOwnerAuth, importLeads);
 router.get("/:slug/enquiries/imports", venueOwnerAuth, getImports);
 router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, updateEnquiry);
+// Per-lead communication log (4-segment paths — no shadowing of the routes above).
+router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, addInteraction);
+router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
 router.post("/:slug/nearby", refreshNearby);
