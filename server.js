@@ -20,6 +20,7 @@ const {
 const { runDailyFollowUpReminders } = require("./utils/venueReminderJob");
 const socketStore = require("./utils/socket");
 const Chat = require("./models/Chat");
+const { runScheduledSheetSync } = require("./controllers/venueSheetsSync");
 
 //Creating Express App
 const app = express();
@@ -167,4 +168,8 @@ httpServer.listen(port, function () {
   // Venue owner follow-up reminders (Phase 1.4) — 9am IST. Env-gated + log-only
   // by default (REMINDERS_LOG_ONLY); no-ops gracefully without WhatsApp creds.
   cron.schedule("0 9 * * *", () => { runDailyFollowUpReminders(); }, IST);
+
+  // Google Sheets one-way sync (sheet → leads) for every connected venue — every 15 min.
+  // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).
+  cron.schedule("*/15 * * * *", () => { runScheduledSheetSync(); }, IST);
 });
