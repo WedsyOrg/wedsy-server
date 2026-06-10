@@ -12,6 +12,7 @@ const {
   listTabs,
   readSheetValues,
 } = require("../utils/googleSheets");
+const { buildRowMap, stageColumnLetter } = require("../utils/venueSheetWriteBack");
 
 // Resolve venue from slug and confirm the authenticated owner owns it.
 async function resolveOwnedVenue(req, res) {
@@ -200,9 +201,14 @@ async function syncIntegration(integrationDoc) {
     activityDescription: "Synced from Google Sheet",
   });
 
+  // Capture per-row mapping for stage write-back (keyed by couplePhone digits)
+  // and the A1 column letter of the mapped stage column.
+  const rowMap = buildRowMap(header, rows, columnMap.couplePhone);
+  const stageColumn = stageColumnLetter(header, columnMap);
+
   await VenueSheetIntegration.updateOne(
     { _id: integration._id },
-    { lastSyncAt: new Date(), status: "connected" }
+    { lastSyncAt: new Date(), status: "connected", rowMap, stageColumn }
   );
   return result;
 }

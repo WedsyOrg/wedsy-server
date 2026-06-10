@@ -16,9 +16,14 @@ const VenueSheetIntegrationSchema = new mongoose.Schema(
       enum: ["disconnected", "connected", "error"],
       default: "disconnected",
     },
-    // ── DEFERRED seam: two-way write-back (lead stage → sheet row). Not built in MVP.
-    //   When implemented, add e.g. writeBackEnabled:Boolean + a row-id column mapping
-    //   here, and a writeBackLeadToSheet() in controllers/venueSheetsSync.js.
+    // ── Two-way write-back support (lead stage → sheet row) ──
+    // Captured at sync time so a later stage change can locate the right cell
+    // WITHOUT mutating the shared VenueEnquiry model (chosen over adding
+    // sheetRowIndex to VenueEnquiry, which is the more invasive option).
+    //   rowMap:      { <couplePhoneDigits>: <1-based sheet row number> }
+    //   stageColumn: A1 column letter of the mapped stage column (e.g. "H")
+    rowMap: { type: mongoose.Schema.Types.Mixed, default: {} },
+    stageColumn: { type: String, default: "" },
   },
   { timestamps: true }
 );

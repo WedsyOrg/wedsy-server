@@ -8,10 +8,14 @@ const { google } = require("googleapis");
 //   SHEETS_TOKEN_ENC_KEY      (any secret string; used to derive the AES-256 key)
 //   VENUE_OWNER_APP_URL       (optional; where the OAuth callback redirects back to)
 
-// Read-only scopes: list spreadsheets (Drive metadata) + read values (Sheets).
+// Scopes: list spreadsheets (Drive metadata, read-only) + read AND write values
+// (Sheets). The Sheets scope was widened from spreadsheets.readonly to
+// spreadsheets to support stage write-back (2-way). NOTE: existing connected
+// integrations were consented under the narrower scope and must RE-CONSENT
+// (disconnect + reconnect) before write-back will be authorized.
 const SCOPES = [
   "https://www.googleapis.com/auth/drive.metadata.readonly",
-  "https://www.googleapis.com/auth/spreadsheets.readonly",
+  "https://www.googleapis.com/auth/spreadsheets",
 ];
 
 function sheetsConfigured() {
@@ -111,6 +115,17 @@ async function readSheetValues(refreshToken, spreadsheetId, sheetName) {
   };
 }
 
+// Write a single cell. `a1` is a cell reference within the tab, e.g. "H5".
+async function updateCell(refreshToken, spreadsheetId, sheetName, a1, value) {
+  const sheets = google.sheets({ version: "v4", auth: clientFromRefreshToken(refreshToken) });
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!${a1}`,
+    valueInputOption: "RAW",
+    requestBody: { values: [[value]] },
+  });
+}
+
 module.exports = {
   SCOPES,
   sheetsConfigured,
@@ -121,4 +136,5 @@ module.exports = {
   listSpreadsheets,
   listTabs,
   readSheetValues,
+  updateCell,
 };

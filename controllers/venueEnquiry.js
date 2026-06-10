@@ -3,6 +3,7 @@ const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { createOrGetConversation } = require("./venueConversation");
+const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
@@ -161,6 +162,7 @@ const updateEnquiry = async (req, res) => {
 
     const { stage, estimatedValue, lostReason, followUpDate, addNote } = req.body || {};
 
+    let stageChanged = false;
     if (stage !== undefined && stage !== enquiry.stage) {
       enquiry.activities.push({
         type: "stage_changed",
@@ -168,6 +170,7 @@ const updateEnquiry = async (req, res) => {
         timestamp: new Date(),
       });
       enquiry.stage = stage;
+      stageChanged = true;
     }
     if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
@@ -182,6 +185,18 @@ const updateEnquiry = async (req, res) => {
     }
 
     await enquiry.save();
+
+    // Fire-and-forget: mirror a stage change back to the source Google Sheet for
+    // sheet-synced leads. Never blocks the PATCH and never surfaces errors here;
+    // no-ops gracefully when there is no integration / creds / row mapping.
+    if (stageChanged) {
+      setImmediate(() => {
+        writeBackLeadToSheet(enquiry).catch((e) =>
+          console.warn(`[writeBackLeadToSheet] enquiry ${enquiry._id}: ${e.message}`)
+        );
+      });
+    }
+
     return res.status(200).json({ enquiry });
   } catch (err) {
     return res.status(500).json({ message: err.message });
