@@ -15,6 +15,7 @@ const { listBookings, getBooking, createBooking, updateBooking } = require("../c
 const { createQuote, listQuotes, getQuote, updateQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
+const { getAnalytics } = require("../controllers/venueAnalytics");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { enquiryIpLimiter, enquiryPhoneLimiter } = require("../utils/venueEnquiryRateLimit");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
@@ -75,6 +76,9 @@ router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, addPayment);
 
 // ── Phase 3: payments summary (3.4) ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
+
+// ── Phase 4.1: analytics ──
+router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
 
 router.post("/:slug/availability", venueOwnerAuth, saveAvailability);
 router.post("/:slug/view", CheckLogin, trackView);
