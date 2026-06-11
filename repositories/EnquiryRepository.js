@@ -33,9 +33,44 @@ const updateFieldsById = async (_id, fields) => {
   );
 };
 
+// Append a call-log entry (append-only stream — no edit/delete helpers by design).
+// extraSet lets the caller atomically set fields in the same write (e.g. qualified: true).
+const pushCallLogById = async (_id, entry, extraSet = {}) => {
+  const update = { $push: { callLog: entry } };
+  if (Object.keys(extraSet).length) update.$set = extraSet;
+  return await Enquiry.findByIdAndUpdate(_id, update, {
+    new: true,
+    runValidators: true,
+    context: "query",
+  });
+};
+
+// Append a follow-up entry.
+const pushFollowUpById = async (_id, entry) => {
+  return await Enquiry.findByIdAndUpdate(
+    _id,
+    { $push: { followUps: entry } },
+    { new: true, runValidators: true, context: "query" }
+  );
+};
+
+// First-call TAT anchor (set-once, idempotent — same semantics as enquiry.SetFirstCall):
+// `firstCalledAt: null` matches both null and missing, so only a never-called lead
+// gets stamped; an already-stamped lead simply doesn't match and keeps its timestamp.
+const stampFirstCalledAt = async (_id) => {
+  return await Enquiry.findOneAndUpdate(
+    { _id, firstCalledAt: null },
+    { $set: { firstCalledAt: new Date() } },
+    { new: true }
+  );
+};
+
 module.exports = {
   findById,
   updateStageById,
   updateAssignedToById,
   updateFieldsById,
+  pushCallLogById,
+  pushFollowUpById,
+  stampFirstCalledAt,
 };
