@@ -463,6 +463,7 @@ async function run() {
     // browse filters (public list)
     const byType = await api("GET", `/venues?venueType=banquet_hall&status=published`, {});
     check("couple: browse venueType filter returns matches", byType.status === 200 && Array.isArray(byType.json.venues) && byType.json.venues.every((x) => x.venueType === "banquet_hall"), `n ${byType.json && byType.json.venues && byType.json.venues.length}`);
+    check("couple: browse list items expose isVerified (future-proof cards)", byType.json.venues.length > 0 && byType.json.venues.every((x) => typeof x.isVerified === "boolean"), "");
     const paged = await api("GET", `/venues?limit=1&status=published`, {});
     check("couple: browse pagination (limit=1 + total)", paged.status === 200 && paged.json.venues.length <= 1 && typeof paged.json.total === "number", `n ${paged.json.venues.length} total ${paged.json.total}`);
     // amenity filter: enable evCharging on test-palace, then filter

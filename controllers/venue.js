@@ -22,7 +22,10 @@ const getVenues = async (req, res) => {
       maxPrice: trimmed(maxPrice),
       sort: trimmed(sort),
     });
-    return res.status(200).json(result);
+    // Stable per-venue isVerified on the browse list (same derivation + API name
+    // as the detail response) so cards are future-proof for the OS boolean.
+    const venues = (result.venues || []).map((v) => ({ ...v, isVerified: v.status === "verified" }));
+    return res.status(200).json({ ...result, venues });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
