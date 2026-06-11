@@ -5,9 +5,16 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
 const FOLLOW_UP_TYPES = ["meet", "call", "visit"];
 // Attempt cadence (Lifecycle Slice C): day offsets from the FIRST unanswered
-// attempt for attempts #1..#4. Configurable via Settings later.
+// attempt. Runtime values come from SettingsService (cadence.*) which defaults
+// to exactly these constants.
 const ATTEMPT_OFFSETS_DAYS = [0, 1, 3, 5];
 const MAX_ATTEMPTS = 4;
+const SettingsService = require("./SettingsService");
+
+const cadenceConfig = async () => {
+  const cfg = await SettingsService.getMany(["cadence.attemptOffsetsDays", "cadence.maxAttempts"]);
+  return { offsets: cfg["cadence.attemptOffsetsDays"], maxAttempts: cfg["cadence.maxAttempts"] };
+};
 const UNANSWERED_OUTCOMES = ["busy", "unknown"];
 // Whitelisted qualificationData fields a PUT may write (everything else is ignored).
 const QUALIFICATION_STRING_FIELDS = [
@@ -55,29 +62,32 @@ const hasFutureFollowUp = (enquiry, now = new Date()) =>
 // unanswered (busy/unknown) calls so far. Below MAX: suggest the next attempt per
 // the 0/1/3/5-day rhythm anchored to the first unanswered attempt (clamped to
 // tomorrow if the rhythm date already passed). At MAX: unresponsive — rep decides.
-const cadenceFor = (callLog, now = new Date()) => {
+const cadenceFor = (callLog, now = new Date(), cfg = {}) => {
+  const offsets = cfg.offsets || ATTEMPT_OFFSETS_DAYS;
+  const maxAttempts = cfg.maxAttempts || MAX_ATTEMPTS;
   const unanswered = (callLog || []).filter((e) =>
     UNANSWERED_OUTCOMES.includes(e.outcome)
   );
   const attempts = unanswered.length;
-  if (attempts === 0 || attempts >= MAX_ATTEMPTS) {
+  if (attempts === 0 || attempts >= maxAttempts) {
     return {
       attempts,
-      maxAttempts: MAX_ATTEMPTS,
+      maxAttempts,
       suggestedNextAttemptAt: null,
-      unresponsive: attempts >= MAX_ATTEMPTS,
+      unresponsive: attempts >= maxAttempts,
     };
   }
   const first = new Date(unanswered[0].startedAt);
+  const offsetIdx = Math.min(attempts, offsets.length - 1);
   let suggested = new Date(
-    first.getTime() + ATTEMPT_OFFSETS_DAYS[attempts] * 24 * 60 * 60 * 1000
+    first.getTime() + offsets[offsetIdx] * 24 * 60 * 60 * 1000
   );
   if (suggested <= now) {
     suggested = new Date(now.getTime() + 24 * 60 * 60 * 1000);
   }
   return {
     attempts,
-    maxAttempts: MAX_ATTEMPTS,
+    maxAttempts,
     suggestedNextAttemptAt: suggested,
     unresponsive: false,
   };
@@ -85,7 +95,7 @@ const cadenceFor = (callLog, now = new Date()) => {
 
 // Stamp unresponsiveFlaggedAt + event once attempts reach MAX (set-once on the flag).
 const flagUnresponsiveIfNeeded = async (enquiryId, callLog, actorId, alreadyFlaggedAt) => {
-  const cadence = cadenceFor(callLog);
+  const cadence = cadenceFor(callLog, new Date(), await cadenceConfig());
   if (!cadence.unresponsive || alreadyFlaggedAt) return false;
   await EnquiryRepository.updateFieldsById(enquiryId, {
     unresponsiveFlaggedAt: new Date(),
@@ -155,13 +165,14 @@ const logCall = async (
   const doc = stamped || updated;
   const leadObj = doc.toObject ? doc.toObject() : doc;
   if (UNANSWERED_OUTCOMES.includes(entry.outcome)) {
+    const cadCfg = await cadenceConfig();
     const flaggedNow = await flagUnresponsiveIfNeeded(
       enquiryId,
       leadObj.callLog,
       actorId,
       leadObj.unresponsiveFlaggedAt
     );
-    leadObj.cadence = cadenceFor(leadObj.callLog);
+    leadObj.cadence = cadenceFor(leadObj.callLog, new Date(), cadCfg);
     if (flaggedNow) leadObj.unresponsiveFlaggedAt = new Date();
   }
   return leadObj;
@@ -301,6 +312,7 @@ module.exports = {
   listInternalEvents,
   hasFutureFollowUp,
   cadenceFor,
+  cadenceConfig,
   flagUnresponsiveIfNeeded,
   ATTEMPT_OFFSETS_DAYS,
   MAX_ATTEMPTS,

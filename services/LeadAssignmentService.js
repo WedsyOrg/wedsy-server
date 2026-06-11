@@ -4,9 +4,11 @@ const Enquiry = require("../models/Enquiry");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { istDayStart } = require("../utils/goldenWindow");
 
-// Configurable via Settings later — constants for Phase 1.
+const SettingsService = require("./SettingsService");
+
+// Defaults live in SettingsService (assignment.*) — these constants remain only
+// as exported legacy names; runtime reads the settings (which default to these).
 const DAILY_ASSIGNMENT_CAP = 15;
-// Primary pool first; overflow to the next pool when everyone is at cap.
 const POOL_ROLE_NAMES = ["Sales Intern", "Sales Executive"];
 
 // Least-recently-assigned ACTIVE admin in the pools with remaining daily capacity.
@@ -14,7 +16,14 @@ const POOL_ROLE_NAMES = ["Sales Intern", "Sales Executive"];
 // so brand-new pool members get the next lead).
 const pickAssignee = async () => {
   const todayStart = istDayStart();
-  for (const roleName of POOL_ROLE_NAMES) {
+  const cfg = await SettingsService.getMany([
+    "assignment.poolRoles",
+    "assignment.overflowRoles",
+    "assignment.dailyCap",
+  ]);
+  const poolRoleNames = [...cfg["assignment.poolRoles"], ...cfg["assignment.overflowRoles"]];
+  const dailyCap = cfg["assignment.dailyCap"];
+  for (const roleName of poolRoleNames) {
     const role = await Role.findOne({ name: roleName, deletedAt: null }).lean();
     if (!role) continue;
     const pool = await Admin.find({ roleId: role._id, status: "active" })
@@ -25,7 +34,7 @@ const pickAssignee = async () => {
         assignedTo: admin._id,
         createdAt: { $gte: todayStart },
       });
-      if (assignedToday < DAILY_ASSIGNMENT_CAP) return admin;
+      if (assignedToday < dailyCap) return admin;
     }
   }
   return null;
@@ -36,6 +45,9 @@ const pickAssignee = async () => {
 // Never throws (intake must not fail because assignment did).
 const doAssignLead = async (enquiryId) => {
   try {
+    if (!(await SettingsService.get("assignment.autoAssignEnabled"))) {
+      return null; // auto-assignment switched off in Settings — lead stays unassigned
+    }
     const assignee = await pickAssignee();
     if (!assignee) {
       await LeadInternalEventService.record({

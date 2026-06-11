@@ -746,6 +746,26 @@ const ResetPassword = async (req, res) => {
   }
 };
 
+
+// GET /auth/admin/permissions — the caller's resolved permission strings.
+// Drives which Settings sections the frontend renders.
+const GetPermissions = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.auth.user_id).lean();
+    if (!admin || !admin.roleId) {
+      return res.status(200).send({ permissions: [] });
+    }
+    const Role = require("../models/Role");
+    const role = await Role.findById(admin.roleId).lean();
+    res.status(200).send({
+      permissions: role && Array.isArray(role.permissions) ? role.permissions : [],
+      roleName: role ? role.name : null,
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Server error" });
+  }
+};
+
 module.exports = {
   AdminLogin,
   GetAdmin,
@@ -761,4 +781,5 @@ module.exports = {
   RestoreVendorAccount,
   ForgotPassword,
   ResetPassword,
+  GetPermissions,
 };

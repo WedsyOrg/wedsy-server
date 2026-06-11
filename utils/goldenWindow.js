@@ -21,29 +21,33 @@ const istDayStart = (now = new Date()) => {
 const istDayEnd = (now = new Date()) =>
   new Date(istDayStart(now).getTime() + 24 * 60 * 60 * 1000 - 1);
 
-// First-call deadline for a lead created at `createdAt`.
-const goldenDeadline = (createdAt) => {
+// First-call deadline for a lead created at `createdAt`. cfg overrides come from
+// SettingsService (golden.*); omitted ⇒ the original constants.
+const goldenDeadline = (createdAt, cfg = {}) => {
+  const windowMinutes = cfg.windowMinutes ?? GOLDEN_WINDOW_MINUTES;
+  const workStart = cfg.workStartHour ?? WORK_START_HOUR;
+  const workEnd = cfg.workEndHour ?? WORK_END_HOUR;
   const created = new Date(createdAt);
   const ist = toIstWallClock(created);
   const hour = ist.getUTCHours();
-  if (hour >= WORK_START_HOUR && hour < WORK_END_HOUR) {
-    return new Date(created.getTime() + GOLDEN_WINDOW_MINUTES * 60 * 1000);
+  if (hour >= workStart && hour < workEnd) {
+    return new Date(created.getTime() + windowMinutes * 60 * 1000);
   }
-  // Out of hours: due 10:30 IST the same morning (created 00:00–09:59)
-  // or the next morning (created 19:00–23:59).
-  const dayShift = hour < WORK_START_HOUR ? 0 : 1;
+  // Out of hours: due workStart:30 IST the same morning (created before work)
+  // or the next morning (created after work).
+  const dayShift = hour < workStart ? 0 : 1;
   return fromIstParts(
     ist.getUTCFullYear(),
     ist.getUTCMonth(),
     ist.getUTCDate() + dayShift,
-    WORK_START_HOUR,
+    workStart,
     OUT_OF_HOURS_DUE_MINUTE
   );
 };
 
 // { deadline, inWindow, minutesLeft, minutesOver } for an uncalled lead.
-const goldenWindowFor = (createdAt, now = new Date()) => {
-  const deadline = goldenDeadline(createdAt);
+const goldenWindowFor = (createdAt, now = new Date(), cfg = {}) => {
+  const deadline = goldenDeadline(createdAt, cfg);
   const msLeft = deadline.getTime() - now.getTime();
   return {
     deadline,

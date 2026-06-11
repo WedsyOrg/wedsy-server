@@ -7,12 +7,14 @@ const CallCockpitService = require("./CallCockpitService");
 const LeadAssignmentService = require("./LeadAssignmentService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 
+// Default recycle reasons. Runtime list comes from SettingsService ("recycle.reasons").
 const RECYCLE_REASONS = [
   "wedding_next_year",
   "budget_mismatch_now",
   "venue_not_booked",
   "other",
 ];
+const SettingsService = require("./SettingsService");
 const COMPLETION_OUTCOMES = ["connected", "busy", "no_answer", "done"];
 
 const httpError = (status, message) => {
@@ -36,8 +38,9 @@ const isOpenLead = (lead) =>
 // ── Recycle: the third terminal state ──────────────────────────────────────
 const recycleLead = async (enquiryId, { reason, reasonNote, revisitAt } = {}, actorId) => {
   assertValidId(enquiryId);
-  if (!RECYCLE_REASONS.includes(reason)) {
-    throw httpError(400, `Invalid reason (expected one of: ${RECYCLE_REASONS.join(", ")})`);
+  const recycleReasons = await SettingsService.get("recycle.reasons");
+  if (!recycleReasons.includes(reason)) {
+    throw httpError(400, `Invalid reason (expected one of: ${recycleReasons.join(", ")})`);
   }
   if (reasonNote !== undefined && typeof reasonNote !== "string") {
     throw httpError(400, "Invalid reasonNote");
@@ -225,8 +228,9 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
       }
     } else if (name === "recycle") {
       const d = new Date(value && value.revisitAt);
-      if (!value || !RECYCLE_REASONS.includes(value.reason)) {
-        throw httpError(400, `recycle needs a valid reason (${RECYCLE_REASONS.join(", ")})`);
+      const recycleReasons = await SettingsService.get("recycle.reasons");
+      if (!value || !recycleReasons.includes(value.reason)) {
+        throw httpError(400, `recycle needs a valid reason (${recycleReasons.join(", ")})`);
       }
       if (!value.revisitAt || Number.isNaN(d.getTime()) || d <= new Date()) {
         throw httpError(422, "recycle.revisitAt is required and must be in the future");

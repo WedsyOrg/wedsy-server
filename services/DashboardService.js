@@ -11,9 +11,10 @@ const {
   toIstWallClock,
 } = require("../utils/goldenWindow");
 
-// At-risk SLAs — configurable via Settings later; constants for Phase 1.
-const NEW_LEAD_SLA_HOURS = 24; // stage New with no call in 24h
-const CONTACTED_SILENCE_SLA_HOURS = 24; // stage Contacted with no internal event in 24h
+// At-risk SLA defaults — runtime values come from SettingsService (atRisk.*).
+const NEW_LEAD_SLA_HOURS = 24;
+const CONTACTED_SILENCE_SLA_HOURS = 24;
+const SettingsService = require("./SettingsService");
 const RE_ENQUIRED_BADGE_DAYS = 7;
 
 // A lead still in play for active dashboard surfaces.
@@ -50,7 +51,21 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   const now = new Date();
   const todayStart = istDayStart(now);
   const todayEnd = istDayEnd(now);
-  const dayAgo = new Date(now.getTime() - NEW_LEAD_SLA_HOURS * 3600 * 1000);
+  const settings = await SettingsService.getMany([
+    "atRisk.newHours",
+    "atRisk.contactedHours",
+    "golden.windowMinutes",
+    "golden.workStartHour",
+    "golden.workEndHour",
+  ]);
+  const newSlaHours = settings["atRisk.newHours"];
+  const contactedSlaHours = settings["atRisk.contactedHours"];
+  const goldenCfg = {
+    windowMinutes: settings["golden.windowMinutes"],
+    workStartHour: settings["golden.workStartHour"],
+    workEndHour: settings["golden.workEndHour"],
+  };
+  const dayAgo = new Date(now.getTime() - newSlaHours * 3600 * 1000);
   const weekAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
 
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
@@ -154,7 +169,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   const newUntouched = newUntouchedLeads.map((lead) => {
     // Imported leads anchor the golden window on the IMPORT time, not the
     // (historical) createdAt — a 2024 Zoho lead isn't a breached 30-min window.
-    const gw = goldenWindowFor(lead.importedAt || lead.createdAt, now);
+    const gw = goldenWindowFor(lead.importedAt || lead.createdAt, now, goldenCfg);
     return {
       ...leadRow(lead),
       source: lead.marketingSource || lead.source || "",
@@ -195,11 +210,11 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
         .map((lead) => {
           const last = lastEventByLead.get(String(lead._id)) || lead.updatedAt;
           const silentHours = (now - new Date(last)) / 3600000;
-          return silentHours > CONTACTED_SILENCE_SLA_HOURS
+          return silentHours > contactedSlaHours
             ? {
                 ...leadRow(lead),
                 reason: "contacted_silent",
-                hoursOverSla: Math.floor(silentHours - CONTACTED_SILENCE_SLA_HOURS),
+                hoursOverSla: Math.floor(silentHours - contactedSlaHours),
               }
             : null;
         })
@@ -273,12 +288,12 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
 
   // Manager sections only for broader-than-own scopes.
   if (["team", "department", "all"].includes(scope)) {
-    Object.assign(payload, await buildManagerSections(adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo }));
+    Object.assign(payload, await buildManagerSections(adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg, newSlaHours }));
   }
   return payload;
 };
 
-const buildManagerSections = async (adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo }) => {
+const buildManagerSections = async (adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg = {}, newSlaHours = NEW_LEAD_SLA_HOURS }) => {
   const { getSubordinateIds } = require("../middlewares/requirePermission");
   const caller = await Admin.findById(adminId).lean();
 
@@ -329,7 +344,7 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
           ...ACTIVE,
           stage: "new",
           "callLog.0": { $exists: false },
-          createdAt: { $lt: new Date(now.getTime() - NEW_LEAD_SLA_HOURS * 3600 * 1000) },
+          createdAt: { $lt: new Date(now.getTime() - newSlaHours * 3600 * 1000) },
         }),
       ]);
       const byDay = activityByActor.get(String(member._id)) || {};
@@ -393,7 +408,7 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
   let calledCount = 0;
   let breaches = 0;
   for (const lead of weekLeads) {
-    const deadline = goldenDeadline(lead.createdAt);
+    const deadline = goldenDeadline(lead.createdAt, goldenCfg);
     if (lead.firstCalledAt) {
       minutesSum += (new Date(lead.firstCalledAt) - new Date(lead.createdAt)) / 60000;
       calledCount += 1;

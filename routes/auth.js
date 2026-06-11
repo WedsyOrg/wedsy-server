@@ -2,13 +2,15 @@ const express = require("express");
 const router = express.Router();
 const rateLimit = require("express-rate-limit");
 
-const { CheckLogin } = require("../middlewares/auth");
+const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 const auth = require("../controllers/auth");
 const authInternational = require("../controllers/auth.international");
 
 // Admin Auth
 router.post("/admin", auth.AdminLogin);
 router.get("/admin", CheckLogin, auth.GetAdmin);
+// Settings Suite: resolved permissions for the caller (drives Settings UI visibility).
+router.get("/admin/permissions", CheckAdminLogin, auth.GetPermissions);
 // Password reset (Lifecycle Slice G). Forgot is rate-limited (5/hour/IP) and
 // always answers generically — no user enumeration.
 const forgotLimiter = rateLimit({
