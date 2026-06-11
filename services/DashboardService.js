@@ -15,6 +15,7 @@ const {
 const NEW_LEAD_SLA_HOURS = 24;
 const CONTACTED_SILENCE_SLA_HOURS = 24;
 const SettingsService = require("./SettingsService");
+const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const RE_ENQUIRED_BADGE_DAYS = 7;
 
 // A lead still in play for active dashboard surfaces.
@@ -67,6 +68,9 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   };
   const dayAgo = new Date(now.getTime() - newSlaHours * 3600 * 1000);
   const weekAgo = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+  // Lead visibility cutoff: mandatory listing filter on EVERY lead query below
+  // ({} when the feature is off). Never applied to writes or direct fetches.
+  const visibility = await currentVisibilityFilter();
 
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
@@ -91,52 +95,53 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   ] = await Promise.all([
     // Open follow-ups due today or overdue.
     Enquiry.find({
-      ...scopeFilter,
-      ...ACTIVE,
-      followUps: { $elemMatch: { completedAt: null, scheduledAt: { $lte: todayEnd } } },
+      $and: [
+        { ...scopeFilter, ...ACTIVE, followUps: { $elemMatch: { completedAt: null, scheduledAt: { $lte: todayEnd } } } },
+        visibility,
+      ],
     }).lean(),
     // Unresponsive — decide rows.
-    Enquiry.find({ ...scopeFilter, ...ACTIVE, unresponsiveFlaggedAt: { $ne: null } }).lean(),
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, unresponsiveFlaggedAt: { $ne: null } }, visibility] }).lean(),
     // New & untouched (no call yet), oldest first.
-    Enquiry.find({ ...scopeFilter, ...ACTIVE, stage: "new", "callLog.0": { $exists: false } })
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "new", "callLog.0": { $exists: false } }, visibility] })
       .sort({ createdAt: 1 })
       .lean(),
     // At-risk A: New, no call, older than the SLA. Imported historical leads are
     // excluded — a Zoho migration must never read as an SLA storm.
     Enquiry.find({
-      ...scopeFilter,
-      ...ACTIVE,
-      stage: "new",
-      "callLog.0": { $exists: false },
-      createdAt: { $lt: dayAgo },
-      importedAt: null,
+      $and: [
+        { ...scopeFilter, ...ACTIVE, stage: "new", "callLog.0": { $exists: false }, createdAt: { $lt: dayAgo }, importedAt: null },
+        visibility,
+      ],
     }).lean(),
     // At-risk B candidates: Contacted (silence checked against the event stream below).
-    Enquiry.find({ ...scopeFilter, ...ACTIVE, stage: "contacted" }).lean(),
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "contacted" }, visibility] }).lean(),
     // Hot: meetings on the books.
-    Enquiry.find({ ...scopeFilter, ...ACTIVE, stage: "meeting_scheduled" }).lean(),
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "meeting_scheduled" }, visibility] }).lean(),
     // Resurfaced today (isRecycled already cleared by the lazy pass).
-    Enquiry.find({ ...scopeFilter, "recycled.resurfacedAt": { $gte: todayStart } }).lean(),
+    Enquiry.find({ $and: [{ ...scopeFilter, "recycled.resurfacedAt": { $gte: todayStart } }, visibility] }).lean(),
     // All open promises.
     Enquiry.find({
-      ...scopeFilter,
-      ...ACTIVE,
-      followUps: { $elemMatch: { completedAt: null, promiseNote: { $nin: [null, ""] } } },
+      $and: [
+        { ...scopeFilter, ...ACTIVE, followUps: { $elemMatch: { completedAt: null, promiseNote: { $nin: [null, ""] } } } },
+        visibility,
+      ],
     }).lean(),
     // Pipeline weight per stage (recycled excluded; won/lost included for the funnel).
     Enquiry.aggregate([
-      { $match: { ...scopeFilter, "recycled.isRecycled": { $ne: true } } },
+      { $match: { $and: [{ ...scopeFilter, "recycled.isRecycled": { $ne: true } }, visibility] } },
       { $group: { _id: "$stage", count: { $sum: 1 } } },
     ]),
     // Hardening: open leads owned by a non-active admin — at risk regardless of recency.
     inactiveAdminIds.length
-      ? Enquiry.find({ ...scopeFilter, ...ACTIVE, assignedTo: { $in: inactiveAdminIds } }).lean()
+      ? Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, assignedTo: { $in: inactiveAdminIds } }, visibility] }).lean()
       : Promise.resolve([]),
     // Hardening: lost leads that came back (re-enquired in the last 14 days).
     Enquiry.find({
-      ...scopeFilter,
-      stage: "lost",
-      reEnquiredAt: { $gte: new Date(now.getTime() - 14 * 24 * 3600 * 1000) },
+      $and: [
+        { ...scopeFilter, stage: "lost", reEnquiredAt: { $gte: new Date(now.getTime() - 14 * 24 * 3600 * 1000) } },
+        visibility,
+      ],
     }).lean(),
   ]);
 
@@ -256,7 +261,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
 
   // Mission progress: follow-ups completed today in scope ("X of Y done").
   const completedTodayDocs = await Enquiry.aggregate([
-    { $match: { ...scopeFilter } },
+    { $match: { $and: [{ ...scopeFilter }, visibility] } },
     { $unwind: "$followUps" },
     { $match: { "followUps.completedAt": { $gte: todayStart, $lte: todayEnd } } },
     { $count: "n" },
@@ -288,12 +293,12 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
 
   // Manager sections only for broader-than-own scopes.
   if (["team", "department", "all"].includes(scope)) {
-    Object.assign(payload, await buildManagerSections(adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg, newSlaHours }));
+    Object.assign(payload, await buildManagerSections(adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg, newSlaHours, visibility }));
   }
   return payload;
 };
 
-const buildManagerSections = async (adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg = {}, newSlaHours = NEW_LEAD_SLA_HOURS }) => {
+const buildManagerSections = async (adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg = {}, newSlaHours = NEW_LEAD_SLA_HOURS, visibility = {} }) => {
   const { getSubordinateIds } = require("../middlewares/requirePermission");
   const caller = await Admin.findById(adminId).lean();
 
@@ -329,22 +334,23 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
       const own = { assignedTo: member._id };
       const [dueToday, overdue, untouched, atRiskCount] = await Promise.all([
         Enquiry.countDocuments({
-          ...own,
-          ...ACTIVE,
-          followUps: { $elemMatch: { completedAt: null, scheduledAt: { $gte: todayStart, $lte: todayEnd } } },
+          $and: [
+            { ...own, ...ACTIVE, followUps: { $elemMatch: { completedAt: null, scheduledAt: { $gte: todayStart, $lte: todayEnd } } } },
+            visibility,
+          ],
         }),
         Enquiry.countDocuments({
-          ...own,
-          ...ACTIVE,
-          followUps: { $elemMatch: { completedAt: null, scheduledAt: { $lt: todayStart } } },
+          $and: [
+            { ...own, ...ACTIVE, followUps: { $elemMatch: { completedAt: null, scheduledAt: { $lt: todayStart } } } },
+            visibility,
+          ],
         }),
-        Enquiry.countDocuments({ ...own, ...ACTIVE, stage: "new", "callLog.0": { $exists: false } }),
+        Enquiry.countDocuments({ $and: [{ ...own, ...ACTIVE, stage: "new", "callLog.0": { $exists: false } }, visibility] }),
         Enquiry.countDocuments({
-          ...own,
-          ...ACTIVE,
-          stage: "new",
-          "callLog.0": { $exists: false },
-          createdAt: { $lt: new Date(now.getTime() - newSlaHours * 3600 * 1000) },
+          $and: [
+            { ...own, ...ACTIVE, stage: "new", "callLog.0": { $exists: false }, createdAt: { $lt: new Date(now.getTime() - newSlaHours * 3600 * 1000) } },
+            visibility,
+          ],
         }),
       ]);
       const byDay = activityByActor.get(String(member._id)) || {};
@@ -361,7 +367,7 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
   );
 
   // Approval queue — PR #26 shapes (pending disqualify requests in scope).
-  const approvalDocs = await Enquiry.find({ ...scopeFilter, lostStatus: "pending" }).lean();
+  const approvalDocs = await Enquiry.find({ $and: [{ ...scopeFilter, lostStatus: "pending" }, visibility] }).lean();
   const requesterIds = approvalDocs.map((l) => l.lostRequestedBy).filter(Boolean);
   const requesters = requesterIds.length
     ? await Admin.find({ _id: { $in: requesterIds } }, { name: 1 }).lean()
@@ -401,7 +407,7 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
   // Golden-window health this week. Imported historical leads excluded — the
   // migration must never read as a wall of breaches.
   const weekLeads = await Enquiry.find(
-    { ...scopeFilter, createdAt: { $gte: weekAgo }, importedAt: null },
+    { $and: [{ ...scopeFilter, createdAt: { $gte: weekAgo }, importedAt: null }, visibility] },
     { createdAt: 1, firstCalledAt: 1 }
   ).lean();
   let minutesSum = 0;
