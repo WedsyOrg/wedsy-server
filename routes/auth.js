@@ -21,6 +21,8 @@ const forgotLimiter = rateLimit({
 });
 router.post("/admin/forgot", forgotLimiter, auth.ForgotPassword);
 router.post("/admin/reset", auth.ResetPassword);
+// Forced first-login password change (Settings Suite Slice 9).
+router.post("/admin/first-reset", CheckAdminLogin, auth.FirstResetPassword);
 
 // Vendor Auth
 router.post("/vendor", auth.VendorLogin);
