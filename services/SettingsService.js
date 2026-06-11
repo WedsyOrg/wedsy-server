@@ -27,6 +27,9 @@ const DEFAULTS = {
   "atRisk.contactedHours": 24,
   "tags.available": ["Premium", "NRI", "Destination"],
   "adform.fieldMap": {},
+  // Lead visibility cutoff: hide leads created before this date from lists and
+  // dashboards (imported + recently re-enquired leads always show). null = off.
+  "leads.visibilityCutoff": null,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -48,6 +51,8 @@ const KEY_CATEGORY = {
   "whatsapp.templates": "settings_templates",
   "tags.available": "settings_templates",
   "adform.fieldMap": "settings_integrations",
+  // Visibility cutoff governs what the working pipeline shows → pipeline category.
+  "leads.visibilityCutoff": "settings_pipeline",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -112,6 +117,13 @@ const validateValue = (key, value) => {
         out[k] = t;
       }
       return out;
+    }
+    case "leads.visibilityCutoff": {
+      if (value === null || value === "") return null;
+      if (typeof value !== "string" || Number.isNaN(new Date(value).getTime())) {
+        throw err(400, "leads.visibilityCutoff must be null or a parseable ISO date string");
+      }
+      return new Date(value).toISOString();
     }
     case "adform.fieldMap": {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
