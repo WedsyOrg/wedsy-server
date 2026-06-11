@@ -94,4 +94,32 @@ const SetCustomFields = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields };
+// PUT /enquiry/:_id/tags (Slice 7a)
+const SetTags = async (req, res) => {
+  try {
+    const updated = await LeadLifecycleService.setTags(
+      req.params._id,
+      (req.body || {}).tags,
+      req.auth.user_id
+    );
+    res.status(200).json(updated);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// POST /enquiry/bulk-transfer (Slice 7b) — per-document scope check inside.
+const BulkTransfer = async (req, res) => {
+  try {
+    const result = await LeadLifecycleService.bulkTransfer(
+      req.body || {},
+      req.auth.user_id,
+      req.scopeFilter || {}
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer };

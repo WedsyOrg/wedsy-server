@@ -12,6 +12,7 @@ const Order = require("../models/Order");
 const { SendUpdate } = require("../utils/update");
 const { GetPaymentTransactions } = require("../utils/payment");
 const { computeLeadHealth } = require("../utils/leadHealth");
+const { buildFilterConditions } = require("../utils/leadFilterBuilder");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
 
@@ -452,10 +453,18 @@ const GetAll = async (req, res) => {
         };
       }
     }
+    // Filter builder (Settings Suite): strict-whitelisted {field,op,value} filters.
+    // Unknown field/op → 400. ALWAYS combined under the same mandatory $and below.
+    let filterConditions = [];
+    try {
+      filterConditions = await buildFilterConditions(req.query.filters);
+    } catch (fbError) {
+      return res.status(fbError.status || 400).send({ message: fbError.message });
+    }
     // RBAC scope: combine req.scopeFilter (built by requirePermission with ownerField
     // "assignedTo") as a MANDATORY $and constraint, so caller params can only narrow
     // within scope, never widen it. For "all" scope req.scopeFilter is {} -> unchanged.
-    const scopedFilter = { $and: [query, req.scopeFilter || {}] };
+    const scopedFilter = { $and: [query, req.scopeFilter || {}, ...filterConditions] };
     if (!(status && ["Hot", "Potential", "Cold"].includes(status))) {
       Enquiry.countDocuments(scopedFilter)
         .then((total) => {
@@ -635,6 +644,7 @@ const GetAll = async (req, res) => {
                     },
                   ]),
               req.scopeFilter || {},
+              ...filterConditions,
             ],
           },
         },
