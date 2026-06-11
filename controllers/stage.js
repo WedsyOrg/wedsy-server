@@ -28,11 +28,11 @@ const Create = async (req, res) => {
 // PUT /stages/:id
 const Update = async (req, res) => {
   try {
-    const { name, color, category, order } = req.body || {};
+    const { name, color, category, order, slaHours } = req.body || {};
     const actorId = req.auth && req.auth.user_id;
     const stage = await StageService.updateStage(
       req.params.id,
-      { name, color, category, order },
+      { name, color, category, order, slaHours },
       actorId
     );
     res.status(200).json(stage);
