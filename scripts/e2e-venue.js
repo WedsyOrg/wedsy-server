@@ -429,6 +429,50 @@ async function run() {
     check("roles: listing_manager payments GET -> 200 (open read)", lmPayments.status === 200, `status ${lmPayments.status}`);
   }
 
+  // ================= Couple-side: isVerified, view beacon, availability, browse =================
+  if (process.env.E2E_COUPLE === "1") {
+    // isVerified on public detail (derived from status; test-palace is published -> false)
+    const det = await api("GET", `/venues/${SLUG}`, {});
+    check("couple: public detail exposes isVerified (false for published)", det.status === 200 && det.json.isVerified === false && det.json.venue, `isVerified ${det.json && det.json.isVerified}`);
+
+    // view beacon (public) increments analytics views + conversion shape
+    const beforeAn = await api("GET", `/venues/${SLUG}/analytics`, { token });
+    const beforeViews = beforeAn.json.traffic ? beforeAn.json.traffic.views : -1;
+    const v = await api("POST", `/venues/${SLUG}/view`, {});
+    check("couple: public view beacon -> 200", v.status === 200, `status ${v.status}`);
+    // The beacon is fire-and-forget (writes AFTER responding) — poll for the async write.
+    let tr = null;
+    for (let i = 0; i < 15; i++) {
+      const a = await api("GET", `/venues/${SLUG}/analytics`, { token });
+      tr = a.json.traffic;
+      if (tr && tr.views > beforeViews) break;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+    check("couple: analytics traffic shape {views,enquiries,conversionRate}", tr && typeof tr.views === "number" && typeof tr.enquiries === "number" && typeof tr.conversionRate === "number", JSON.stringify(tr));
+    check("couple: view recorded (views >= 1)", tr && tr.views >= 1, `views ${tr && tr.views}`);
+
+    // availability-check: block a date, then query
+    await api("POST", `/venues/${SLUG}/availability`, { token, body: { blockedDates: ["2027-01-01"] } });
+    const unavail = await api("GET", `/venues/${SLUG}/availability-check?date=2027-01-01`, {});
+    check("couple: availability-check blocked date -> unavailable", unavail.status === 200 && unavail.json.status === "unavailable", `status ${unavail.json && unavail.json.status}`);
+    const avail = await api("GET", `/venues/${SLUG}/availability-check?date=2027-06-15`, {});
+    check("couple: availability-check free date -> available", avail.status === 200 && avail.json.status === "available", `status ${avail.json && avail.json.status}`);
+    const badDate = await api("GET", `/venues/${SLUG}/availability-check?date=31-02-2026`, {});
+    check("couple: availability-check invalid date -> 400", badDate.status === 400, `status ${badDate.status}`);
+
+    // browse filters (public list)
+    const byType = await api("GET", `/venues?venueType=banquet_hall&status=published`, {});
+    check("couple: browse venueType filter returns matches", byType.status === 200 && Array.isArray(byType.json.venues) && byType.json.venues.every((x) => x.venueType === "banquet_hall"), `n ${byType.json && byType.json.venues && byType.json.venues.length}`);
+    const paged = await api("GET", `/venues?limit=1&status=published`, {});
+    check("couple: browse pagination (limit=1 + total)", paged.status === 200 && paged.json.venues.length <= 1 && typeof paged.json.total === "number", `n ${paged.json.venues.length} total ${paged.json.total}`);
+    // amenity filter: enable evCharging on test-palace, then filter
+    await api("PUT", `/venues/${SLUG}`, { token, body: { amenities: { evCharging: true } } });
+    const byAmenity = await api("GET", `/venues?amenities=evCharging&status=published`, {});
+    const hasTP = (byAmenity.json.venues || []).some((x) => x.slug === SLUG);
+    check("couple: browse amenities=evCharging includes the toggled venue", byAmenity.status === 200 && hasTP, `found ${hasTP}`);
+    await api("PUT", `/venues/${SLUG}`, { token, body: { amenities: { evCharging: false } } });
+  }
+
   finish();
 }
 
