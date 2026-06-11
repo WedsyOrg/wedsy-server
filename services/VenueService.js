@@ -68,6 +68,9 @@ const SCALAR_TOP_LEVEL = [
   "coverPhoto", "featurePhoto",
   // Places-enrich location fields (additive)
   "state", "pincode", "googlePlaceId", "formattedAddress",
+  // Neighbourhood (area, from Places) + Bangalore region — editable from the
+  // Places-powered location flow / dropdown.
+  "locality", "zone",
   // Phase 3 invoicing profile (additive)
   "gstin", "pan", "invoicePrefix",
 ];
