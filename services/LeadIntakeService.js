@@ -30,7 +30,7 @@ const findExistingByNormalizedPhone = async (phone) => {
 //   lost     → keep the stage; reEnquiredAt feeds the dashboard's
 //              "Returned — they came back" card (last 14 days) with a manager Reopen.
 //   won      → already a client; event only, no badge.
-const recordReEnquiry = async (enquiryId, { source, message } = {}) => {
+const recordReEnquiry = async (enquiryId, { source, message, adFormAnswers } = {}) => {
   try {
     const lead = await Enquiry.findById(enquiryId).lean();
     if (!lead) return;
@@ -39,7 +39,12 @@ const recordReEnquiry = async (enquiryId, { source, message } = {}) => {
       leadId: enquiryId,
       type: "re_enquired",
       actorId: null,
-      payload: { source: source || "", message: message || "" },
+      payload: {
+        source: source || "",
+        message: message || "",
+        // Slice 4: a re-enquiry from an ad form carries its new answers.
+        ...(adFormAnswers ? { adFormAnswers } : {}),
+      },
     });
 
     if (lead.stage === "won") {
