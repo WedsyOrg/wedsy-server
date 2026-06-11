@@ -124,6 +124,15 @@ const VenueSchema = new mongoose.Schema({
     refund: { type: String, default: "" },
     otherRestrictions: { type: String, default: "" },
   },
+  // Structured policy clauses (Phase: owner-feedback). Three ordered lists of
+  // numbered clause strings. Legacy `policies` (above) is NEVER dropped — it is
+  // migrated into policyDoc on read (see controllers/venue.js withPolicyDoc) so
+  // nothing is lost. New field name (couldn't overload the `policies` object).
+  policyDoc: {
+    policies: [{ type: String }],
+    terms: [{ type: String }],
+    refund: [{ type: String }],
+  },
   contact: {
     primaryName: { type: String, default: "" },
     primaryPhone: { type: String, default: "" },

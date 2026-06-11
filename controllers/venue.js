@@ -31,10 +31,31 @@ const getVenues = async (req, res) => {
   }
 };
 
+// Backward-compatible structured policies. If policyDoc has no content yet,
+// migrate the legacy `policies` object into it on read (never lost):
+//   otherRestrictions -> policyDoc.policies, cancellation+refund -> policyDoc.refund.
+function withPolicyDoc(venue) {
+  if (!venue) return venue;
+  const pd = venue.policyDoc || {};
+  const has = (a) => Array.isArray(a) && a.length > 0;
+  if (has(pd.policies) || has(pd.terms) || has(pd.refund)) {
+    venue.policyDoc = { policies: pd.policies || [], terms: pd.terms || [], refund: pd.refund || [] };
+    return venue;
+  }
+  const legacy = venue.policies || {};
+  const clean = (...vals) => vals.map((s) => (s == null ? "" : String(s).trim())).filter(Boolean);
+  venue.policyDoc = {
+    policies: clean(legacy.otherRestrictions),
+    terms: [],
+    refund: clean(legacy.cancellation, legacy.refund),
+  };
+  return venue;
+}
+
 const getVenueBySlug = async (req, res) => {
   try {
     const { slug } = req.params;
-    const venue = await VenueService.getVenueBySlug(slug);
+    const venue = withPolicyDoc(await VenueService.getVenueBySlug(slug));
     // Stable public verification flag. Derived from status today (same as the
     // dashboard); when Wedsy OS ships a real orthogonal boolean, only this
     // derivation changes — the `isVerified` API name stays, so the couple-side

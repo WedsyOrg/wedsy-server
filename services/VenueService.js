@@ -196,6 +196,18 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
     }
   }
 
+  // Structured policy clauses — arrays of trimmed, length-capped clause strings.
+  if (updates.policyDoc && typeof updates.policyDoc === "object") {
+    const cleanClauses = (arr) =>
+      (Array.isArray(arr) ? arr : [])
+        .map((s) => String(s == null ? "" : s).trim().slice(0, 2000))
+        .filter(Boolean)
+        .slice(0, 100);
+    for (const k of ["policies", "terms", "refund"]) {
+      if (updates.policyDoc[k] !== undefined) $set[`policyDoc.${k}`] = cleanClauses(updates.policyDoc[k]);
+    }
+  }
+
   if (updates.contact && typeof updates.contact === "object") {
     for (const k of CONTACT_SCALARS) {
       if (updates.contact[k] !== undefined) $set[`contact.${k}`] = updates.contact[k];

@@ -64,6 +64,11 @@ const details = async (placeId) => {
         componentOf(components, "locality") ||
         componentOf(components, "postal_town") ||
         componentOf(components, "administrative_area_level_2"),
+      // Neighbourhood / area — maps to Venue.locality so the owner form autofills it.
+      area:
+        componentOf(components, "sublocality_level_1") ||
+        componentOf(components, "sublocality") ||
+        componentOf(components, "neighborhood"),
       state: componentOf(components, "administrative_area_level_1"),
       pincode: componentOf(components, "postal_code"),
       country: componentOf(components, "country"),

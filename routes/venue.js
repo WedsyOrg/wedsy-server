@@ -18,6 +18,7 @@ const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
+const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
 const { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter } = require("../utils/venueEnquiryRateLimit");
@@ -38,6 +39,8 @@ const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 router.get("/", optionalAdminAuth, getVenues);
 // Admin-only: create a new venue (venue owners must NOT create venues).
 router.post("/", CheckAdminLogin, createVenue);
+// Public "list your venue" lead from the landing page — rate-limited + validated.
+router.post("/onboarding-requests", publicReadLimiter, createOnboardingRequest);
 // Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
