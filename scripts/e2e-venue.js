@@ -472,6 +472,34 @@ async function run() {
     const hasTP = (byAmenity.json.venues || []).some((x) => x.slug === SLUG);
     check("couple: browse amenities=evCharging includes the toggled venue", byAmenity.status === 200 && hasTP, `found ${hasTP}`);
     await api("PUT", `/venues/${SLUG}`, { token, body: { amenities: { evCharging: false } } });
+
+    // ── Places proxy contract (auth-gated; no live Google call to avoid cost/key) ──
+    const acNoAuth = await api("GET", `/places/autocomplete?input=mumbai`, {});
+    check("places: autocomplete requires auth -> 401", acNoAuth.status === 401, `status ${acNoAuth.status}`);
+    const detNoAuth = await api("GET", `/places/details?placeId=x`, {});
+    check("places: details requires auth -> 401", detNoAuth.status === 401, `status ${detNoAuth.status}`);
+
+    // ── policyDoc structured policies + backward compat ──
+    await api("PUT", `/venues/${SLUG}`, { token, body: { policies: { otherRestrictions: "No outside DJ after 11pm", cancellation: "50% refund before 30 days", refund: "No refund within 7 days" } } });
+    const r1 = await api("GET", `/venues/${SLUG}`, {});
+    const pd1 = r1.json.venue.policyDoc;
+    check("policyDoc: legacy policies migrated on read (otherRestrictions->policies, cancel/refund->refund)",
+      pd1 && pd1.policies.includes("No outside DJ after 11pm") && pd1.refund.length >= 1, JSON.stringify(pd1));
+    await api("PUT", `/venues/${SLUG}`, { token, body: { policyDoc: { policies: ["Clause A", "Clause B"], terms: ["T1"], refund: ["R1"] } } });
+    const r2 = await api("GET", `/venues/${SLUG}`, {});
+    const pd2 = r2.json.venue.policyDoc;
+    check("policyDoc: structured value persists + precedes legacy",
+      pd2 && pd2.policies.length === 2 && pd2.policies[0] === "Clause A" && pd2.terms[0] === "T1" && pd2.refund[0] === "R1", JSON.stringify(pd2));
+
+    // ── onboarding requests (public) create + hostile input ──
+    const onb = await api("POST", `/venues/onboarding-requests`, { body: { name: "Rohaan", venueName: "Crown Estate", city: "Bangalore", phone: "+91 98765 43210" } });
+    check("onboarding: create -> 201 + id", [200, 201].includes(onb.status) && onb.json.id, `status ${onb.status}`);
+    const onbMissing = await api("POST", `/venues/onboarding-requests`, { body: { venueName: "X", phone: "9876543210" } });
+    check("onboarding: missing name -> 400", onbMissing.status === 400, `status ${onbMissing.status}`);
+    const onbShort = await api("POST", `/venues/onboarding-requests`, { body: { name: "  ", venueName: "X", phone: "123" } });
+    check("onboarding: blank name / short phone -> 400", onbShort.status === 400, `status ${onbShort.status}`);
+    const onbNull = await api("POST", `/venues/onboarding-requests`, { rawBody: "null" });
+    check("onboarding: null body -> not 500", onbNull.status !== 500, `status ${onbNull.status}`);
   }
 
   // ================= Public-route rate limiting (callback + generate-location) =================
@@ -486,6 +514,9 @@ async function run() {
     // so generate-location-description 429s at the limiter — BEFORE invoking Anthropic.
     const gen = await api("POST", `/venues/${SLUG}/generate-location-description`, {});
     check("public-ratelimit: generate-location-description over-limit -> 429 (no Anthropic call)", gen.status === 429, `status ${gen.status}`);
+    // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
+    const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
+    check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
   }
 
   finish();
