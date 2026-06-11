@@ -92,6 +92,19 @@ router.get(
   requirePermission("leads:edit:own"),
   cockpit.GetInternalEvents
 );
+// Settings Suite: journey + custom field values.
+router.get(
+  "/:_id/journey",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.Journey
+);
+router.put(
+  "/:_id/custom-fields",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.SetCustomFields
+);
 // Lifecycle: follow-up completion (zero-orphan gate), recycle, convert.
 router.put(
   "/:_id/follow-up/:followUpId/complete",

@@ -13,6 +13,7 @@ router.use("/user", require("./user"));
 router.use("/enquiry", require("./enquiry"));
 router.use("/project", require("./project")); // Lifecycle Slice D
 router.use("/settings", require("./settings")); // Settings Suite
+router.use("/custom-field", require("./custom-field")); // Settings Suite
 router.use("/decor", require("./decor"));
 router.use("/decor-package", require("./decor-package"));
 router.use("/search", require("./search"));

@@ -137,6 +137,11 @@ const EnquirySchema = new mongoose.Schema(
       completedAt: { type: Date, default: null },
       completedBy: { type: ObjectId, ref: "Admin", default: null },
     },
+    // ── Settings Suite (additive only) ──────────────────────────────────────
+    // Values for CustomFieldDef-defined fields ({ defKey: value }).
+    customFields: { type: Object, default: {} },
+    // Tag labels picked from the Settings tag library (tags.available).
+    tags: { type: [String], default: [] },
     // ── Lead lifecycle (additive only) ──────────────────────────────────────
     // Intake engine: stamped when an existing lead enquires again (dedup-merge).
     reEnquiredAt: { type: Date, default: null },
