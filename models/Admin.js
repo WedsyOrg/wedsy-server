@@ -19,6 +19,8 @@ const AdminSchema = new mongoose.Schema(
     // Password reset (additive): sha256 hash of the emailed token + its expiry.
     resetToken: { type: String, default: null },
     resetTokenExpiresAt: { type: Date, default: null },
+    // Settings Suite (additive): force a password change on first login.
+    mustResetPassword: { type: Boolean, default: false },
     meta: {
       designation: { type: String, default: "" },
       employeeId: { type: String, default: "" },

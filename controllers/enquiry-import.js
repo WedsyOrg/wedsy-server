@@ -39,6 +39,7 @@ const Commit = async (req, res) => {
     const options = {
       mapping: parseJson(req.body.mapping, {}),
       stageMapping: parseJson(req.body.stageMapping, {}),
+      ownerMap: parseJson(req.body.ownerMap, {}),
       skipDuplicates: req.body.skipDuplicates !== "false" && req.body.skipDuplicates !== false,
       assignOnImport: req.body.assignOnImport === "true" || req.body.assignOnImport === true,
     };
@@ -51,4 +52,18 @@ const Commit = async (req, res) => {
   }
 };
 
-module.exports = { Preview, Commit };
+// GET /enquiry/import/sample — downloadable CSV in our standard shape.
+const Sample = async (req, res) => {
+  try {
+    const csv = await LeadImportService.sampleCsv();
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", "attachment; filename=wedsy-import-sample.csv");
+    res.status(200).send(csv);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error("[import:sample]", error);
+    res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  }
+};
+
+module.exports = { Preview, Commit, Sample };

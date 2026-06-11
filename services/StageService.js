@@ -60,7 +60,7 @@ const createStage = async ({ name, color, category } = {}, actorId) => {
 
 // Rename / recolor / reorder a single stage. NEVER changes slug — leads store the slug,
 // so renaming is display-only to keep existing leads valid.
-const updateStage = async (id, { name, color, category, order } = {}, actorId) => {
+const updateStage = async (id, { name, color, category, order, slaHours } = {}, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid stage id");
   const existing = await StageRepository.findById(id);
   if (!existing) throw err(404, "Stage not found");
@@ -83,6 +83,12 @@ const updateStage = async (id, { name, color, category, order } = {}, actorId) =
   }
   if (typeof order === "number" && Number.isFinite(order)) {
     fields.order = order;
+  }
+  if (slaHours !== undefined) {
+    if (slaHours !== null && (!Number.isFinite(slaHours) || slaHours < 0 || slaHours > 8760)) {
+      throw err(400, "slaHours must be null or a number 0–8760");
+    }
+    fields.slaHours = slaHours;
   }
 
   if (Object.keys(fields).length === 0) return existing;
@@ -130,12 +136,21 @@ const reorderStages = async (orderedIds, actorId) => {
   return { stages };
 };
 
-const deleteStage = async (id, moveToSlug, actorId) => {
+const deleteStage = async (id, moveToSlug, actorId, migrateToStageId) => {
   if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid stage id");
   const existing = await StageRepository.findById(id);
   if (!existing) throw err(404, "Stage not found");
-  if (existing.isSystem === true) {
-    throw err(400, "Cannot delete a system stage");
+  // Settings Suite: accept migrateToStageId (preferred) — resolve it to a slug.
+  if (!moveToSlug && migrateToStageId) {
+    if (!mongoose.Types.ObjectId.isValid(migrateToStageId)) {
+      throw err(400, "Invalid migrateToStageId");
+    }
+    const target = await StageRepository.findById(migrateToStageId);
+    if (!target) throw err(400, "migrateToStageId not found");
+    moveToSlug = target.slug;
+  }
+  if (existing.isSystem === true || existing.systemKey) {
+    throw err(422, "Cannot delete a system stage");
   }
   const total = await StageRepository.countAll();
   if (total <= 1) throw err(400, "Cannot delete the only stage");

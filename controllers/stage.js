@@ -28,11 +28,11 @@ const Create = async (req, res) => {
 // PUT /stages/:id
 const Update = async (req, res) => {
   try {
-    const { name, color, category, order } = req.body || {};
+    const { name, color, category, order, slaHours } = req.body || {};
     const actorId = req.auth && req.auth.user_id;
     const stage = await StageService.updateStage(
       req.params.id,
-      { name, color, category, order },
+      { name, color, category, order, slaHours },
       actorId
     );
     res.status(200).json(stage);
@@ -57,8 +57,9 @@ const Reorder = async (req, res) => {
 const Delete = async (req, res) => {
   try {
     const moveTo = (req.query && req.query.moveTo) || (req.body && req.body.moveTo);
+    const migrateToStageId = req.body && req.body.migrateToStageId;
     const actorId = req.auth && req.auth.user_id;
-    const result = await StageService.deleteStage(req.params.id, moveTo, actorId);
+    const result = await StageService.deleteStage(req.params.id, moveTo, actorId, migrateToStageId);
     res.status(200).json(result);
   } catch (error) {
     res.status(error.status || 500).json({ message: error.message });

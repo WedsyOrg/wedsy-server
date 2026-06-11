@@ -523,6 +523,8 @@ const AdminLogin = (req, res) => {
             res.send({
               message: "Login Successful",
               token,
+              // Settings Suite Slice 9: client-side gate; token is still issued.
+              mustResetPassword: user.mustResetPassword === true,
             });
           } else {
             res.status(401).send({ message: "Wrong Credentials" });
@@ -574,7 +576,14 @@ const Get = async (req, res) => {
 const GetAdmin = (req, res) => {
   const { user } = req.auth;
   const { name, phone, email, roles } = user;
-  res.send({ name, phone, email, roles });
+  res.send({
+    name,
+    phone,
+    email,
+    roles,
+    // Settings Suite Slice 9: AdminContext routes flagged admins to /set-password.
+    mustResetPassword: user.mustResetPassword === true,
+  });
 };
 
 const GetVendor = (req, res) => {
@@ -746,6 +755,50 @@ const ResetPassword = async (req, res) => {
   }
 };
 
+
+// POST /auth/admin/first-reset — the ONLY action allowed to a flagged admin.
+// Min 8 chars, must differ from the current password; clears the flag.
+const FirstResetPassword = async (req, res) => {
+  try {
+    const { newPassword } = req.body || {};
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).send({ message: "Password must be at least 8 characters" });
+    }
+    const admin = await Admin.findById(req.auth.user_id);
+    if (!admin) return res.status(401).send({ message: "invalid user" });
+    if (await CheckHash(newPassword, admin.password)) {
+      return res.status(400).send({ message: "New password cannot be the same as the current one" });
+    }
+    admin.password = await CreateHash(newPassword);
+    admin.mustResetPassword = false;
+    await admin.save();
+    console.log(`[auth] First-login password set for admin ${admin._id}`);
+    return res.status(200).send({ message: "Password updated" });
+  } catch (error) {
+    console.error("[auth] FirstResetPassword error:", error.message);
+    return res.status(500).send({ message: "Server error" });
+  }
+};
+
+// GET /auth/admin/permissions — the caller's resolved permission strings.
+// Drives which Settings sections the frontend renders.
+const GetPermissions = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.auth.user_id).lean();
+    if (!admin || !admin.roleId) {
+      return res.status(200).send({ permissions: [] });
+    }
+    const Role = require("../models/Role");
+    const role = await Role.findById(admin.roleId).lean();
+    res.status(200).send({
+      permissions: role && Array.isArray(role.permissions) ? role.permissions : [],
+      roleName: role ? role.name : null,
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Server error" });
+  }
+};
+
 module.exports = {
   AdminLogin,
   GetAdmin,
@@ -761,4 +814,6 @@ module.exports = {
   RestoreVendorAccount,
   ForgotPassword,
   ResetPassword,
+  GetPermissions,
+  FirstResetPassword,
 };

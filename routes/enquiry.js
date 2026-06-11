@@ -24,6 +24,12 @@ router.get(
 );
 // Lifecycle (Slice F): founder CSV import (the Zoho migration tool). Literal
 // paths above /:_id; multipart handled per-route via express-fileupload.
+router.get(
+  "/import/sample",
+  CheckAdminLogin,
+  requirePermission("leads:create:department"),
+  enquiryImport.Sample
+);
 router.post(
   "/import/preview",
   CheckAdminLogin,
@@ -37,6 +43,14 @@ router.post(
   requirePermission("leads:create:department"),
   fileUpload(),
   enquiryImport.Commit
+);
+// Settings Suite (Slice 7b): bulk transfer — team-or-broader scope, verified per
+// document inside the service. Literal path above /:_id.
+router.post(
+  "/bulk-transfer",
+  CheckAdminLogin,
+  requirePermission("leads:edit:team", { ownerField: "assignedTo" }),
+  lifecycle.BulkTransfer
 );
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
@@ -91,6 +105,25 @@ router.get(
   CheckAdminLogin,
   requirePermission("leads:edit:own"),
   cockpit.GetInternalEvents
+);
+// Settings Suite: journey + custom field values.
+router.get(
+  "/:_id/journey",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.Journey
+);
+router.put(
+  "/:_id/custom-fields",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.SetCustomFields
+);
+router.put(
+  "/:_id/tags",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.SetTags
 );
 // Lifecycle: follow-up completion (zero-orphan gate), recycle, convert.
 router.put(

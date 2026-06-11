@@ -1,4 +1,6 @@
 const DashboardService = require("../services/DashboardService");
+const JourneyService = require("../services/JourneyService");
+const CustomFieldService = require("../services/CustomFieldService");
 const LeadLifecycleService = require("../services/LeadLifecycleService");
 const ProjectService = require("../services/ProjectService");
 
@@ -69,4 +71,55 @@ const Convert = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert };
+// GET /enquiry/:_id/journey — the lead's full chronological story (Slice 5).
+const Journey = async (req, res) => {
+  try {
+    res.status(200).json(await JourneyService.buildJourney(req.params._id));
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// PUT /enquiry/:_id/custom-fields (Slice 3) — validated against active defs.
+const SetCustomFields = async (req, res) => {
+  try {
+    const updated = await CustomFieldService.setLeadValues(
+      req.params._id,
+      req.body,
+      req.auth.user_id
+    );
+    res.status(200).json(updated);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// PUT /enquiry/:_id/tags (Slice 7a)
+const SetTags = async (req, res) => {
+  try {
+    const updated = await LeadLifecycleService.setTags(
+      req.params._id,
+      (req.body || {}).tags,
+      req.auth.user_id
+    );
+    res.status(200).json(updated);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// POST /enquiry/bulk-transfer (Slice 7b) — per-document scope check inside.
+const BulkTransfer = async (req, res) => {
+  try {
+    const result = await LeadLifecycleService.bulkTransfer(
+      req.body || {},
+      req.auth.user_id,
+      req.scopeFilter || {}
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer };

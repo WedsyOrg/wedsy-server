@@ -7,12 +7,14 @@ const CallCockpitService = require("./CallCockpitService");
 const LeadAssignmentService = require("./LeadAssignmentService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 
+// Default recycle reasons. Runtime list comes from SettingsService ("recycle.reasons").
 const RECYCLE_REASONS = [
   "wedding_next_year",
   "budget_mismatch_now",
   "venue_not_booked",
   "other",
 ];
+const SettingsService = require("./SettingsService");
 const COMPLETION_OUTCOMES = ["connected", "busy", "no_answer", "done"];
 
 const httpError = (status, message) => {
@@ -36,8 +38,9 @@ const isOpenLead = (lead) =>
 // ── Recycle: the third terminal state ──────────────────────────────────────
 const recycleLead = async (enquiryId, { reason, reasonNote, revisitAt } = {}, actorId) => {
   assertValidId(enquiryId);
-  if (!RECYCLE_REASONS.includes(reason)) {
-    throw httpError(400, `Invalid reason (expected one of: ${RECYCLE_REASONS.join(", ")})`);
+  const recycleReasons = await SettingsService.get("recycle.reasons");
+  if (!recycleReasons.includes(reason)) {
+    throw httpError(400, `Invalid reason (expected one of: ${recycleReasons.join(", ")})`);
   }
   if (reasonNote !== undefined && typeof reasonNote !== "string") {
     throw httpError(400, "Invalid reasonNote");
@@ -225,8 +228,9 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
       }
     } else if (name === "recycle") {
       const d = new Date(value && value.revisitAt);
-      if (!value || !RECYCLE_REASONS.includes(value.reason)) {
-        throw httpError(400, `recycle needs a valid reason (${RECYCLE_REASONS.join(", ")})`);
+      const recycleReasons = await SettingsService.get("recycle.reasons");
+      if (!value || !recycleReasons.includes(value.reason)) {
+        throw httpError(400, `recycle needs a valid reason (${recycleReasons.join(", ")})`);
       }
       if (!value.revisitAt || Number.isNaN(d.getTime()) || d <= new Date()) {
         throw httpError(422, "recycle.revisitAt is required and must be in the future");
@@ -302,11 +306,89 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
   return obj;
 };
 
+// ── Tags (Settings Suite, Slice 7a) ─────────────────────────────────────────
+// Replace the lead's tag set. Every tag must come from the Settings library
+// (tags.available) — free-text additions happen only on the settings page.
+const setTags = async (enquiryId, tags, actorId) => {
+  assertValidId(enquiryId);
+  if (!Array.isArray(tags) || tags.some((t) => typeof t !== "string")) {
+    throw httpError(400, "tags must be an array of strings");
+  }
+  const library = await SettingsService.get("tags.available");
+  const unknown = tags.filter((t) => !library.includes(t));
+  if (unknown.length) {
+    throw httpError(400, `Unknown tag(s): ${unknown.join(", ")} — add them to the library in Settings first`);
+  }
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  const before = lead.tags || [];
+  const next = [...new Set(tags)];
+  const updated = await EnquiryRepository.updateFieldsById(enquiryId, { tags: next });
+  const added = next.filter((t) => !before.includes(t));
+  const removed = before.filter((t) => !next.includes(t));
+  if (added.length || removed.length) {
+    await LeadInternalEventService.record({
+      leadId: enquiryId,
+      type: "tags_changed",
+      actorId,
+      payload: { added, removed, tags: next },
+    });
+  }
+  return updated;
+};
+
+// ── Bulk transfer (Settings Suite, Slice 7b) ────────────────────────────────
+// Scope is verified PER DOCUMENT: every lead must match the caller's scope filter
+// or the WHOLE batch is rejected (403) listing the out-of-scope ids.
+const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = {}) => {
+  if (!Array.isArray(leadIds) || leadIds.length === 0) {
+    throw httpError(400, "leadIds must be a non-empty array");
+  }
+  if (leadIds.length > 200) throw httpError(400, "Max 200 leads per transfer");
+  for (const id of leadIds) assertValidId(id, "lead id");
+  if (!mongoose.Types.ObjectId.isValid(toAdminId)) throw httpError(400, "Invalid toAdminId");
+
+  const target = await Admin.findById(toAdminId).lean();
+  if (!target) throw httpError(400, "Target admin not found");
+  if (target.status !== "active") throw httpError(422, "Target admin is not active");
+
+  const inScope = await Enquiry.find(
+    { $and: [{ _id: { $in: leadIds } }, scopeFilter] },
+    { _id: 1, assignedTo: 1 }
+  ).lean();
+  const inScopeIds = new Set(inScope.map((l) => String(l._id)));
+  const outOfScope = leadIds.filter((id) => !inScopeIds.has(String(id)));
+  if (outOfScope.length) {
+    throw httpError(403, `Out of your scope: ${outOfScope.join(", ")} — batch rejected`);
+  }
+
+  const fromById = new Map(inScope.map((l) => [String(l._id), l.assignedTo]));
+  await Enquiry.updateMany(
+    { _id: { $in: leadIds } },
+    { $set: { assignedTo: target._id, updatedBy: actorId || null } }
+  );
+  for (const id of leadIds) {
+    await LeadInternalEventService.record({
+      leadId: id,
+      type: "transferred",
+      actorId,
+      payload: {
+        from: fromById.get(String(id)) ? String(fromById.get(String(id))) : null,
+        to: String(target._id),
+        toName: target.name,
+      },
+    });
+  }
+  return { transferred: leadIds.length, to: String(target._id), toName: target.name };
+};
+
 module.exports = {
   recycleLead,
   resurfaceDueLeads,
   completeFollowUp,
   isOpenLead,
+  setTags,
+  bulkTransfer,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };
