@@ -48,7 +48,8 @@ const limiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.ip === '127.0.0.1', // skip localhost
+  // Skip localhost — both IPv4 and IPv6 loopback (::1, and the IPv4-mapped form).
+  skip: (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip), // skip localhost
 });
 app.use(limiter);
 
