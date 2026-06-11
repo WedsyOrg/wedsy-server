@@ -9,6 +9,8 @@ const RoleSchema = new mongoose.Schema(
     permissions: { type: [String], default: [] },
     isSystem: { type: Boolean, default: false },
     protected: { type: Boolean, default: false },
+    // Settings Suite (additive): stable machine key; "founder" marks the immutable role.
+    systemKey: { type: String, default: "" },
     deletedAt: { type: Date, default: null },
   },
   { timestamps: true }
