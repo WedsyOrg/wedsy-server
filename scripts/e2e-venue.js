@@ -474,6 +474,20 @@ async function run() {
     await api("PUT", `/venues/${SLUG}`, { token, body: { amenities: { evCharging: false } } });
   }
 
+  // ================= Public-route rate limiting (callback + generate-location) =================
+  // Run on a freshly-started server (publicReadLimiter counters reset on restart).
+  if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
+    // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
+    const burst = await Promise.all(Array.from({ length: 75 }, () =>
+      api("GET", `/venues/${SLUG}/integrations/google-sheets/callback`, {})));
+    const statuses = [...new Set(burst.map((r) => r.status))];
+    check("public-ratelimit: sheets callback burst -> 429 present", burst.some((r) => r.status === 429), `statuses ${statuses.join(",")}`);
+    // The per-IP bucket (shared across publicReadLimiter routes) is now exhausted,
+    // so generate-location-description 429s at the limiter — BEFORE invoking Anthropic.
+    const gen = await api("POST", `/venues/${SLUG}/generate-location-description`, {});
+    check("public-ratelimit: generate-location-description over-limit -> 429 (no Anthropic call)", gen.status === 429, `status ${gen.status}`);
+  }
+
   finish();
 }
 

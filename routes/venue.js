@@ -94,7 +94,9 @@ router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
 // OAuth state (Google's redirect carries no Bearer token).
 router.get("/:slug/integrations/google-sheets", venueOwnerAuth, requireCapability("leads"), sheets.getIntegration);
 router.get("/:slug/integrations/google-sheets/connect", venueOwnerAuth, requireCapability("leads"), sheets.connect);
-router.get("/:slug/integrations/google-sheets/callback", sheets.callback);
+// Public OAuth redirect target — authorized by the signed `state` JWT; add a
+// per-IP rate limiter on top so the unauthenticated endpoint can't be flooded.
+router.get("/:slug/integrations/google-sheets/callback", publicReadLimiter, sheets.callback);
 router.post("/:slug/integrations/google-sheets/disconnect", venueOwnerAuth, requireCapability("leads"), sheets.disconnect);
 router.get("/:slug/integrations/google-sheets/sheets", venueOwnerAuth, requireCapability("leads"), sheets.listSheets);
 router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, requireCapability("leads"), sheets.saveMapping);
@@ -111,8 +113,11 @@ router.post("/:slug/availability", venueOwnerAuth, requireCapability("availabili
 // Public view beacon (fire-and-forget, rate-limited, no PII) + single-date availability read.
 router.post("/:slug/view", publicReadLimiter, trackView);
 router.get("/:slug/availability-check", publicReadLimiter, availabilityCheck);
-router.post("/:slug/nearby", refreshNearby);
-router.post("/:slug/reviews", refreshReviews);
-router.post("/:slug/generate-location-description", generateLocationDescription);
+// Pre-existing public enrichment routes — now rate-limited per IP. The last one
+// invokes the Anthropic API unauthenticated (cost-abuse surface), so the limiter
+// matters most there (it also short-circuits to a cached result per venue).
+router.post("/:slug/nearby", publicReadLimiter, refreshNearby);
+router.post("/:slug/reviews", publicReadLimiter, refreshReviews);
+router.post("/:slug/generate-location-description", publicReadLimiter, generateLocationDescription);
 
 module.exports = router;
