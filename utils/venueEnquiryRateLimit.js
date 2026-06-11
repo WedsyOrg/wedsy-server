@@ -56,4 +56,16 @@ const enquiryPhoneLimiter = rateLimit({
   keyGenerator: (req) => `${req.params.slug || "?"}:${effectivePhone(req)}`,
 });
 
-module.exports = { enquiryIpLimiter, enquiryPhoneLimiter };
+// Public read/beacon limiter (view tracking + availability-check). Generous —
+// a couple browsing many venues is normal — but caps inflation/abuse per IP.
+const PUBLIC_READ_WINDOW_MS = num(process.env.VENUE_PUBLIC_READ_WINDOW_MS, 60 * 1000); // 1m
+const PUBLIC_READ_MAX = num(process.env.VENUE_PUBLIC_READ_MAX, 60);
+const publicReadLimiter = rateLimit({
+  windowMs: PUBLIC_READ_WINDOW_MS,
+  max: PUBLIC_READ_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many requests, please slow down." },
+});
+
+module.exports = { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter };

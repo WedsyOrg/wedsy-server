@@ -11,6 +11,7 @@ const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueBooking = require("../models/VenueBooking");
 const VenueInvoice = require("../models/VenueInvoice");
+const VenueView = require("../models/VenueView");
 
 // Pipeline order — used to compute "reached stage X or beyond".
 const STAGE_ORDER = ["new", "contacted", "site_visit_scheduled", "site_visit_done", "proposal_sent", "negotiating", "booked", "lost"];
@@ -114,6 +115,17 @@ const getAnalytics = async (req, res) => {
     }
     const revenue = { byMonth: Object.values(revByMonth).sort((a, b) => (a.month < b.month ? -1 : 1)) };
 
+    // Views + view→enquiry conversion (couple-side traffic closing the loop).
+    const viewQuery = { venueId: venue._id };
+    if (Object.keys(dateFilter).length) viewQuery.viewedAt = dateFilter;
+    const viewCount = await VenueView.countDocuments(viewQuery);
+    const traffic = {
+      views: viewCount,
+      enquiries: total,
+      // % of viewers who enquired (capped at 100; 0 when no views).
+      conversionRate: viewCount > 0 ? Math.min(100, Math.round((total / viewCount) * 1000) / 10) : 0,
+    };
+
     return res.status(200).json({
       range: { from: fromDate || null, to: toDate || null },
       total,
@@ -122,6 +134,7 @@ const getAnalytics = async (req, res) => {
       sources,
       lostReasons,
       revenue,
+      traffic,
       responseTime: null, // omitted: no first-response timestamp data is captured yet
     });
   } catch (err) {

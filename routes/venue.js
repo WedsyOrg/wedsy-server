@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
 const { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
-const { saveAvailability } = require("../controllers/venueAvailability");
+const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
@@ -20,7 +20,7 @@ const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
-const { enquiryIpLimiter, enquiryPhoneLimiter } = require("../utils/venueEnquiryRateLimit");
+const { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter } = require("../utils/venueEnquiryRateLimit");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
@@ -108,7 +108,9 @@ router.patch("/:slug/team/:memberId", venueOwnerAuth, requireCapability("team"),
 
 // Availability — availability capability.
 router.post("/:slug/availability", venueOwnerAuth, requireCapability("availability"), saveAvailability);
-router.post("/:slug/view", CheckLogin, trackView);
+// Public view beacon (fire-and-forget, rate-limited, no PII) + single-date availability read.
+router.post("/:slug/view", publicReadLimiter, trackView);
+router.get("/:slug/availability-check", publicReadLimiter, availabilityCheck);
 router.post("/:slug/nearby", refreshNearby);
 router.post("/:slug/reviews", refreshReviews);
 router.post("/:slug/generate-location-description", generateLocationDescription);

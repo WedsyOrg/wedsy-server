@@ -2,17 +2,25 @@ const VenueService = require("../services/VenueService");
 
 const getVenues = async (req, res) => {
   try {
-    const { status, limit = 100, skip = 0, zone, area, search } = req.query;
+    const { status, limit = 100, skip = 0, zone, area, search, venueType, amenities, veg, nonVeg, minCapacity, minPrice, maxPrice, sort } = req.query;
     // Admin: use the status query as-is (undefined = all statuses, no filter).
     // Non-admin (public/couples): keep the current default-to-published behavior.
     const effectiveStatus = req.admin ? status : status || "published";
+    const trimmed = (v) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
     const result = await VenueService.getAllVenues({
       status: effectiveStatus,
       limit: parseInt(limit),
       skip: parseInt(skip),
-      zone: typeof zone === "string" && zone.trim() ? zone.trim() : undefined,
-      area: typeof area === "string" && area.trim() ? area.trim() : undefined,
-      search: typeof search === "string" && search.trim() ? search.trim() : undefined,
+      zone: trimmed(zone),
+      area: trimmed(area),
+      search: trimmed(search),
+      venueType: trimmed(venueType),
+      amenities: trimmed(amenities),
+      veg, nonVeg,
+      minCapacity: trimmed(minCapacity),
+      minPrice: trimmed(minPrice),
+      maxPrice: trimmed(maxPrice),
+      sort: trimmed(sort),
     });
     return res.status(200).json(result);
   } catch (err) {
@@ -24,7 +32,12 @@ const getVenueBySlug = async (req, res) => {
   try {
     const { slug } = req.params;
     const venue = await VenueService.getVenueBySlug(slug);
-    return res.status(200).json({ venue });
+    // Stable public verification flag. Derived from status today (same as the
+    // dashboard); when Wedsy OS ships a real orthogonal boolean, only this
+    // derivation changes — the `isVerified` API name stays, so the couple-side
+    // frontend needs zero change.
+    const isVerified = (venue && venue.status === "verified") || false;
+    return res.status(200).json({ venue, isVerified });
   } catch (err) {
     if (err.message === "Venue not found") {
       return res.status(404).json({ message: "Venue not found" });
