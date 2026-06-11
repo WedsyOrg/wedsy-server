@@ -56,6 +56,11 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
 
+  // Hardening: admins who can no longer work leads — their open leads are orphans.
+  const inactiveAdminIds = (
+    await Admin.find({ status: { $ne: "active" } }, { _id: 1 }).lean()
+  ).map((a) => a._id);
+
   const [
     missionLeads,
     unresponsiveLeads,
@@ -66,6 +71,8 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     resurfacedDocs,
     promiseLeads,
     stageCounts,
+    orphanedLeads,
+    returnedLeadDocs,
   ] = await Promise.all([
     // Open follow-ups due today or overdue.
     Enquiry.find({
@@ -79,13 +86,15 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     Enquiry.find({ ...scopeFilter, ...ACTIVE, stage: "new", "callLog.0": { $exists: false } })
       .sort({ createdAt: 1 })
       .lean(),
-    // At-risk A: New, no call, older than the SLA.
+    // At-risk A: New, no call, older than the SLA. Imported historical leads are
+    // excluded — a Zoho migration must never read as an SLA storm.
     Enquiry.find({
       ...scopeFilter,
       ...ACTIVE,
       stage: "new",
       "callLog.0": { $exists: false },
       createdAt: { $lt: dayAgo },
+      importedAt: null,
     }).lean(),
     // At-risk B candidates: Contacted (silence checked against the event stream below).
     Enquiry.find({ ...scopeFilter, ...ACTIVE, stage: "contacted" }).lean(),
@@ -104,6 +113,16 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
       { $match: { ...scopeFilter, "recycled.isRecycled": { $ne: true } } },
       { $group: { _id: "$stage", count: { $sum: 1 } } },
     ]),
+    // Hardening: open leads owned by a non-active admin — at risk regardless of recency.
+    inactiveAdminIds.length
+      ? Enquiry.find({ ...scopeFilter, ...ACTIVE, assignedTo: { $in: inactiveAdminIds } }).lean()
+      : Promise.resolve([]),
+    // Hardening: lost leads that came back (re-enquired in the last 14 days).
+    Enquiry.find({
+      ...scopeFilter,
+      stage: "lost",
+      reEnquiredAt: { $gte: new Date(now.getTime() - 14 * 24 * 3600 * 1000) },
+    }).lean(),
   ]);
 
   // Today's mission rows: one per due/overdue follow-up, chronological.
@@ -133,7 +152,9 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   }));
 
   const newUntouched = newUntouchedLeads.map((lead) => {
-    const gw = goldenWindowFor(lead.createdAt, now);
+    // Imported leads anchor the golden window on the IMPORT time, not the
+    // (historical) createdAt — a 2024 Zoho lead isn't a breached 30-min window.
+    const gw = goldenWindowFor(lead.importedAt || lead.createdAt, now);
     return {
       ...leadRow(lead),
       source: lead.marketingSource || lead.source || "",
@@ -153,26 +174,38 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
       ])
     : [];
   const lastEventByLead = new Map(lastEvents.map((e) => [String(e._id), e.last]));
+  const orphanIds = new Set(orphanedLeads.map((l) => String(l._id)));
   const atRisk = [
-    ...staleNewLeads.map((lead) => ({
+    // Orphans first: an inactive owner is the most urgent risk, recency irrelevant.
+    ...orphanedLeads.map((lead) => ({
       ...leadRow(lead),
-      reason: "new_no_call",
-      hoursOverSla: Math.floor((now - new Date(lead.createdAt)) / 3600000 - NEW_LEAD_SLA_HOURS),
+      reason: "owner_inactive",
+      hoursOverSla: Math.floor((now - new Date(lead.updatedAt)) / 3600000),
     })),
-    ...contactedLeads
-      .map((lead) => {
-        const last = lastEventByLead.get(String(lead._id)) || lead.updatedAt;
-        const silentHours = (now - new Date(last)) / 3600000;
-        return silentHours > CONTACTED_SILENCE_SLA_HOURS
-          ? {
-              ...leadRow(lead),
-              reason: "contacted_silent",
-              hoursOverSla: Math.floor(silentHours - CONTACTED_SILENCE_SLA_HOURS),
-            }
-          : null;
-      })
-      .filter(Boolean),
-  ].sort((a, b) => b.hoursOverSla - a.hoursOverSla);
+    ...[
+      ...staleNewLeads
+        .filter((lead) => !orphanIds.has(String(lead._id)))
+        .map((lead) => ({
+          ...leadRow(lead),
+          reason: "new_no_call",
+          hoursOverSla: Math.floor((now - new Date(lead.createdAt)) / 3600000 - NEW_LEAD_SLA_HOURS),
+        })),
+      ...contactedLeads
+        .filter((lead) => !orphanIds.has(String(lead._id)))
+        .map((lead) => {
+          const last = lastEventByLead.get(String(lead._id)) || lead.updatedAt;
+          const silentHours = (now - new Date(last)) / 3600000;
+          return silentHours > CONTACTED_SILENCE_SLA_HOURS
+            ? {
+                ...leadRow(lead),
+                reason: "contacted_silent",
+                hoursOverSla: Math.floor(silentHours - CONTACTED_SILENCE_SLA_HOURS),
+              }
+            : null;
+        })
+        .filter(Boolean),
+    ].sort((a, b) => b.hoursOverSla - a.hoursOverSla),
+  ];
 
   const hotLeads = hotLeadDocs.map((lead) => {
     const nextMeeting = (lead.followUps || [])
@@ -215,6 +248,14 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   ]);
   const completedToday = completedTodayDocs.length ? completedTodayDocs[0].n : 0;
 
+  // "Returned — they came back": lost leads that re-enquired in the last 14 days.
+  const returnedLeads = returnedLeadDocs.map((lead) => ({
+    ...leadRow(lead),
+    reEnquiredAt: lead.reEnquiredAt,
+    lostReason: lead.lostReason || "",
+    stageBeforeLost: lead.stageBeforeLost || "",
+  }));
+
   const payload = {
     completedToday,
     generatedAt: now,
@@ -225,6 +266,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     atRisk,
     hotLeads,
     resurfacedToday,
+    returnedLeads,
     promises,
     counts,
   };
@@ -341,9 +383,10 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
     createdAt: e.createdAt,
   }));
 
-  // Golden-window health this week.
+  // Golden-window health this week. Imported historical leads excluded — the
+  // migration must never read as a wall of breaches.
   const weekLeads = await Enquiry.find(
-    { ...scopeFilter, createdAt: { $gte: weekAgo } },
+    { ...scopeFilter, createdAt: { $gte: weekAgo }, importedAt: null },
     { createdAt: 1, firstCalledAt: 1 }
   ).lean();
   let minutesSum = 0;
