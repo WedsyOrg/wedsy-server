@@ -12,26 +12,26 @@ router.get("/", CheckAdminLogin, stage.GetAll);
 router.post(
   "/",
   CheckAdminLogin,
-  requirePermission("settings:edit:all"),
+  requirePermission("settings_pipeline:edit:all"),
   stage.Create
 );
 // "/reorder" must come BEFORE "/:id" so it isn't captured as an id param.
 router.put(
   "/reorder",
   CheckAdminLogin,
-  requirePermission("settings:edit:all"),
+  requirePermission("settings_pipeline:edit:all"),
   stage.Reorder
 );
 router.put(
   "/:id",
   CheckAdminLogin,
-  requirePermission("settings:edit:all"),
+  requirePermission("settings_pipeline:edit:all"),
   stage.Update
 );
 router.delete(
   "/:id",
   CheckAdminLogin,
-  requirePermission("settings:delete:all"),
+  requirePermission("settings_pipeline:edit:all"),
   stage.Delete
 );
 

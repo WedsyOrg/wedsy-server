@@ -24,10 +24,13 @@ const legacyRolesForRole = async (role) => {
   return deriveLegacyRoles(dept ? dept.name : "");
 };
 
-// GET /admin
+// GET /admin — scope-aware INSIDE the service (Slice H): full list for
+// users:view:all, department list for users:view:department, otherwise a
+// minimal active-admin projection so assignee dropdowns keep working.
+// The route deliberately stays CheckAdminLogin-only (no 403 for normal pages).
 const GetAll = async (req, res) => {
   try {
-    const admins = await AdminService.listAdmins();
+    const admins = await AdminService.listAdmins(req.auth.user_id);
     res.status(200).json(admins);
   } catch (error) {
     res.status(500).json({ message: "Server error" });
@@ -95,6 +98,22 @@ const CreateAdmin = async (req, res) => {
       status: "active",
     });
 
+    // Invite email (Lifecycle Slice G — ships dark until the template id exists).
+    // Deliberately sends ONLY {name, email, loginUrl}: the password the founder
+    // typed is NEVER emailed; the founder shares it separately.
+    if (process.env.MAILJET_TEMPLATE_INVITE) {
+      const NotificationService = require("../services/NotificationService");
+      const loginUrl = `${process.env.OS_FRONTEND_URL || "https://os.wedsy.in"}/login`;
+      NotificationService.sendEmail(
+        created.email,
+        Number(process.env.MAILJET_TEMPLATE_INVITE),
+        { name: created.name, email: created.email, loginUrl },
+        created.name
+      ).catch((e) => console.error("[admin] invite email failed:", e.message));
+    } else {
+      console.warn("[admin] MAILJET_TEMPLATE_INVITE not set — invite email skipped (dark ship).");
+    }
+
     const safe = created.toObject();
     delete safe.password;
     return res.status(201).json(safe);
@@ -104,8 +123,8 @@ const CreateAdmin = async (req, res) => {
 };
 
 // PUT /admin/:id — founder-gated via users:edit:all.
-// Whitelisted fields only: roleId, departmentId, reportingManagerId, status.
-// Never updates password/email/phone here.
+// Whitelisted fields only: roleId, departmentId, reportingManagerId, status, phone.
+// Never updates password/email here.
 const UpdateAdmin = async (req, res) => {
   try {
     const { id } = req.params;
@@ -119,6 +138,14 @@ const UpdateAdmin = async (req, res) => {
 
     const body = req.body || {};
     const update = {};
+
+    // Lifecycle Slice I: phone is editable (fixes the seeded "PENDING" phones).
+    if (body.phone !== undefined) {
+      if (typeof body.phone !== "string" || !body.phone.trim()) {
+        return res.status(400).json({ message: "phone must be a non-empty string." });
+      }
+      update.phone = body.phone.trim();
+    }
 
     if (body.status !== undefined) {
       if (!STATUS_VALUES.includes(body.status)) {

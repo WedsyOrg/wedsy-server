@@ -523,6 +523,8 @@ const AdminLogin = (req, res) => {
             res.send({
               message: "Login Successful",
               token,
+              // Settings Suite Slice 9: client-side gate; token is still issued.
+              mustResetPassword: user.mustResetPassword === true,
             });
           } else {
             res.status(401).send({ message: "Wrong Credentials" });
@@ -574,7 +576,14 @@ const Get = async (req, res) => {
 const GetAdmin = (req, res) => {
   const { user } = req.auth;
   const { name, phone, email, roles } = user;
-  res.send({ name, phone, email, roles });
+  res.send({
+    name,
+    phone,
+    email,
+    roles,
+    // Settings Suite Slice 9: AdminContext routes flagged admins to /set-password.
+    mustResetPassword: user.mustResetPassword === true,
+  });
 };
 
 const GetVendor = (req, res) => {
@@ -659,6 +668,137 @@ const GetOTP = (req, res) => {
   }
 };
 
+
+// ── Password reset (Lifecycle Slice G) ───────────────────────────────────────
+const crypto = require("crypto");
+const NotificationService = require("../services/NotificationService");
+
+const sha256 = (value) => crypto.createHash("sha256").update(value).digest("hex");
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+// POST /auth/admin/forgot — ALWAYS responds with the same generic 200 so account
+// existence can never be probed. Ships dark until MAILJET_TEMPLATE_RESET is set.
+const ForgotPassword = async (req, res) => {
+  const generic = { message: "If that account exists, a reset link was sent." };
+  try {
+    const { email } = req.body || {};
+    if (!email || typeof email !== "string") {
+      return res.status(200).send(generic);
+    }
+    const admin = await Admin.findOne({ email: email.trim() });
+    if (!admin) {
+      return res.status(200).send(generic);
+    }
+    const token = crypto.randomBytes(32).toString("hex");
+    admin.resetToken = sha256(token);
+    admin.resetTokenExpiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
+    await admin.save();
+
+    const templateId = process.env.MAILJET_TEMPLATE_RESET;
+    if (!templateId) {
+      console.warn(
+        "[auth] MAILJET_TEMPLATE_RESET is not set — reset email NOT sent (dark ship). Token stored; flow testable via DB."
+      );
+      return res.status(200).send(generic);
+    }
+    const base = process.env.OS_FRONTEND_URL || "https://os.wedsy.in";
+    const resetUrl = `${base}/reset-password?token=${token}&email=${encodeURIComponent(
+      admin.email
+    )}`;
+    NotificationService.sendEmail(
+      admin.email,
+      Number(templateId),
+      { name: admin.name, resetUrl, expiresIn: "30 minutes" },
+      admin.name
+    ).catch((e) => console.error("[auth] reset email failed:", e.message));
+    return res.status(200).send(generic);
+  } catch (error) {
+    console.error("[auth] ForgotPassword error:", error.message);
+    // Still generic — never leak state through errors.
+    return res.status(200).send(generic);
+  }
+};
+
+// POST /auth/admin/reset — one generic 400 on ANY failure (no oracle).
+const ResetPassword = async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body || {};
+    const fail = () =>
+      res.status(400).send({ message: "Invalid or expired reset link" });
+    if (!email || !token || !newPassword || typeof newPassword !== "string") {
+      return fail();
+    }
+    if (newPassword.length < 8) {
+      return res
+        .status(400)
+        .send({ message: "Password must be at least 8 characters" });
+    }
+    const admin = await Admin.findOne({ email: String(email).trim() });
+    if (
+      !admin ||
+      !admin.resetToken ||
+      !admin.resetTokenExpiresAt ||
+      admin.resetTokenExpiresAt < new Date() ||
+      admin.resetToken !== sha256(String(token))
+    ) {
+      return fail();
+    }
+    admin.password = await CreateHash(newPassword);
+    admin.resetToken = null;
+    admin.resetTokenExpiresAt = null;
+    await admin.save();
+    console.log(`[auth] Password reset completed for admin ${admin._id}`);
+    return res.status(200).send({ message: "Password updated. You can log in now." });
+  } catch (error) {
+    console.error("[auth] ResetPassword error:", error.message);
+    return res.status(400).send({ message: "Invalid or expired reset link" });
+  }
+};
+
+
+// POST /auth/admin/first-reset — the ONLY action allowed to a flagged admin.
+// Min 8 chars, must differ from the current password; clears the flag.
+const FirstResetPassword = async (req, res) => {
+  try {
+    const { newPassword } = req.body || {};
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).send({ message: "Password must be at least 8 characters" });
+    }
+    const admin = await Admin.findById(req.auth.user_id);
+    if (!admin) return res.status(401).send({ message: "invalid user" });
+    if (await CheckHash(newPassword, admin.password)) {
+      return res.status(400).send({ message: "New password cannot be the same as the current one" });
+    }
+    admin.password = await CreateHash(newPassword);
+    admin.mustResetPassword = false;
+    await admin.save();
+    console.log(`[auth] First-login password set for admin ${admin._id}`);
+    return res.status(200).send({ message: "Password updated" });
+  } catch (error) {
+    console.error("[auth] FirstResetPassword error:", error.message);
+    return res.status(500).send({ message: "Server error" });
+  }
+};
+
+// GET /auth/admin/permissions — the caller's resolved permission strings.
+// Drives which Settings sections the frontend renders.
+const GetPermissions = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.auth.user_id).lean();
+    if (!admin || !admin.roleId) {
+      return res.status(200).send({ permissions: [] });
+    }
+    const Role = require("../models/Role");
+    const role = await Role.findById(admin.roleId).lean();
+    res.status(200).send({
+      permissions: role && Array.isArray(role.permissions) ? role.permissions : [],
+      roleName: role ? role.name : null,
+    });
+  } catch (error) {
+    res.status(500).send({ message: "Server error" });
+  }
+};
+
 module.exports = {
   AdminLogin,
   GetAdmin,
@@ -672,4 +812,8 @@ module.exports = {
   RestoreUserAccount,
   DeleteVendorAccount,
   RestoreVendorAccount,
+  ForgotPassword,
+  ResetPassword,
+  GetPermissions,
+  FirstResetPassword,
 };

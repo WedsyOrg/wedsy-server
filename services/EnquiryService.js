@@ -4,8 +4,10 @@ const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
 
-// Fixed set of disqualification reasons. Kept as a plain constant (no enum on the field).
+// Default disqualification reasons. Runtime list comes from SettingsService
+// ("lost.reasons"), which defaults to exactly this constant.
 const LOST_REASONS = ["budget", "competitor", "not_responsive", "not_a_fit", "other"];
+const SettingsService = require("./SettingsService");
 
 const httpError = (status, message) => {
   const err = new Error(message);
@@ -84,7 +86,8 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
   if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
-  if (!LOST_REASONS.includes(reason)) {
+  const lostReasons = await SettingsService.get("lost.reasons");
+  if (!lostReasons.includes(reason)) {
     throw httpError(400, "Invalid reason");
   }
   if (note !== undefined && note !== null && typeof note !== "string") {
@@ -100,6 +103,34 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
   }
   if (enquiry.lostStatus === "approved") {
     throw httpError(400, "Lead is already lost");
+  }
+
+  // Settings: when approval is switched OFF, a disqualify request is final
+  // immediately (no manager decision step). Default remains approval-required.
+  const approvalRequired = await SettingsService.get("lost.approvalRequired");
+  if (!approvalRequired) {
+    const updatedDirect = await EnquiryRepository.updateFieldsById(enquiryId, {
+      lostStatus: "approved",
+      lostReason: reason,
+      lostNote: note || "",
+      lostRequestedBy: actorId || null,
+      lostRequestedAt: new Date(),
+      lostDecidedBy: actorId || null,
+      lostDecidedAt: new Date(),
+      lostDecisionNote: "Auto-approved (approval disabled in Settings)",
+      stageBeforeLost: enquiry.stage,
+      isLost: true,
+      stage: "lost",
+    });
+    await ActivityLogService.record({
+      actorId,
+      action: "lead.disqualify_approved",
+      entityType: "lead",
+      entityId: String(enquiryId),
+      summary: `Disqualified directly (approval disabled; reason: ${reason})`,
+      meta: { reason, note: note || "", autoApproved: true },
+    });
+    return updatedDirect;
   }
 
   const updated = await EnquiryRepository.updateFieldsById(enquiryId, {
