@@ -54,6 +54,10 @@ const mock = {
   anthropicCalls: [],
   metaCalls: [],
   igCalls: [], // Instagram DM sends (Slice 7)
+  googleTokenCalls: [],
+  freeBusyCalls: [],
+  eventCreateCalls: [],
+  googleBusy: [], // injected busy blocks for freeBusy
   replyText: "Lovely! Tell me more 😊",
   extractor: { qualified: false, escalate: false, escalateReason: "", classification: "lead", data: {} },
   anthropic429s: 0, // consume N 429s before answering (Slice 11)
@@ -62,7 +66,12 @@ const mockServer = http.createServer((req, res) => {
   let raw = "";
   req.on("data", (c) => (raw += c));
   req.on("end", () => {
-    const body = raw ? JSON.parse(raw) : {};
+    let body = {};
+    try {
+      body = raw ? JSON.parse(raw) : {};
+    } catch (_) {
+      body = {}; // form-urlencoded (Google token exchange) — raw is enough
+    }
     if (req.url === "/v1/messages") {
       if (mock.anthropic429s > 0) {
         mock.anthropic429s--;
@@ -89,6 +98,47 @@ const mockServer = http.createServer((req, res) => {
       mock.igCalls.push({ body });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ recipient_id: body.recipient && body.recipient.id, message_id: "igm.mb56" }));
+      return;
+    }
+    // ── Google mocks (Slice 8) ──
+    if (req.url === "/google/token") {
+      mock.googleTokenCalls.push(body || raw);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          access_token: "mock-access-token",
+          refresh_token: "mock-refresh-token",
+          scope: "https://www.googleapis.com/auth/calendar.events email",
+          expires_in: 3600,
+        })
+      );
+      return;
+    }
+    if (req.url === "/google/userinfo") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ email: "saleslead@wedsy.test" }));
+      return;
+    }
+    if (req.url === "/gcal/freeBusy") {
+      mock.freeBusyCalls.push(body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          calendars: { primary: { busy: mock.googleBusy } },
+        })
+      );
+      return;
+    }
+    if (req.url.startsWith("/gcal/calendars/primary/events")) {
+      mock.eventCreateCalls.push(body);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          id: `gev_${mock.eventCreateCalls.length}`,
+          hangoutLink: "https://meet.google.com/mock-abc-def",
+          status: "confirmed",
+        })
+      );
       return;
     }
     res.writeHead(404);
@@ -282,6 +332,13 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
       INSTAGRAM_AGENT_APP_SECRET: "mb56-ig-secret",
       INSTAGRAM_AGENT_PAGE_ACCESS_TOKEN: "mb56-ig-token",
       INSTAGRAM_GRAPH_BASE_URL: `http://localhost:${MOCK_PORT}/iggraph`,
+      // Google (Slice 8) — configured + fully mocked.
+      GOOGLE_CLIENT_ID: "mb56-google-client",
+      GOOGLE_CLIENT_SECRET: "mb56-google-secret",
+      GOOGLE_REDIRECT_URI: `http://localhost:${APP_PORT}/google/oauth/callback`,
+      GOOGLE_TOKEN_URL: `http://localhost:${MOCK_PORT}/google/token`,
+      GOOGLE_USERINFO_URL: `http://localhost:${MOCK_PORT}/google/userinfo`,
+      GOOGLE_CALENDAR_URL: `http://localhost:${MOCK_PORT}/gcal`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -777,10 +834,15 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
       (m) => m.body.type === "template" && m.body.template && m.body.template.name === "wedsy_welcome_v1" && m.body.to === pS2
     );
     ok(!!tplCall && tplCall.phoneNumberId === "MB56_AGENT", "welcome template sent from KIARA's number");
-    const ahConv = await WAConversation.findOne({ phone: pS2 }).lean();
+    // The marker is stamped (CAS) BEFORE the send/conversation writes — wait
+    // for the conversation rather than racing it.
+    const ahConv = await waitFor(async () => WAConversation.findOne({ phone: pS2 }).lean(), "safety-net conversation");
     ok(!!ahConv && ahConv.mode === "ai" && String(ahConv.enquiryId) === String(ahLead._id), "ai-mode conversation opened + linked");
     ok(
-      !!(await LeadInternalEvent.findOne({ leadId: ahLead._id, type: "kiara_safety_net_engaged", "payload.reason": "after_hours_create" }).lean()),
+      !!(await waitFor(
+        async () => LeadInternalEvent.findOne({ leadId: ahLead._id, type: "kiara_safety_net_engaged", "payload.reason": "after_hours_create" }).lean(),
+        "safety-net journey event"
+      )),
       "journey event kiara_safety_net_engaged (after_hours_create)"
     );
     ok(
@@ -1054,6 +1116,176 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     const igQl = await QualifiedLead.findOne({ phone: IG3 }).lean();
     ok(!!igQl && igQl.crmSynced === true, "QualifiedLead.crmSynced mirrors the WA idiom");
     mock.extractor = { qualified: false, escalate: false, escalateReason: "", classification: "lead", data: {} };
+
+    // ════ SLICE 8 — Google Workspace (mocked end-to-end) ════
+    section("S8: link flow (oauth start → callback → status)");
+    let gStatus = await api("GET", "/google/status", { token: salesLeadToken });
+    ok(gStatus.status === 200 && gStatus.data.configured === true && gStatus.data.linked === false, "configured but unlinked");
+    const gStart = await api("GET", "/google/oauth/start", { token: salesLeadToken });
+    ok(
+      gStart.status === 200 &&
+        String(gStart.data.url).includes("client_id=mb56-google-client") &&
+        String(gStart.data.url).includes(encodeURIComponent(`http://localhost:${APP_PORT}/google/oauth/callback`)),
+      "consent URL pins the redirect URI"
+    );
+    const gState = new URL(gStart.data.url).searchParams.get("state");
+    const cbRes = await fetch(`${BASE}/google/oauth/callback?code=mock-code&state=${encodeURIComponent(gState)}`);
+    ok(cbRes.status === 200, "oauth callback succeeds");
+    const GoogleAccount = require("../models/GoogleAccount");
+    const gAcc = await GoogleAccount.findOne({ adminId: salesLead._id }).lean();
+    ok(!!gAcc && gAcc.refreshToken === "mock-refresh-token" && gAcc.email === "saleslead@wedsy.test", "GoogleAccount stored (refresh token + email)");
+    gStatus = await api("GET", "/google/status", { token: salesLeadToken });
+    ok(gStatus.data.linked === true && gStatus.data.email === "saleslead@wedsy.test", "status reflects the link");
+    const badState = await fetch(`${BASE}/google/oauth/callback?code=x&state=tampered`);
+    ok(badState.status === 403, "tampered oauth state rejected (403)");
+
+    section("S8: availability — merged Google + OS free/busy");
+    const gLead = await Enquiry.create({
+      name: `${MARK} GoogleLead`,
+      phone: phone(501),
+      verified: false,
+      source: "Website",
+      additionalInfo: {},
+      stage: "new",
+      assignedTo: intern._id, // intern-owned → books on the sales lead's calendar
+    });
+    await api("PUT", `/enquiry/${gLead._id}/qualification`, {
+      token: internToken,
+      body: { email: "couple@example.com", additionalEmails: ["partner@example.com"] },
+    });
+    // Google busy: tomorrow 05:00–06:00 UTC; OS busy: tomorrow 08:00–09:00 UTC.
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000);
+    const dayUTC = (h) =>
+      new Date(Date.UTC(tomorrow.getUTCFullYear(), tomorrow.getUTCMonth(), tomorrow.getUTCDate(), h, 0));
+    mock.googleBusy = [{ start: dayUTC(5).toISOString(), end: dayUTC(6).toISOString() }];
+    const CalendarEventS8 = require("../models/CalendarEvent");
+    const osBlock = await CalendarEventS8.create({
+      ownerId: salesLead._id,
+      type: "block",
+      title: "MB56 os busy block",
+      start: dayUTC(8),
+      end: dayUTC(9),
+    });
+    const avail = await api("GET", `/google/availability?leadId=${gLead._id}&days=3`, { token: salesLeadToken });
+    ok(avail.status === 200 && avail.data.configured && avail.data.googleUsed, "availability uses linked Google free/busy");
+    ok(
+      avail.data.busy.some((b) => b.source === "google") && avail.data.busy.some((b) => b.source === "os"),
+      "busy merges Google + OS calendars"
+    );
+    const overlaps = (slot, busyStart, busyEnd) =>
+      new Date(slot.start) < busyEnd && new Date(slot.end) > busyStart;
+    ok(
+      avail.data.slots.length > 0 &&
+        !avail.data.slots.some((s) => overlaps(s, dayUTC(5), dayUTC(6)) || overlaps(s, dayUTC(8), dayUTC(9))),
+      "suggested slots avoid both busy windows"
+    );
+
+    section("S8: book — Google event w/ Meet + invites + OS mirror + follow-up");
+    const slot = avail.data.slots[0];
+    const evBefore = mock.eventCreateCalls.length;
+    const book = await api("POST", "/google/book", {
+      token: salesLeadToken,
+      body: { leadId: String(gLead._id), start: slot.start, end: slot.end },
+    });
+    ok(book.status === 200 && book.data.google === true, "booking succeeds via Google");
+    ok(book.data.meetLink === "https://meet.google.com/mock-abc-def", "Meet link returned");
+    ok(mock.eventCreateCalls.length === evBefore + 1, "exactly one Google event created");
+    const gEvBody = mock.eventCreateCalls[mock.eventCreateCalls.length - 1];
+    const invitedEmails = (gEvBody.attendees || []).map((a) => a.email);
+    ok(
+      invitedEmails.includes("couple@example.com") && invitedEmails.includes("partner@example.com"),
+      "client + additionalEmails invited"
+    );
+    ok(invitedEmails.includes(salesLead.email), "internal attendee (sales lead) invited");
+    ok(!!gEvBody.conferenceData, "event requests a Meet conference");
+    const gLeadAfter = await Enquiry.findById(gLead._id).lean();
+    ok(
+      (gLeadAfter.followUps || []).some((f) => f.type === "meet" && new Date(f.scheduledAt).getTime() === new Date(slot.start).getTime()),
+      "meet follow-up booked as today"
+    );
+    ok(String(gLeadAfter.assignedTo) === String(salesLead._id) && String(gLeadAfter.qualifiedBy) === String(intern._id),
+      "intern handoff fired through the same booking path");
+    const mirroredEv = await CalendarEventS8.findOne({ leadId: gLead._id, type: "gmeet" }).lean();
+    ok(!!mirroredEv && mirroredEv.googleEventId === book.data.googleEventId, "OS mirror stamped with googleEventId");
+
+    section("S8: unlinked fallback (OS-only, exactly as today)");
+    await api("DELETE", "/google/link", { token: salesLeadToken });
+    gStatus = await api("GET", "/google/status", { token: salesLeadToken });
+    ok(gStatus.data.linked === false, "disconnect removes the link");
+    const gLead2 = await Enquiry.create({
+      name: `${MARK} GoogleLead2`,
+      phone: phone(502),
+      verified: false,
+      source: "Website",
+      additionalInfo: {},
+      stage: "new",
+      assignedTo: salesLead._id,
+    });
+    const evBefore2 = mock.eventCreateCalls.length;
+    const book2 = await api("POST", "/google/book", {
+      token: salesLeadToken,
+      body: { leadId: String(gLead2._id), start: dayUTC(10).toISOString() },
+    });
+    ok(book2.status === 200 && book2.data.google === false, "unlinked → OS-only booking (google:false)");
+    ok(mock.eventCreateCalls.length === evBefore2, "no Google call when unlinked");
+    const gLead2After = await Enquiry.findById(gLead2._id).lean();
+    ok((gLead2After.followUps || []).some((f) => f.type === "meet"), "meet follow-up still books (fallback)");
+    await CalendarEventS8.deleteMany({ _id: osBlock._id });
+
+    section("S8: not-configured dormancy (separate boot, no GOOGLE_* env)");
+    const DORMANT_PORT = 8129;
+    const dormantChild = spawn("node", ["server.js"], {
+      cwd: `${__dirname}/..`,
+      env: {
+        ...process.env,
+        PORT: String(DORMANT_PORT),
+        ANTHROPIC_API_URL: `http://localhost:${MOCK_PORT}/v1/messages`,
+        META_GRAPH_BASE_URL: `http://localhost:${MOCK_PORT}/graph`,
+        GOOGLE_CLIENT_ID: "",
+        GOOGLE_CLIENT_SECRET: "",
+        GOOGLE_SHEETS_KEY_PATH: "/nonexistent/mb56-keyfile.json",
+      },
+      stdio: "ignore",
+    });
+    try {
+      await waitFor(
+        () => fetch(`http://localhost:${DORMANT_PORT}/`).then((r) => r.ok).catch(() => false),
+        "dormant server boot",
+        30000
+      );
+      const dApi = async (method, path, body) => {
+        const r = await fetch(`http://localhost:${DORMANT_PORT}${path}`, {
+          method,
+          headers: { Authorization: `Bearer ${salesLeadToken}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+          body: body ? JSON.stringify(body) : undefined,
+        });
+        let data = null;
+        try { data = await r.json(); } catch (_) {}
+        return { status: r.status, data };
+      };
+      const dStatus = await dApi("GET", "/google/status");
+      ok(dStatus.status === 200 && dStatus.data.configured === false, "dormant: status reports not configured");
+      const dStart = await dApi("GET", "/google/oauth/start");
+      ok(dStart.status === 409, "dormant: oauth start refuses tidily (409)");
+      const gLead3 = await Enquiry.create({
+        name: `${MARK} GoogleLead3`,
+        phone: phone(503),
+        verified: false,
+        source: "Website",
+        additionalInfo: {},
+        stage: "new",
+        assignedTo: salesLead._id,
+      });
+      const dBook = await dApi("POST", "/google/book", {
+        leadId: String(gLead3._id),
+        start: dayUTC(12).toISOString(),
+      });
+      ok(dBook.status === 200 && dBook.data.google === false, "dormant: booking falls back to OS-only");
+      const gLead3After = await Enquiry.findById(gLead3._id).lean();
+      ok((gLead3After.followUps || []).some((f) => f.type === "meet"), "dormant: the meet follow-up still books");
+    } finally {
+      dormantChild.kill();
+    }
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
@@ -1076,6 +1308,8 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     await VendorContact.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
     await Attendance.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
     const allAdminIds = [founder._id, salesLead._id, intern._id, holder._id, revenueHead._id];
+    const GoogleAccountModel = require("../models/GoogleAccount");
+    await GoogleAccountModel.deleteMany({ adminId: { $in: allAdminIds } });
     const CalendarEventModel = require("../models/CalendarEvent");
     const AdminNotificationModel = require("../models/AdminNotification");
     await CalendarEventModel.deleteMany({ ownerId: { $in: allAdminIds } });

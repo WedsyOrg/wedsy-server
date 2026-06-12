@@ -84,5 +84,6 @@ router.use("/wa", require("./waConversation")); // Kiara admin chat API
 router.use("/attendance", require("./attendance")); // HRMS brick #1 (MB5 Slice 2)
 router.use("/calendar", require("./calendar")); // Team calendar + meeting mode + huddles (MB5 Slice 3)
 router.use("/admin-notifications", require("./notifications")); // in-OS staff notifications (MB5)
+router.use("/google", require("./google")); // Google Workspace (MB6 Slice 8 — dormant until env-wired)
 
 module.exports = router;
