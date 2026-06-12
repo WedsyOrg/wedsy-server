@@ -52,6 +52,12 @@ const getAnalytics = async (req, res) => {
     const { from, to } = req.query;
     const fromDate = from ? new Date(from) : null;
     const toDate = to ? new Date(to) : null;
+    // A date-only "to" (YYYY-MM-DD) parses to midnight UTC, which silently
+    // excludes everything created later that same day — i.e. today's leads
+    // never appear in any bounded range. Make it inclusive end-of-day.
+    if (toDate && !isNaN(toDate) && /^\d{4}-\d{2}-\d{2}$/.test(String(to))) {
+      toDate.setUTCHours(23, 59, 59, 999);
+    }
     const dateFilter = {};
     if (fromDate && !isNaN(fromDate)) dateFilter.$gte = fromDate;
     if (toDate && !isNaN(toDate)) dateFilter.$lte = toDate;
