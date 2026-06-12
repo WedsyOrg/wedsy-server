@@ -1,8 +1,14 @@
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 
-const sendWhatsApp = async (phone, templateName, parameters = [], buttonParameters = null) => {
+// agentPhoneNumberId (additive, optional): send the template from the Kiara
+// agent number instead of the default business number. Default = unchanged.
+const sendWhatsApp = async (phone, templateName, parameters = [], buttonParameters = null, agentPhoneNumberId = null) => {
   const MAX_RETRIES = 2;
   let attempt = 0;
+  const phoneNumberId = agentPhoneNumberId || process.env.META_WA_PHONE_NUMBER_ID;
+  const accessToken = agentPhoneNumberId
+    ? process.env.META_WA_AGENT_ACCESS_TOKEN
+    : process.env.META_WA_ACCESS_TOKEN;
 
   const components = [
     {
@@ -23,11 +29,11 @@ const sendWhatsApp = async (phone, templateName, parameters = [], buttonParamete
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await fetch(
-        `https://graph.facebook.com/v19.0/${process.env.META_WA_PHONE_NUMBER_ID}/messages`,
+        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${process.env.META_WA_ACCESS_TOKEN}`,
+            'Authorization': `Bearer ${accessToken}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
