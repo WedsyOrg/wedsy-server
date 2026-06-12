@@ -283,6 +283,10 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
     message: clean,
     sentBy: actorId || null,
   }).save();
+  // Bug B fix (MB5 Slice 1): the response message must have the SAME shape as
+  // getMessages (sentBy populated to {_id,name}) — the chat panel appends it
+  // optimistically and renders sentBy.name.
+  await saved.populate("sentBy", "name");
   const updated = await WAConversationRepository.touchOutbound(conversation._id, preview(clean));
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
@@ -326,6 +330,8 @@ const sendTemplate = async (conversationId, actorId, scopeFilter = {}) => {
     message: body,
     sentBy: actorId || null,
   }).save();
+  // Bug B fix: same shape as getMessages (sentBy populated) — see sendText.
+  await saved.populate("sentBy", "name");
   const updated = await WAConversationRepository.touchOutbound(conversation._id, body);
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
