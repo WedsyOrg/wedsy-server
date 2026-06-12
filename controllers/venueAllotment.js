@@ -253,6 +253,10 @@ const occupancy = async (req, res) => {
           status: a.status,
           checkInAt: a.checkInAt,
           checkOutAt: a.checkOutAt,
+          // Actuals let the client clip an early-departure stay to the real
+          // occupied range instead of the planned one.
+          actualCheckInAt: a.actualCheckInAt || null,
+          actualCheckOutAt: a.actualCheckOutAt || null,
         })),
     }));
 
