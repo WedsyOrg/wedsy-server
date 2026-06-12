@@ -13,8 +13,10 @@ const DEFAULTS = {
   // on deploy); 'triage' = new leads land unassigned in the Triage queue.
   "assignment.mode": "auto",
   "triage.escalateAfterMinutes": 10,
-  "golden.windowMinutes": 30,
-  "golden.workStartHour": 10,
+  // MB5 Slice 5: founder-approved default changes — golden window 15 min,
+  // working hours 11:00–19:00 IST.
+  "golden.windowMinutes": 15,
+  "golden.workStartHour": 11,
   "golden.workEndHour": 19,
   "cadence.attemptOffsetsDays": [0, 1, 3, 5],
   "cadence.maxAttempts": 4,
@@ -40,6 +42,9 @@ const DEFAULTS = {
   // FIELDS stay code-defined (extractor + QualifiedLead + Sheets coupling).
   "kiara.systemPrompt": KIARA_DEFAULT_SYSTEM_PROMPT,
   "kiara.reengageTemplateName": "",
+  // MB5 Slice 5: the safety net's approved welcome template. '' = the whole
+  // safety net is DORMANT (ships off; founder arms it in Settings → Kiara).
+  "kiara.welcomeTemplateName": "",
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -68,6 +73,7 @@ const KEY_CATEGORY = {
   // Kiara's brain — founder-gated category.
   "kiara.systemPrompt": "settings_kiara",
   "kiara.reengageTemplateName": "settings_kiara",
+  "kiara.welcomeTemplateName": "settings_kiara",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -152,13 +158,14 @@ const validateValue = (key, value) => {
       }
       return value;
     }
-    case "kiara.reengageTemplateName": {
+    case "kiara.reengageTemplateName":
+    case "kiara.welcomeTemplateName": {
       if (typeof value !== "string" || value.length > 200) {
-        throw err(400, "kiara.reengageTemplateName must be a string of at most 200 chars");
+        throw err(400, `${key} must be a string of at most 200 chars`);
       }
       // Meta template names: lowercase/digits/underscores. Empty = unset.
       if (value && !/^[a-z0-9_]+$/.test(value)) {
-        throw err(400, "kiara.reengageTemplateName must match Meta's template-name format (lowercase letters, digits, underscores)");
+        throw err(400, `${key} must match Meta's template-name format (lowercase letters, digits, underscores)`);
       }
       return value;
     }

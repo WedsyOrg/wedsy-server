@@ -83,10 +83,10 @@ const listTriage = async () => {
     .limit(100)
     .lean();
 
-  // Kiara transcript preview for whatsapp leads (last few messages).
-  const waLeads = leads.filter((l) => l.source === "whatsapp");
-  const convs = waLeads.length
-    ? await WAConversation.find({ enquiryId: { $in: waLeads.map((l) => l._id) } }).lean()
+  // Kiara transcript preview for any lead with a conversation — whatsapp
+  // intake AND safety-net-engaged leads (the morning pile, Slice 5).
+  const convs = leads.length
+    ? await WAConversation.find({ enquiryId: { $in: leads.map((l) => l._id) } }).lean()
     : [];
   const convByLead = new Map(convs.map((c) => [String(c.enquiryId), c]));
   const transcripts = new Map();

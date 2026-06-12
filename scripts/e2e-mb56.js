@@ -208,6 +208,8 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     "triage.escalateAfterMinutes",
     "golden.workStartHour",
     "golden.workEndHour",
+    "golden.windowMinutes",
+    "kiara.welcomeTemplateName",
   ];
   const settingsBefore = await Setting.find({ key: { $in: touchedKeys } }).lean();
 
@@ -691,6 +693,137 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
       body: { key: "assignment.mode", value: "auto" },
     });
     ok(backToAuto.status === 200, "assignment.mode back to auto (zero-change default)");
+
+    // ════ SLICE 5 — Golden window 15 + Kiara safety net ════
+    section("S5: new defaults (code-level, no stored override)");
+    {
+      // In THIS process (fresh SettingsService cache), with no stored rows the
+      // defaults must be 15 / 11 / 19.
+      const stored = await Setting.find({
+        key: { $in: ["golden.windowMinutes", "golden.workStartHour", "golden.workEndHour"] },
+      }).lean();
+      await Setting.deleteMany({
+        key: { $in: ["golden.windowMinutes", "golden.workStartHour", "golden.workEndHour"] },
+      });
+      const SettingsServiceLocal = require("../services/SettingsService");
+      SettingsServiceLocal.invalidate ? SettingsServiceLocal.invalidate() : null;
+      ok((await SettingsServiceLocal.get("golden.windowMinutes")) === 15, "default golden window is 15 minutes");
+      ok((await SettingsServiceLocal.get("golden.workStartHour")) === 11, "default working hours start 11:00 IST");
+      ok((await SettingsServiceLocal.get("golden.workEndHour")) === 19, "default working hours end 19:00 IST");
+      ok((await SettingsServiceLocal.get("kiara.welcomeTemplateName")) === "", "safety net ships DORMANT (no template)");
+      if (stored.length) await Setting.insertMany(stored.map(({ _id, ...rest }) => rest));
+      SettingsServiceLocal.invalidate ? SettingsServiceLocal.invalidate() : null;
+    }
+
+    section("S5: dormant when unset");
+    // Force "outside working hours" so the after-hours branch WOULD fire if armed.
+    const istHr = new Date(Date.now() + 330 * 60 * 1000).getUTCHours();
+    const offS = istHr >= 22 ? 0 : istHr + 1;
+    const offE = istHr >= 22 ? 1 : istHr + 2;
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workStartHour", value: offS } });
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workEndHour", value: offE } });
+    const metaBefore = mock.metaCalls.length;
+    const pS1 = phone(301);
+    const dormantCreate = await api("POST", "/enquiry", {
+      body: { name: "MB56 Dormant Lead", phone: pS1, source: "Website", verified: false },
+    });
+    ok(dormantCreate.status === 201, "after-hours lead created (safety net unset)");
+    await sleep(1200);
+    ok(mock.metaCalls.length === metaBefore, "DORMANT: no template sent when kiara.welcomeTemplateName is unset");
+    ok(!(await WAConversation.findOne({ phone: `91${pS1.slice(-10)}` }).lean()) &&
+       !(await WAConversation.findOne({ phone: pS1 }).lean()),
+       "DORMANT: no conversation opened");
+
+    section("S5: after-hours create → welcome template + conversation");
+    await api("PUT", "/settings", {
+      token: founderToken,
+      body: { key: "kiara.welcomeTemplateName", value: "wedsy_welcome_v1" },
+    });
+    const pS2 = phone(302);
+    const ahCreate = await api("POST", "/enquiry", {
+      body: { name: "MB56 AfterHours Lead", phone: pS2, source: "Website", verified: false },
+    });
+    ok(ahCreate.status === 201, "after-hours lead created (armed)");
+    const ahLead = await waitFor(async () => {
+      const l = await Enquiry.findOne({ phone: pS2 }).lean();
+      return l && l.kiaraSafetyNetAt ? l : null;
+    }, "safety net engaged");
+    ok(!!ahLead.kiaraSafetyNetAt, "kiaraSafetyNetAt stamped (once-per-lead marker)");
+    const tplCall = mock.metaCalls.find(
+      (m) => m.body.type === "template" && m.body.template && m.body.template.name === "wedsy_welcome_v1" && m.body.to === pS2
+    );
+    ok(!!tplCall && tplCall.phoneNumberId === "MB56_AGENT", "welcome template sent from KIARA's number");
+    const ahConv = await WAConversation.findOne({ phone: pS2 }).lean();
+    ok(!!ahConv && ahConv.mode === "ai" && String(ahConv.enquiryId) === String(ahLead._id), "ai-mode conversation opened + linked");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: ahLead._id, type: "kiara_safety_net_engaged", "payload.reason": "after_hours_create" }).lean()),
+      "journey event kiara_safety_net_engaged (after_hours_create)"
+    );
+    ok(
+      !!(await WAAgentMessage.findOne({ phone: pS2, message: "[template: wedsy_welcome_v1]" }).lean()),
+      "template placeholder stored in the thread"
+    );
+
+    section("S5: morning pile — after-hours lead in triage with transcript");
+    await api("PUT", "/settings", { token: founderToken, body: { key: "assignment.mode", value: "triage" } });
+    // The after-hours lead was created in AUTO mode (assigned via round-robin);
+    // create a fresh one to verify the triage+transcript path.
+    const pS3 = phone(303);
+    await api("POST", "/enquiry", {
+      body: { name: "MB56 MorningPile Lead", phone: pS3, source: "Website", verified: false },
+    });
+    const mpLead = await waitFor(async () => {
+      const l = await Enquiry.findOne({ phone: pS3 }).lean();
+      return l && l.kiaraSafetyNetAt ? l : null;
+    }, "morning-pile lead engaged");
+    ok(mpLead.triagePending === true && mpLead.assignedTo === null, "after-hours lead waits in triage");
+    // Back to working hours = "the morning": the pile is visible with transcript.
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workStartHour", value: 0 } });
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workEndHour", value: 24 } });
+    const morningQueue = await api("GET", "/enquiry/triage", { token: holderToken });
+    const mpRow = (morningQueue.data.list || []).find((r) => String(r._id) === String(mpLead._id));
+    ok(!!mpRow, "morning pile: lead appears in triage at open");
+    ok(mpRow && mpRow.transcript.length >= 1 && mpRow.transcript[0].message.includes("wedsy_welcome_v1"),
+       "Kiara transcript attached to the pile row");
+    await api("POST", `/enquiry/${mpLead._id}/triage-assign`, { token: holderToken });
+    await api("PUT", "/settings", { token: founderToken, body: { key: "assignment.mode", value: "auto" } });
+
+    section("S5: in-hours golden-window miss → engage once");
+    const pS4 = phone(304);
+    await api("POST", "/enquiry", {
+      body: { name: "MB56 GW Miss Lead", phone: pS4, source: "Website", verified: false },
+    });
+    const gwLead = await waitFor(async () => Enquiry.findOne({ phone: pS4 }).lean(), "gw lead created");
+    ok(!gwLead.kiaraSafetyNetAt, "in-hours lead NOT engaged at create");
+    // Clock-mock: age the lead past the 15-min window (raw collection write —
+    // mongoose treats createdAt as immutable and silently strips it).
+    await Enquiry.collection.updateOne(
+      { _id: gwLead._id },
+      { $set: { createdAt: new Date(Date.now() - 30 * 60 * 1000) } }
+    );
+    await api("GET", "/enquiry/dashboard", { token: founderToken }); // sweep rides the dashboard
+    const gwAfter = await waitFor(async () => {
+      const l = await Enquiry.findById(gwLead._id).lean();
+      return l && l.kiaraSafetyNetAt ? l : null;
+    }, "gw miss engaged");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: gwLead._id, type: "kiara_safety_net_engaged", "payload.reason": "golden_window_missed" }).lean()),
+      "journey reason golden_window_missed"
+    );
+    const gwTplCalls = mock.metaCalls.filter((m) => m.body.type === "template" && m.body.to === pS4).length;
+    await api("GET", "/enquiry/dashboard", { token: founderToken }); // second sweep
+    await sleep(800);
+    const gwTplCalls2 = mock.metaCalls.filter((m) => m.body.type === "template" && m.body.to === pS4).length;
+    ok(gwTplCalls === 1 && gwTplCalls2 === 1, "engaged exactly ONCE per lead");
+
+    section("S5: mission-quiet for safety-net leads");
+    const dash5 = await api("GET", "/enquiry/dashboard", { token: founderToken });
+    ok(
+      !(dash5.data.newUntouched || []).some((r) => String(r.leadId || r._id) === String(gwAfter._id)),
+      "safety-net-engaged lead joins mission-quiet (absent from new-untouched)"
+    );
+    // Disarm for the remaining slices.
+    await api("PUT", "/settings", { token: founderToken, body: { key: "kiara.welcomeTemplateName", value: "" } });
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);

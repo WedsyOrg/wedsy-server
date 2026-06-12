@@ -149,6 +149,11 @@ const EnquirySchema = new mongoose.Schema(
     unresponsiveFlaggedAt: { type: Date, default: null },
     // CSV import marker: historical imports are excluded from auto-assignment.
     importedAt: { type: Date, default: null },
+    // ── MB5 Slice 5 (additive only) — Kiara safety net engagement marker ────
+    // Set once when the safety net sends the welcome template (after-hours
+    // create or golden-window miss). Gates the once-per-lead rule and joins
+    // the lead into mission-quiet.
+    kiaraSafetyNetAt: { type: Date, default: null },
     // ── MB5 Slice 4 (additive only) — triage mode ───────────────────────────
     // In assignment.mode='triage', new leads land here unassigned until a
     // triage holder assigns them (or the escalation chain auto-assigns).

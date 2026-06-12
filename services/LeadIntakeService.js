@@ -98,6 +98,13 @@ const afterCreate = async (enquiryId) => {
   } catch (e) {
     console.error("LeadIntakeService.afterCreate failed:", e.message);
   }
+  // MB5 Slice 5: Kiara safety net — after-hours creates get the welcome
+  // template immediately. Template-gated (dormant when unset); fire-safe.
+  try {
+    await require("./KiaraSafetyNetService").maybeEngageOnCreate(enquiryId);
+  } catch (e) {
+    console.error("LeadIntakeService.afterCreate safety net failed:", e.message);
+  }
 };
 
 // The ONE create path for hook/intake-created leads (WhatsApp, Instagram, …).
