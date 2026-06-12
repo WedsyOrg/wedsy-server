@@ -306,6 +306,27 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
   return obj;
 };
 
+// ── Quick notes (Redesign) ───────────────────────────────────────────────────
+// One note = one "commented" internal event (shows in the journey) + an append
+// to the legacy updates.notes blob so the old surfaces keep seeing it.
+const addNote = async (enquiryId, text, actorId) => {
+  assertValidId(enquiryId);
+  if (typeof text !== "string" || !text.trim()) throw httpError(400, "Note text is required");
+  if (text.length > 2000) throw httpError(400, "Notes are capped at 2000 characters");
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  const clean = text.trim();
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "commented",
+    actorId,
+    payload: { text: clean },
+  });
+  const stamp = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
+  const legacy = lead.updates?.notes ? `${lead.updates.notes}\n\n[${stamp}] ${clean}` : `[${stamp}] ${clean}`;
+  return await EnquiryRepository.updateFieldsById(enquiryId, { "updates.notes": legacy });
+};
+
 // ── Tags (Settings Suite, Slice 7a) ─────────────────────────────────────────
 // Replace the lead's tag set. Every tag must come from the Settings library
 // (tags.available) — free-text additions happen only on the settings page.
@@ -389,6 +410,7 @@ module.exports = {
   isOpenLead,
   setTags,
   bulkTransfer,
+  addNote,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };

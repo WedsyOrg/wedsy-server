@@ -119,6 +119,12 @@ router.put(
   requirePermission("leads:edit:own"),
   lifecycle.SetCustomFields
 );
+router.post(
+  "/:_id/note",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  lifecycle.AddNote
+);
 router.put(
   "/:_id/tags",
   CheckAdminLogin,

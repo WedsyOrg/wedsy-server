@@ -94,6 +94,20 @@ const SetCustomFields = async (req, res) => {
   }
 };
 
+// POST /enquiry/:_id/note (Redesign) — quick note: commented event + legacy blob.
+const AddNote = async (req, res) => {
+  try {
+    const updated = await LeadLifecycleService.addNote(
+      req.params._id,
+      (req.body || {}).text,
+      req.auth.user_id
+    );
+    res.status(201).json(updated);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
 // PUT /enquiry/:_id/tags (Slice 7a)
 const SetTags = async (req, res) => {
   try {
@@ -122,4 +136,4 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote };
