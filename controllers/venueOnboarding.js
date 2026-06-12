@@ -4,6 +4,7 @@
  */
 const VenueOnboardingRequest = require("../models/VenueOnboardingRequest");
 const { reqStr, optStr, MAXLEN } = require("../utils/venueInput");
+const { notifyOnboardingRequest } = require("../utils/venueOpsAlert");
 
 const createOnboardingRequest = async (req, res) => {
   try {
@@ -25,6 +26,9 @@ const createOnboardingRequest = async (req, res) => {
       phone: String(phone).trim().slice(0, MAXLEN.phone),
       status: "new",
     });
+    // Fire-and-forget ops alert — env-gated, log-only by default, and a
+    // delivery failure must never affect the 201 we owe the requester.
+    notifyOnboardingRequest({ name: doc.name, venueName: doc.venueName, city: doc.city, phone: doc.phone }).catch(() => {});
     return res.status(201).json({ success: true, id: doc._id });
   } catch (err) {
     return res.status(500).json({ message: err.message });

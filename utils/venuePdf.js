@@ -3,11 +3,37 @@
  * Each function streams directly to the Express response.
  */
 const PDFDocument = require("pdfkit");
+const axios = require("axios");
 const { formatINR } = require("./venueMoney");
 
 const BURGUNDY = "#6b1e2e";
 const GOLD = "#c9a961";
 const GREY = "#555555";
+
+/**
+ * Resolve venue.logo into an image buffer pdfkit can embed (JPEG/PNG).
+ * Supports data: URIs and http(s) URLs (uploads via /file/upload are
+ * sharp-normalised JPEGs). Missing, unreachable or malformed logos resolve
+ * to null and the PDF renders exactly as before — never an error.
+ */
+async function loadLogoBuffer(logo) {
+  if (!logo || typeof logo !== "string") return null;
+  try {
+    if (logo.startsWith("data:image/")) {
+      const b64 = logo.slice(logo.indexOf(",") + 1);
+      const buf = Buffer.from(b64, "base64");
+      return buf.length > 0 ? buf : null;
+    }
+    if (/^https?:\/\//.test(logo)) {
+      const res = await axios.get(logo, { responseType: "arraybuffer", timeout: 4000 });
+      const buf = Buffer.from(res.data);
+      return buf.length > 0 ? buf : null;
+    }
+  } catch {
+    /* graceful absence */
+  }
+  return null;
+}
 
 function startDoc(res, filename) {
   const doc = new PDFDocument({ size: "A4", margin: 50 });
@@ -17,17 +43,29 @@ function startDoc(res, filename) {
   return doc;
 }
 
-function venueHeader(doc, venue, titleText) {
-  doc.fillColor(BURGUNDY).fontSize(22).text(venue.name || "Venue", { continued: false });
+function venueHeader(doc, venue, titleText, logoBuffer) {
+  // Logo top-left when present; the venue text block shifts right beside it.
+  let textX = 50;
+  if (logoBuffer) {
+    try {
+      doc.image(logoBuffer, 50, 50, { fit: [110, 44] });
+      textX = 175;
+    } catch {
+      textX = 50; // bytes pdfkit can't embed — render as if absent
+    }
+  }
+  doc.fillColor(BURGUNDY).fontSize(22).text(venue.name || "Venue", textX, 50, { continued: false });
   const contact = venue.contact || {};
   const lines = [
     venue.address || venue.formattedAddress || "",
     contact.primaryPhone || venue.phone || "",
     contact.email || venue.email || "",
   ].filter(Boolean);
-  doc.moveDown(0.2).fillColor(GREY).fontSize(9).text(lines.join("  •  "));
+  doc.moveDown(0.2).fillColor(GREY).fontSize(9).text(lines.join("  •  "), textX, doc.y);
+  // Keep the title row clear of the logo block however short the text is.
+  if (logoBuffer && doc.y < 100) doc.y = 100;
   doc.moveDown(0.6);
-  doc.fillColor(GOLD).fontSize(16).text(titleText);
+  doc.fillColor(GOLD).fontSize(16).text(titleText, 50, doc.y);
   doc.moveTo(50, doc.y + 4).lineTo(545, doc.y + 4).strokeColor(GOLD).stroke();
   doc.moveDown(0.8);
 }
@@ -75,9 +113,10 @@ function totalsBlock(doc, totals, gstPercent, discount) {
 }
 
 // Quote PDF.
-function streamQuotePdf(res, { venue, enquiry, quote }) {
+async function streamQuotePdf(res, { venue, enquiry, quote }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
   const doc = startDoc(res, `quote-${quote.version || 1}.pdf`);
-  venueHeader(doc, venue, `Quotation  ·  v${quote.version || 1}`);
+  venueHeader(doc, venue, `Quotation  ·  v${quote.version || 1}`, logoBuffer);
   doc.fillColor(GREY).fontSize(10);
   doc.text(`For: ${(enquiry && (enquiry.coupleName || enquiry.name)) || "—"}`);
   if (enquiry && enquiry.couplePhone) doc.text(`Phone: ${enquiry.couplePhone}`);
@@ -90,9 +129,10 @@ function streamQuotePdf(res, { venue, enquiry, quote }) {
 }
 
 // Invoice PDF (GST format).
-function streamInvoicePdf(res, { venue, booking, invoice }) {
+async function streamInvoicePdf(res, { venue, booking, invoice }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
   const doc = startDoc(res, `${invoice.invoiceNumber}.pdf`);
-  venueHeader(doc, venue, `Tax Invoice  ·  ${invoice.invoiceNumber}`);
+  venueHeader(doc, venue, `Tax Invoice  ·  ${invoice.invoiceNumber}`, logoBuffer);
   doc.fillColor(GREY).fontSize(10);
   const taxLines = [];
   if (venue.gstin) taxLines.push(`GSTIN: ${venue.gstin}`);

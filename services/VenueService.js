@@ -66,6 +66,8 @@ const SCALAR_TOP_LEVEL = [
   "name", "tagline", "description", "venueType", "established",
   "city", "address", "phone", "email", "website",
   "coverPhoto", "featurePhoto",
+  // Brand logo for quote/invoice PDFs (listing-gated PUT, same as photos)
+  "logo",
   // Places-enrich location fields (additive)
   "state", "pincode", "googlePlaceId", "formattedAddress",
   // Neighbourhood (area, from Places) + Bangalore region — editable from the
