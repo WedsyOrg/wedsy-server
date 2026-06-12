@@ -519,6 +519,37 @@ async function run() {
     check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
   }
 
+  // ================= Phase 4.2: owner reviews (cache, rate limit, public payload) =================
+  if (process.env.E2E_REVIEWS === "1") {
+    // Seed gives test-palace a fresh deterministic cache -> served without Google.
+    const r1 = await api("GET", `/venues/${SLUG}/reviews`, { token });
+    check("reviews: owner GET serves the cached rating (no Google call)",
+      r1.status === 200 && r1.json.cached === true && r1.json.rating === 4.6 && r1.json.count === 132 && r1.json.reviews.length === 1,
+      `status ${r1.status} rating=${r1.json.rating} cached=${r1.json.cached}`);
+
+    // Manual refresh with creds blanked -> graceful skip (no live call), still 200.
+    const rf = await api("POST", `/venues/${SLUG}/reviews/refresh`, { token });
+    check("reviews: refresh with blank creds -> 200 skipped (cache intact)",
+      rf.status === 200 && rf.json.skipped && rf.json.rating === 4.6, `status ${rf.status} skipped=${rf.json.skipped}`);
+
+    // Refresh rate limit: burst past the limiter -> 429 present.
+    const burst = await Promise.all(Array.from({ length: 6 }, () => api("POST", `/venues/${SLUG}/reviews/refresh`, { token })));
+    check("reviews: refresh burst -> 429 rate limit", burst.some((r) => r.status === 429), `statuses ${[...new Set(burst.map((r) => r.status))].join(",")}`);
+
+    // Public detail: rating + count exposed, individual review texts ABSENT.
+    const pub = await api("GET", `/venues/${SLUG}`, {});
+    const v = pub.json.venue || {};
+    check("reviews: public detail exposes rating+count ONLY (no texts)",
+      pub.status === 200 && v.googleRating === 4.6 && v.googleReviewCount === 132 && v.googleReviews === undefined,
+      `rating=${v.googleRating} texts=${JSON.stringify(v.googleReviews)}`);
+
+    // Public browse list: same guarantee (select already excludes texts).
+    const list = await api("GET", `/venues?limit=3`, {});
+    const items = list.json.venues || list.json || [];
+    check("reviews: public list never includes review texts",
+      list.status === 200 && items.length > 0 && items.every((x) => x.googleReviews === undefined), `n=${items.length}`);
+  }
+
   finish();
 }
 
