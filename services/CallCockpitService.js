@@ -212,6 +212,18 @@ const addFollowUp = async (
     payload: { followUpType: type, scheduledAt: scheduledAtDate, promiseNote: promiseNote || "" },
   });
 
+  // MB5 Slice 3 (fire-safe inside): meet/visit mirror into the team calendar,
+  // gmeet huddle auto-create, intern→manager handoff with qualifiedBy credit.
+  const justAdded = (updated.followUps || [])
+    .filter((f) => f.type === type)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+  const CalendarEventService = require("./CalendarEventService");
+  await CalendarEventService.onFollowUpBooked(
+    enquiryId,
+    { _id: justAdded ? justAdded._id : null, type, scheduledAt: scheduledAtDate },
+    actorId
+  );
+
   return updated;
 };
 

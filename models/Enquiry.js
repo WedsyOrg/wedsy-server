@@ -149,6 +149,20 @@ const EnquirySchema = new mongoose.Schema(
     unresponsiveFlaggedAt: { type: Date, default: null },
     // CSV import marker: historical imports are excluded from auto-assignment.
     importedAt: { type: Date, default: null },
+    // ── MB5 Slice 3 (additive only) ─────────────────────────────────────────
+    // Set-once credit: the intern who booked the meet that triggered the
+    // handoff. Their stats keep this lead permanently.
+    qualifiedBy: { type: ObjectId, ref: "Admin", default: null },
+    // Lightweight event-team assignments captured at huddle completion.
+    eventTeam: {
+      type: [
+        {
+          adminId: { type: ObjectId, ref: "Admin", required: true },
+          label: { type: String, default: "" },
+        },
+      ],
+      default: [],
+    },
     // Recycle — the third terminal state. Excluded from all active views while
     // isRecycled; lazily resurfaced (and reassigned) once revisitAt passes.
     recycled: {

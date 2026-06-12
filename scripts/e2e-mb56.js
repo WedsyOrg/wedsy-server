@@ -298,6 +298,193 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     const att2 = await Attendance.findOne({ adminId: intern._id }).lean();
     ok(att2.idleSegments.length >= 1 && att2.checkInAt, "timestamps persist across the day (payroll-safe)");
     await api("POST", "/attendance/check-out", { token: internToken });
+
+    // ════ SLICE 3 — Calendar, meeting mode, huddle, handoff ════
+    section("S3: handoff — meet booked on intern-owned lead");
+    const lead1 = await Enquiry.create({
+      name: `${MARK} HandoffLead`,
+      phone: phone(101),
+      verified: false,
+      source: "Website",
+      additionalInfo: {},
+      stage: "new",
+      assignedTo: intern._id,
+    });
+    const meetAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000); // +2 days
+    const bookMeet = await api("POST", `/enquiry/${lead1._id}/follow-up`, {
+      token: internToken,
+      body: { type: "meet", scheduledAt: meetAt.toISOString(), promiseNote: "demo" },
+    });
+    ok(bookMeet.status === 200 || bookMeet.status === 201, "meet follow-up booked");
+    const lead1After = await Enquiry.findById(lead1._id).lean();
+    ok(String(lead1After.assignedTo) === String(salesLead._id), "lead auto-transferred to reportingManager");
+    ok(String(lead1After.qualifiedBy) === String(intern._id), "intern permanently credited (qualifiedBy)");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: lead1._id, type: "meet_handoff" }).lean()),
+      "journey event meet_handoff"
+    );
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: lead1._id, type: "transferred", "payload.reason": "meet_handoff" }).lean()),
+      "journey event transferred (reason meet_handoff)"
+    );
+    const AdminNotification = require("../models/AdminNotification");
+    ok(
+      !!(await AdminNotification.findOne({ adminId: intern._id, type: "meet_handoff" }).lean()) &&
+        !!(await AdminNotification.findOne({ adminId: salesLead._id, type: "meet_handoff" }).lean()),
+      "both intern and manager notified"
+    );
+    const CalendarEvent = require("../models/CalendarEvent");
+    const gmeetEv = await CalendarEvent.findOne({ leadId: lead1._id, type: "gmeet" }).lean();
+    ok(!!gmeetEv && String(gmeetEv.ownerId) === String(salesLead._id), "gmeet mirrored onto the manager's calendar");
+    const huddleEv = await CalendarEvent.findOne({ leadId: lead1._id, type: "huddle", status: "scheduled" }).lean();
+    ok(!!huddleEv && String(huddleEv.ownerId) === String(salesLead._id), "huddle auto-created for the sales lead");
+
+    section("S3: huddle countdown chip + completion");
+    let leadCal = await api("GET", `/calendar/lead/${lead1._id}`, { token: salesLeadToken });
+    ok(
+      leadCal.status === 200 && leadCal.data.huddle && leadCal.data.huddle.pending && leadCal.data.huddle.msToMeet > 0,
+      "client-file chip: huddle pending with countdown"
+    );
+    const noNotes = await api("POST", `/calendar/huddles/${huddleEv._id}/complete`, {
+      token: salesLeadToken,
+      body: { attendeeIds: [String(salesLead._id)], eventTeam: [] },
+    });
+    ok(noNotes.status === 422, "huddle completion requires notes (422)");
+    const huddleDone = await api("POST", `/calendar/huddles/${huddleEv._id}/complete`, {
+      token: salesLeadToken,
+      body: {
+        attendeeIds: [String(salesLead._id), String(intern._id)],
+        eventTeam: [{ adminId: String(intern._id), label: "Decor" }],
+        notes: "Aligned on decor budget and venue pitch",
+      },
+    });
+    ok(huddleDone.status === 200 && huddleDone.data.status === "closed", "huddle completed");
+    const lead1Team = await Enquiry.findById(lead1._id).lean();
+    ok(
+      (lead1Team.eventTeam || []).length === 1 && lead1Team.eventTeam[0].label === "Decor",
+      "eventTeam written onto the lead"
+    );
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: lead1._id, type: "huddle_completed" }).lean()),
+      "journey event huddle_completed"
+    );
+    leadCal = await api("GET", `/calendar/lead/${lead1._id}`, { token: salesLeadToken });
+    ok(leadCal.data.huddle && leadCal.data.huddle.pending === false, "chip flips to huddle-complete");
+
+    section("S3: meeting-notes gate + blocking");
+    // A meeting that is already over (unclosed).
+    const pastMeeting = await api("POST", "/calendar/events", {
+      token: internToken,
+      body: {
+        type: "meeting",
+        title: "MB56 past client meeting",
+        start: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+        end: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        leadId: String(lead1._id),
+      },
+    });
+    ok(pastMeeting.status === 201, "past meeting created (test fixture)");
+    const closeNoNotes = await api("POST", `/calendar/events/${pastMeeting.data._id}/close`, {
+      token: internToken,
+      body: {},
+    });
+    ok(closeNoNotes.status === 422, "meeting cannot be closed without notes (422)");
+    const blockedNext = await api("POST", "/calendar/events", {
+      token: internToken,
+      body: {
+        type: "meeting",
+        title: "MB56 next meeting",
+        start: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        end: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(),
+      },
+    });
+    ok(blockedNext.status === 422, "unclosed meeting BLOCKS starting the next one (422)");
+    let mm = await api("GET", "/calendar/meeting-mode", { token: internToken });
+    ok(mm.status === 200 && mm.data.blocked && mm.data.unclosed.length === 1, "meeting-mode: unclosed pinned + blocked");
+    const unclosedRH = await api("GET", "/calendar/unclosed", { token: salesLeadToken });
+    ok(
+      unclosedRH.status === 200 &&
+        (unclosedRH.data.list || []).some((u) => String(u._id) === String(pastMeeting.data._id)),
+      "Revenue-Head view lists the team's unclosed meetings"
+    );
+    const draftNotes = await api("PUT", `/calendar/events/${pastMeeting.data._id}/notes`, {
+      token: internToken,
+      body: { notes: "Client wants pastel decor, budget 12L" },
+    });
+    ok(draftNotes.status === 200, "live notes pane saves a draft");
+    const closeOk = await api("POST", `/calendar/events/${pastMeeting.data._id}/close`, {
+      token: internToken,
+      body: {},
+    });
+    ok(closeOk.status === 200 && closeOk.data.status === "closed", "close succeeds using the captured notes");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: lead1._id, type: "meeting_closed" }).lean()),
+      "journey event meeting_closed"
+    );
+    const unblocked = await api("POST", "/calendar/events", {
+      token: internToken,
+      body: {
+        type: "meeting",
+        title: "MB56 live meeting",
+        start: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+        end: new Date(Date.now() + 50 * 60 * 1000).toISOString(),
+        leadId: String(lead1._id),
+      },
+    });
+    ok(unblocked.status === 201, "after closing, the next meeting can start");
+
+    section("S3: live meeting → banner + in_meeting status");
+    mm = await api("GET", "/calendar/meeting-mode", { token: internToken });
+    ok(
+      mm.data.live && String(mm.data.live._id) === String(unblocked.data._id) && mm.data.live.lead,
+      "meeting banner: live meeting with lead attached"
+    );
+    await api("POST", "/attendance/check-in", { token: internToken });
+    me = await api("GET", "/attendance/me", { token: internToken });
+    ok(me.data.status === "in_meeting", "status derives in_meeting while a meeting is live");
+    const grid = await api(
+      "GET",
+      `/calendar/team?from=${new Date(Date.now() - 24 * 3600 * 1000).toISOString()}&to=${new Date(Date.now() + 5 * 24 * 3600 * 1000).toISOString()}`,
+      { token: founderToken }
+    );
+    const internRowCal = (grid.data.rows || []).find((r) => r.name === `${MARK} Intern`);
+    ok(
+      grid.status === 200 && internRowCal && internRowCal.events.some((e) => e.live) && internRowCal.status === "in_meeting",
+      "team calendar: per-employee row with live event + status dot"
+    );
+    const slRow = (grid.data.rows || []).find((r) => r.name === `${MARK} SalesLead`);
+    ok(slRow && slRow.events.some((e) => e.type === "gmeet"), "team calendar: mirrored gmeet visible on manager row");
+    // Close the live meeting so later slices aren't blocked.
+    await api("POST", `/calendar/events/${unblocked.data._id}/close`, {
+      token: internToken,
+      body: { notes: "wrap" },
+    });
+    await api("POST", "/attendance/check-out", { token: internToken });
+
+    section("S3: visit mirror (no huddle, no handoff)");
+    const lead2 = await Enquiry.create({
+      name: `${MARK} VisitLead`,
+      phone: phone(102),
+      verified: false,
+      source: "Website",
+      additionalInfo: {},
+      stage: "new",
+      assignedTo: salesLead._id,
+    });
+    await api("POST", `/enquiry/${lead2._id}/follow-up`, {
+      token: salesLeadToken,
+      body: { type: "visit", scheduledAt: new Date(Date.now() + 24 * 3600 * 1000).toISOString() },
+    });
+    ok(
+      !!(await CalendarEvent.findOne({ leadId: lead2._id, type: "visit" }).lean()),
+      "visit follow-up mirrors as a visit event"
+    );
+    ok(
+      !(await CalendarEvent.findOne({ leadId: lead2._id, type: "huddle" }).lean()),
+      "no huddle for a visit"
+    );
+    const lead2After = await Enquiry.findById(lead2._id).lean();
+    ok(String(lead2After.assignedTo) === String(salesLead._id), "no handoff for a non-intern owner");
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
@@ -314,6 +501,10 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     await QualifiedLead.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
     await NotificationFailureLog.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
     await Attendance.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
+    const CalendarEventModel = require("../models/CalendarEvent");
+    const AdminNotificationModel = require("../models/AdminNotification");
+    await CalendarEventModel.deleteMany({ ownerId: { $in: [founder._id, salesLead._id, intern._id] } });
+    await AdminNotificationModel.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
     await Admin.deleteMany({ _id: { $in: [founder._id, salesLead._id, intern._id] } });
     await Role.deleteMany({ _id: { $in: [founderRole._id, salesLeadRole._id, internRole._id] } });
     await Department.deleteMany({ _id: dept._id });
