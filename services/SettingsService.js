@@ -1,4 +1,5 @@
 const Setting = require("../models/Setting");
+const { KIARA_DEFAULT_SYSTEM_PROMPT } = require("./kiaraDefaultPrompt");
 
 // ─── Defaults: the EXACT current hardcoded values. Empty collection ⇒ identical
 // behavior to before this service existed. WhatsApp strings lifted verbatim from
@@ -30,6 +31,11 @@ const DEFAULTS = {
   // Lead visibility cutoff: hide leads created before this date from lists and
   // dashboards (imported + recently re-enquired leads always show). null = off.
   "leads.visibilityCutoff": null,
+  // Kiara (the WhatsApp AI agent). systemPrompt seeds VERBATIM from the former
+  // hardcoded text — empty settings ⇒ zero behavior change. Qualification
+  // FIELDS stay code-defined (extractor + QualifiedLead + Sheets coupling).
+  "kiara.systemPrompt": KIARA_DEFAULT_SYSTEM_PROMPT,
+  "kiara.reengageTemplateName": "",
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -53,6 +59,9 @@ const KEY_CATEGORY = {
   "adform.fieldMap": "settings_integrations",
   // Visibility cutoff governs what the working pipeline shows → pipeline category.
   "leads.visibilityCutoff": "settings_pipeline",
+  // Kiara's brain — founder-gated category.
+  "kiara.systemPrompt": "settings_kiara",
+  "kiara.reengageTemplateName": "settings_kiara",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -124,6 +133,22 @@ const validateValue = (key, value) => {
         throw err(400, "leads.visibilityCutoff must be null or a parseable ISO date string");
       }
       return new Date(value).toISOString();
+    }
+    case "kiara.systemPrompt": {
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 20000) {
+        throw err(400, "kiara.systemPrompt must be a non-empty string of at most 20000 chars");
+      }
+      return value;
+    }
+    case "kiara.reengageTemplateName": {
+      if (typeof value !== "string" || value.length > 200) {
+        throw err(400, "kiara.reengageTemplateName must be a string of at most 200 chars");
+      }
+      // Meta template names: lowercase/digits/underscores. Empty = unset.
+      if (value && !/^[a-z0-9_]+$/.test(value)) {
+        throw err(400, "kiara.reengageTemplateName must match Meta's template-name format (lowercase letters, digits, underscores)");
+      }
+      return value;
     }
     case "adform.fieldMap": {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {

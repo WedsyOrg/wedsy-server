@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { receiveMessage } = require('../services/WhatsAppAgentService');
+const { receiveMessage, receiveMedia } = require('../services/WhatsAppAgentService');
 
 const VerifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
@@ -44,12 +44,20 @@ const ReceiveMessage = (req, res) => {
     const entry = req.body?.entry?.[0];
     const change = entry?.changes?.[0];
     const message = change?.value?.messages?.[0];
-    if (!message || message.type !== 'text') return;
+    if (!message) return;
     const phone = message.from;
-    const text = message.text.body;
-    receiveMessage(phone, text).catch(err =>
-      console.error('[WhatsAppAgent] Unhandled error:', err.message)
-    );
+    // WhatsApp display name travels with the message — used to name the CRM lead.
+    const profileName = change?.value?.contacts?.[0]?.profile?.name || '';
+    if (message.type === 'text') {
+      receiveMessage(phone, message.text.body, { profileName }).catch(err =>
+        console.error('[WhatsAppAgent] Unhandled error:', err.message)
+      );
+    } else {
+      // Non-text (image/audio/…): placeholder + conversation bump, no AI reply.
+      receiveMedia(phone, message.type, { profileName }).catch(err =>
+        console.error('[WhatsAppAgent] Unhandled error:', err.message)
+      );
+    }
   } catch (error) {
     console.error('[WhatsAppAgent] Webhook parse error:', error.message);
   }

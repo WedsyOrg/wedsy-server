@@ -2,6 +2,7 @@ const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
 const LeadLifecycleService = require("./LeadLifecycleService");
+const WAConversationRepository = require("../repositories/WAConversationRepository");
 const { computeLeadHealth } = require("../utils/leadHealth");
 const {
   goldenWindowFor,
@@ -75,6 +76,25 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
 
+  // MISSION-QUIET (Kiara): WhatsApp leads actively handled by the AI agent
+  // (mode ai, open, not escalated) carry no call-now pressure — Kiara is
+  // already talking to them. They re-enter missions the moment the
+  // conversation escalates or qualifies (needsHuman flips / qualified path).
+  let kiaraQuietIds = [];
+  try {
+    const quietConvIds = await WAConversationRepository.findQuietEnquiryIds();
+    if (quietConvIds.length) {
+      const quietLeads = await Enquiry.find(
+        { _id: { $in: quietConvIds }, source: "whatsapp" },
+        { _id: 1 }
+      ).lean();
+      kiaraQuietIds = quietLeads.map((l) => l._id);
+    }
+  } catch (e) {
+    console.error("[Dashboard] kiara mission-quiet lookup failed:", e.message);
+  }
+  const kiaraQuiet = kiaraQuietIds.length ? { _id: { $nin: kiaraQuietIds } } : {};
+
   // Hardening: admins who can no longer work leads — their open leads are orphans.
   const inactiveAdminIds = (
     await Admin.find({ status: { $ne: "active" } }, { _id: 1 }).lean()
@@ -102,15 +122,17 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     }).lean(),
     // Unresponsive — decide rows.
     Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, unresponsiveFlaggedAt: { $ne: null } }, visibility] }).lean(),
-    // New & untouched (no call yet), oldest first.
-    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "new", "callLog.0": { $exists: false } }, visibility] })
+    // New & untouched (no call yet), oldest first. Kiara-quiet leads excluded —
+    // the AI agent is mid-conversation with them.
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, ...kiaraQuiet, stage: "new", "callLog.0": { $exists: false } }, visibility] })
       .sort({ createdAt: 1 })
       .lean(),
     // At-risk A: New, no call, older than the SLA. Imported historical leads are
-    // excluded — a Zoho migration must never read as an SLA storm.
+    // excluded — a Zoho migration must never read as an SLA storm. Kiara-quiet
+    // leads excluded too (no call pressure while the agent is handling them).
     Enquiry.find({
       $and: [
-        { ...scopeFilter, ...ACTIVE, stage: "new", "callLog.0": { $exists: false }, createdAt: { $lt: dayAgo }, importedAt: null },
+        { ...scopeFilter, ...ACTIVE, ...kiaraQuiet, stage: "new", "callLog.0": { $exists: false }, createdAt: { $lt: dayAgo }, importedAt: null },
         visibility,
       ],
     }).lean(),
@@ -259,6 +281,39 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   const counts = {};
   for (const c of stageCounts) counts[c._id || "unknown"] = c.count;
 
+  // Kiara escalations: needsHuman conversations surface as mission cards for
+  // the lead's owner ("WhatsApp: <name> needs you — <reason>"), same scope
+  // rules as every other lead surface.
+  let waNeedsHuman = [];
+  try {
+    const escalated = await WAConversationRepository.findNeedsHuman();
+    const escalatedLeadIds = escalated.map((c) => c.enquiryId).filter(Boolean);
+    if (escalatedLeadIds.length) {
+      const inScope = await Enquiry.find({
+        $and: [{ _id: { $in: escalatedLeadIds } }, scopeFilter, visibility],
+      }).lean();
+      const byId = new Map(inScope.map((l) => [String(l._id), l]));
+      waNeedsHuman = escalated
+        .filter((c) => c.enquiryId && byId.has(String(c.enquiryId)))
+        .map((c) => {
+          const lead = byId.get(String(c.enquiryId));
+          return {
+            conversationId: c._id,
+            leadId: lead._id,
+            name: lead.name,
+            maskedPhone: maskPhone(lead.phone),
+            stage: lead.stage,
+            reason: c.needsHumanReason || "Needs a human",
+            needsHumanAt: c.needsHumanAt,
+            unreadCount: c.unreadCount || 0,
+          };
+        })
+        .sort((a, b) => new Date(a.needsHumanAt || 0) - new Date(b.needsHumanAt || 0));
+    }
+  } catch (e) {
+    console.error("[Dashboard] kiara needs-human lookup failed:", e.message);
+  }
+
   // Mission progress: follow-ups completed today in scope ("X of Y done").
   const completedTodayDocs = await Enquiry.aggregate([
     { $match: { $and: [{ ...scopeFilter }, visibility] } },
@@ -282,6 +337,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     scope,
     todaysMission,
     unresponsiveDecide,
+    waNeedsHuman,
     newUntouched,
     atRisk,
     hotLeads,
