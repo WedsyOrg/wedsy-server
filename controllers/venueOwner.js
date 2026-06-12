@@ -1,6 +1,8 @@
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const VenueOwner = require("../models/VenueOwner");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const VenueTeamActivity = require("../models/VenueTeamActivity");
 const Venue = require("../models/Venue");
 const VenueClaimRequest = require("../models/VenueClaimRequest");
 const NotificationFailureLog = require("../models/NotificationFailureLog");
@@ -358,14 +360,81 @@ const sendLoginOTP = async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ message: "Phone is required" });
+    // Owner account OR an active team member with this phone may log in.
     const venueOwner = await VenueOwner.findOne({ phone }).lean();
-    if (!venueOwner) return res.status(404).json({ message: "No venue account found for this phone number" });
+    const member = venueOwner ? null : await VenueTeamMember.findOne({ phone, isActive: true }).lean();
+    if (!venueOwner && !member) {
+      return res.status(404).json({ message: "No venue account found for this phone number" });
+    }
     const { ReferenceId } = await SendOTP(phone);
     return res.status(200).json({ success: true, referenceId: ReferenceId });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
 };
+
+// Collect EVERY login identity for a phone: owner accounts + active memberships.
+// Each is independently selectable — this makes multi-identity login deterministic
+// (no implicit owner-first / first-member pick when a phone maps to several).
+async function collectIdentities(phone) {
+  const [owners, members] = await Promise.all([
+    VenueOwner.find({ phone }).populate("venueId", "name slug status"),
+    VenueTeamMember.find({ phone, isActive: true }).populate("venueId", "name slug status"),
+  ]);
+  const identities = [];
+  for (const o of owners) {
+    if (!o.venueId) continue;
+    identities.push({ kind: "owner", id: String(o._id), venueId: String(o.venueId._id), venueName: o.venueId.name, role: o.role, doc: o });
+  }
+  for (const m of members) {
+    if (!m.venueId) continue;
+    identities.push({ kind: "member", id: String(m._id), venueId: String(m.venueId._id), venueName: m.venueId.name, role: m.role, doc: m });
+  }
+  return identities;
+}
+
+function signOwnerToken(venueOwner) {
+  return jwt.sign(
+    { type: "venue_owner", venueOwnerId: venueOwner._id, venueId: venueOwner.venueId._id, role: venueOwner.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "30d" }
+  );
+}
+
+function signMemberToken(member) {
+  return jwt.sign(
+    { type: "venue_owner", venueId: member.venueId._id, memberId: member._id, ownerId: member.ownerId, role: member.role },
+    process.env.JWT_SECRET,
+    { expiresIn: "30d" }
+  );
+}
+
+// Mint the session token for a resolved identity and build the login response.
+async function loginAsIdentity(identity) {
+  if (identity.kind === "owner") {
+    const venueOwner = identity.doc;
+    venueOwner.lastLoginAt = new Date();
+    await venueOwner.save();
+    // Fire-and-forget enrichment; never block the login response.
+    setImmediate(() => {
+      enrichVenue(venueOwner.venueId._id).catch((err) =>
+        console.warn(`[enrichVenue] login enrichment failed for venue ${venueOwner.venueId._id}: ${err.message}`)
+      );
+    });
+    return { token: signOwnerToken(venueOwner), venueOwner: { id: venueOwner._id, name: venueOwner.name, phone: venueOwner.phone, role: venueOwner.role, venue: venueOwner.venueId } };
+  }
+  const member = identity.doc;
+  member.lastLoginAt = new Date();
+  await member.save();
+  VenueTeamActivity.create({
+    venueId: member.venueId._id,
+    actorId: String(member._id),
+    actorName: member.name,
+    action: "member_login",
+    targetMemberId: String(member._id),
+  }).catch((e) => console.error("Failed to log member login:", e.message));
+  return { token: signMemberToken(member), venueOwner: { id: member._id, name: member.name, phone: member.phone, role: member.role, venue: member.venueId, isMember: true } };
+}
 
 // POST /venue-owner/auth — login
 const login = async (req, res) => {
@@ -377,26 +446,71 @@ const login = async (req, res) => {
       ? { Valid: true }
       : await VerifyOTP(phone, referenceId, otp);
     if (!result.Valid) return res.status(400).json({ message: "Invalid or expired OTP" });
-    const venueOwner = await VenueOwner.findOne({ phone }).populate("venueId", "name slug status");
-    if (!venueOwner) return res.status(404).json({ message: "No venue account found" });
-    venueOwner.lastLoginAt = new Date();
-    await venueOwner.save();
-    const token = jwt.sign(
-      { type: "venue_owner", venueOwnerId: venueOwner._id, venueId: venueOwner.venueId._id, role: venueOwner.role },
+
+    const identities = await collectIdentities(phone);
+    if (identities.length === 0) return res.status(404).json({ message: "No venue account found" });
+
+    // Exactly one identity → log straight in (unchanged behaviour).
+    if (identities.length === 1) {
+      const out = await loginAsIdentity(identities[0]);
+      return res.status(200).json({ success: true, ...out });
+    }
+
+    // Multiple identities → the client must choose. The short-lived selection
+    // token binds the choice to this just-verified phone and the exact options
+    // offered, so select-identity can't be used to mint an unoffered identity.
+    const selectionToken = jwt.sign(
+      { type: "venue_identity_select", phone, options: identities.map((i) => ({ kind: i.kind, id: i.id })) },
       process.env.JWT_SECRET,
-      { expiresIn: "30d" }
+      { expiresIn: "10m" }
     );
-    // Fire-and-forget Google enrichment so the owner sees fresh photos/zone
-    // next time they hit the dashboard. Never block the login response on it.
-    setImmediate(() => {
-      enrichVenue(venueOwner.venueId._id).catch((err) => {
-        console.warn(`[enrichVenue] login enrichment failed for venue ${venueOwner.venueId._id}: ${err.message}`);
-      });
+    return res.status(200).json({
+      multiple: true,
+      selectionToken,
+      identities: identities.map((i) => ({ kind: i.kind, id: i.id, venueId: i.venueId, venueName: i.venueName, role: i.role })),
     });
-    return res.status(200).json({ success: true, token, venueOwner: { id: venueOwner._id, name: venueOwner.name, phone: venueOwner.phone, role: venueOwner.role, venue: venueOwner.venueId } });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
 };
 
-module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login };
+// POST /venue-owner/auth/select-identity — exchange a selection token + chosen
+// identity for the venue_owner session token. Re-resolves the identity from the
+// DB (never trusts a client-supplied role) and verifies it was among the offered
+// options bound to the verified phone.
+const selectIdentity = async (req, res) => {
+  try {
+    const { selectionToken, kind, id } = req.body || {};
+    if (!selectionToken || !kind || !id) {
+      return res.status(400).json({ message: "selectionToken, kind, and id are required" });
+    }
+    let payload;
+    try {
+      payload = jwt.verify(selectionToken, process.env.JWT_SECRET);
+    } catch {
+      return res.status(400).json({ message: "Invalid or expired selection token" });
+    }
+    if (payload.type !== "venue_identity_select" || !Array.isArray(payload.options) || !payload.phone) {
+      return res.status(400).json({ message: "Invalid selection token" });
+    }
+    const offered = payload.options.some((o) => o.kind === kind && String(o.id) === String(id));
+    if (!offered) return res.status(403).json({ message: "Identity not offered for this selection" });
+
+    let identity = null;
+    if (kind === "owner") {
+      const o = await VenueOwner.findOne({ _id: id, phone: payload.phone }).populate("venueId", "name slug status");
+      if (o && o.venueId) identity = { kind: "owner", doc: o };
+    } else if (kind === "member") {
+      const m = await VenueTeamMember.findOne({ _id: id, phone: payload.phone, isActive: true }).populate("venueId", "name slug status");
+      if (m && m.venueId) identity = { kind: "member", doc: m };
+    }
+    if (!identity) return res.status(404).json({ message: "Identity no longer available" });
+
+    const out = await loginAsIdentity(identity);
+    return res.status(200).json({ success: true, ...out });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, selectIdentity };

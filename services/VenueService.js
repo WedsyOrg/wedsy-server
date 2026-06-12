@@ -1,7 +1,7 @@
 const VenueRepository = require("../repositories/VenueRepository");
 
-const getAllVenues = async ({ status, limit, skip, zone, area, search } = {}) => {
-  return VenueRepository.findAll({ status, limit, skip, zone, area, search });
+const getAllVenues = async (params = {}) => {
+  return VenueRepository.findAll(params);
 };
 
 const getVenueBySlug = async (slug) => {
@@ -68,6 +68,11 @@ const SCALAR_TOP_LEVEL = [
   "coverPhoto", "featurePhoto",
   // Places-enrich location fields (additive)
   "state", "pincode", "googlePlaceId", "formattedAddress",
+  // Neighbourhood (area, from Places) + Bangalore region — editable from the
+  // Places-powered location flow / dropdown.
+  "locality", "zone",
+  // Phase 3 invoicing profile (additive)
+  "gstin", "pan", "invoicePrefix",
 ];
 
 const ARRAY_TOP_LEVEL = ["areas", "blockedDates", "spaces"];
@@ -97,6 +102,7 @@ const AMENITY_BOOLEANS = [
   "groomRoom", "makeupRoom", "changingRooms", "prayerRoom", "fireNOC",
   "liquorLicense", "dayOfCoordinator", "securityStaff", "housekeeping",
   "valetParking", "shuttleService", "petFriendly", "smokingAllowed",
+  "evCharging",
 ];
 
 const PHOTO_BUCKETS = ["venue", "decor", "rooms", "spaces"];
@@ -190,6 +196,18 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
   if (updates.policies && typeof updates.policies === "object") {
     for (const k of POLICY_FIELDS) {
       if (updates.policies[k] !== undefined) $set[`policies.${k}`] = updates.policies[k];
+    }
+  }
+
+  // Structured policy clauses — arrays of trimmed, length-capped clause strings.
+  if (updates.policyDoc && typeof updates.policyDoc === "object") {
+    const cleanClauses = (arr) =>
+      (Array.isArray(arr) ? arr : [])
+        .map((s) => String(s == null ? "" : s).trim().slice(0, 2000))
+        .filter(Boolean)
+        .slice(0, 100);
+    for (const k of ["policies", "terms", "refund"]) {
+      if (updates.policyDoc[k] !== undefined) $set[`policyDoc.${k}`] = cleanClauses(updates.policyDoc[k]);
     }
   }
 

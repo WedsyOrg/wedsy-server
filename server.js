@@ -17,13 +17,16 @@ const {
   artistDetailReminder,
   birthdayReminder,
 } = require("./utils/notificationJobs");
+const { runDailyFollowUpReminders } = require("./utils/venueReminderJob");
 const socketStore = require("./utils/socket");
 const Chat = require("./models/Chat");
+const { runScheduledSheetSync } = require("./controllers/venueSheetsSync");
 
 //Creating Express App
 const app = express();
 // Behind nginx on EC2 (sets X-Forwarded-For) — trust the first proxy hop so
-// express-rate-limit reads the real client IP instead of throwing ValidationError.
+// express-rate-limit reads the real client IP instead of throwing
+// ERR_ERL_UNEXPECTED_X_FORWARDED_FOR (its trust-proxy validation error).
 app.set('trust proxy', 1);
 
 //Applying middlewares
@@ -45,7 +48,8 @@ const limiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.ip === '127.0.0.1', // skip localhost
+  // Skip localhost — both IPv4 and IPv6 loopback (::1, and the IPv4-mapped form).
+  skip: (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip), // skip localhost
 });
 app.use(limiter);
 
@@ -161,4 +165,12 @@ httpServer.listen(port, function () {
 
   // Vendor birthday message — 9am IST
   cron.schedule("0 9 * * *", () => { birthdayReminder(); }, IST);
+
+  // Venue owner follow-up reminders (Phase 1.4) — 9am IST. Env-gated + log-only
+  // by default (REMINDERS_LOG_ONLY); no-ops gracefully without WhatsApp creds.
+  cron.schedule("0 9 * * *", () => { runDailyFollowUpReminders(); }, IST);
+
+  // Google Sheets one-way sync (sheet → leads) for every connected venue — every 15 min.
+  // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).
+  cron.schedule("*/15 * * * *", () => { runScheduledSheetSync(); }, IST);
 });

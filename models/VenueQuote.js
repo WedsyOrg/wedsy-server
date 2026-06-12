@@ -1,0 +1,43 @@
+const mongoose = require("mongoose");
+
+// Phase 3 (3.2) — a versioned quote for an enquiry. A new version supersedes the
+// prior one (version auto-increments per enquiry).
+const VenueQuoteSchema = new mongoose.Schema(
+  {
+    venue: { type: mongoose.Schema.Types.ObjectId, ref: "Venue", required: true },
+    enquiry: { type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry", required: true },
+    version: { type: Number, default: 1 },
+    lineItems: [
+      {
+        label: { type: String, default: "" },
+        category: {
+          type: String,
+          enum: ["venue_hire", "catering", "decoration", "accommodation", "other"],
+          default: "other",
+        },
+        qty: { type: Number, default: 1 },
+        unitPrice: { type: Number, default: 0 },
+        perDay: { type: Boolean, default: false },
+        day: { type: Number, default: null },
+      },
+    ],
+    gstPercent: { type: Number, default: 18 },
+    discount: { type: Number, default: 0 },
+    totals: {
+      subtotal: { type: Number, default: 0 },
+      gst: { type: Number, default: 0 },
+      grandTotal: { type: Number, default: 0 },
+    },
+    status: {
+      type: String,
+      enum: ["draft", "sent", "accepted", "superseded"],
+      default: "draft",
+    },
+  },
+  { timestamps: true }
+);
+
+VenueQuoteSchema.index({ venue: 1, createdAt: -1 });
+VenueQuoteSchema.index({ enquiry: 1, version: -1 });
+
+module.exports = mongoose.models.VenueQuote || mongoose.model("VenueQuote", VenueQuoteSchema);

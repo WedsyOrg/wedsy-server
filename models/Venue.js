@@ -108,6 +108,7 @@ const VenueSchema = new mongoose.Schema({
     shuttleService: { type: Boolean, default: false },
     petFriendly: { type: Boolean, default: false },
     smokingAllowed: { type: Boolean, default: false },
+    evCharging: { type: Boolean, default: false },
     outsideAlcohol: { type: String, enum: ["yes", "no", "extra_charge"], default: "no" },
   },
   photos: {
@@ -122,6 +123,15 @@ const VenueSchema = new mongoose.Schema({
     cancellation: { type: String, default: "" },
     refund: { type: String, default: "" },
     otherRestrictions: { type: String, default: "" },
+  },
+  // Structured policy clauses (Phase: owner-feedback). Three ordered lists of
+  // numbered clause strings. Legacy `policies` (above) is NEVER dropped — it is
+  // migrated into policyDoc on read (see controllers/venue.js withPolicyDoc) so
+  // nothing is lost. New field name (couldn't overload the `policies` object).
+  policyDoc: {
+    policies: [{ type: String }],
+    terms: [{ type: String }],
+    refund: [{ type: String }],
   },
   contact: {
     primaryName: { type: String, default: "" },
@@ -149,6 +159,10 @@ const VenueSchema = new mongoose.Schema({
   featured: { type: Boolean, default: false },
   status: { type: String, enum: ["draft", "published", "pending_outreach", "outreach_sent", "verified", "rejected"], default: "draft" },
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
+  // Phase 3 (3.3) invoicing profile — venue-owned, editable from listing/settings.
+  gstin: { type: String, default: "" },
+  pan: { type: String, default: "" },
+  invoicePrefix: { type: String, default: "" },
   enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],
   nearbyAccommodation: [{
     placeId: { type: String },

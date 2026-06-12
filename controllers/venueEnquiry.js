@@ -3,6 +3,12 @@ const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { createOrGetConversation } = require("./venueConversation");
+const { createDraftBookingForEnquiry } = require("./venueBooking");
+const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
+
+// Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
+const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
+const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN } = require("../utils/venueInput");
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
@@ -49,12 +55,21 @@ const createEnquiry = async (req, res) => {
 
     const userId = bodyUserId || (req.auth && req.auth.user_id) || null;
 
-    const effectiveName = coupleName || name;
-    const effectivePhone = couplePhone || phone;
+    const effectiveName = cleanStr(coupleName || name);
+    const effectivePhone = cleanStr(couplePhone || phone);
 
     if (!effectiveName || !effectivePhone) {
       return res.status(400).json({ message: "Name and phone are required" });
     }
+    // Hostile-input validation on the PUBLIC endpoint (length caps, strict dates, numbers).
+    for (const [v, f, max] of [[effectiveName, "name", MAXLEN.name], [effectivePhone, "phone", MAXLEN.phone], [email, "email", MAXLEN.email], [message, "message", MAXLEN.text], [budget, "budget", MAXLEN.label]]) {
+      const r = optStr(v, f, max);
+      if (!r.ok) return res.status(400).json({ message: r.message });
+    }
+    const edPub = optDate(eventDate, "eventDate"); if (!edPub.ok) return res.status(400).json({ message: edPub.message });
+    const fuPub = optDate(followUpDate, "followUpDate"); if (!fuPub.ok) return res.status(400).json({ message: fuPub.message });
+    const gcPub = optCount(guestCount, "guestCount"); if (!gcPub.ok) return res.status(400).json({ message: gcPub.message });
+    const evPub = optNumber(estimatedValue, "estimatedValue"); if (!evPub.ok) return res.status(400).json({ message: evPub.message });
 
     const venue = await Venue.findOne({ slug }).select("_id name phone status").lean();
     if (!venue) {
@@ -75,19 +90,19 @@ const createEnquiry = async (req, res) => {
       userId: userId || undefined,
       name: effectiveName,
       phone: effectivePhone,
-      coupleName: coupleName || effectiveName,
-      couplePhone: couplePhone || effectivePhone,
-      email: email || "",
-      eventDate: eventDate || null,
-      guestCount: guestCount || null,
-      budget: budget || "",
-      vibe: vibe || [],
-      message: message || "",
+      coupleName: cleanStr(coupleName) || effectiveName,
+      couplePhone: cleanStr(couplePhone) || effectivePhone,
+      email: cleanStr(email),
+      eventDate: edPub.value,
+      guestCount: gcPub.value != null ? gcPub.value : null,
+      budget: cleanStr(budget),
+      vibe: Array.isArray(vibe) ? vibe.slice(0, 50).map((x) => String(x).slice(0, 100)) : [],
+      message: cleanStr(message),
       source: source || "wedsy",
       stage: "new", // forced server-side; client cannot set stage on the public endpoint
-      estimatedValue: estimatedValue || 0,
+      estimatedValue: evPub.value != null ? evPub.value : 0,
       notes: notesArray,
-      followUpDate: followUpDate || null,
+      followUpDate: fuPub.value,
       activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
       status: "new",
     });
@@ -159,19 +174,42 @@ const updateEnquiry = async (req, res) => {
     const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id });
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
-    const { stage, estimatedValue, lostReason, followUpDate, addNote } = req.body || {};
+    const { stage, estimatedValue, lostReason, followUpDate, addNote, assignedTo } = req.body || {};
 
+    if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
+      return res.status(400).json({ message: `lostReason must be one of ${LOST_REASON_ENUM.filter(Boolean).join(", ")}` });
+    }
+    if (stage !== undefined && !STAGE_ENUM.includes(stage)) {
+      return res.status(400).json({ message: `stage must be one of ${STAGE_ENUM.join(", ")}` });
+    }
+    const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
+    const fuV = optDate(followUpDate, "followUpDate"); if (!fuV.ok) return res.status(400).json({ message: fuV.message });
+
+    let movedToBooked = false;
+    let stageChanged = false;
     if (stage !== undefined && stage !== enquiry.stage) {
       enquiry.activities.push({
         type: "stage_changed",
         description: `Stage changed from ${enquiry.stage} to ${stage}`,
         timestamp: new Date(),
       });
+      if (stage === "booked") movedToBooked = true;
       enquiry.stage = stage;
+      stageChanged = true;
     }
-    if (estimatedValue !== undefined) enquiry.estimatedValue = estimatedValue;
+    if (evV.value !== undefined) enquiry.estimatedValue = evV.value;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
-    if (followUpDate !== undefined) enquiry.followUpDate = followUpDate || null;
+    if (followUpDate !== undefined) enquiry.followUpDate = fuV.value;
+    // assignedTo: a String holding a VenueTeamMember._id (so OS can read/resolve it);
+    // not an ObjectId ref yet. Empty = unassigned. (Harness caught it was dropped.)
+    if (assignedTo !== undefined) {
+      enquiry.assignedTo = assignedTo ? String(assignedTo) : "";
+      enquiry.activities.push({
+        type: "assigned",
+        description: assignedTo ? "Lead assigned" : "Lead unassigned",
+        timestamp: new Date(),
+      });
+    }
     if (typeof addNote === "string" && addNote.trim()) {
       enquiry.notes.push({ text: addNote.trim(), addedAt: new Date() });
       enquiry.activities.push({
@@ -182,7 +220,30 @@ const updateEnquiry = async (req, res) => {
     }
 
     await enquiry.save();
-    return res.status(200).json({ enquiry });
+
+    // Phase 3.1: moving a lead to "booked" auto-creates a draft booking (idempotent,
+    // one per enquiry). Failure here must not fail the stage update.
+    let booking = null;
+    if (movedToBooked) {
+      try {
+        booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
+      } catch (bookingErr) {
+        console.error("Auto-create booking failed for enquiry", String(enquiry._id), bookingErr.message);
+      }
+    }
+
+    // Fire-and-forget: mirror a stage change back to the source Google Sheet for
+    // sheet-synced leads. Never blocks the PATCH and never surfaces errors here;
+    // no-ops gracefully when there is no integration / creds / row mapping.
+    if (stageChanged) {
+      setImmediate(() => {
+        writeBackLeadToSheet(enquiry).catch((e) =>
+          console.warn(`[writeBackLeadToSheet] enquiry ${enquiry._id}: ${e.message}`)
+        );
+      });
+    }
+
+    return res.status(200).json({ enquiry, booking: booking ? { _id: booking._id } : undefined });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -208,9 +269,20 @@ const createManualLead = async (req, res) => {
       assignedTo,
     } = req.body || {};
 
-    if (!coupleName && !couplePhone) {
+    const nameC = cleanStr(coupleName);
+    const phoneC = cleanStr(couplePhone);
+    if (!nameC && !phoneC) {
       return res.status(400).json({ message: "Couple name or phone is required" });
     }
+    // Hostile-input validation (length caps, strict dates, non-negative numbers).
+    for (const [v, f, max] of [[coupleName, "coupleName", MAXLEN.name], [couplePhone, "couplePhone", MAXLEN.phone], [email, "email", MAXLEN.email], [message, "message", MAXLEN.text]]) {
+      const r = optStr(v, f, max);
+      if (!r.ok) return res.status(400).json({ message: r.message });
+    }
+    const edV = optDate(eventDate, "eventDate"); if (!edV.ok) return res.status(400).json({ message: edV.message });
+    const fuV = optDate(followUpDate, "followUpDate"); if (!fuV.ok) return res.status(400).json({ message: fuV.message });
+    const gcV = optCount(guestCount, "guestCount"); if (!gcV.ok) return res.status(400).json({ message: gcV.message });
+    const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
 
     const venue = await Venue.findOne({ slug }).select("_id").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
@@ -221,28 +293,29 @@ const createManualLead = async (req, res) => {
     let notesArray = [];
     if (Array.isArray(notes)) {
       notesArray = notes
-        .map((n) => (typeof n === "string" ? { text: n } : n))
-        .filter((n) => n && n.text);
+        .map((n) => (typeof n === "string" ? { text: cleanStr(n) } : n))
+        .filter((n) => n && n.text)
+        .map((n) => ({ text: String(n.text).slice(0, MAXLEN.text) }));
     } else if (typeof notes === "string" && notes.trim()) {
-      notesArray = [{ text: notes.trim() }];
+      notesArray = [{ text: notes.trim().slice(0, MAXLEN.text) }];
     }
 
     const enquiry = await VenueEnquiry.create({
       venueId: venue._id,
-      name: coupleName || "",
-      phone: couplePhone || "",
-      coupleName: coupleName || "",
-      couplePhone: couplePhone || "",
-      email: email || "",
-      eventDate: eventDate || null,
-      guestCount: guestCount || null,
-      message: message || "",
+      name: nameC,
+      phone: phoneC,
+      coupleName: nameC,
+      couplePhone: phoneC,
+      email: cleanStr(email),
+      eventDate: edV.value,
+      guestCount: gcV.value != null ? gcV.value : null,
+      message: cleanStr(message),
       source: source || "other",
       stage: stage || "new",
-      estimatedValue: estimatedValue || 0,
+      estimatedValue: evV.value != null ? evV.value : 0,
       notes: notesArray,
-      followUpDate: followUpDate || null,
-      assignedTo: assignedTo || "",
+      followUpDate: fuV.value,
+      assignedTo: cleanStr(assignedTo),
       activities: [{ type: "created", description: "Lead added manually", timestamp: new Date() }],
       status: "new",
     });
@@ -253,10 +326,72 @@ const createManualLead = async (req, res) => {
   }
 };
 
+// Shared bulk-create core (reused by CSV/Excel import AND Google Sheets sync).
+// Given a venueId and an array of mapped rows, dedups by couplePhone (digits-only)
+// against existing venue leads and within the batch, coerces dates/numbers safely,
+// defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
+// errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
+async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
+  const existing = await VenueEnquiry.find({ venueId }).select("couplePhone").lean();
+  const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
+
+  let created = 0;
+  let skipped = 0;
+  const errors = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i] || {};
+    try {
+      const coupleName = toStr(row.coupleName);
+      const couplePhone = toStr(row.couplePhone);
+      if (!coupleName || !couplePhone) {
+        errors.push({ row: i, reason: "Missing required coupleName or couplePhone" });
+        continue;
+      }
+
+      const key = digitsOnly(couplePhone);
+      if (key && seenPhones.has(key)) {
+        skipped += 1; // duplicate of an existing lead or an earlier row in this batch
+        continue;
+      }
+
+      const sourceRaw = toStr(row.source).toLowerCase();
+      const stageRaw = toStr(row.stage).toLowerCase();
+      const source = sourceRaw && SOURCE_ENUM.includes(sourceRaw) ? sourceRaw : "other";
+      const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
+
+      const notesStr = toStr(row.notes);
+      await VenueEnquiry.create({
+        venueId,
+        name: coupleName,
+        phone: couplePhone,
+        coupleName,
+        couplePhone,
+        email: toStr(row.email),
+        eventDate: toDateOrNull(row.eventDate),
+        guestCount: toNumberOrNull(row.guestCount),
+        source,
+        stage,
+        estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
+        notes: notesStr ? [{ text: notesStr }] : [],
+        followUpDate: toDateOrNull(row.followUpDate),
+        assignedTo: toStr(row.assignedTo),
+        activities: [{ type: "created", description: activityDescription, timestamp: new Date() }],
+        status: "new",
+      });
+
+      if (key) seenPhones.add(key);
+      created += 1;
+    } catch (rowErr) {
+      errors.push({ row: i, reason: rowErr.message });
+    }
+  }
+
+  return { created, skipped, errors };
+}
+
 // Bulk CSV/Excel lead import — venue owners only, ownership-checked.
 // Body: { rows: [mappedRow], fileName } (also tolerates a bare array of rows).
-// Per row: require coupleName + couplePhone; dedup by couplePhone within the venue
-// (and within the batch); coerce dates/numbers safely; default stage/source.
 const importLeads = async (req, res) => {
   try {
     const { slug } = req.params;
@@ -270,61 +405,7 @@ const importLeads = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    // Existing phones for this venue → dedup set (digits-only). Batch dups added as we go.
-    const existing = await VenueEnquiry.find({ venueId: venue._id }).select("couplePhone").lean();
-    const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
-
-    let created = 0;
-    let skipped = 0;
-    const errors = [];
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i] || {};
-      try {
-        const coupleName = toStr(row.coupleName);
-        const couplePhone = toStr(row.couplePhone);
-        if (!coupleName || !couplePhone) {
-          errors.push({ row: i, reason: "Missing required coupleName or couplePhone" });
-          continue;
-        }
-
-        const key = digitsOnly(couplePhone);
-        if (key && seenPhones.has(key)) {
-          skipped += 1; // duplicate of an existing lead or an earlier row in this file
-          continue;
-        }
-
-        const sourceRaw = toStr(row.source).toLowerCase();
-        const stageRaw = toStr(row.stage).toLowerCase();
-        const source = sourceRaw && SOURCE_ENUM.includes(sourceRaw) ? sourceRaw : "other";
-        const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
-
-        const notesStr = toStr(row.notes);
-        await VenueEnquiry.create({
-          venueId: venue._id,
-          name: coupleName,
-          phone: couplePhone,
-          coupleName,
-          couplePhone,
-          email: toStr(row.email),
-          eventDate: toDateOrNull(row.eventDate),
-          guestCount: toNumberOrNull(row.guestCount),
-          source,
-          stage,
-          estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
-          notes: notesStr ? [{ text: notesStr }] : [],
-          followUpDate: toDateOrNull(row.followUpDate),
-          assignedTo: toStr(row.assignedTo),
-          activities: [{ type: "created", description: "Lead imported", timestamp: new Date() }],
-          status: "new",
-        });
-
-        if (key) seenPhones.add(key);
-        created += 1;
-      } catch (rowErr) {
-        errors.push({ row: i, reason: rowErr.message });
-      }
-    }
+    const { created, skipped, errors } = await importLeadRows(venue._id, rows);
 
     await VenueLeadImport.create({
       venue: venue._id,
@@ -359,4 +440,4 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports, importLeadRows };

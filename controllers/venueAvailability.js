@@ -36,4 +36,32 @@ const saveAvailability = async (req, res) => {
   }
 };
 
-module.exports = { saveAvailability };
+// GET /venues/:slug/availability-check?date=YYYY-MM-DD — PUBLIC single-date read.
+// Returns { date, status: available | unavailable | unknown }. Never leaks the
+// full calendar: only answers for the one requested date. "unknown" = the venue
+// has not configured availability yet (empty blockedDates).
+const availabilityCheck = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const date = (req.query.date || "").trim();
+    if (!ISO_DATE_RE.test(date)) {
+      return res.status(400).json({ message: "date must be a YYYY-MM-DD string" });
+    }
+    const d = new Date(`${date}T00:00:00Z`);
+    if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== date) {
+      return res.status(400).json({ message: "date is not a valid calendar date" });
+    }
+    const venue = await Venue.findOne({ slug }).select("blockedDates").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    const blocked = Array.isArray(venue.blockedDates) ? venue.blockedDates : [];
+    let status;
+    if (blocked.length === 0) status = "unknown";
+    else if (blocked.includes(date)) status = "unavailable";
+    else status = "available";
+    return res.status(200).json({ date, status });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { saveAvailability, availabilityCheck };
