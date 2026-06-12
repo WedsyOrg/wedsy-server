@@ -1,5 +1,9 @@
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 
+// Test seam: e2e suites point this at a local mock so no test ever hits Meta.
+// Unset (production) ⇒ the real Graph endpoint, unchanged.
+const GRAPH_BASE_URL = process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com/v19.0';
+
 // agentPhoneNumberId (additive, optional): send the template from the Kiara
 // agent number instead of the default business number. Default = unchanged.
 const sendWhatsApp = async (phone, templateName, parameters = [], buttonParameters = null, agentPhoneNumberId = null) => {
@@ -29,7 +33,7 @@ const sendWhatsApp = async (phone, templateName, parameters = [], buttonParamete
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await fetch(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+        `${GRAPH_BASE_URL}/${phoneNumberId}/messages`,
         {
           method: 'POST',
           headers: {
@@ -83,7 +87,7 @@ const sendWhatsAppText = async (phone, message, agentPhoneNumberId = null) => {
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await fetch(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
+        `${GRAPH_BASE_URL}/${phoneNumberId}/messages`,
         {
           method: 'POST',
           headers: {

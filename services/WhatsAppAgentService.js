@@ -10,6 +10,10 @@ const QualifiedLead = require('../models/QualifiedLead');
 const axios = require('axios');
 const { google } = require('googleapis');
 
+// Test seam: e2e suites point this at a local mock so no test ever touches
+// the live API. Unset (production) ⇒ the real endpoint, unchanged.
+const ANTHROPIC_API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
+
 // Kiara's persona now lives in Settings (kiara.systemPrompt, founder-gated,
 // 60s cache) and defaults to the verbatim former hardcoded text — an empty
 // settings collection is byte-identical behavior.
@@ -47,7 +51,7 @@ const sendToClaude = async (history) => {
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await axios.post(
-        'https://api.anthropic.com/v1/messages',
+        ANTHROPIC_API_URL,
         {
           model: 'claude-sonnet-4-5',
           max_tokens: 500,
@@ -89,7 +93,7 @@ const checkQualified = async (history) => {
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await axios.post(
-        'https://api.anthropic.com/v1/messages',
+        ANTHROPIC_API_URL,
         {
           model: 'claude-sonnet-4-5',
           max_tokens: 400,
