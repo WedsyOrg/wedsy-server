@@ -502,6 +502,83 @@ async function run() {
     check("onboarding: null body -> not 500", onbNull.status !== 500, `status ${onbNull.status}`);
   }
 
+  // ================= Phase 3.5: contracts (generate / edit / send / public ack / pdf) =================
+  if (process.env.E2E_CONTRACTS === "1") {
+    // Seed structured policies so generation has known content.
+    await api("PUT", `/venues/${SLUG}`, { token, body: { policyDoc: { policies: ["No outside DJ after 11pm"], terms: ["50% advance to confirm"], refund: ["No refund within 7 days"] } } });
+    const couplePhone = `95${Date.now() % 1e8}`;
+    const bk = await api("POST", `/venues/${SLUG}/bookings`, {
+      token,
+      body: { coupleName: "Contract Couple", couplePhone, totalValue: 400000, days: [{ date: new Date(Date.now() + 30 * 86400000).toISOString(), eventType: "Wedding", guestCount: 250 }], paymentSchedule: [{ label: "Advance", amount: 100000 }] },
+    });
+    const bkId = bk.json.booking._id;
+
+    // generate v1 — seeded from policyDoc + frozen specifics
+    const g1 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const c1 = g1.json.contract;
+    check("contracts: generate v1 seeds from policyDoc",
+      g1.status === 201 && c1.version === 1 && c1.sections.length === 3
+        && c1.sections[0].clauses[0] === "No outside DJ after 11pm"
+        && c1.parties.coupleName === "Contract Couple"
+        && c1.specifics.totalValue === 400000,
+      `status ${g1.status} sections=${c1 && c1.sections.length}`);
+
+    // edit while draft
+    const ed = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [{ heading: "Venue Policies", clauses: ["No outside DJ after 11pm", "Decor by approved vendors only"] }] } });
+    check("contracts: edit draft sections -> 200", ed.status === 200 && ed.json.contract.sections[0].clauses.length === 2, `status ${ed.status}`);
+    const edBad = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [{ heading: "   ", clauses: ["x"] }] } });
+    check("contracts: blank section heading -> 400", edBad.status === 400, `status ${edBad.status}`);
+
+    // send -> public ack link
+    const sent = await api("POST", `/venues/${SLUG}/contracts/${c1._id}/send`, { token });
+    check("contracts: send -> sent + ack token", sent.status === 200 && sent.json.contract.status === "sent" && sent.json.contract.sentAt && sent.json.ackToken, `status ${sent.status}`);
+    const ackToken = sent.json.ackToken;
+
+    // public read (no auth) — phone masked
+    const pub = await api("GET", `/venues/contract-ack/${ackToken}`, {});
+    check("contracts: public ack GET shows contract, masks phone",
+      pub.status === 200 && pub.json.contract.sections.length === 1 && /•/.test(pub.json.contract.parties.couplePhone),
+      `status ${pub.status} phone=${pub.json.contract && pub.json.contract.parties.couplePhone}`);
+
+    // garbage + tampered tokens rejected
+    const badTok = await api("GET", `/venues/contract-ack/not-a-token`, {});
+    check("contracts: garbage token -> 401", badTok.status === 401, `status ${badTok.status}`);
+    const tampered = await api("POST", `/venues/contract-ack/${ackToken.slice(0, -2)}xx`, { body: { name: "X", phone: couplePhone } });
+    check("contracts: tampered token -> 401", tampered.status === 401, `status ${tampered.status}`);
+
+    // wrong phone -> 403; hostile name -> 400
+    const wrong = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Impostor", phone: "9000000000" } });
+    check("contracts: wrong phone -> 403", wrong.status === 403, `status ${wrong.status}`);
+    const blankName = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "   ", phone: couplePhone } });
+    check("contracts: blank name -> 400", blankName.status === 400, `status ${blankName.status}`);
+
+    // right phone -> acknowledged + stamps
+    const ack = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Contract Couple", phone: couplePhone } });
+    check("contracts: matching phone -> acknowledged", ack.status === 200 && ack.json.acknowledgedAt, `status ${ack.status}`);
+    const ackAgain = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Again", phone: couplePhone } });
+    check("contracts: double-acknowledge -> 409", ackAgain.status === 409, `status ${ackAgain.status}`);
+
+    // pdf bytes
+    const pdf = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
+    check("contracts: PDF returns bytes", pdf.status === 200 && pdf.head.startsWith("%PDF") && pdf.bytes > 800, `bytes=${pdf.bytes}`);
+
+    // new version supersedes (voids) prior non-acknowledged; acknowledged stays
+    const g2 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    check("contracts: v2 generated", g2.status === 201 && g2.json.contract.version === 2, `v=${g2.json.contract && g2.json.contract.version}`);
+    const both = await api("GET", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const v1After = both.json.contracts.find((c) => c.version === 1);
+    check("contracts: acknowledged v1 NOT voided by v2", v1After && v1After.status === "acknowledged", `v1=${v1After && v1After.status}`);
+    const g3 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const all3 = await api("GET", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const v2After = all3.json.contracts.find((c) => c.version === 2);
+    check("contracts: draft v2 voided by v3 (supersede)", g3.status === 201 && v2After && v2After.status === "void", `v2=${v2After && v2After.status}`);
+
+    // draft-only editing: v1 (acknowledged) cannot be edited
+    const edAck = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [] } });
+    check("contracts: editing acknowledged contract -> 409", edAck.status === 409, `status ${edAck.status}`);
+  }
+
+
   // ================= Public-route rate limiting (callback + generate-location) =================
   // Run on a freshly-started server (publicReadLimiter counters reset on restart).
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
@@ -645,82 +722,6 @@ async function run() {
     const rs2 = await api("GET", `/venues/${SLUG}/bookings/${bkId}/runsheet`, { token });
     const day9Items = rs2.json.items.filter((i) => i.day && i.day.slice(0, 10) === iso(day(9)).slice(0, 10));
     check("pms: new booking day auto-seeds skeleton", addDay.status === 200 && day9Items.length === 3, `day9=${day9Items.length}`);
-  }
-
-  // ================= Phase 3.5: contracts (generate / edit / send / public ack / pdf) =================
-  if (process.env.E2E_CONTRACTS === "1") {
-    // Seed structured policies so generation has known content.
-    await api("PUT", `/venues/${SLUG}`, { token, body: { policyDoc: { policies: ["No outside DJ after 11pm"], terms: ["50% advance to confirm"], refund: ["No refund within 7 days"] } } });
-    const couplePhone = `95${Date.now() % 1e8}`;
-    const bk = await api("POST", `/venues/${SLUG}/bookings`, {
-      token,
-      body: { coupleName: "Contract Couple", couplePhone, totalValue: 400000, days: [{ date: new Date(Date.now() + 30 * 86400000).toISOString(), eventType: "Wedding", guestCount: 250 }], paymentSchedule: [{ label: "Advance", amount: 100000 }] },
-    });
-    const bkId = bk.json.booking._id;
-
-    // generate v1 — seeded from policyDoc + frozen specifics
-    const g1 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
-    const c1 = g1.json.contract;
-    check("contracts: generate v1 seeds from policyDoc",
-      g1.status === 201 && c1.version === 1 && c1.sections.length === 3
-        && c1.sections[0].clauses[0] === "No outside DJ after 11pm"
-        && c1.parties.coupleName === "Contract Couple"
-        && c1.specifics.totalValue === 400000,
-      `status ${g1.status} sections=${c1 && c1.sections.length}`);
-
-    // edit while draft
-    const ed = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [{ heading: "Venue Policies", clauses: ["No outside DJ after 11pm", "Decor by approved vendors only"] }] } });
-    check("contracts: edit draft sections -> 200", ed.status === 200 && ed.json.contract.sections[0].clauses.length === 2, `status ${ed.status}`);
-    const edBad = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [{ heading: "   ", clauses: ["x"] }] } });
-    check("contracts: blank section heading -> 400", edBad.status === 400, `status ${edBad.status}`);
-
-    // send -> public ack link
-    const sent = await api("POST", `/venues/${SLUG}/contracts/${c1._id}/send`, { token });
-    check("contracts: send -> sent + ack token", sent.status === 200 && sent.json.contract.status === "sent" && sent.json.contract.sentAt && sent.json.ackToken, `status ${sent.status}`);
-    const ackToken = sent.json.ackToken;
-
-    // public read (no auth) — phone masked
-    const pub = await api("GET", `/venues/contract-ack/${ackToken}`, {});
-    check("contracts: public ack GET shows contract, masks phone",
-      pub.status === 200 && pub.json.contract.sections.length === 1 && /•/.test(pub.json.contract.parties.couplePhone),
-      `status ${pub.status} phone=${pub.json.contract && pub.json.contract.parties.couplePhone}`);
-
-    // garbage + tampered tokens rejected
-    const badTok = await api("GET", `/venues/contract-ack/not-a-token`, {});
-    check("contracts: garbage token -> 401", badTok.status === 401, `status ${badTok.status}`);
-    const tampered = await api("POST", `/venues/contract-ack/${ackToken.slice(0, -2)}xx`, { body: { name: "X", phone: couplePhone } });
-    check("contracts: tampered token -> 401", tampered.status === 401, `status ${tampered.status}`);
-
-    // wrong phone -> 403; hostile name -> 400
-    const wrong = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Impostor", phone: "9000000000" } });
-    check("contracts: wrong phone -> 403", wrong.status === 403, `status ${wrong.status}`);
-    const blankName = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "   ", phone: couplePhone } });
-    check("contracts: blank name -> 400", blankName.status === 400, `status ${blankName.status}`);
-
-    // right phone -> acknowledged + stamps
-    const ack = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Contract Couple", phone: couplePhone } });
-    check("contracts: matching phone -> acknowledged", ack.status === 200 && ack.json.acknowledgedAt, `status ${ack.status}`);
-    const ackAgain = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Again", phone: couplePhone } });
-    check("contracts: double-acknowledge -> 409", ackAgain.status === 409, `status ${ackAgain.status}`);
-
-    // pdf bytes
-    const pdf = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
-    check("contracts: PDF returns bytes", pdf.status === 200 && pdf.head.startsWith("%PDF") && pdf.bytes > 800, `bytes=${pdf.bytes}`);
-
-    // new version supersedes (voids) prior non-acknowledged; acknowledged stays
-    const g2 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
-    check("contracts: v2 generated", g2.status === 201 && g2.json.contract.version === 2, `v=${g2.json.contract && g2.json.contract.version}`);
-    const both = await api("GET", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
-    const v1After = both.json.contracts.find((c) => c.version === 1);
-    check("contracts: acknowledged v1 NOT voided by v2", v1After && v1After.status === "acknowledged", `v1=${v1After && v1After.status}`);
-    const g3 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
-    const all3 = await api("GET", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
-    const v2After = all3.json.contracts.find((c) => c.version === 2);
-    check("contracts: draft v2 voided by v3 (supersede)", g3.status === 201 && v2After && v2After.status === "void", `v2=${v2After && v2After.status}`);
-
-    // draft-only editing: v1 (acknowledged) cannot be edited
-    const edAck = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [] } });
-    check("contracts: editing acknowledged contract -> 409", edAck.status === 409, `status ${edAck.status}`);
   }
 
   finish();
