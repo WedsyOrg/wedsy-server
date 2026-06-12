@@ -1286,6 +1286,129 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     } finally {
       dormantChild.kill();
     }
+
+    // ════ SLICE 9 — Filters + saved views ════
+    section("S9: new filter keys");
+    const fLead = await Enquiry.create({
+      name: `${MARK} FilterLead`,
+      phone: phone(601),
+      verified: false,
+      source: "Website",
+      additionalInfo: { eventMonth: "December" },
+      stage: "new",
+      assignedTo: salesLead._id,
+      qualified: true,
+    });
+    await api("PUT", `/enquiry/${fLead._id}/qualification`, {
+      token: salesLeadToken,
+      body: {
+        servicesRequired: ["Decor", "Catering"],
+        budgetAmount: 1800000,
+        email: "filter@example.com",
+        venueStatus: "booked",
+      },
+    });
+    await api("POST", `/enquiry/${fLead._id}/follow-up`, {
+      token: salesLeadToken,
+      body: { type: "meet", scheduledAt: new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString() },
+    });
+    const fLead2 = await Enquiry.create({
+      name: `${MARK} FilterLead2`,
+      phone: phone(602),
+      verified: false,
+      source: "Website",
+      additionalInfo: {},
+      stage: "new",
+      assignedTo: salesLead._id,
+      reEnquiredAt: new Date(),
+      followUps: [{ type: "call", scheduledAt: new Date(Date.now() - 24 * 3600 * 1000) }],
+    });
+
+    const filterQuery = async (filters, token = salesLeadToken) =>
+      api("GET", `/enquiry?limit=200&filters=${encodeURIComponent(JSON.stringify(filters))}`, { token });
+    const hits = (resp, id) => (resp.data.list || []).some((l) => String(l._id) === String(id));
+
+    let r = await filterQuery([{ field: "qualificationData.servicesRequired", op: "in", value: ["Decor", "Venue"] }]);
+    ok(r.status === 200 && hits(r, fLead._id) && !hits(r, fLead2._id), "servicesRequired any-of");
+    r = await filterQuery([
+      { field: "qualificationData.budgetAmount", op: "gte", value: 1000000 },
+      { field: "qualificationData.budgetAmount", op: "lte", value: 2000000 },
+    ]);
+    ok(hits(r, fLead._id), "budget range (gte+lte)");
+    r = await filterQuery([{ field: "healthBand", op: "eq", value: "Hot" }]);
+    ok(hits(r, fLead._id) && !hits(r, fLead2._id), "healthBand Hot (qualified + venue + email + next step)");
+    r = await filterQuery([{ field: "healthBand", op: "eq", value: "Cold" }]);
+    ok(hits(r, fLead2._id) && !hits(r, fLead._id), "healthBand Cold (unqualified)");
+    r = await filterQuery([{ field: "hasMeetingBooked", op: "eq", value: true }]);
+    ok(hits(r, fLead._id) && !hits(r, fLead2._id), "hasMeetingBooked");
+    r = await filterQuery([{ field: "overdueFollowUps", op: "eq", value: true }]);
+    ok(hits(r, fLead2._id) && !hits(r, fLead._id), "overdueFollowUps");
+    r = await filterQuery([{ field: "reEnquired", op: "eq", value: true }]);
+    ok(hits(r, fLead2._id) && !hits(r, fLead._id), "reEnquired y/n");
+    r = await filterQuery([{ field: "additionalInfo.eventMonth", op: "eq", value: "December" }]);
+    ok(hits(r, fLead._id) && !hits(r, fLead2._id), "eventMonth");
+    r = await filterQuery([{ field: "qualificationData.venueStatus", op: "eq", value: "booked" }]);
+    ok(hits(r, fLead._id), "venueStatus");
+    r = await filterQuery([{ field: "updatedAt", op: "gte", value: new Date(Date.now() - 3600 * 1000).toISOString() }]);
+    ok(hits(r, fLead._id), "lastActivity recency (updatedAt gte)");
+    // Kiara-derived: reuse a fresh webhook lead.
+    const pF = phone(603);
+    await signedWebhook(inboundText(pF, "Hi, planning!", "Filter Kiara"));
+    const fConv = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pF }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "filter kiara lead");
+    r = await filterQuery([{ field: "kiaraChatting", op: "eq", value: true }], founderToken);
+    ok(hits(r, fConv.enquiryId) && !hits(r, fLead._id), "kiaraChatting (live ai conversation)");
+    r = await filterQuery([{ field: "needsHuman", op: "eq", value: true }], founderToken);
+    ok(!hits(r, fConv.enquiryId), "needsHuman false until escalation");
+    const badField = await filterQuery([{ field: "hacked", op: "eq", value: 1 }]);
+    ok(badField.status === 400, "unknown filter field still 400 (strict whitelist)");
+
+    section("S9: scope is preserved under the new filters");
+    const internView = await filterQuery([{ field: "healthBand", op: "eq", value: "Hot" }], internToken);
+    ok(internView.status === 200 && !hits(internView, fLead._id), "own-scope intern can't see another owner's Hot lead");
+
+    section("S9: saved views CRUD");
+    const svCreate = await api("POST", "/saved-views", {
+      token: internToken,
+      body: {
+        name: "My hot meets",
+        filters: [
+          { field: "healthBand", op: "eq", value: "Hot" },
+          { field: "hasMeetingBooked", op: "eq", value: true },
+        ],
+        view: "active",
+        isDefault: true,
+      },
+    });
+    ok(svCreate.status === 201 && svCreate.data.isDefault === true, "saved view created (default)");
+    const svJunk = await api("POST", "/saved-views", {
+      token: internToken,
+      body: { name: "junk", filters: [{ field: "hacked", op: "eq", value: 1 }] },
+    });
+    ok(svJunk.status === 400, "saved view filters re-validated (junk → 400)");
+    const svDup = await api("POST", "/saved-views", {
+      token: internToken,
+      body: { name: "My hot meets", filters: [] },
+    });
+    ok(svDup.status === 409, "duplicate name rejected (409)");
+    const svRename = await api("PUT", `/saved-views/${svCreate.data._id}`, {
+      token: internToken,
+      body: { name: "Hot meets v2" },
+    });
+    ok(svRename.status === 200 && svRename.data.name === "Hot meets v2", "rename works");
+    const svListIntern = await api("GET", "/saved-views", { token: internToken });
+    ok((svListIntern.data.list || []).length === 1, "owner lists their views");
+    const svListOther = await api("GET", "/saved-views", { token: salesLeadToken });
+    ok(
+      !(svListOther.data.list || []).some((v) => String(v._id) === String(svCreate.data._id)),
+      "views are strictly per-user"
+    );
+    const svForeignDelete = await api("DELETE", `/saved-views/${svCreate.data._id}`, { token: salesLeadToken });
+    ok(svForeignDelete.status === 404, "cannot delete someone else's view");
+    const svDelete = await api("DELETE", `/saved-views/${svCreate.data._id}`, { token: internToken });
+    ok(svDelete.status === 200, "delete works");
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
@@ -1310,6 +1433,8 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     const allAdminIds = [founder._id, salesLead._id, intern._id, holder._id, revenueHead._id];
     const GoogleAccountModel = require("../models/GoogleAccount");
     await GoogleAccountModel.deleteMany({ adminId: { $in: allAdminIds } });
+    const SavedViewModel = require("../models/SavedView");
+    await SavedViewModel.deleteMany({ adminId: { $in: allAdminIds } });
     const CalendarEventModel = require("../models/CalendarEvent");
     const AdminNotificationModel = require("../models/AdminNotification");
     await CalendarEventModel.deleteMany({ ownerId: { $in: allAdminIds } });
