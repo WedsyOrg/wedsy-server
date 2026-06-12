@@ -20,6 +20,8 @@ async function resolveOwnedVenue(req, res) {
 function shape(out, venue) {
   return {
     hasPlaceId: Boolean(venue.googlePlaceId),
+    // The owner's own place id — powers the "write a review" link in requests.
+    placeId: venue.googlePlaceId || null,
     rating: out.rating,
     count: out.count,
     reviews: out.reviews,
