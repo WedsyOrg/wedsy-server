@@ -53,6 +53,7 @@ const waitFor = async (fn, label, timeoutMs = 20000, everyMs = 300) => {
 const mock = {
   anthropicCalls: [],
   metaCalls: [],
+  igCalls: [], // Instagram DM sends (Slice 7)
   replyText: "Lovely! Tell me more 😊",
   extractor: { qualified: false, escalate: false, escalateReason: "", classification: "lead", data: {} },
   anthropic429s: 0, // consume N 429s before answering (Slice 11)
@@ -82,6 +83,12 @@ const mockServer = http.createServer((req, res) => {
       mock.metaCalls.push({ phoneNumberId: graph[1], body });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ messaging_product: "whatsapp", messages: [{ id: "wamid.mb56" }] }));
+      return;
+    }
+    if (req.url === "/iggraph/me/messages") {
+      mock.igCalls.push({ body });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ recipient_id: body.recipient && body.recipient.id, message_id: "igm.mb56" }));
       return;
     }
     res.writeHead(404);
@@ -115,6 +122,20 @@ const signedWebhook = async (payload) => {
   });
   return res.status;
 };
+const signedIgWebhook = async (instagramId, text) => {
+  const payload = {
+    entry: [{ messaging: [{ sender: { id: instagramId }, message: { text } }] }],
+  };
+  const raw = JSON.stringify(payload);
+  const sig = "sha256=" + crypto.createHmac("sha256", "mb56-ig-secret").update(raw).digest("hex");
+  const res = await fetch(`${BASE}/webhook/instagram-agent`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-hub-signature-256": sig },
+    body: raw,
+  });
+  return res.status;
+};
+
 const inboundText = (phone, text, profileName = "MB56 Customer") => ({
   entry: [
     {
@@ -258,6 +279,9 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
       WHATSAPP_AGENT_APP_SECRET: APP_SECRET,
       META_WA_AGENT_ACCESS_TOKEN: "mb56-token",
       GOOGLE_SHEETS_KEY_PATH: "/nonexistent/mb56-keyfile.json",
+      INSTAGRAM_AGENT_APP_SECRET: "mb56-ig-secret",
+      INSTAGRAM_AGENT_PAGE_ACCESS_TOKEN: "mb56-ig-token",
+      INSTAGRAM_GRAPH_BASE_URL: `http://localhost:${MOCK_PORT}/iggraph`,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -938,6 +962,98 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     const pub2 = await api("GET", "/settings/public", { token: internToken });
     ok(String(pub2.data["cockpit.briefScript"]).includes("quick test script"), "cockpit renders the edited script via settings");
     await Setting.deleteMany({ key: "cockpit.briefScript" }); // restore default
+
+    // ════ SLICE 7 — Instagram hooks (MB4 pattern adapted) ════
+    section("S7: IG inbound → channel:'instagram' conversation, unlinked");
+    const IG1 = "MB56IG00000001";
+    ok((await signedIgWebhook(IG1, "Hi! Do you do engagement decor?")) === 200, "IG webhook accepts signed payload");
+    const igConv1 = await waitFor(async () => WAConversation.findOne({ phone: IG1 }).lean(), "IG conversation created");
+    ok(igConv1.channel === "instagram", "conversation carries channel:'instagram'");
+    ok(igConv1.enquiryId === null, "no phone yet → conversation lives UNLINKED");
+    await waitFor(async () => WAAgentMessage.findOne({ phone: IG1, role: "assistant" }).lean(), "IG Kiara replied");
+    ok(mock.igCalls.some((c) => c.body.recipient.id === IG1), "reply delivered as an Instagram DM (mock)");
+    const igInbox = await api("GET", "/wa/conversations?status=active&limit=100", { token: founderToken });
+    const igRow = (igInbox.data.list || []).find((c) => c.phone === IG1);
+    ok(!!igRow && igRow.channel === "instagram" && igRow.lead === null, "unlinked IG thread surfaces in the inbox, badged by channel");
+
+    section("S7: IG mode gate — takeover silences the bot identically");
+    const takeIg = await api("POST", `/wa/conversations/${igConv1._id}/takeover`, { token: founderToken });
+    ok(takeIg.status === 200 && takeIg.data.mode === "human", "takeover works on IG threads");
+    const igCallsBefore = mock.anthropicCalls.length;
+    const igMsgsBefore = await WAAgentMessage.countDocuments({ phone: IG1, role: "assistant" });
+    await signedIgWebhook(IG1, "hello? anyone there?");
+    await waitFor(async () => WAAgentMessage.findOne({ phone: IG1, message: "hello? anyone there?" }).lean(), "human-mode IG inbound stored");
+    await sleep(1200);
+    ok(mock.anthropicCalls.length === igCallsBefore, "NO Anthropic call in human mode (IG)");
+    ok((await WAAgentMessage.countDocuments({ phone: IG1, role: "assistant" })) === igMsgsBefore, "NO auto-reply in human mode (IG)");
+    const igDmsBefore = mock.igCalls.length;
+    const igSend = await api("POST", `/wa/conversations/${igConv1._id}/send`, {
+      token: founderToken,
+      body: { text: "Hi! This is the Wedsy team — happy to help directly." },
+    });
+    ok(igSend.status === 200, "admin send works on IG threads");
+    ok(mock.igCalls.length === igDmsBefore + 1 && mock.metaCalls.every((m) => m.body.to !== IG1), "admin send goes out as an IG DM, never WhatsApp");
+    const igTpl = await api("POST", `/wa/conversations/${igConv1._id}/send-template`, { token: founderToken });
+    ok(igTpl.status === 422, "re-engage template blocked on IG (WhatsApp-only feature)");
+    const backIg = await api("POST", `/wa/conversations/${igConv1._id}/handback`, { token: founderToken });
+    ok(backIg.status === 200 && backIg.data.mode === "ai", "handback resumes the IG bot");
+
+    section("S7: IG escalation contract");
+    const IG2 = "MB56IG00000002";
+    mock.extractor = { qualified: false, escalate: true, escalateReason: "Customer wants a human", classification: "lead", data: {} };
+    await signedIgWebhook(IG2, "I want to talk to a real person please");
+    const igConv2 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: IG2 }).lean();
+      return c && c.needsHuman ? c : null;
+    }, "IG escalation flips needsHuman");
+    ok(igConv2.needsHuman && igConv2.needsHumanReason === "Customer wants a human", "escalation reason recorded");
+    mock.extractor = { qualified: false, escalate: false, escalateReason: "", classification: "lead", data: {} };
+
+    section("S7: IG phone capture → CRM linkage + qualified sync");
+    const IG3 = "MB56IG00000003";
+    mock.extractor = {
+      qualified: true,
+      escalate: true,
+      escalateReason: "Qualified — ready for your call",
+      classification: "lead",
+      data: {
+        name: "Insta Bride",
+        phoneNumber: "9191000505",
+        eventType: "wedding",
+        city: "Bengaluru",
+        servicesRequired: "decor and catering",
+        budget: "20 lakhs",
+      },
+    };
+    await signedIgWebhook(IG3, "Sure, my number is 9191000505");
+    const igConv3 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: IG3 }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "IG conversation linked once phone captured", 40000);
+    const igLead = await Enquiry.findById(igConv3.enquiryId).lean();
+    ok(igLead.source === "instagram" && igLead.phone === "919191000505", "CRM lead created with source instagram + real phone");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: igLead._id, type: "ig_conversation_linked" }).lean()),
+      "journey event ig_conversation_linked"
+    );
+    await waitFor(async () => {
+      const l = await Enquiry.findById(igLead._id).lean();
+      return l.qualified ? l : null;
+    }, "IG qualified sync");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: igLead._id, type: "ig_qualified_by_kiara" }).lean()),
+      "journey event ig_qualified_by_kiara"
+    );
+    const igLeadFinal = await Enquiry.findById(igLead._id).lean();
+    ok(
+      (igLeadFinal.qualificationData.servicesRequired || []).includes("Decor") &&
+        (igLeadFinal.qualificationData.servicesRequired || []).includes("Catering"),
+      "IG services mapped into cockpit fields"
+    );
+    ok(igLeadFinal.qualificationData.budgetAmount === 2000000, "IG budget parsed (20 lakhs → 2000000)");
+    const igQl = await QualifiedLead.findOne({ phone: IG3 }).lean();
+    ok(!!igQl && igQl.crmSynced === true, "QualifiedLead.crmSynced mirrors the WA idiom");
+    mock.extractor = { qualified: false, escalate: false, escalateReason: "", classification: "lead", data: {} };
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
@@ -945,14 +1061,19 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     console.error("server log tail:", serverLog.slice(-2000));
   } finally {
     section("Cleanup");
-    const leads = await Enquiry.find({ phone: { $regex: `^${PHONE_PREFIX}` } }, { _id: 1 }).lean();
+    const leads = await Enquiry.find(
+      { phone: { $regex: `^(${PHONE_PREFIX}|919191000)` } },
+      { _id: 1 }
+    ).lean();
     const leadIds = leads.map((l) => l._id);
     await LeadInternalEvent.deleteMany({ leadId: { $in: leadIds } });
-    await Enquiry.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
-    await WAConversation.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
-    await WAAgentMessage.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
-    await QualifiedLead.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
-    await NotificationFailureLog.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
+    await Enquiry.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|919191000)` } });
+    await WAConversation.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
+    await WAAgentMessage.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
+    await QualifiedLead.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
+    await NotificationFailureLog.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
+    const VendorContact = require("../models/VendorContact");
+    await VendorContact.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
     await Attendance.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
     const allAdminIds = [founder._id, salesLead._id, intern._id, holder._id, revenueHead._id];
     const CalendarEventModel = require("../models/CalendarEvent");

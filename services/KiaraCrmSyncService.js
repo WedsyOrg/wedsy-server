@@ -58,6 +58,10 @@ const closeLeadAsSystem = async (enquiryId, reason) => {
 };
 
 // ── Escalation ────────────────────────────────────────────────────────────────
+// Journey event types are channel-prefixed (wa_* / ig_* — MB6 Slice 7).
+const evType = (conversation, suffix) =>
+  `${conversation && conversation.channel === "instagram" ? "ig" : "wa"}_${suffix}`;
+
 const escalate = async (conversation, reason) => {
   const updated = await WAConversationRepository.updateFieldsById(conversation._id, {
     needsHuman: true,
@@ -67,7 +71,7 @@ const escalate = async (conversation, reason) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_escalated",
+      type: evType(conversation, "escalated"),
       actorId: null,
       payload: { reason: reason || "" },
     });
@@ -107,7 +111,7 @@ const applyExtraction = async (conversation, extraction) => {
           name: (extraction.data && extraction.data.name) || "",
           offering: (extraction.data && extraction.data.servicesRequired) || "",
           firstMessage: firstMsg ? firstMsg.message : "",
-          source: "whatsapp",
+          source: conversation.channel === "instagram" ? "instagram" : "whatsapp",
           conversationId: conversation._id,
         });
       }
@@ -122,7 +126,7 @@ const applyExtraction = async (conversation, extraction) => {
         await closeLeadAsSystem(conversation.enquiryId, reason);
         await LeadInternalEventService.record({
           leadId: conversation.enquiryId,
-          type: "wa_classified",
+          type: evType(conversation, "classified"),
           actorId: null,
           payload: { classification, action: "conversation_closed_lead_lost", reason },
         });
@@ -317,7 +321,7 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
 
   await LeadInternalEventService.record({
     leadId: enquiryId,
-    type: "wa_qualified_by_kiara",
+    type: evType(conversation, "qualified_by_kiara"),
     actorId: null,
     payload: {
       answers: ANSWER_KEYS.reduce((acc, k) => {

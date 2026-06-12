@@ -15,6 +15,10 @@ const WAConversationSchema = new mongoose.Schema(
   {
     phone: { type: String, required: true, unique: true },
     normalizedPhone: { type: String, default: "", index: true },
+    // MB6 Slice 7: conversation channel. Instagram rows key `phone` by the
+    // IG-scoped user id (the same key WAAgentMessage already uses for IG).
+    // Default keeps every existing row 'whatsapp' — migration-free.
+    channel: { type: String, enum: ["whatsapp", "instagram"], default: "whatsapp" },
     enquiryId: { type: ObjectId, ref: "Enquiry", default: null },
     mode: { type: String, enum: ["ai", "human"], default: "ai" },
     needsHuman: { type: Boolean, default: false },

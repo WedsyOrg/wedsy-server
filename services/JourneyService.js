@@ -32,6 +32,24 @@ const EVENT_TITLES = {
   wa_classified: "Classified by Kiara",
   wa_admin_message_sent: "WhatsApp message sent",
   wa_template_sent: "Re-engage template sent",
+  // Kiara on Instagram (MB6 Slice 7).
+  ig_conversation_linked: "Instagram chat linked",
+  ig_escalated: "Kiara asked for a human (Instagram)",
+  ig_human_takeover: "Human took over the Instagram chat",
+  ig_handed_back: "Handed back to Kiara (Instagram)",
+  ig_qualified_by_kiara: "Qualified by Kiara on Instagram ✦",
+  ig_classified: "Classified by Kiara (Instagram)",
+  ig_admin_message_sent: "Instagram DM sent",
+  // MB5/6 moments.
+  triage_entered: "Landed in triage",
+  triage_assigned: "Assigned from triage",
+  triage_escalated: "Triage escalation",
+  triage_auto_assigned: "Auto-assigned from triage",
+  meet_handoff: "Handed to the sales lead for the meet",
+  meeting_closed: "Meeting closed with notes",
+  huddle_completed: "Huddle complete — team onboarded 🤝",
+  kiara_safety_net_engaged: "Kiara safety net engaged ✦",
+  meet_refused: "Refusing a meeting — tagged no-meet",
 };
 
 // GET /enquiry/:_id/journey — every moment of a lead's life, one chronological

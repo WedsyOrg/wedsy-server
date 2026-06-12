@@ -41,11 +41,16 @@ const windowInfo = (conversation, now = new Date()) => {
 // ── Hook 1 support: inbound touch + CRM lead linkage ─────────────────────────
 
 // Upsert the conversation row for an inbound message (creates it on first
-// contact) and bump freshness/unread.
-const recordInbound = async (phone, text) => {
-  const normalized = LeadIntakeService.normalizePhone(phone);
-  return await WAConversationRepository.upsertOnInbound(phone, normalized, preview(text));
+// contact) and bump freshness/unread. channel: 'whatsapp' (phone-keyed) or
+// 'instagram' (IG-user-id-keyed — no meaningful normalized phone).
+const recordInbound = async (phone, text, channel = "whatsapp") => {
+  const normalized = channel === "whatsapp" ? LeadIntakeService.normalizePhone(phone) : "";
+  return await WAConversationRepository.upsertOnInbound(phone, normalized, preview(text), new Date(), channel);
 };
+
+// Journey event types are channel-prefixed (wa_* / ig_*).
+const evType = (conversation, suffix) =>
+  `${conversation && conversation.channel === "instagram" ? "ig" : "wa"}_${suffix}`;
 
 // Ensure the conversation is linked to a CRM lead — full intake semantics:
 // normalized-phone dedup, re-enquiry on terminal leads, round-robin auto-assign.
@@ -225,7 +230,7 @@ const takeover = async (conversationId, actorId, scopeFilter = {}) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_human_takeover",
+      type: evType(conversation, "human_takeover"),
       actorId,
       payload: {},
     });
@@ -244,7 +249,7 @@ const handback = async (conversationId, actorId, scopeFilter = {}) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_handed_back",
+      type: evType(conversation, "handed_back"),
       actorId,
       payload: {},
     });
@@ -270,12 +275,15 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
     );
   }
   const clean = text.trim();
-  const sent = await sendWhatsAppText(
-    conversation.phone,
-    clean,
-    process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID
-  );
-  if (!sent) throw httpError(502, "WhatsApp send failed — try again");
+  // MB6 Slice 7: channel-aware delivery — IG threads send a DM, not WhatsApp.
+  let sent;
+  if (conversation.channel === "instagram") {
+    const { sendInstagramDM } = require("../utils/instagram");
+    sent = await sendInstagramDM(conversation.phone, clean);
+  } else {
+    sent = await sendWhatsAppText(conversation.phone, clean, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
+  }
+  if (!sent) throw httpError(502, `${conversation.channel === "instagram" ? "Instagram" : "WhatsApp"} send failed — try again`);
 
   const saved = await new WAAgentMessage({
     phone: conversation.phone,
@@ -291,7 +299,7 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_admin_message_sent",
+      type: evType(conversation, "admin_message_sent"),
       actorId,
       payload: { preview: preview(clean) },
     });
@@ -302,6 +310,9 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
 // Template send (re-engage): allowed with the window closed, still human-mode-only.
 const sendTemplate = async (conversationId, actorId, scopeFilter = {}) => {
   const conversation = await getScoped(conversationId, scopeFilter);
+  if (conversation.channel === "instagram") {
+    throw httpError(422, "Templates are a WhatsApp feature — Instagram chats can't be re-engaged this way");
+  }
   if (conversation.mode !== "human") {
     throw httpError(409, "Kiara is handling this conversation — take over before sending");
   }
