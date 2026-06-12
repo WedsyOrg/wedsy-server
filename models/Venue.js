@@ -50,6 +50,16 @@ const VenueSchema = new mongoose.Schema({
       photos: [String],
     }],
   },
+  // Phase 5 (PMS) — the operational rooms inventory used for guest allotment
+  // and check-in/out. Distinct from accommodation.roomTypes (marketing copy);
+  // both render side by side on the listing surface.
+  rooms: [{
+    name: { type: String, required: true }, // name or number, e.g. "Suite 2"
+    type: { type: String, enum: ["standard", "deluxe", "suite", "dorm", "other"], default: "standard" },
+    capacity: { type: Number, default: 2 },
+    notes: { type: String, default: "" },
+    isActive: { type: Boolean, default: true },
+  }],
   pricing: {
     currency: { type: String, default: "INR" },
     minimumDuration: { type: Number, default: 12 },
