@@ -316,6 +316,18 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     departmentId: dept._id,
     status: "active",
   });
+  // Created with the fixtures so the 5-min team-scope cache includes them (S10).
+  const metricsIntern = await Admin.create({
+    name: `${MARK} MetricsIntern`,
+    email: `mb56-mintern-${Date.now()}@test.local`,
+    phone: "919191000006",
+    password: "x",
+    roles: ["sales"],
+    roleId: internRole._id,
+    departmentId: dept._id,
+    reportingManagerId: salesLead._id,
+    status: "active",
+  });
 
   await new Promise((r) => mockServer.listen(MOCK_PORT, r));
   const child = spawn("node", ["server.js"], {
@@ -1409,6 +1421,113 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     ok(svForeignDelete.status === 404, "cannot delete someone else's view");
     const svDelete = await api("DELETE", `/saved-views/${svCreate.data._id}`, { token: internToken });
     ok(svDelete.status === 200, "delete works");
+
+    // ════ SLICE 10 — Intern/presales metrics (math vs seeded fixtures) ════
+    section("S10: metrics math vs seeded fixtures");
+    const mToken = tok(metricsIntern);
+    // The metrics intern sat in the round-robin pool all suite — snapshot the
+    // baseline and assert exact DELTAS from the seeded fixtures below.
+    const metricsBefore = await api("GET", "/enquiry/intern-metrics?period=today", { token: founderToken });
+    const mBase = (metricsBefore.data.rows || []).find((r) => String(r.adminId) === String(metricsIntern._id)) || {
+      leadsReceived: 0,
+      qualified: 0,
+      meetsBooked: 0,
+    };
+    const mkLead = async (n, fields = {}) =>
+      Enquiry.create({
+        name: `${MARK} M${n}`,
+        phone: phone(700 + n),
+        verified: false,
+        source: "Website",
+        additionalInfo: {},
+        stage: "new",
+        ...fields,
+      });
+    const now10 = Date.now();
+    // A: received, called in 10min (in 15-min window), qualified incomplete.
+    const mA = await mkLead(1, { assignedTo: metricsIntern._id, qualified: true });
+    await Enquiry.collection.updateOne(
+      { _id: mA._id },
+      { $set: { createdAt: new Date(now10 - 2 * 3600 * 1000), firstCalledAt: new Date(now10 - 2 * 3600 * 1000 + 10 * 60 * 1000) } }
+    );
+    // B: received, called after 60min (window missed).
+    const mB = await mkLead(2, { assignedTo: metricsIntern._id });
+    await Enquiry.collection.updateOne(
+      { _id: mB._id },
+      { $set: { createdAt: new Date(now10 - 3 * 3600 * 1000), firstCalledAt: new Date(now10 - 3 * 3600 * 1000 + 60 * 60 * 1000) } }
+    );
+    // C: received, never called.
+    const mC = await mkLead(3, { assignedTo: metricsIntern._id });
+    // D: handoff credit only (qualifiedBy), owned by the sales lead now.
+    await mkLead(4, { assignedTo: salesLead._id, qualified: true, qualifiedBy: metricsIntern._id });
+    // Assignment journey events (what "received" derives from).
+    for (const leadId of [mA._id, mB._id, mC._id]) {
+      await LeadInternalEvent.create({
+        leadId,
+        type: "auto_assigned",
+        actorId: null,
+        payload: { assignedTo: String(metricsIntern._id) },
+      });
+    }
+    // Meets: 2 booked by the metrics intern; 1 completed (the show-up).
+    const meetA = await api("POST", `/enquiry/${mA._id}/follow-up`, {
+      token: mToken,
+      body: { type: "meet", scheduledAt: new Date(now10 + 24 * 3600 * 1000).toISOString() },
+    });
+    ok(meetA.status === 200 || meetA.status === 201, "metrics fixture meet 1 booked");
+    const meetC = await api("POST", `/enquiry/${mC._id}/follow-up`, {
+      token: mToken,
+      body: { type: "meet", scheduledAt: new Date(now10 - 3600 * 1000).toISOString() },
+    });
+    const mCDoc = await Enquiry.findById(mC._id).lean();
+    const meetCFu = (mCDoc.followUps || []).find((f) => f.type === "meet");
+    // Booking the meets handed mA/mC to the sales lead (the Slice-3 handoff),
+    // so the OWNER completes — with a next step (the zero-orphan gate).
+    const completeC = await api("PUT", `/enquiry/${mC._id}/follow-up/${meetCFu._id}/complete`, {
+      token: salesLeadToken,
+      body: {
+        outcome: "done",
+        notes: "met them",
+        nextFollowUp: { type: "call", scheduledAt: new Date(now10 + 2 * 24 * 3600 * 1000).toISOString() },
+      },
+    });
+    ok(completeC.status === 200, "metrics fixture meet completed");
+
+    const metrics = await api("GET", "/enquiry/intern-metrics?period=today", { token: founderToken });
+    ok(metrics.status === 200, "intern metrics endpoint loads");
+    const mRow = (metrics.data.rows || []).find((r) => String(r.adminId) === String(metricsIntern._id));
+    ok(!!mRow, "per-intern rollup row present");
+    ok(
+      mRow.leadsReceived === mBase.leadsReceived + 3,
+      `leads received +3 (base ${mBase.leadsReceived}, got ${mRow.leadsReceived})`
+    );
+    ok(mRow.contacted === 2 && mRow.contactedInWindowPct === 50, `contacted-in-window 50% (got ${mRow.contactedInWindowPct})`);
+    ok(mRow.avgFirstCallMinutes === 35, `avg time-to-first-call 35min (got ${mRow.avgFirstCallMinutes})`);
+    ok(
+      mRow.qualified === mBase.qualified + 2,
+      `qualified +2 incl. handoff credit (base ${mBase.qualified}, got ${mRow.qualified})`
+    );
+    ok(
+      mRow.meetsBooked === mBase.meetsBooked + 2,
+      `meets booked +2 (base ${mBase.meetsBooked}, got ${mRow.meetsBooked})`
+    );
+    ok(mRow.meetShowUpRatePct === 50, `meeting show-up rate 50% (got ${mRow.meetShowUpRatePct})`);
+    ok(mRow.incompleteDiscovery >= 2, `incomplete discovery counted (got ${mRow.incompleteDiscovery})`);
+
+    section("S10: scope + period");
+    const metricsLead = await api("GET", "/enquiry/intern-metrics?period=week", { token: salesLeadToken });
+    ok(
+      metricsLead.status === 200 &&
+        (metricsLead.data.rows || []).some((r) => String(r.adminId) === String(metricsIntern._id)),
+      "sales lead sees their subordinate's rollup (week period)"
+    );
+    const metricsOwn = await api("GET", "/enquiry/intern-metrics?period=today", { token: mToken });
+    ok(
+      (metricsOwn.data.rows || []).every((r) => String(r.adminId) === String(metricsIntern._id)),
+      "own-scope intern sees only themself"
+    );
+    const badPeriod = await api("GET", "/enquiry/intern-metrics?period=year", { token: founderToken });
+    ok(badPeriod.status === 400, "invalid period rejected (400)");
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
@@ -1430,7 +1549,7 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     const VendorContact = require("../models/VendorContact");
     await VendorContact.deleteMany({ phone: { $regex: `^(${PHONE_PREFIX}|MB56IG)` } });
     await Attendance.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
-    const allAdminIds = [founder._id, salesLead._id, intern._id, holder._id, revenueHead._id];
+    const allAdminIds = [founder._id, salesLead._id, intern._id, holder._id, revenueHead._id, metricsIntern._id];
     const GoogleAccountModel = require("../models/GoogleAccount");
     await GoogleAccountModel.deleteMany({ adminId: { $in: allAdminIds } });
     const SavedViewModel = require("../models/SavedView");
