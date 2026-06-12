@@ -116,4 +116,61 @@ function streamInvoicePdf(res, { venue, booking, invoice }) {
   doc.end();
 }
 
-module.exports = { streamQuotePdf, streamInvoicePdf };
+// Contract PDF (Phase 3.5) — numbered clause sections + booking specifics +
+// digital-acknowledgment block. NOTE: once the venue-logo support from
+// claude/venue-quality-sweep lands, wire loadLogoBuffer here too (punch list).
+function streamContractPdf(res, { venue, contract }) {
+  const doc = startDoc(res, `contract-v${contract.version || 1}.pdf`);
+  venueHeader(doc, venue, `Venue Contract  ·  v${contract.version || 1}`);
+
+  const parties = contract.parties || {};
+  const specifics = contract.specifics || {};
+  doc.fillColor(GREY).fontSize(10);
+  doc.text(`Between: ${parties.venueName || venue.name || "Venue"} and ${parties.coupleName || "—"}`);
+  doc.text(`Status: ${contract.status}${contract.sentAt ? `  ·  sent ${new Date(contract.sentAt).toDateString()}` : ""}`);
+  doc.moveDown(0.6);
+
+  // Booking specifics
+  doc.fillColor(BURGUNDY).fontSize(12).text("Booking Specifics");
+  doc.moveDown(0.2).fillColor("#222222").fontSize(10);
+  for (const d of specifics.days || []) {
+    doc.text(`• ${d.date ? new Date(d.date).toDateString() : "—"}${d.eventType ? ` — ${d.eventType}` : ""}${d.guestCount ? ` (${d.guestCount} guests)` : ""}`);
+  }
+  doc.text(`Total value: ${formatINR(specifics.totalValue || 0)}`);
+  if ((specifics.paymentSchedule || []).length) {
+    doc.moveDown(0.2).fillColor(GREY).text("Payment schedule:");
+    doc.fillColor("#222222");
+    for (const m of specifics.paymentSchedule) {
+      doc.text(`  – ${m.label || "Milestone"}: ${formatINR(m.amount || 0)}${m.dueDate ? ` due ${new Date(m.dueDate).toDateString()}` : ""}`);
+    }
+  }
+  doc.moveDown(0.8);
+
+  // Numbered clause sections
+  let clauseNo = 1;
+  for (const section of contract.sections || []) {
+    doc.fillColor(BURGUNDY).fontSize(12).text(section.heading || "Section");
+    doc.moveDown(0.2).fillColor("#222222").fontSize(10);
+    for (const clause of section.clauses || []) {
+      doc.text(`${clauseNo}. ${clause}`, { width: 495 });
+      doc.moveDown(0.15);
+      clauseNo += 1;
+    }
+    doc.moveDown(0.5);
+  }
+
+  // Digital acknowledgment block
+  doc.moveDown(0.8);
+  doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor(GOLD).stroke();
+  doc.moveDown(0.4).fillColor(BURGUNDY).fontSize(12).text("Digital Acknowledgment");
+  doc.moveDown(0.2).fillColor(GREY).fontSize(9);
+  if (contract.status === "acknowledged") {
+    doc.text(`Acknowledged by ${contract.acknowledgmentName || "—"} on ${contract.acknowledgedAt ? new Date(contract.acknowledgedAt).toUTCString() : "—"} (phone verified against the booking).`);
+  } else {
+    doc.text("Pending — the couple acknowledges this contract through the secure link shared by the venue.");
+  }
+  doc.moveDown(0.3).text("This is a digital acknowledgment recorded by Wedsy on behalf of the venue, not an electronic signature service.", { width: 495 });
+  doc.end();
+}
+
+module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf };
