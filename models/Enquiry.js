@@ -149,6 +149,12 @@ const EnquirySchema = new mongoose.Schema(
     unresponsiveFlaggedAt: { type: Date, default: null },
     // CSV import marker: historical imports are excluded from auto-assignment.
     importedAt: { type: Date, default: null },
+    // ── MB5 Slice 4 (additive only) — triage mode ───────────────────────────
+    // In assignment.mode='triage', new leads land here unassigned until a
+    // triage holder assigns them (or the escalation chain auto-assigns).
+    triagePending: { type: Boolean, default: false },
+    triageEnteredAt: { type: Date, default: null },
+    triageEscalatedAt: { type: Date, default: null },
     // ── MB5 Slice 3 (additive only) ─────────────────────────────────────────
     // Set-once credit: the intern who booked the meet that triggered the
     // handoff. Their stats keep this lead permanently.

@@ -76,6 +76,14 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
 
+  // MB5 Slice 4: lazy triage-escalation sweep rides the dashboard read too
+  // (same no-new-infra pattern). No-op outside triage mode / working hours.
+  try {
+    await require("./TriageService").sweepEscalations();
+  } catch (e) {
+    console.error("[Dashboard] triage sweep failed:", e.message);
+  }
+
   // MISSION-QUIET (Kiara): WhatsApp leads actively handled by the AI agent
   // (mode ai, open, not escalated) carry no call-now pressure — Kiara is
   // already talking to them. They re-enter missions the moment the

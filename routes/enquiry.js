@@ -22,6 +22,17 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   lifecycle.Dashboard
 );
+// MB5 Slice 4: triage queue (literal paths above /:_id). leads:triage is the
+// new permission — seed-granted to sales-lead-class roles; founder wildcard covers.
+const triage = require("../controllers/triage");
+router.get("/triage", CheckAdminLogin, requirePermission("leads:triage:own"), triage.List);
+router.get("/triage/interns", CheckAdminLogin, requirePermission("leads:triage:own"), triage.Interns);
+router.post(
+  "/:_id/triage-assign",
+  CheckAdminLogin,
+  requirePermission("leads:triage:own"),
+  triage.Assign
+);
 // Lifecycle (Slice F): founder CSV import (the Zoho migration tool). Literal
 // paths above /:_id; multipart handled per-route via express-fileupload.
 router.get(

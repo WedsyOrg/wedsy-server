@@ -9,6 +9,10 @@ const DEFAULTS = {
   "assignment.overflowRoles": ["Sales Executive"],
   "assignment.dailyCap": 15,
   "assignment.autoAssignEnabled": true,
+  // MB5 Slice 4: 'auto' = round-robin exactly as before (zero behavior change
+  // on deploy); 'triage' = new leads land unassigned in the Triage queue.
+  "assignment.mode": "auto",
+  "triage.escalateAfterMinutes": 10,
   "golden.windowMinutes": 30,
   "golden.workStartHour": 10,
   "golden.workEndHour": 19,
@@ -44,6 +48,8 @@ const KEY_CATEGORY = {
   "assignment.overflowRoles": "settings_assignment",
   "assignment.dailyCap": "settings_assignment",
   "assignment.autoAssignEnabled": "settings_assignment",
+  "assignment.mode": "settings_assignment",
+  "triage.escalateAfterMinutes": "settings_assignment",
   "golden.windowMinutes": "settings_sla",
   "golden.workStartHour": "settings_sla",
   "golden.workEndHour": "settings_sla",
@@ -82,6 +88,12 @@ const validateValue = (key, value) => {
       return value.map((s) => s.trim());
     case "assignment.dailyCap":
       if (!isIntInRange(value, 1, 100)) throw err(400, "assignment.dailyCap must be an integer 1–100");
+      return value;
+    case "assignment.mode":
+      if (!["auto", "triage"].includes(value)) throw err(400, "assignment.mode must be 'auto' or 'triage'");
+      return value;
+    case "triage.escalateAfterMinutes":
+      if (!isIntInRange(value, 1, 240)) throw err(400, "triage.escalateAfterMinutes must be an integer 1–240");
       return value;
     case "assignment.autoAssignEnabled":
     case "lost.approvalRequired":

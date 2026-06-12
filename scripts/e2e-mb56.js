@@ -202,8 +202,47 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
   const salesLeadToken = tok(salesLead);
   const internToken = tok(intern);
 
-  const touchedKeys = ["assignment.poolRoles"];
+  const touchedKeys = [
+    "assignment.poolRoles",
+    "assignment.mode",
+    "triage.escalateAfterMinutes",
+    "golden.workStartHour",
+    "golden.workEndHour",
+  ];
   const settingsBefore = await Setting.find({ key: { $in: touchedKeys } }).lean();
+
+  // Triage-holder fixture (sales-lead-class role with the new permission).
+  const holderRole = await Role.create({
+    name: `${MARK} TriageHolder`,
+    departmentId: dept._id,
+    permissions: ["leads:view:all", "leads:edit:all", "leads:triage:all"],
+  });
+  const holder = await Admin.create({
+    name: `${MARK} Holder`,
+    email: `mb56-holder-${Date.now()}@test.local`,
+    phone: "919191000004",
+    password: "x",
+    roles: ["sales"],
+    roleId: holderRole._id,
+    departmentId: dept._id,
+    status: "active",
+  });
+  // Revenue Head: reuse the real role if the dev DB has it, else create one.
+  let rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null });
+  const rhRoleCreated = !rhRole;
+  if (!rhRole) {
+    rhRole = await Role.create({ name: "Revenue Head", departmentId: dept._id, permissions: ["leads:view:all"] });
+  }
+  const revenueHead = await Admin.create({
+    name: `${MARK} RevenueHead`,
+    email: `mb56-rh-${Date.now()}@test.local`,
+    phone: "919191000005",
+    password: "x",
+    roles: ["sales"],
+    roleId: rhRole._id,
+    departmentId: dept._id,
+    status: "active",
+  });
 
   await new Promise((r) => mockServer.listen(MOCK_PORT, r));
   const child = spawn("node", ["server.js"], {
@@ -485,6 +524,173 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     );
     const lead2After = await Enquiry.findById(lead2._id).lean();
     ok(String(lead2After.assignedTo) === String(salesLead._id), "no handoff for a non-intern owner");
+
+    // ════ SLICE 4 — Triage & escalation ════
+    section("S4: triage mode — new leads land unassigned");
+    const holderToken = tok(holder);
+    // Force "working hours" deterministically for the sweep assertions.
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workStartHour", value: 0 } });
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workEndHour", value: 24 } });
+    const modePut = await api("PUT", "/settings", {
+      token: founderToken,
+      body: { key: "assignment.mode", value: "triage" },
+    });
+    ok(modePut.status === 200, "assignment.mode flips to triage in Settings");
+
+    const pT1 = phone(201);
+    await signedWebhook(inboundText(pT1, "Hi! Need wedding decor", "Triage One"));
+    const convT1 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pT1 }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "triage lead linked");
+    const leadT1 = await Enquiry.findById(convT1.enquiryId).lean();
+    ok(leadT1.assignedTo === null && leadT1.triagePending === true, "triage-mode lead lands UNASSIGNED in triage");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: leadT1._id, type: "triage_entered" }).lean()),
+      "journey event triage_entered"
+    );
+
+    section("S4: triage view — gated, transcript, golden freshness");
+    const deny = await api("GET", "/enquiry/triage", { token: internToken });
+    ok(deny.status === 403, "intern without leads:triage gets 403");
+    let queue = await api("GET", "/enquiry/triage", { token: holderToken });
+    ok(queue.status === 200, "triage holder can read the queue");
+    const qRow = (queue.data.list || []).find((r) => String(r._id) === String(leadT1._id));
+    ok(!!qRow && qRow.source === "whatsapp", "queue row carries source");
+    ok(qRow && qRow.transcript.length >= 1 && qRow.transcript[0].message.includes("decor"), "Kiara transcript preview attached");
+    ok(qRow && qRow.goldenWindow && typeof qRow.goldenWindow.inWindow === "boolean", "freshness vs golden window attached");
+    const viewTriage = await api("GET", "/enquiry?view=triage&limit=50", { token: holderToken });
+    ok(
+      (viewTriage.data.list || []).some((l) => String(l._id) === String(leadT1._id)),
+      "leads filter view=triage shows the queue"
+    );
+    const pickerResp = await api("GET", "/enquiry/triage/interns", { token: holderToken });
+    const pickerIntern = (pickerResp.data.list || []).find((i) => String(i._id) === String(intern._id));
+    ok(!!pickerIntern && typeof pickerIntern.status === "string", "intern picker shows live status");
+
+    section("S4: assign + take-it-myself");
+    const assignResp = await api("POST", `/enquiry/${leadT1._id}/triage-assign`, {
+      token: holderToken,
+      body: { adminId: String(intern._id) },
+    });
+    ok(assignResp.status === 200 && String(assignResp.data.assignedTo) === String(intern._id), "assign to intern works");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: leadT1._id, type: "triage_assigned" }).lean()),
+      "journey event triage_assigned"
+    );
+    ok(
+      !!(await AdminNotification.findOne({ adminId: intern._id, type: "triage_assigned" }).lean()),
+      "assignee notified"
+    );
+    const pT2 = phone(202);
+    await signedWebhook(inboundText(pT2, "Venue enquiry", "Triage Two"));
+    const convT2 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pT2 }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "triage lead 2 linked");
+    const takeResp = await api("POST", `/enquiry/${convT2.enquiryId}/triage-assign`, { token: holderToken });
+    ok(String(takeResp.data.assignedTo) === String(holder._id), "take-it-myself assigns to the caller");
+    const selfEv = await LeadInternalEvent.findOne({ leadId: convT2.enquiryId, type: "triage_assigned" }).lean();
+    ok(selfEv && selfEv.payload.self === true, "self-assign flagged in the journey");
+
+    section("S4: escalation — notify holders after N minutes");
+    // Holder is checked in and online — an available human, so NO auto-assign.
+    await api("POST", "/attendance/check-in", { token: holderToken });
+    const pT3 = phone(203);
+    await signedWebhook(inboundText(pT3, "Catering query", "Triage Three"));
+    const convT3 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pT3 }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "triage lead 3 linked");
+    // Mock the clock: rewind triageEnteredAt past the 10-min default.
+    await Enquiry.updateOne(
+      { _id: convT3.enquiryId },
+      { $set: { triageEnteredAt: new Date(Date.now() - 11 * 60 * 1000) } }
+    );
+    queue = await api("GET", "/enquiry/triage", { token: holderToken }); // sweep rides the read
+    const t3 = await Enquiry.findById(convT3.enquiryId).lean();
+    ok(!!t3.triageEscalatedAt, "lead escalated after escalateAfterMinutes");
+    ok(t3.triagePending === true && t3.assignedTo === null, "holders available → NOT auto-assigned");
+    ok(
+      !!(await AdminNotification.findOne({ adminId: holder._id, type: "triage_escalation", leadId: t3._id }).lean()),
+      "all triage holders notified"
+    );
+    const secondSweep = await api("GET", "/enquiry/triage", { token: holderToken });
+    const escalations = await AdminNotification.countDocuments({ adminId: holder._id, type: "triage_escalation", leadId: t3._id });
+    ok(secondSweep.status === 200 && escalations === 1, "escalation fires once per lead");
+
+    section("S4: all holders in_meeting → auto-assign to online intern");
+    // Holder goes into a live meeting; intern is checked in + online.
+    const holderMeeting = await api("POST", "/calendar/events", {
+      token: holderToken,
+      body: {
+        type: "meeting",
+        title: "MB56 holder busy",
+        start: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
+        end: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      },
+    });
+    ok(holderMeeting.status === 201, "holder meeting live (fixture)");
+    await api("POST", "/attendance/check-in", { token: internToken });
+    const pT4 = phone(204);
+    await signedWebhook(inboundText(pT4, "Photography packages?", "Triage Four"));
+    const convT4 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pT4 }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "triage lead 4 linked");
+    await Enquiry.updateOne(
+      { _id: convT4.enquiryId },
+      { $set: { triageEnteredAt: new Date(Date.now() - 11 * 60 * 1000) } }
+    );
+    await api("GET", "/enquiry/dashboard", { token: founderToken }); // sweep also rides the dashboard
+    const t4 = await Enquiry.findById(convT4.enquiryId).lean();
+    ok(String(t4.assignedTo) === String(intern._id) && t4.triagePending === false, "auto-assigned to the online intern");
+    const autoEv = await LeadInternalEvent.findOne({ leadId: t4._id, type: "triage_auto_assigned" }).lean();
+    ok(autoEv && autoEv.payload.reason === "auto-assigned: triage was in meetings", "journey carries the reason");
+    ok(
+      !!(await AdminNotification.findOne({ adminId: revenueHead._id, type: "triage_auto_assigned", leadId: t4._id }).lean()),
+      "Revenue Head notified"
+    );
+    ok(
+      !!(await AdminNotification.findOne({ adminId: salesLead._id, type: "triage_auto_assigned", leadId: t4._id }).lean()),
+      "intern's sales lead notified with the reason"
+    );
+    ok(
+      !!(await AdminNotification.findOne({ adminId: intern._id, type: "triage_auto_assigned", leadId: t4._id }).lean()),
+      "intern notified"
+    );
+
+    section("S4: working-hours gate");
+    // Move "working hours" away from now → sweep must not escalate.
+    const istHourNow = new Date(Date.now() + 330 * 60 * 1000).getUTCHours();
+    const offStart = istHourNow >= 22 ? 0 : istHourNow + 1;
+    const offEnd = istHourNow >= 22 ? 1 : istHourNow + 2;
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workStartHour", value: offStart } });
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workEndHour", value: offEnd } });
+    const pT5 = phone(205);
+    await signedWebhook(inboundText(pT5, "Mehendi artists?", "Triage Five"));
+    const convT5 = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pT5 }).lean();
+      return c && c.enquiryId ? c : null;
+    }, "triage lead 5 linked");
+    await Enquiry.updateOne(
+      { _id: convT5.enquiryId },
+      { $set: { triageEnteredAt: new Date(Date.now() - 11 * 60 * 1000) } }
+    );
+    await api("GET", "/enquiry/triage", { token: holderToken });
+    const t5 = await Enquiry.findById(convT5.enquiryId).lean();
+    ok(!t5.triageEscalatedAt, "outside working hours → no escalation (morning pile)");
+    // Restore working hours + close the holder's meeting + flip back to auto.
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workStartHour", value: 0 } });
+    await api("PUT", "/settings", { token: founderToken, body: { key: "golden.workEndHour", value: 24 } });
+    await api("POST", `/calendar/events/${holderMeeting.data._id}/close`, { token: holderToken, body: { notes: "done" } });
+    await api("POST", "/attendance/check-out", { token: internToken });
+    await api("POST", "/attendance/check-out", { token: holderToken });
+    const backToAuto = await api("PUT", "/settings", {
+      token: founderToken,
+      body: { key: "assignment.mode", value: "auto" },
+    });
+    ok(backToAuto.status === 200, "assignment.mode back to auto (zero-change default)");
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
@@ -501,12 +707,15 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     await QualifiedLead.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
     await NotificationFailureLog.deleteMany({ phone: { $regex: `^${PHONE_PREFIX}` } });
     await Attendance.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
+    const allAdminIds = [founder._id, salesLead._id, intern._id, holder._id, revenueHead._id];
     const CalendarEventModel = require("../models/CalendarEvent");
     const AdminNotificationModel = require("../models/AdminNotification");
-    await CalendarEventModel.deleteMany({ ownerId: { $in: [founder._id, salesLead._id, intern._id] } });
-    await AdminNotificationModel.deleteMany({ adminId: { $in: [founder._id, salesLead._id, intern._id] } });
-    await Admin.deleteMany({ _id: { $in: [founder._id, salesLead._id, intern._id] } });
-    await Role.deleteMany({ _id: { $in: [founderRole._id, salesLeadRole._id, internRole._id] } });
+    await CalendarEventModel.deleteMany({ ownerId: { $in: allAdminIds } });
+    await AdminNotificationModel.deleteMany({ adminId: { $in: allAdminIds } });
+    await Attendance.deleteMany({ adminId: { $in: allAdminIds } });
+    await Admin.deleteMany({ _id: { $in: allAdminIds } });
+    await Role.deleteMany({ _id: { $in: [founderRole._id, salesLeadRole._id, internRole._id, holderRole._id] } });
+    if (rhRoleCreated) await Role.deleteMany({ _id: rhRole._id });
     await Department.deleteMany({ _id: dept._id });
     await Setting.deleteMany({ key: { $in: touchedKeys } });
     if (settingsBefore.length) await Setting.insertMany(settingsBefore.map(({ _id, ...rest }) => rest));
