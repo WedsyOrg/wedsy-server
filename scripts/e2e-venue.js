@@ -502,6 +502,83 @@ async function run() {
     check("onboarding: null body -> not 500", onbNull.status !== 500, `status ${onbNull.status}`);
   }
 
+  // ================= Phase 3.5: contracts (generate / edit / send / public ack / pdf) =================
+  if (process.env.E2E_CONTRACTS === "1") {
+    // Seed structured policies so generation has known content.
+    await api("PUT", `/venues/${SLUG}`, { token, body: { policyDoc: { policies: ["No outside DJ after 11pm"], terms: ["50% advance to confirm"], refund: ["No refund within 7 days"] } } });
+    const couplePhone = `95${Date.now() % 1e8}`;
+    const bk = await api("POST", `/venues/${SLUG}/bookings`, {
+      token,
+      body: { coupleName: "Contract Couple", couplePhone, totalValue: 400000, days: [{ date: new Date(Date.now() + 30 * 86400000).toISOString(), eventType: "Wedding", guestCount: 250 }], paymentSchedule: [{ label: "Advance", amount: 100000 }] },
+    });
+    const bkId = bk.json.booking._id;
+
+    // generate v1 — seeded from policyDoc + frozen specifics
+    const g1 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const c1 = g1.json.contract;
+    check("contracts: generate v1 seeds from policyDoc",
+      g1.status === 201 && c1.version === 1 && c1.sections.length === 3
+        && c1.sections[0].clauses[0] === "No outside DJ after 11pm"
+        && c1.parties.coupleName === "Contract Couple"
+        && c1.specifics.totalValue === 400000,
+      `status ${g1.status} sections=${c1 && c1.sections.length}`);
+
+    // edit while draft
+    const ed = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [{ heading: "Venue Policies", clauses: ["No outside DJ after 11pm", "Decor by approved vendors only"] }] } });
+    check("contracts: edit draft sections -> 200", ed.status === 200 && ed.json.contract.sections[0].clauses.length === 2, `status ${ed.status}`);
+    const edBad = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [{ heading: "   ", clauses: ["x"] }] } });
+    check("contracts: blank section heading -> 400", edBad.status === 400, `status ${edBad.status}`);
+
+    // send -> public ack link
+    const sent = await api("POST", `/venues/${SLUG}/contracts/${c1._id}/send`, { token });
+    check("contracts: send -> sent + ack token", sent.status === 200 && sent.json.contract.status === "sent" && sent.json.contract.sentAt && sent.json.ackToken, `status ${sent.status}`);
+    const ackToken = sent.json.ackToken;
+
+    // public read (no auth) — phone masked
+    const pub = await api("GET", `/venues/contract-ack/${ackToken}`, {});
+    check("contracts: public ack GET shows contract, masks phone",
+      pub.status === 200 && pub.json.contract.sections.length === 1 && /•/.test(pub.json.contract.parties.couplePhone),
+      `status ${pub.status} phone=${pub.json.contract && pub.json.contract.parties.couplePhone}`);
+
+    // garbage + tampered tokens rejected
+    const badTok = await api("GET", `/venues/contract-ack/not-a-token`, {});
+    check("contracts: garbage token -> 401", badTok.status === 401, `status ${badTok.status}`);
+    const tampered = await api("POST", `/venues/contract-ack/${ackToken.slice(0, -2)}xx`, { body: { name: "X", phone: couplePhone } });
+    check("contracts: tampered token -> 401", tampered.status === 401, `status ${tampered.status}`);
+
+    // wrong phone -> 403; hostile name -> 400
+    const wrong = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Impostor", phone: "9000000000" } });
+    check("contracts: wrong phone -> 403", wrong.status === 403, `status ${wrong.status}`);
+    const blankName = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "   ", phone: couplePhone } });
+    check("contracts: blank name -> 400", blankName.status === 400, `status ${blankName.status}`);
+
+    // right phone -> acknowledged + stamps
+    const ack = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Contract Couple", phone: couplePhone } });
+    check("contracts: matching phone -> acknowledged", ack.status === 200 && ack.json.acknowledgedAt, `status ${ack.status}`);
+    const ackAgain = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Again", phone: couplePhone } });
+    check("contracts: double-acknowledge -> 409", ackAgain.status === 409, `status ${ackAgain.status}`);
+
+    // pdf bytes
+    const pdf = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
+    check("contracts: PDF returns bytes", pdf.status === 200 && pdf.head.startsWith("%PDF") && pdf.bytes > 800, `bytes=${pdf.bytes}`);
+
+    // new version supersedes (voids) prior non-acknowledged; acknowledged stays
+    const g2 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    check("contracts: v2 generated", g2.status === 201 && g2.json.contract.version === 2, `v=${g2.json.contract && g2.json.contract.version}`);
+    const both = await api("GET", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const v1After = both.json.contracts.find((c) => c.version === 1);
+    check("contracts: acknowledged v1 NOT voided by v2", v1After && v1After.status === "acknowledged", `v1=${v1After && v1After.status}`);
+    const g3 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const all3 = await api("GET", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
+    const v2After = all3.json.contracts.find((c) => c.version === 2);
+    check("contracts: draft v2 voided by v3 (supersede)", g3.status === 201 && v2After && v2After.status === "void", `v2=${v2After && v2After.status}`);
+
+    // draft-only editing: v1 (acknowledged) cannot be edited
+    const edAck = await api("PATCH", `/venues/${SLUG}/contracts/${c1._id}`, { token, body: { sections: [] } });
+    check("contracts: editing acknowledged contract -> 409", edAck.status === 409, `status ${edAck.status}`);
+  }
+
+
   // ================= Public-route rate limiting (callback + generate-location) =================
   // Run on a freshly-started server (publicReadLimiter counters reset on restart).
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
@@ -517,6 +594,134 @@ async function run() {
     // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
     const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
     check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
+  }
+
+  // ================= Phase 5 (PMS): rooms, allotments, runsheet, occupancy =================
+  if (process.env.E2E_PMS === "1") {
+    const day = (offset) => {
+      const t = Date.now() + offset * 86400000;
+      const d = new Date(t);
+      return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+    };
+    const iso = (d) => d.toISOString();
+
+    // ── rooms CRUD + hostile input ──
+    const r1 = await api("POST", `/venues/${SLUG}/rooms`, { token, body: { name: "PMS Suite 1", type: "suite", capacity: 2 } });
+    check("pms: add room -> 201", r1.status === 201 && r1.json.room && r1.json.room.name === "PMS Suite 1", `status ${r1.status}`);
+    const roomA = r1.json.room && r1.json.room._id;
+    const r2 = await api("POST", `/venues/${SLUG}/rooms`, { token, body: { name: "PMS Std 2", type: "standard", capacity: 3 } });
+    const roomB = r2.json.room && r2.json.room._id;
+    const rBadType = await api("POST", `/venues/${SLUG}/rooms`, { token, body: { name: "X", type: "penthouse" } });
+    check("pms: bad room type -> 400", rBadType.status === 400, `status ${rBadType.status}`);
+    const rBlank = await api("POST", `/venues/${SLUG}/rooms`, { token, body: { name: "   " } });
+    check("pms: blank room name -> 400", rBlank.status === 400, `status ${rBlank.status}`);
+    const rPatch = await api("PATCH", `/venues/${SLUG}/rooms/${roomA}`, { token, body: { capacity: 4, notes: "lake view" } });
+    check("pms: patch room -> 200 persists", rPatch.status === 200 && rPatch.json.room.capacity === 4, `status ${rPatch.status}`);
+
+    // ── booking with two days -> auto-seeded runsheet skeleton per day ──
+    const bk = await api("POST", `/venues/${SLUG}/bookings`, {
+      token,
+      body: { coupleName: "PMS Couple", couplePhone: `96${Date.now() % 1e8}`, totalValue: 300000, days: [{ date: iso(day(7)), eventType: "Wedding", guestCount: 200 }, { date: iso(day(8)), eventType: "Reception", guestCount: 350 }] },
+    });
+    check("pms: booking with 2 days -> 201", bk.status === 201 && bk.json.booking, `status ${bk.status}`);
+    const bkId = bk.json.booking._id;
+    const rs0 = await api("GET", `/venues/${SLUG}/bookings/${bkId}/runsheet`, { token });
+    check("pms: auto-seeded runsheet = 3 items × 2 days", rs0.status === 200 && rs0.json.items.length === 6 && rs0.json.items.every((i) => i.seeded), `n=${rs0.json.items && rs0.json.items.length}`);
+
+    // ── allotment lifecycle ──
+    const al1 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/allotments`, {
+      token,
+      body: { room: roomA, guestName: "Groom's family", checkInAt: iso(day(7)), checkOutAt: iso(day(9)) },
+    });
+    check("pms: allot room -> 201", al1.status === 201 && al1.json.allotments.length === 1, `status ${al1.status}`);
+    const alId = al1.json.allotments[0] && al1.json.allotments[0]._id;
+
+    // overlap rejected (different booking range overlapping night 8)
+    const alOverlap = await api("POST", `/venues/${SLUG}/bookings/${bkId}/allotments`, {
+      token,
+      body: { room: roomA, guestName: "Clash", checkInAt: iso(day(8)), checkOutAt: iso(day(10)) },
+    });
+    check("pms: overlapping allotment -> 409", alOverlap.status === 409, `status ${alOverlap.status}`);
+
+    // CONCURRENCY: 5 simultaneous identical requests on roomB -> exactly one wins
+    const burst = await Promise.all(
+      Array.from({ length: 5 }, (_, i) =>
+        api("POST", `/venues/${SLUG}/bookings/${bkId}/allotments`, {
+          token,
+          body: { room: roomB, guestName: `Racer ${i}`, checkInAt: iso(day(7)), checkOutAt: iso(day(8)) },
+        })
+      )
+    );
+    const winners = burst.filter((r) => r.status === 201).length;
+    const losers = burst.filter((r) => r.status === 409).length;
+    check("pms: 5 concurrent same-room allotments -> exactly 1 wins, 4 conflict", winners === 1 && losers === 4, `winners=${winners} losers=${losers}`);
+
+    // check-in stamps actualCheckInAt
+    const ci = await api("PATCH", `/venues/${SLUG}/allotments/${alId}`, { token, body: { action: "check_in" } });
+    check("pms: check-in stamps actualCheckInAt", ci.status === 200 && ci.json.allotment.status === "checked_in" && ci.json.allotment.actualCheckInAt, `status ${ci.status}`);
+    const ciAgain = await api("PATCH", `/venues/${SLUG}/allotments/${alId}`, { token, body: { action: "check_in" } });
+    check("pms: double check-in -> 409", ciAgain.status === 409, `status ${ciAgain.status}`);
+    const co = await api("PATCH", `/venues/${SLUG}/allotments/${alId}`, { token, body: { action: "check_out" } });
+    check("pms: check-out stamps actualCheckOutAt", co.status === 200 && co.json.allotment.status === "checked_out" && co.json.allotment.actualCheckOutAt, `status ${co.status}`);
+
+    // cancel frees the range: cancel the roomB winner, re-allot same range OK
+    const winnerId = burst.find((r) => r.status === 201).json.allotments[0]._id;
+    const cancel = await api("PATCH", `/venues/${SLUG}/allotments/${winnerId}`, { token, body: { action: "cancel" } });
+    check("pms: cancel allotment -> 200", cancel.status === 200 && cancel.json.allotment.status === "cancelled", `status ${cancel.status}`);
+    const realot = await api("POST", `/venues/${SLUG}/bookings/${bkId}/allotments`, {
+      token,
+      body: { room: roomB, guestName: "After cancel", checkInAt: iso(day(7)), checkOutAt: iso(day(8)) },
+    });
+    check("pms: cancelled range can be re-allotted", realot.status === 201, `status ${realot.status}`);
+
+    // hostile allotment input
+    const alBad = await api("POST", `/venues/${SLUG}/bookings/${bkId}/allotments`, { token, body: { room: roomA, guestName: "X", checkInAt: "not-a-date", checkOutAt: iso(day(9)) } });
+    check("pms: invalid checkInAt -> 400", alBad.status === 400, `status ${alBad.status}`);
+    const alRev = await api("POST", `/venues/${SLUG}/bookings/${bkId}/allotments`, { token, body: { room: roomA, guestName: "X", checkInAt: iso(day(9)), checkOutAt: iso(day(7)) } });
+    check("pms: checkOut before checkIn -> 400", alRev.status === 400, `status ${alRev.status}`);
+
+    // ── runsheet CRUD + reorder + vendor wa.me field ──
+    const it1 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/runsheet`, {
+      token,
+      body: { day: iso(day(7)), time: "14:30", title: "Florist arrival", category: "vendor", vendorPhone: "9876501234", owner: "Asiya" },
+    });
+    check("pms: add vendor runsheet item -> 201", it1.status === 201 && it1.json.item.vendorPhone === "9876501234", `status ${it1.status}`);
+    const itemId = it1.json.item._id;
+    const itBadTime = await api("POST", `/venues/${SLUG}/bookings/${bkId}/runsheet`, { token, body: { day: iso(day(7)), time: "25:99", title: "X" } });
+    check("pms: invalid time -> 400", itBadTime.status === 400, `status ${itBadTime.status}`);
+    const itDone = await api("PATCH", `/venues/${SLUG}/runsheet/${itemId}`, { token, body: { status: "done" } });
+    check("pms: runsheet check-off -> done", itDone.status === 200 && itDone.json.item.status === "done", `status ${itDone.status}`);
+
+    const rsDay = await api("GET", `/venues/${SLUG}/bookings/${bkId}/runsheet?day=${iso(day(7))}`, { token });
+    const dayIds = rsDay.json.items.map((i) => i._id);
+    const reordered = await api("POST", `/venues/${SLUG}/bookings/${bkId}/runsheet/reorder`, { token, body: { day: iso(day(7)), ids: [...dayIds].reverse() } });
+    check("pms: reorder persists (first becomes last)", reordered.status === 200 && String(reordered.json.items[0]._id) === String(dayIds[dayIds.length - 1]), `status ${reordered.status}`);
+    const del = await api("DELETE", `/venues/${SLUG}/runsheet/${itemId}`, { token });
+    check("pms: delete runsheet item -> 200", del.status === 200 && del.json.deleted, `status ${del.status}`);
+
+    // ── occupancy matrix vs what we just created ──
+    const occ = await api("GET", `/venues/${SLUG}/occupancy?from=${iso(day(6))}&to=${iso(day(10))}`, { token });
+    const occOk = occ.status === 200 && Array.isArray(occ.json.days) && occ.json.days.length === 4 && Array.isArray(occ.json.rooms);
+    check("pms: occupancy shape (4 days, rooms[])", occOk, `status ${occ.status} days=${occ.json.days && occ.json.days.length}`);
+    if (occOk) {
+      const occA = occ.json.rooms.find((r) => String(r._id) === String(roomA));
+      const occB = occ.json.rooms.find((r) => String(r._id) === String(roomB));
+      check("pms: occupancy shows roomA stay (checked_out) + roomB re-allotment",
+        occA && occA.allotments.length >= 1 && occB && occB.allotments.some((a) => a.guestName === "After cancel"),
+        `A=${occA && occA.allotments.length} B=${occB && occB.allotments.length}`);
+      check("pms: cancelled allotment absent from occupancy", occB && !occB.allotments.some((a) => a.status === "cancelled"));
+    }
+    const occBad = await api("GET", `/venues/${SLUG}/occupancy?from=${iso(day(10))}&to=${iso(day(6))}`, { token });
+    check("pms: occupancy to<=from -> 400", occBad.status === 400, `status ${occBad.status}`);
+
+    // ── day added to existing booking -> new day auto-seeds ──
+    const addDay = await api("PATCH", `/venues/${SLUG}/bookings/${bkId}`, {
+      token,
+      body: { days: [{ date: iso(day(7)), eventType: "Wedding", guestCount: 200 }, { date: iso(day(8)), eventType: "Reception", guestCount: 350 }, { date: iso(day(9)), eventType: "Brunch", guestCount: 80 }] },
+    });
+    const rs2 = await api("GET", `/venues/${SLUG}/bookings/${bkId}/runsheet`, { token });
+    const day9Items = rs2.json.items.filter((i) => i.day && i.day.slice(0, 10) === iso(day(9)).slice(0, 10));
+    check("pms: new booking day auto-seeds skeleton", addDay.status === 200 && day9Items.length === 3, `day9=${day9Items.length}`);
   }
 
   finish();

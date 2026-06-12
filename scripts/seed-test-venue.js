@@ -23,6 +23,10 @@ try { VenueBooking = require("../models/VenueBooking"); } catch (_) {}
 try { VenueQuote = require("../models/VenueQuote"); } catch (_) {}
 try { VenueInvoice = require("../models/VenueInvoice"); } catch (_) {}
 try { VenueMessageTemplate = require("../models/VenueMessageTemplate"); } catch (_) {}
+let VenueRoomAllotment, VenueRoomNight, VenueRunsheetItem;
+try { VenueRoomAllotment = require("../models/VenueRoomAllotment"); } catch (_) {}
+try { VenueRoomNight = require("../models/VenueRoomNight"); } catch (_) {}
+try { VenueRunsheetItem = require("../models/VenueRunsheetItem"); } catch (_) {}
 try { VenueTeamMember = require("../models/VenueTeamMember"); } catch (_) {}
 try { ({ computeTotals } = require("../utils/venueMoney")); } catch (_) {}
 
@@ -117,6 +121,12 @@ async function run() {
     console.log(`[seed] created venue ${venue.slug} (${venue._id})`);
   } else {
     Object.assign(venue, venueDefaults);
+    // Fields that suites WRITE but the defaults above don't cover — clear them
+    // so a "reset" venue is actually deterministic across repeated runs
+    // (stale policyDoc/logo made the back-compat e2e checks order-dependent).
+    venue.policyDoc = undefined;
+    venue.logo = "";
+    venue.rooms = []; // Phase 5: rooms inventory is rebuilt by suites that need it
     await venue.save();
     console.log(`[seed] reset venue ${venue.slug} (${venue._id})`);
   }
@@ -148,6 +158,10 @@ async function run() {
   if (VenueBooking) await VenueBooking.deleteMany({ venue: venue._id });
   if (VenueQuote) await VenueQuote.deleteMany({ venue: venue._id });
   if (VenueInvoice) await VenueInvoice.deleteMany({ venue: venue._id });
+  // Phase 5 (PMS) collections — allotments/nights/runsheets are venue-scoped.
+  if (VenueRoomAllotment) await VenueRoomAllotment.deleteMany({ venue: venue._id });
+  if (VenueRoomNight) await VenueRoomNight.deleteMany({ venue: venue._id });
+  if (VenueRunsheetItem) await VenueRunsheetItem.deleteMany({ venue: venue._id });
 
   const enquiries = [];
   for (const spec of LEAD_SPECS) {
