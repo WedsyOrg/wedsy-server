@@ -256,6 +256,47 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
   fillQd("venueName", data.venueName);
   fillQd("weddingStyle", data.weddingStyle);
 
+  // MB6 Slice 6 (closes MB4 judgment-call #2): best-effort map Kiara's
+  // servicesRequired/budget answers onto the cockpit-v2 fields — fill-only-
+  // empty like everything above; the raw answers stay in kiaraAnswers.
+  if (data.servicesRequired && !(qd.servicesRequired || []).length) {
+    let available = [];
+    try {
+      available = await require("./SettingsService").get("services.available");
+    } catch (_) { /* master list is advisory for matching */ }
+    const rawParts = Array.isArray(data.servicesRequired)
+      ? data.servicesRequired
+      : String(data.servicesRequired).split(/[,/&+]|\band\b/i);
+    const matched = [
+      ...new Set(
+        rawParts
+          .map((s) => {
+            const t = String(s).trim().toLowerCase();
+            if (!t) return null;
+            const hit = (available || []).find(
+              (a) => t.includes(a.toLowerCase()) || a.toLowerCase().includes(t)
+            );
+            return hit || null;
+          })
+          .filter(Boolean)
+      ),
+    ];
+    if (matched.length) set["qualificationData.servicesRequired"] = matched;
+  }
+  if (data.budget && qd.budgetAmount == null && !qd.budgetNote) {
+    const raw = String(data.budget);
+    const digits = raw.replace(/[^\d.]/g, "");
+    let amount = digits ? parseFloat(digits) : null;
+    const lower = raw.toLowerCase();
+    if (amount != null && Number.isFinite(amount)) {
+      if (/(lakh|lac|\bl\b)/.test(lower)) amount *= 100000;
+      else if (/(crore|\bcr\b)/.test(lower)) amount *= 10000000;
+      else if (/\d\s*k\b/.test(lower)) amount *= 1000;
+      set["qualificationData.budgetAmount"] = amount;
+    }
+    set["qualificationData.budgetNote"] = raw.slice(0, 500);
+  }
+
   // Placeholder lead names ("WhatsApp 1234") upgrade to the real one.
   if (data.name && /^WhatsApp \d{4}$/.test(lead.name || "")) {
     set.name = String(data.name);

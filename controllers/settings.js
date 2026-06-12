@@ -64,6 +64,12 @@ const GetPublic = async (req, res) => {
       "golden.windowMinutes",
       "golden.workStartHour",
       "golden.workEndHour",
+      // MB6 Slice 6: the cockpit reads these without settings permissions.
+      "services.available",
+      "cockpit.briefScript",
+      "cockpit.servicesScript",
+      "cockpit.budgetScript",
+      "cockpit.qualificationIntro",
     ]);
     res.status(200).json(values);
   } catch (error) {

@@ -824,6 +824,120 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     );
     // Disarm for the remaining slices.
     await api("PUT", "/settings", { token: founderToken, body: { key: "kiara.welcomeTemplateName", value: "" } });
+
+    // ════ SLICE 6 — Cockpit v2 + scripts-in-settings ════
+    section("S6: public settings expose services + scripts");
+    const pub = await api("GET", "/settings/public", { token: internToken });
+    ok(
+      Array.isArray(pub.data["services.available"]) && pub.data["services.available"].includes("Mehendi") && pub.data["services.available"].length === 8,
+      "services.available seeded with the 8 services"
+    );
+    ok(
+      ["cockpit.briefScript", "cockpit.servicesScript", "cockpit.budgetScript", "cockpit.qualificationIntro"].every(
+        (k) => typeof pub.data[k] === "string" && pub.data[k].length > 50
+      ),
+      "all four cockpit scripts drafted + readable without settings perms"
+    );
+
+    section("S6: qualification v2 fields");
+    const leadQ = await Enquiry.create({
+      name: `${MARK} CockpitLead`,
+      phone: phone(401),
+      verified: false,
+      source: "Website",
+      additionalInfo: {},
+      stage: "new",
+      assignedTo: intern._id,
+    });
+    const qPut = await api("PUT", `/enquiry/${leadQ._id}/qualification`, {
+      token: internToken,
+      body: {
+        servicesRequired: ["Decor", "Photography", "Decor"],
+        budgetAmount: 1500000,
+        budgetNote: "15L ±, flexible for the right venue",
+        additionalEmails: ["partner@example.com", "PARTNER@example.com"],
+        groomName: "Arjun",
+      },
+    });
+    ok(qPut.status === 200, "qualification PUT accepts the v2 fields");
+    const leadQAfter = await Enquiry.findById(leadQ._id).lean();
+    ok(
+      JSON.stringify(leadQAfter.qualificationData.servicesRequired) === JSON.stringify(["Decor", "Photography"]),
+      "servicesRequired deduped + stored"
+    );
+    ok(leadQAfter.qualificationData.budgetAmount === 1500000 && leadQAfter.qualificationData.budgetNote.includes("15L"), "budget stored (number + note)");
+    ok(
+      JSON.stringify(leadQAfter.qualificationData.additionalEmails) === JSON.stringify(["partner@example.com"]),
+      "additionalEmails lowercased + deduped"
+    );
+    const qBad = await api("PUT", `/enquiry/${leadQ._id}/qualification`, {
+      token: internToken,
+      body: { additionalEmails: ["not-an-email"] },
+    });
+    ok(qBad.status === 400, "invalid additionalEmails rejected (400)");
+
+    section("S6: Kiara servicesRequired/budget map into cockpit fields");
+    mock.extractor = {
+      qualified: true,
+      escalate: false,
+      escalateReason: "",
+      classification: "lead",
+      data: {
+        name: "Kiara Mapped",
+        eventDate: "",
+        servicesRequired: "decor and photography, maybe mehendi",
+        budget: "around 12 lakhs",
+      },
+    };
+    const pK = phone(402);
+    await signedWebhook(inboundText(pK, "We need help with our wedding!", "Kiara Mapped"));
+    const kLead = await waitFor(async () => {
+      const c = await WAConversation.findOne({ phone: pK }).lean();
+      if (!c || !c.enquiryId) return null;
+      const l = await Enquiry.findById(c.enquiryId).lean();
+      return l && l.qualified && (l.qualificationData.servicesRequired || []).length ? l : null;
+    }, "kiara qualified sync", 40000);
+    const mappedServices = kLead.qualificationData.servicesRequired;
+    ok(
+      mappedServices.includes("Decor") && mappedServices.includes("Photography") && mappedServices.includes("Mehendi"),
+      `Kiara services mapped best-effort (${mappedServices.join(",")})`
+    );
+    ok(kLead.qualificationData.budgetAmount === 1200000, `Kiara budget parsed to 1200000 (got ${kLead.qualificationData.budgetAmount})`);
+    ok(kLead.qualificationData.budgetNote === "around 12 lakhs", "raw budget kept as the note");
+    mock.extractor = { qualified: false, escalate: false, escalateReason: "", classification: "lead", data: {} };
+
+    section("S6: meet-refuser");
+    const refuse = await api("POST", `/enquiry/${leadQ._id}/meet-refused`, { token: internToken });
+    ok(refuse.status === 200 && (refuse.data.tags || []).includes("no-meet"), "lead tagged no-meet");
+    ok(
+      !!(await LeadInternalEvent.findOne({ leadId: leadQ._id, type: "meet_refused" }).lean()),
+      "journey event meet_refused"
+    );
+    ok(
+      !!(await AdminNotification.findOne({ adminId: salesLead._id, type: "meet_refused", leadId: leadQ._id }).lean()),
+      "sales lead (reporting manager) escalated"
+    );
+    ok(
+      !!(await AdminNotification.findOne({ adminId: revenueHead._id, type: "meet_refused", leadId: leadQ._id }).lean()),
+      "Revenue Head notified"
+    );
+
+    section("S6: settings_scripts gating");
+    const scriptsDenied = await api("GET", "/settings?category=settings_scripts", { token: holderToken });
+    ok(scriptsDenied.status === 403, "settings_scripts denied without the permission");
+    const scriptsCat = await api("GET", "/settings?category=settings_scripts", { token: founderToken });
+    ok(
+      scriptsCat.status === 200 && Object.keys(scriptsCat.data.values || {}).length === 4,
+      "founder reads the scripts category (4 keys)"
+    );
+    const scriptPut = await api("PUT", "/settings", {
+      token: founderToken,
+      body: { key: "cockpit.briefScript", value: "Hi {{name}}, this is {{caller}} — quick test script." },
+    });
+    ok(scriptPut.status === 200, "script saves through the standard settings PUT");
+    const pub2 = await api("GET", "/settings/public", { token: internToken });
+    ok(String(pub2.data["cockpit.briefScript"]).includes("quick test script"), "cockpit renders the edited script via settings");
+    await Setting.deleteMany({ key: "cockpit.briefScript" }); // restore default
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);

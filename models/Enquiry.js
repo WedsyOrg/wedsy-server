@@ -128,6 +128,13 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
+      // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
+      // Multi-select from the services.available master list.
+      servicesRequired: { type: [String], default: [] },
+      budgetAmount: { type: Number, default: null },
+      budgetNote: { type: String, default: "" },
+      // Partner/fiancé emails — Slice 8's calendar invites include these.
+      additionalEmails: { type: [String], default: [] },
     },
     // Outcome of the cockpit's complete-call action. gaps holds the missing items
     // acknowledged on an incomplete save (flagged on the lead, per the approved design).

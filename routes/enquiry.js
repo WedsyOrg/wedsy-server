@@ -105,6 +105,13 @@ router.put(
   requirePermission("leads:edit:own"),
   cockpit.UpdateQualification
 );
+// MB6 Slice 6: the lead refuses a meeting — tag, escalate, notify.
+router.post(
+  "/:_id/meet-refused",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.MeetRefused
+);
 router.post(
   "/:_id/call-complete",
   CheckAdminLogin,

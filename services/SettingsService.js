@@ -45,6 +45,39 @@ const DEFAULTS = {
   // MB5 Slice 5: the safety net's approved welcome template. '' = the whole
   // safety net is DORMANT (ships off; founder arms it in Settings → Kiara).
   "kiara.welcomeTemplateName": "",
+  // MB6 Slice 6: the services master list (qualification multi-select chips).
+  "services.available": [
+    "Venue",
+    "Decor",
+    "Catering",
+    "Photography",
+    "Makeup",
+    "Mehendi",
+    "Logistics",
+    "Entertainment",
+  ],
+  // MB6 Slice 6: cockpit call scripts — founder-editable in Settings (the
+  // settings_scripts category). Draft v1 texts; the cockpit renders these live.
+  "cockpit.briefScript":
+    "Hi {{name}}! This is {{caller}} from Wedsy — first of all, congratulations on the wedding! 🎉 " +
+    "I saw your enquiry come in and wanted to call right away. A quick line about us: we're a Bengaluru " +
+    "wedding company that takes care of everything under one roof — planning, decor, catering, photography, " +
+    "makeup, mehendi, and all the running-around on the day itself. But before I talk shop — tell me about " +
+    "you two! When's the big day, and how far along are the preparations?",
+  "cockpit.servicesScript":
+    "Lovely — so here's how we usually help. Some couples hand us the entire wedding, others just the pieces " +
+    "they don't want to worry about: the venue hunt, decor, catering, photography, makeup, mehendi, " +
+    "entertainment, or simply the day-of logistics so the family actually gets to enjoy the wedding. " +
+    "Which parts are still open for you? I'll note them down so the right team preps before we meet.",
+  "cockpit.budgetScript":
+    "And just so I point you to the right options — do you have a rough budget in mind? Even a ballpark " +
+    "for the pieces you want us to handle helps us tailor things properly. And honestly, if you'd rather " +
+    "not put a number on it yet, that's completely fine — most couples figure it out with us as we go.",
+  "cockpit.qualificationIntro":
+    "Before I let you go — let me make sure I have everything so the team can hit the ground running: " +
+    "both your names, the date or month you're aiming for, whether the venue is sorted, and the best email " +
+    "to send our ideas to (yours and your partner's, if you like — that way nobody misses anything). " +
+    "Two quick minutes, promise!",
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -74,6 +107,13 @@ const KEY_CATEGORY = {
   "kiara.systemPrompt": "settings_kiara",
   "kiara.reengageTemplateName": "settings_kiara",
   "kiara.welcomeTemplateName": "settings_kiara",
+  // Services master list rides the templates/tag-library category.
+  "services.available": "settings_templates",
+  // Cockpit scripts — their own resource (seed-granted; founder wildcard covers).
+  "cockpit.briefScript": "settings_scripts",
+  "cockpit.servicesScript": "settings_scripts",
+  "cockpit.budgetScript": "settings_scripts",
+  "cockpit.qualificationIntro": "settings_scripts",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -90,8 +130,17 @@ const validateValue = (key, value) => {
     case "lost.reasons":
     case "recycle.reasons":
     case "tags.available":
+    case "services.available":
       if (!isStringArray(value)) throw err(400, `${key} must be a non-empty array of non-empty strings`);
       return value.map((s) => s.trim());
+    case "cockpit.briefScript":
+    case "cockpit.servicesScript":
+    case "cockpit.budgetScript":
+    case "cockpit.qualificationIntro":
+      if (typeof value !== "string" || value.length > 5000) {
+        throw err(400, `${key} must be a string of at most 5000 chars`);
+      }
+      return value;
     case "assignment.dailyCap":
       if (!isIntInRange(value, 1, 100)) throw err(400, "assignment.dailyCap must be an integer 1–100");
       return value;
