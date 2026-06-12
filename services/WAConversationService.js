@@ -67,16 +67,17 @@ const ensureLeadLinked = async (conversation, { profileName, firstMessage } = {}
   } else {
     const name = (profileName || "").trim() || `WhatsApp ${String(conversation.phone).slice(-4)}`;
     try {
-      const created = await new Enquiry({
+      // Bug A fix (MB5 Slice 1): the shared intake create path — pins stage
+      // and the create-path defaults so the lead is indistinguishable from a
+      // manual create (round-robin auto-assign included).
+      const created = await LeadIntakeService.createLead({
         name,
         phone: conversation.phone,
         verified: false,
         source: "whatsapp",
         additionalInfo: {},
-      }).save();
+      });
       enquiryId = created._id;
-      // Round-robin auto-assign (never throws).
-      await LeadIntakeService.afterCreate(created._id);
     } catch (e) {
       // Unique-phone race (duplicate webhook delivery): fall back to the winner.
       const winner = await LeadIntakeService.findExistingByNormalizedPhone(conversation.phone);

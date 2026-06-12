@@ -100,9 +100,31 @@ const afterCreate = async (enquiryId) => {
   }
 };
 
+// The ONE create path for hook/intake-created leads (WhatsApp, Instagram, …).
+// Mirrors the CreateNew controller's create branch and PINS the board/list-
+// critical fields explicitly (stage and the boolean flags), so an intake-created
+// lead can never be shaped differently from a manually created one — the board
+// renders only configured stage columns, so a lead with a missing/unknown stage
+// silently disappears from it.
+const createLead = async ({ name, phone, verified = false, source, additionalInfo = {} }) => {
+  const created = await new Enquiry({
+    name,
+    phone,
+    verified,
+    source,
+    additionalInfo,
+    stage: "new",
+    isInterested: false,
+    isLost: false,
+  }).save();
+  await afterCreate(created._id);
+  return created;
+};
+
 module.exports = {
   normalizePhone,
   findExistingByNormalizedPhone,
   recordReEnquiry,
   afterCreate,
+  createLead,
 };
