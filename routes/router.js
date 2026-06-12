@@ -81,5 +81,6 @@ router.use("/places", require("./places"));
 router.use("/venue-owner", require("./venueOwner"));
 router.use("/conversations", require("./conversation"));
 router.use("/wa", require("./waConversation")); // Kiara admin chat API
+router.use("/attendance", require("./attendance")); // HRMS brick #1 (MB5 Slice 2)
 
 module.exports = router;
