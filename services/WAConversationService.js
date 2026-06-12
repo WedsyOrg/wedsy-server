@@ -192,8 +192,19 @@ const getMessages = async (conversationId, { page = 1, limit = 50 } = {}, scopeF
   if (conversation.unreadCount > 0) {
     await WAConversationRepository.updateFieldsById(conversation._id, { unreadCount: 0 });
   }
+  // Whether the re-engage template is configured (the UI disables its send
+  // button with an explanatory tooltip when it isn't).
+  let reengageTemplateSet = false;
+  try {
+    reengageTemplateSet = !!(await SettingsService.get("kiara.reengageTemplateName"));
+  } catch (_) { /* settings read is advisory here */ }
   return {
-    conversation: { ...conversation.toObject(), ...windowInfo(conversation), unreadCount: 0 },
+    conversation: {
+      ...conversation.toObject(),
+      ...windowInfo(conversation),
+      unreadCount: 0,
+      reengageTemplateSet,
+    },
     messages: docs.reverse(),
     total,
     page: pageNum,
