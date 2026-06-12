@@ -16,8 +16,10 @@ const LeadIntakeService = require('./LeadIntakeService');
 const LeadInternalEventService = require('./LeadInternalEventService');
 const WAConversationRepository = require('../repositories/WAConversationRepository');
 
-// Mock seam (same idiom as the WhatsApp agent).
-const ANTHROPIC_API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
+// MB6 Slice 11: every Anthropic call rides the shared in-process queue
+// (serialized, exponential backoff on 429) — shared with the WhatsApp agent.
+// The queue owns the ANTHROPIC_API_URL test seam.
+const { callAnthropic } = require('../utils/anthropicQueue');
 
 // CRASH FIX (mirrors MB4's WhatsApp fix): response.data.content[0].text threw
 // on empty content arrays and tool/thinking-first responses. Find the first
@@ -79,22 +81,12 @@ const sendToClaude = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 500,
-          system: SYSTEM_PROMPT,
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 500,
+        system: SYSTEM_PROMPT,
+        messages: history
+      });
       const text = firstTextBlock(response);
       if (text !== null) return text;
       throw new Error('No text block in Anthropic response');
@@ -121,28 +113,18 @@ const checkQualified = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 400,
-          // MB6 Slice 7: the WA extractor's routing contract (escalate +
-          // classification), keeping IG's phone-collection mission —
-          // qualification still requires the phone number.
-          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the user has provided their phone number AND the assistant has thanked them and said the team will connect within 24 hours. Extract whatever details were collected. ' +
-            'Also decide two routing signals. (1) "escalate": set true when the customer explicitly asks for a human, shows frustration or anger, pushes pricing/negotiation beyond rapport, or the conversation is stuck (3+ exchanges without progress) — and ALWAYS when qualified is true (use escalateReason "Qualified — ready for your call"). Give a short escalateReason whenever escalate is true. ' +
-            '(2) "classification": classify the contact as one of "lead" (a genuine wedding/engagement customer), "vendor" (a vendor/photographer/supplier pitching their services), "birthday" (a birthday inquiry), "corporate" (a corporate-event inquiry), or "destination" (a confirmed destination wedding outside Bengaluru). ' +
-            'Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "escalate": true/false, "escalateReason": "", "classification": "lead", "data": {"name": "", "phoneNumber": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 400,
+        // MB6 Slice 7: the WA extractor's routing contract (escalate +
+        // classification), keeping IG's phone-collection mission —
+        // qualification still requires the phone number.
+        system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the user has provided their phone number AND the assistant has thanked them and said the team will connect within 24 hours. Extract whatever details were collected. ' +
+          'Also decide two routing signals. (1) "escalate": set true when the customer explicitly asks for a human, shows frustration or anger, pushes pricing/negotiation beyond rapport, or the conversation is stuck (3+ exchanges without progress) — and ALWAYS when qualified is true (use escalateReason "Qualified — ready for your call"). Give a short escalateReason whenever escalate is true. ' +
+          '(2) "classification": classify the contact as one of "lead" (a genuine wedding/engagement customer), "vendor" (a vendor/photographer/supplier pitching their services), "birthday" (a birthday inquiry), "corporate" (a corporate-event inquiry), or "destination" (a confirmed destination wedding outside Bengaluru). ' +
+          'Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "escalate": true/false, "escalateReason": "", "classification": "lead", "data": {"name": "", "phoneNumber": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
+        messages: history
+      });
       const text = firstTextBlock(response);
       if (text === null) return { qualified: false };
       try {
@@ -362,6 +344,12 @@ const receiveMessage = async (instagramId, message) => {
     await WAConversationRepository.touchOutbound(conversation._id, reply.slice(0, 120));
     await sendInstagramDM(instagramId, reply);
     const updatedHistory = await WAAgentMessageRepository.getHistory(instagramId);
+
+    // MB6 Slice 11: same early-skip as WhatsApp — no qualification check
+    // until the customer has sent at least 3 messages.
+    const userMessages = updatedHistory.filter((m) => m.role === 'user').length;
+    if (userMessages < 3) return;
+
     const qualification = await checkQualified(updatedHistory);
 
     // Phone captured → CRM lead linkage (dedup or shared create path).

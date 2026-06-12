@@ -186,6 +186,35 @@ const signedIgWebhook = async (instagramId, text) => {
   return res.status;
 };
 
+// MB6 Slice 11: extraction is skipped under 3 user messages — qualification/
+// escalation flows prime with the decisive message first, then two fillers.
+const waSendThree = async (WAAgentMessage, p, decisiveText, profileName = "MB56 Customer") => {
+  const replies = async () => WAAgentMessage.countDocuments({ phone: p, role: "assistant" });
+  const base = await replies();
+  await signedWebhook(inboundText(p, decisiveText, profileName));
+  await waitForCount(replies, base + 1);
+  await signedWebhook(inboundText(p, "ok — anything else you need?", profileName));
+  await waitForCount(replies, base + 2);
+  await signedWebhook(inboundText(p, "that's everything from me!", profileName));
+};
+const igSendThree = async (WAAgentMessage, igId, decisiveText) => {
+  const replies = async () => WAAgentMessage.countDocuments({ phone: igId, role: "assistant" });
+  const base = await replies();
+  await signedIgWebhook(igId, decisiveText);
+  await waitForCount(replies, base + 1);
+  await signedIgWebhook(igId, "ok — anything else you need?");
+  await waitForCount(replies, base + 2);
+  await signedIgWebhook(igId, "that's everything from me!");
+};
+const waitForCount = async (fn, n, timeoutMs = 20000) => {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until) {
+    if ((await fn()) >= n) return;
+    await sleep(250);
+  }
+  throw new Error(`waitForCount timed out (wanted ${n})`);
+};
+
 const inboundText = (phone, text, profileName = "MB56 Customer") => ({
   entry: [
     {
@@ -988,7 +1017,7 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
       },
     };
     const pK = phone(402);
-    await signedWebhook(inboundText(pK, "We need help with our wedding!", "Kiara Mapped"));
+    await waSendThree(WAAgentMessage, pK, "We need help with our wedding!", "Kiara Mapped");
     const kLead = await waitFor(async () => {
       const c = await WAConversation.findOne({ phone: pK }).lean();
       if (!c || !c.enquiryId) return null;
@@ -1075,7 +1104,7 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     section("S7: IG escalation contract");
     const IG2 = "MB56IG00000002";
     mock.extractor = { qualified: false, escalate: true, escalateReason: "Customer wants a human", classification: "lead", data: {} };
-    await signedIgWebhook(IG2, "I want to talk to a real person please");
+    await igSendThree(WAAgentMessage, IG2, "I want to talk to a real person please");
     const igConv2 = await waitFor(async () => {
       const c = await WAConversation.findOne({ phone: IG2 }).lean();
       return c && c.needsHuman ? c : null;
@@ -1099,7 +1128,7 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
         budget: "20 lakhs",
       },
     };
-    await signedIgWebhook(IG3, "Sure, my number is 9191000505");
+    await igSendThree(WAAgentMessage, IG3, "Sure, my number is 9191000505");
     const igConv3 = await waitFor(async () => {
       const c = await WAConversation.findOne({ phone: IG3 }).lean();
       return c && c.enquiryId ? c : null;
@@ -1528,6 +1557,49 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
     );
     const badPeriod = await api("GET", "/enquiry/intern-metrics?period=year", { token: founderToken });
     ok(badPeriod.status === 400, "invalid period rejected (400)");
+
+    // ════ SLICE 11 — Anthropic 429 mitigation ════
+    section("S11: <3-message qualification skip");
+    const extractorCalls = () =>
+      mock.anthropicCalls.filter((c) => String(c.system || "").startsWith("You are a data extractor")).length;
+    const pQ = phone(801);
+    const exBefore = extractorCalls();
+    await signedWebhook(inboundText(pQ, "Hi! First message", "Skip Test"));
+    await waitFor(async () => WAAgentMessage.findOne({ phone: pQ, role: "assistant" }).lean(), "skip reply 1");
+    await sleep(600);
+    ok(extractorCalls() === exBefore, "message 1: NO qualification-check call");
+    await signedWebhook(inboundText(pQ, "Second message", "Skip Test"));
+    await waitFor(
+      async () => (await WAAgentMessage.countDocuments({ phone: pQ, role: "assistant" })) >= 2,
+      "skip reply 2"
+    );
+    await sleep(600);
+    ok(extractorCalls() === exBefore, "message 2: still NO qualification-check call");
+    await signedWebhook(inboundText(pQ, "Third message", "Skip Test"));
+    await waitFor(
+      async () => (await WAAgentMessage.countDocuments({ phone: pQ, role: "assistant" })) >= 3,
+      "skip reply 3"
+    );
+    await waitFor(async () => extractorCalls() > exBefore, "extractor fires on message 3");
+    ok(extractorCalls() === exBefore + 1, "message 3: qualification check fires exactly once");
+
+    section("S11: 429 → exponential backoff, reply still lands");
+    const pR = phone(802);
+    mock.anthropic429s = 2; // the next two Anthropic calls 429
+    const t429 = Date.now();
+    await signedWebhook(inboundText(pR, "Hello despite rate limits!", "Backoff Test"));
+    await waitFor(
+      async () => WAAgentMessage.findOne({ phone: pR, role: "assistant" }).lean(),
+      "reply after backoff",
+      30000
+    );
+    const elapsed = Date.now() - t429;
+    ok(mock.anthropic429s === 0, "both 429s consumed by the queue");
+    ok(elapsed >= 2900, `exponential backoff respected (1s+2s — took ${elapsed}ms)`);
+    ok(
+      mock.metaCalls.some((m) => m.body.to === pR && m.body.type === "text"),
+      "customer still got Kiara's reply"
+    );
   } catch (e) {
     failed++;
     failures.push(`fatal: ${e.message}`);
