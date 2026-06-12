@@ -80,5 +80,6 @@ router.use("/venues", require("./venue"));
 router.use("/places", require("./places"));
 router.use("/venue-owner", require("./venueOwner"));
 router.use("/conversations", require("./conversation"));
+router.use("/wa", require("./waConversation")); // Kiara admin chat API
 
 module.exports = router;
