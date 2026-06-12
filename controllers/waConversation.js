@@ -17,9 +17,9 @@ const respond = (res, error) => {
 // GET /wa/conversations?mode=&needsHuman=&status=&page=&limit=
 const List = async (req, res) => {
   try {
-    const { mode, needsHuman, status, page, limit } = req.query;
+    const { mode, needsHuman, status, enquiryId, page, limit } = req.query;
     const result = await WAConversationService.listInbox(
-      { mode, needsHuman, status, page, limit },
+      { mode, needsHuman, status, enquiryId, page, limit },
       req.scopeFilter || {}
     );
     res.status(200).json(result);

@@ -23,6 +23,15 @@ const EVENT_TITLES = {
   transferred: "Transferred",
   tags_changed: "Tags changed",
   custom_fields_updated: "Custom fields updated",
+  // Kiara (WhatsApp AI agent) moments.
+  wa_conversation_started: "WhatsApp conversation started",
+  wa_escalated: "Kiara asked for a human",
+  wa_human_takeover: "Human took over the chat",
+  wa_handed_back: "Handed back to Kiara",
+  wa_qualified_by_kiara: "Qualified by Kiara ✦",
+  wa_classified: "Classified by Kiara",
+  wa_admin_message_sent: "WhatsApp message sent",
+  wa_template_sent: "Re-engage template sent",
 };
 
 // GET /enquiry/:_id/journey — every moment of a lead's life, one chronological

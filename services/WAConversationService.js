@@ -102,11 +102,12 @@ const ensureLeadLinked = async (conversation, { profileName, firstMessage } = {}
 // Conversations visible to the caller: scoped through the LINKED LEAD using the
 // same scope filter the lead routes build (ownerField assignedTo). Conversations
 // without a lead link surface only for all-scope callers.
-const listInbox = async ({ mode, needsHuman, status, page = 1, limit = 20 } = {}, scopeFilter = {}) => {
+const listInbox = async ({ mode, needsHuman, status, enquiryId, page = 1, limit = 20 } = {}, scopeFilter = {}) => {
   const filter = {};
   if (mode === "ai" || mode === "human") filter.mode = mode;
   if (needsHuman === "true" || needsHuman === true) filter.needsHuman = true;
   if (status === "active" || status === "closed") filter.status = status;
+  if (enquiryId && mongoose.Types.ObjectId.isValid(enquiryId)) filter.enquiryId = enquiryId;
 
   const unscoped = Object.keys(scopeFilter).length === 0;
   if (!unscoped) {
