@@ -606,23 +606,6 @@ async function run() {
   }
 
 
-  // ================= Public-route rate limiting (callback + generate-location) =================
-  // Run on a freshly-started server (publicReadLimiter counters reset on restart).
-  if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
-    // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
-    const burst = await Promise.all(Array.from({ length: 75 }, () =>
-      api("GET", `/venues/${SLUG}/integrations/google-sheets/callback`, {})));
-    const statuses = [...new Set(burst.map((r) => r.status))];
-    check("public-ratelimit: sheets callback burst -> 429 present", burst.some((r) => r.status === 429), `statuses ${statuses.join(",")}`);
-    // The per-IP bucket (shared across publicReadLimiter routes) is now exhausted,
-    // so generate-location-description 429s at the limiter — BEFORE invoking Anthropic.
-    const gen = await api("POST", `/venues/${SLUG}/generate-location-description`, {});
-    check("public-ratelimit: generate-location-description over-limit -> 429 (no Anthropic call)", gen.status === 429, `status ${gen.status}`);
-    // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
-    const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
-    check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
-  }
-
   // ================= Venue logo on quote/invoice PDFs =================
   if (process.env.E2E_PDF_LOGO === "1") {
     // Tiny solid-colour JPEG via sharp (already a dependency) — no fixtures.
@@ -895,6 +878,26 @@ async function run() {
     check("multiprop: seeded KPIs are non-zero (2 leads, 1 upcoming booking per venue)",
       rows.every((r) => r.newLeads7d === 2 && r.bookingsUpcoming === 1 && r.followUpsDue >= 1),
       JSON.stringify(rows.map((r) => ({ s: r.slug, l: r.newLeads7d, b: r.bookingsUpcoming, f: r.followUpsDue }))));
+  }
+
+  // The public-ratelimit drain MUST run last: it exhausts the shared per-IP
+  // publicReadLimiter bucket that other public routes (couple reviews, onboarding,
+  // availability) also use.
+  // ================= Public-route rate limiting (callback + generate-location) =================
+  // Run on a freshly-started server (publicReadLimiter counters reset on restart).
+  if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
+    // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
+    const burst = await Promise.all(Array.from({ length: 75 }, () =>
+      api("GET", `/venues/${SLUG}/integrations/google-sheets/callback`, {})));
+    const statuses = [...new Set(burst.map((r) => r.status))];
+    check("public-ratelimit: sheets callback burst -> 429 present", burst.some((r) => r.status === 429), `statuses ${statuses.join(",")}`);
+    // The per-IP bucket (shared across publicReadLimiter routes) is now exhausted,
+    // so generate-location-description 429s at the limiter — BEFORE invoking Anthropic.
+    const gen = await api("POST", `/venues/${SLUG}/generate-location-description`, {});
+    check("public-ratelimit: generate-location-description over-limit -> 429 (no Anthropic call)", gen.status === 429, `status ${gen.status}`);
+    // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
+    const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
+    check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
   }
 
   finish();
