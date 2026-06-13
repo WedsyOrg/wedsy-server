@@ -156,6 +156,12 @@ const EnquirySchema = new mongoose.Schema(
     unresponsiveFlaggedAt: { type: Date, default: null },
     // CSV import marker: historical imports are excluded from auto-assignment.
     importedAt: { type: Date, default: null },
+    // ── Design-pass Slice 5 (additive) — cached Kiara AI summary ────────────
+    // Founder-voice synopsis composed from captured data; "Regenerate" refreshes.
+    kiaraSummary: {
+      text: { type: String, default: "" },
+      generatedAt: { type: Date, default: null },
+    },
     // ── MB5 Slice 5 (additive only) — Kiara safety net engagement marker ────
     // Set once when the safety net sends the welcome template (after-hours
     // create or golden-window miss). Gates the once-per-lead rule and joins
