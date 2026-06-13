@@ -128,6 +128,13 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
+      // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
+      // Multi-select from the services.available master list.
+      servicesRequired: { type: [String], default: [] },
+      budgetAmount: { type: Number, default: null },
+      budgetNote: { type: String, default: "" },
+      // Partner/fiancé emails — Slice 8's calendar invites include these.
+      additionalEmails: { type: [String], default: [] },
     },
     // Outcome of the cockpit's complete-call action. gaps holds the missing items
     // acknowledged on an incomplete save (flagged on the lead, per the approved design).
@@ -149,6 +156,31 @@ const EnquirySchema = new mongoose.Schema(
     unresponsiveFlaggedAt: { type: Date, default: null },
     // CSV import marker: historical imports are excluded from auto-assignment.
     importedAt: { type: Date, default: null },
+    // ── MB5 Slice 5 (additive only) — Kiara safety net engagement marker ────
+    // Set once when the safety net sends the welcome template (after-hours
+    // create or golden-window miss). Gates the once-per-lead rule and joins
+    // the lead into mission-quiet.
+    kiaraSafetyNetAt: { type: Date, default: null },
+    // ── MB5 Slice 4 (additive only) — triage mode ───────────────────────────
+    // In assignment.mode='triage', new leads land here unassigned until a
+    // triage holder assigns them (or the escalation chain auto-assigns).
+    triagePending: { type: Boolean, default: false },
+    triageEnteredAt: { type: Date, default: null },
+    triageEscalatedAt: { type: Date, default: null },
+    // ── MB5 Slice 3 (additive only) ─────────────────────────────────────────
+    // Set-once credit: the intern who booked the meet that triggered the
+    // handoff. Their stats keep this lead permanently.
+    qualifiedBy: { type: ObjectId, ref: "Admin", default: null },
+    // Lightweight event-team assignments captured at huddle completion.
+    eventTeam: {
+      type: [
+        {
+          adminId: { type: ObjectId, ref: "Admin", required: true },
+          label: { type: String, default: "" },
+        },
+      ],
+      default: [],
+    },
     // Recycle — the third terminal state. Excluded from all active views while
     // isRecycled; lazily resurfaced (and reassigned) once revisitAt passes.
     recycled: {

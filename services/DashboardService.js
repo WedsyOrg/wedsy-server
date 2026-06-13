@@ -76,16 +76,36 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
 
-  // MISSION-QUIET (Kiara): WhatsApp leads actively handled by the AI agent
-  // (mode ai, open, not escalated) carry no call-now pressure — Kiara is
-  // already talking to them. They re-enter missions the moment the
-  // conversation escalates or qualifies (needsHuman flips / qualified path).
+  // MB5 Slice 4: lazy triage-escalation sweep rides the dashboard read too
+  // (same no-new-infra pattern). No-op outside triage mode / working hours.
+  try {
+    await require("./TriageService").sweepEscalations();
+  } catch (e) {
+    console.error("[Dashboard] triage sweep failed:", e.message);
+  }
+
+  // MB5 Slice 5: Kiara safety net sweep — in-hours golden-window misses get
+  // the welcome template. Template-gated; dormant when unset.
+  try {
+    await require("./KiaraSafetyNetService").sweepGoldenWindowMisses();
+  } catch (e) {
+    console.error("[Dashboard] safety net sweep failed:", e.message);
+  }
+
+  // MISSION-QUIET (Kiara): leads actively handled by the AI agent (mode ai,
+  // open, not escalated) carry no call-now pressure — Kiara is already
+  // talking to them. WhatsApp-source leads + safety-net-engaged leads (any
+  // source, Slice 5). They re-enter missions the moment the conversation
+  // escalates or qualifies (needsHuman flips / qualified path).
   let kiaraQuietIds = [];
   try {
     const quietConvIds = await WAConversationRepository.findQuietEnquiryIds();
     if (quietConvIds.length) {
       const quietLeads = await Enquiry.find(
-        { _id: { $in: quietConvIds }, source: "whatsapp" },
+        {
+          _id: { $in: quietConvIds },
+          $or: [{ source: "whatsapp" }, { kiaraSafetyNetAt: { $ne: null } }],
+        },
         { _id: 1 }
       ).lean();
       kiaraQuietIds = quietLeads.map((l) => l._id);

@@ -212,6 +212,18 @@ const addFollowUp = async (
     payload: { followUpType: type, scheduledAt: scheduledAtDate, promiseNote: promiseNote || "" },
   });
 
+  // MB5 Slice 3 (fire-safe inside): meet/visit mirror into the team calendar,
+  // gmeet huddle auto-create, intern→manager handoff with qualifiedBy credit.
+  const justAdded = (updated.followUps || [])
+    .filter((f) => f.type === type)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+  const CalendarEventService = require("./CalendarEventService");
+  await CalendarEventService.onFollowUpBooked(
+    enquiryId,
+    { _id: justAdded ? justAdded._id : null, type, scheduledAt: scheduledAtDate },
+    actorId
+  );
+
   return updated;
 };
 
@@ -236,6 +248,37 @@ const updateQualification = async (enquiryId, body = {}, actorId) => {
       }
       set[`qualificationData.${field}`] = body[field];
     }
+  }
+  // MB6 Slice 6 — Cockpit v2 fields.
+  if (body.servicesRequired !== undefined) {
+    if (!Array.isArray(body.servicesRequired) || body.servicesRequired.some((s) => typeof s !== "string")) {
+      throw httpError(400, "Invalid servicesRequired (expected an array of strings)");
+    }
+    set["qualificationData.servicesRequired"] = [...new Set(body.servicesRequired.map((s) => s.trim()).filter(Boolean))];
+  }
+  if (body.budgetAmount !== undefined) {
+    if (body.budgetAmount !== null && (typeof body.budgetAmount !== "number" || !Number.isFinite(body.budgetAmount) || body.budgetAmount < 0)) {
+      throw httpError(400, "Invalid budgetAmount (expected a non-negative number or null)");
+    }
+    set["qualificationData.budgetAmount"] = body.budgetAmount;
+  }
+  if (body.budgetNote !== undefined) {
+    if (typeof body.budgetNote !== "string" || body.budgetNote.length > 1000) {
+      throw httpError(400, "Invalid budgetNote");
+    }
+    set["qualificationData.budgetNote"] = body.budgetNote;
+  }
+  if (body.additionalEmails !== undefined) {
+    const emailish = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (
+      !Array.isArray(body.additionalEmails) ||
+      body.additionalEmails.some((e) => typeof e !== "string" || (e.trim() && !emailish.test(e.trim())))
+    ) {
+      throw httpError(400, "Invalid additionalEmails (expected an array of email addresses)");
+    }
+    set["qualificationData.additionalEmails"] = [
+      ...new Set(body.additionalEmails.map((e) => e.trim().toLowerCase()).filter(Boolean)),
+    ];
   }
   if (Object.keys(set).length === 0) {
     throw httpError(400, "No valid qualification fields provided");
@@ -304,9 +347,59 @@ const listInternalEvents = async (enquiryId) => {
   return await LeadInternalEventService.listForLead(enquiryId);
 };
 
+// MB6 Slice 6 — meet-refuser: the lead won't take a meeting. Tags 'no-meet',
+// escalates to the owner's sales lead, notifies the Revenue Head, journey event.
+const meetRefused = async (enquiryId, actorId) => {
+  assertValidId(enquiryId);
+  const enquiry = await EnquiryRepository.findById(enquiryId);
+  if (!enquiry) throw httpError(404, "Enquiry not found");
+
+  const Enquiry = require("../models/Enquiry");
+  const Admin = require("../models/Admin");
+  const Role = require("../models/Role");
+  const AdminNotificationService = require("./AdminNotificationService");
+
+  await Enquiry.findByIdAndUpdate(enquiryId, { $addToSet: { tags: "no-meet" } });
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "meet_refused",
+    actorId,
+    payload: {},
+  });
+
+  // Escalate to the owner's sales lead (reportingManager).
+  const owner = enquiry.assignedTo
+    ? await Admin.findById(enquiry.assignedTo, { name: 1, reportingManagerId: 1 }).lean()
+    : null;
+  if (owner && owner.reportingManagerId) {
+    await AdminNotificationService.notify(owner.reportingManagerId, {
+      type: "meet_refused",
+      title: `${enquiry.name} is refusing a meeting`,
+      message: `Tagged no-meet by ${owner.name} — step in or coach the close.`,
+      leadId: enquiryId,
+    });
+  }
+  // Notify the Revenue Head(s).
+  const rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
+  if (rhRole) {
+    const heads = await Admin.find({ roleId: rhRole._id, status: "active" }, { _id: 1 }).lean();
+    await AdminNotificationService.notify(
+      heads.map((h) => h._id),
+      {
+        type: "meet_refused",
+        title: `Meet-refuser: ${enquiry.name}`,
+        message: "Lead is dodging the meeting — tagged no-meet.",
+        leadId: enquiryId,
+      }
+    );
+  }
+  return await EnquiryRepository.findById(enquiryId);
+};
+
 module.exports = {
   logCall,
   addFollowUp,
+  meetRefused,
   updateQualification,
   completeCall,
   listInternalEvents,

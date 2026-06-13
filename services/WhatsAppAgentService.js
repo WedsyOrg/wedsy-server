@@ -7,12 +7,11 @@ const SettingsService = require('./SettingsService');
 const { KIARA_DEFAULT_SYSTEM_PROMPT } = require('./kiaraDefaultPrompt');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 const QualifiedLead = require('../models/QualifiedLead');
-const axios = require('axios');
 const { google } = require('googleapis');
-
-// Test seam: e2e suites point this at a local mock so no test ever touches
-// the live API. Unset (production) ⇒ the real endpoint, unchanged.
-const ANTHROPIC_API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
+// MB6 Slice 11: every Anthropic call rides the shared in-process queue
+// (serialized, exponential backoff on 429) — shared with the Instagram agent.
+// The queue owns the ANTHROPIC_API_URL test seam now.
+const { callAnthropic } = require('../utils/anthropicQueue');
 
 // Kiara's persona now lives in Settings (kiara.systemPrompt, founder-gated,
 // 60s cache) and defaults to the verbatim former hardcoded text — an empty
@@ -50,22 +49,13 @@ const sendToClaude = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 500,
-          system: systemPrompt,
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      // MB6 Slice 11: through the shared in-process queue (429 backoff inside).
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: history
+      });
       const text = firstTextBlock(response);
       if (text === null) throw new Error('Anthropic response had no text block');
       return text;
@@ -92,22 +82,13 @@ const checkQualified = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 400,
-          system: EXTRACTOR_SYSTEM_PROMPT,
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      // MB6 Slice 11: through the shared in-process queue (429 backoff inside).
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 400,
+        system: EXTRACTOR_SYSTEM_PROMPT,
+        messages: history
+      });
       const text = firstTextBlock(response);
       if (text === null) throw new Error('Anthropic response had no text block');
       try {
@@ -291,6 +272,13 @@ const receiveMessage = async (phone, message, meta = {}) => {
     await WAConversationRepository.touchOutbound(conversation._id, reply.slice(0, 120));
     await sendWhatsAppText(phone, reply, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
     const updatedHistory = await WAAgentMessageRepository.getHistory(phone);
+
+    // MB6 Slice 11: skip the qualification-check call entirely while the
+    // conversation has fewer than 3 user messages — nobody qualifies (or needs
+    // routing) two messages in, and this halves early call volume.
+    const userMessages = updatedHistory.filter((m) => m.role === 'user').length;
+    if (userMessages < 3) return;
+
     const qualification = await checkQualified(updatedHistory);
 
     // HOOK 2: escalation + classification routing (vendor/birthday/corporate

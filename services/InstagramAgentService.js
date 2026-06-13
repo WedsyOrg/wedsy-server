@@ -5,6 +5,33 @@ const QualifiedLead = require('../models/QualifiedLead');
 const axios = require('axios');
 const { google } = require('googleapis');
 
+// MB6 Slice 7 — the MB4 hook pattern ADAPTED to Instagram's reality: the
+// thread is keyed by the IG-scoped user id (NOT a phone). The conversation
+// record carries channel:'instagram'; CRM lead linkage happens only once a
+// real phone number is captured by the extractor. Until then the conversation
+// lives unlinked in the inbox.
+const WAConversationService = require('./WAConversationService');
+const KiaraCrmSyncService = require('./KiaraCrmSyncService');
+const LeadIntakeService = require('./LeadIntakeService');
+const LeadInternalEventService = require('./LeadInternalEventService');
+const WAConversationRepository = require('../repositories/WAConversationRepository');
+
+// MB6 Slice 11: every Anthropic call rides the shared in-process queue
+// (serialized, exponential backoff on 429) — shared with the WhatsApp agent.
+// The queue owns the ANTHROPIC_API_URL test seam.
+const { callAnthropic } = require('../utils/anthropicQueue');
+
+// CRASH FIX (mirrors MB4's WhatsApp fix): response.data.content[0].text threw
+// on empty content arrays and tool/thinking-first responses. Find the first
+// text block; null means the caller treats it as a failure.
+const firstTextBlock = (response) => {
+  const content = response && response.data && Array.isArray(response.data.content)
+    ? response.data.content
+    : [];
+  const block = content.find((b) => b && b.type === 'text' && typeof b.text === 'string');
+  return block ? block.text : null;
+};
+
 const SYSTEM_PROMPT = `You are Kiara, a wedding planner at Wedsy in Bengaluru. You're chatting with a potential client on Instagram DM.
 
 Your personality:
@@ -54,23 +81,15 @@ const sendToClaude = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        'https://api.anthropic.com/v1/messages',
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 500,
-          system: SYSTEM_PROMPT,
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      return response.data.content[0].text;
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 500,
+        system: SYSTEM_PROMPT,
+        messages: history
+      });
+      const text = firstTextBlock(response);
+      if (text !== null) return text;
+      throw new Error('No text block in Anthropic response');
     } catch (error) {
       attempt++;
       if (attempt > MAX_RETRIES) {
@@ -94,23 +113,20 @@ const checkQualified = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        'https://api.anthropic.com/v1/messages',
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 400,
-          system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the user has provided their phone number AND the assistant has thanked them and said the team will connect within 24 hours. Extract whatever details were collected. Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "data": {"name": "", "phoneNumber": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-      const text = response.data.content[0].text;
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 400,
+        // MB6 Slice 7: the WA extractor's routing contract (escalate +
+        // classification), keeping IG's phone-collection mission —
+        // qualification still requires the phone number.
+        system: 'You are a data extractor. Based on the conversation, check if the qualification is complete — meaning the user has provided their phone number AND the assistant has thanked them and said the team will connect within 24 hours. Extract whatever details were collected. ' +
+          'Also decide two routing signals. (1) "escalate": set true when the customer explicitly asks for a human, shows frustration or anger, pushes pricing/negotiation beyond rapport, or the conversation is stuck (3+ exchanges without progress) — and ALWAYS when qualified is true (use escalateReason "Qualified — ready for your call"). Give a short escalateReason whenever escalate is true. ' +
+          '(2) "classification": classify the contact as one of "lead" (a genuine wedding/engagement customer), "vendor" (a vendor/photographer/supplier pitching their services), "birthday" (a birthday inquiry), "corporate" (a corporate-event inquiry), or "destination" (a confirmed destination wedding outside Bengaluru). ' +
+          'Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "escalate": true/false, "escalateReason": "", "classification": "lead", "data": {"name": "", "phoneNumber": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
+        messages: history
+      });
+      const text = firstTextBlock(response);
+      if (text === null) return { qualified: false };
       try {
         return JSON.parse(text);
       } catch {
@@ -133,9 +149,57 @@ const checkQualified = async (history) => {
   }
 };
 
-const saveQualifiedLead = async (instagramId, data) => {
+// HOOK 3 support (MB6 Slice 7): once the extractor captured a REAL phone
+// number, link the IG conversation to a CRM lead — full intake semantics
+// (normalized-phone dedup, re-enquiry on terminal leads, shared create path).
+// Idempotent: an already-linked conversation returns untouched.
+const ensureLeadLinkedByPhone = async (conversation, data = {}) => {
+  try {
+    if (!conversation || conversation.enquiryId) return conversation;
+    const phoneNumber = String(data.phoneNumber || '').replace(/\D/g, '');
+    if (phoneNumber.length < 10) return conversation; // no usable phone yet
+
+    let enquiryId = null;
+    const existing = await LeadIntakeService.findExistingByNormalizedPhone(phoneNumber);
+    if (existing) {
+      enquiryId = existing._id;
+      await LeadIntakeService.recordReEnquiry(existing._id, {
+        source: 'instagram',
+        message: `Instagram DM (${conversation.phone})`,
+      });
+    } else {
+      try {
+        const created = await LeadIntakeService.createLead({
+          name: (data.name || '').trim() || `Instagram ${String(conversation.phone).slice(-4)}`,
+          phone: phoneNumber.length === 10 ? `91${phoneNumber}` : phoneNumber,
+          verified: false,
+          source: 'instagram',
+          additionalInfo: { instagramId: conversation.phone },
+        });
+        enquiryId = created._id;
+      } catch (e) {
+        const winner = await LeadIntakeService.findExistingByNormalizedPhone(phoneNumber);
+        if (!winner) throw e;
+        enquiryId = winner._id;
+      }
+    }
+    const updated = await WAConversationRepository.updateFieldsById(conversation._id, { enquiryId });
+    await LeadInternalEventService.record({
+      leadId: enquiryId,
+      type: 'ig_conversation_linked',
+      actorId: null,
+      payload: { instagramId: conversation.phone, phoneNumber },
+    });
+    return updated;
+  } catch (e) {
+    console.error('[InstagramAgent] ensureLeadLinkedByPhone failed:', e.message);
+    return conversation;
+  }
+};
+
+const saveQualifiedLead = async (instagramId, data, conversation = null) => {
   const existing = await QualifiedLead.findOne({ phone: instagramId });
-  if (existing && existing.googleSheetSynced) {
+  if (existing && existing.googleSheetSynced && existing.crmSynced) {
     console.log('[InstagramAgent] Lead already qualified and synced, skipping:', instagramId);
     return existing;
   }
@@ -210,7 +274,7 @@ const saveQualifiedLead = async (instagramId, data) => {
       leadDoc.googleSheetSynced = true;
       await leadDoc.save();
       console.log('[InstagramAgent] Lead appended to Google Sheet:', instagramId);
-      return true;
+      break;
     } catch (error) {
       attempt++;
       if (attempt > MAX_RETRIES) {
@@ -222,25 +286,84 @@ const saveQualifiedLead = async (instagramId, data) => {
           createdAt: new Date()
         });
         console.error(`[InstagramAgent] Google Sheet append failed after ${attempt} attempts:`, error.message);
-        return null;
+        break;
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
+
+  // HOOK 3 (MB6 Slice 7): CRM sync — crmSynced mirrors the googleSheetSynced
+  // retry idiom, exactly like the WhatsApp agent. Requires a linked lead
+  // (i.e. a captured phone), which the caller establishes first.
+  if (!leadDoc.crmSynced && conversation && conversation.enquiryId) {
+    attempt = 0;
+    while (attempt <= MAX_RETRIES) {
+      try {
+        await KiaraCrmSyncService.syncQualifiedToCrm(data.phoneNumber || instagramId, data, conversation);
+        leadDoc.crmSynced = true;
+        await leadDoc.save();
+        console.log('[InstagramAgent] Lead synced to CRM:', instagramId);
+        break;
+      } catch (error) {
+        attempt++;
+        if (attempt > MAX_RETRIES) {
+          await NotificationFailureLog.create({
+            service: 'KiaraCrmSync',
+            phone: instagramId,
+            error: error.message,
+            attempts: attempt,
+            createdAt: new Date()
+          });
+          console.error(`[InstagramAgent] CRM sync failed after ${attempt} attempts:`, error.message);
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+  }
+
+  return leadDoc.googleSheetSynced && leadDoc.crmSynced ? true : null;
 };
 
 const receiveMessage = async (instagramId, message) => {
   try {
     await WAAgentMessageRepository.saveMessage(instagramId, 'user', message);
+
+    // HOOK 1 (adapted): conversation upsert keyed by the IG user id,
+    // channel:'instagram'. NO lead linkage yet — that waits for a real phone.
+    let conversation = await WAConversationService.recordInbound(instagramId, message, 'instagram');
+
+    // Mode gate: a human owns the thread (takeover) or it's closed — the IG
+    // bot stays silent, identically to WhatsApp. Zero Anthropic spend.
+    if (conversation.mode !== 'ai' || conversation.status === 'closed') return;
+
     const history = await WAAgentMessageRepository.getHistory(instagramId);
     const reply = await sendToClaude(history);
     if (!reply) return;
     await WAAgentMessageRepository.saveMessage(instagramId, 'assistant', reply);
+    await WAConversationRepository.touchOutbound(conversation._id, reply.slice(0, 120));
     await sendInstagramDM(instagramId, reply);
     const updatedHistory = await WAAgentMessageRepository.getHistory(instagramId);
+
+    // MB6 Slice 11: same early-skip as WhatsApp — no qualification check
+    // until the customer has sent at least 3 messages.
+    const userMessages = updatedHistory.filter((m) => m.role === 'user').length;
+    if (userMessages < 3) return;
+
     const qualification = await checkQualified(updatedHistory);
+
+    // Phone captured → CRM lead linkage (dedup or shared create path).
+    if (qualification && qualification.data && qualification.data.phoneNumber) {
+      conversation = await ensureLeadLinkedByPhone(conversation, qualification.data);
+    }
+
+    // HOOK 2 (adapted): escalation + classification routing — the same
+    // contract as WhatsApp (vendor/birthday/corporate close out, destination
+    // escalates, qualified always escalates). Channel-aware journey events.
+    conversation = await KiaraCrmSyncService.applyExtraction(conversation, qualification);
+
     if (qualification && qualification.qualified) {
-      await saveQualifiedLead(instagramId, qualification.data);
+      await saveQualifiedLead(instagramId, qualification.data, conversation);
     }
   } catch (error) {
     console.error('[InstagramAgent] receiveMessage error:', error.message);

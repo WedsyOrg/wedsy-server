@@ -320,11 +320,28 @@ const inboundMedia = (phone, type = "image", profileName = "E2E Customer") => ({
     );
     ok(true, "Kiara resumed after handback");
 
+    // MB6 Slice 11: the extractor is SKIPPED until a conversation has 3 user
+    // messages — extraction sections prime with the decisive message first
+    // (firstMessage assertions depend on it), then two fillers.
+    const sendThree = async (p, decisiveText, profileName = "E2E Customer") => {
+      await signedWebhook(inboundText(p, decisiveText, profileName));
+      await waitFor(
+        async () => (await WAAgentMessage.countDocuments({ phone: p, role: "assistant" })) >= 1,
+        "priming reply 1"
+      );
+      await signedWebhook(inboundText(p, "ok — anything else you need from me?", profileName));
+      await waitFor(
+        async () => (await WAAgentMessage.countDocuments({ phone: p, role: "assistant" })) >= 2,
+        "priming reply 2"
+      );
+      await signedWebhook(inboundText(p, "that's everything from my side!", profileName));
+    };
+
     // ── (3) Escalation ───────────────────────────────────────────────────────
     section("3. Escalation JSON → needsHuman + mission card + journey");
     const p3 = phone(3);
     mock.extractor = { qualified: false, escalate: true, escalateReason: "Customer is frustrated", classification: "lead", data: {} };
-    await signedWebhook(inboundText(p3, "This is taking forever. Get me a human!"));
+    await sendThree(p3, "This is taking forever. Get me a human!");
     const conv3 = await waitFor(async () => {
       const c = await WAConversation.findOne({ phone: p3 }).lean();
       return c && c.needsHuman ? c : null;
@@ -370,7 +387,7 @@ const inboundMedia = (phone, type = "image", profileName = "E2E Customer") => ({
         weddingStyle: "South Indian",
       },
     };
-    await signedWebhook(inboundText(p4, "Thanks! All details shared.", "Asha Rao"));
+    await sendThree(p4, "Thanks! All details shared.", "Asha Rao");
     const ql4 = await waitFor(async () => {
       const q = await QualifiedLead.findOne({ phone: p4 }).lean();
       return q && q.crmSynced ? q : null;
@@ -417,7 +434,7 @@ const inboundMedia = (phone, type = "image", profileName = "E2E Customer") => ({
       classification: "vendor",
       data: { name: "Studio Lumière", servicesRequired: "wedding photography" },
     };
-    await signedWebhook(inboundText(p5, "Hi, I'm a photographer — can I work with Wedsy?", "Studio Lumiere"));
+    await sendThree(p5, "Hi, I'm a photographer — can I work with Wedsy?", "Studio Lumiere");
     const conv5 = await waitFor(async () => {
       const c = await WAConversation.findOne({ phone: p5 }).lean();
       return c && c.status === "closed" ? c : null;

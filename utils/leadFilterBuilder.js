@@ -23,6 +23,121 @@ const STATIC_FIELDS = {
   qualified: { ops: ["eq"], kind: "boolean" },
   "recycled.isRecycled": { ops: ["eq"], kind: "boolean" },
   importedAt: { ops: ["exists"], kind: "date" },
+  // ── MB6 Slice 9 additions ──
+  // Event month ("January"…) — the same field the legacy eventMonth param reads.
+  "additionalInfo.eventMonth": { ops: ["eq", "in"], kind: "string" },
+  // Services any-of: array field, "in" matches any element.
+  "qualificationData.servicesRequired": { ops: ["eq", "in", "contains"], kind: "string" },
+  // Budget range.
+  "qualificationData.budgetAmount": { ops: ["eq", "gte", "lte", "exists"], kind: "number" },
+  // Last activity recency (any write touches updatedAt).
+  updatedAt: { ops: ["gte", "lte"], kind: "date" },
+};
+
+// ── MB6 Slice 9: derived/virtual filters ──────────────────────────────────────
+// The list-level health score (computed WITHOUT the events join, matching the
+// list display): qualified base 20 + venue 15 + email/not-willing 20 + future
+// follow-up 20. Hot ≥75, Warm ≥45, Cold below (or unqualified).
+const healthScoreExpr = (now) => ({
+  $add: [
+    20,
+    { $cond: [{ $gt: [{ $ifNull: ["$qualificationData.venueStatus", ""] }, ""] }, 15, 0] },
+    {
+      $cond: [
+        {
+          $or: [
+            { $gt: [{ $ifNull: ["$qualificationData.email", ""] }, ""] },
+            { $eq: ["$qualificationData.emailNotWilling", true] },
+          ],
+        },
+        20,
+        0,
+      ],
+    },
+    {
+      $cond: [
+        {
+          $gt: [
+            {
+              $size: {
+                $filter: {
+                  input: { $ifNull: ["$followUps", []] },
+                  as: "f",
+                  cond: { $gt: ["$$f.scheduledAt", now] },
+                },
+              },
+            },
+            0,
+          ],
+        },
+        20,
+        0,
+      ],
+    },
+  ],
+});
+
+const healthBandCondition = (value, now = new Date()) => {
+  const score = healthScoreExpr(now);
+  if (value === "Hot") return { qualified: true, $expr: { $gte: [score, 75] } };
+  if (value === "Warm")
+    return { qualified: true, $expr: { $and: [{ $gte: [score, 45] }, { $lt: [score, 75] }] } };
+  if (value === "Cold")
+    return { $or: [{ qualified: { $ne: true } }, { $expr: { $lt: [score, 45] } }] };
+  throw err(400, 'healthBand must be "Hot", "Warm" or "Cold"');
+};
+
+const boolValue = (value, field) => {
+  if (typeof value === "boolean") return value;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw err(400, `Invalid boolean for ${field}`);
+};
+
+// Virtual fields: derived conditions (some need a conversation lookup, hence async).
+const VIRTUAL_FIELDS = {
+  healthBand: async (op, value) => {
+    if (op !== "eq") throw err(400, 'healthBand supports only "eq"');
+    return healthBandCondition(value);
+  },
+  hasMeetingBooked: async (op, value) => {
+    if (op !== "eq") throw err(400, 'hasMeetingBooked supports only "eq"');
+    return boolValue(value, "hasMeetingBooked")
+      ? { followUps: { $elemMatch: { type: "meet", completedAt: null } } }
+      : { followUps: { $not: { $elemMatch: { type: "meet", completedAt: null } } } };
+  },
+  overdueFollowUps: async (op, value) => {
+    if (op !== "eq") throw err(400, 'overdueFollowUps supports only "eq"');
+    return boolValue(value, "overdueFollowUps")
+      ? { followUps: { $elemMatch: { completedAt: null, scheduledAt: { $lt: new Date() } } } }
+      : { followUps: { $not: { $elemMatch: { completedAt: null, scheduledAt: { $lt: new Date() } } } } };
+  },
+  reEnquired: async (op, value) => {
+    if (op !== "eq") throw err(400, 'reEnquired supports only "eq"');
+    return boolValue(value, "reEnquired")
+      ? { reEnquiredAt: { $ne: null } }
+      : { $or: [{ reEnquiredAt: { $exists: false } }, { reEnquiredAt: null }] };
+  },
+  kiaraChatting: async (op, value) => {
+    if (op !== "eq") throw err(400, 'kiaraChatting supports only "eq"');
+    const WAConversation = require("../models/WAConversation");
+    const ids = await WAConversation.distinct("enquiryId", {
+      mode: "ai",
+      status: "active",
+      enquiryId: { $ne: null },
+    });
+    return boolValue(value, "kiaraChatting") ? { _id: { $in: ids } } : { _id: { $nin: ids } };
+  },
+  needsHuman: async (op, value) => {
+    if (op !== "eq") throw err(400, 'needsHuman supports only "eq"');
+    const WAConversation = require("../models/WAConversation");
+    const ids = await WAConversation.distinct("enquiryId", {
+      needsHuman: true,
+      status: "active",
+      enquiryId: { $ne: null },
+    });
+    return boolValue(value, "needsHuman") ? { _id: { $in: ids } } : { _id: { $nin: ids } };
+  },
 };
 
 const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -38,6 +153,11 @@ const castValue = (kind, value, field) => {
     if (value === "true") return true;
     if (value === "false") return false;
     throw err(400, `Invalid boolean for ${field}`);
+  }
+  if (kind === "number") {
+    const n = Number(value);
+    if (!Number.isFinite(n)) throw err(400, `Invalid number for ${field}`);
+    return n;
   }
   if (typeof value !== "string" && typeof value !== "number") {
     throw err(400, `Invalid value for ${field}`);
@@ -104,6 +224,10 @@ const buildFilterConditions = async (filtersRaw) => {
     }
     const { field, op, value } = f;
 
+    if (field in VIRTUAL_FIELDS) {
+      conditions.push(await VIRTUAL_FIELDS[field](op, value));
+      continue;
+    }
     if (field in STATIC_FIELDS) {
       const spec = STATIC_FIELDS[field];
       if (!spec.ops.includes(op)) throw err(400, `Op "${op}" not allowed for ${field}`);

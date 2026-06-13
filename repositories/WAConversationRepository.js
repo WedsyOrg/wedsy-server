@@ -7,7 +7,7 @@ const findById = async (id) => WAConversation.findById(id);
 // Inbound message touch: create the conversation on first contact, bump the
 // freshness fields and the unread counter on every one after. Atomic upsert —
 // concurrent webhook deliveries can't double-create.
-const upsertOnInbound = async (phone, normalizedPhone, preview, at = new Date()) =>
+const upsertOnInbound = async (phone, normalizedPhone, preview, at = new Date(), channel = "whatsapp") =>
   WAConversation.findOneAndUpdate(
     { phone },
     {
@@ -17,6 +17,8 @@ const upsertOnInbound = async (phone, normalizedPhone, preview, at = new Date())
         lastMessageAt: at,
         lastMessagePreview: preview,
       },
+      // Channel is identity, not state — written once at creation.
+      $setOnInsert: { channel },
       $inc: { unreadCount: 1 },
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }

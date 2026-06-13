@@ -22,6 +22,33 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   lifecycle.Dashboard
 );
+// MB5 Slice 4: triage queue (literal paths above /:_id). leads:triage is the
+// new permission — seed-granted to sales-lead-class roles; founder wildcard covers.
+const triage = require("../controllers/triage");
+// MB6 Slice 10: intern/presales rollup (derived only, scope-aware).
+router.get(
+  "/intern-metrics",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  async (req, res) => {
+    try {
+      const InternMetricsService = require("../services/InternMetricsService");
+      res
+        .status(200)
+        .json(await InternMetricsService.internMetrics({ period: req.query.period }, req.scopeFilter || {}));
+    } catch (error) {
+      res.status(error.status || 500).json({ message: error.message });
+    }
+  }
+);
+router.get("/triage", CheckAdminLogin, requirePermission("leads:triage:own"), triage.List);
+router.get("/triage/interns", CheckAdminLogin, requirePermission("leads:triage:own"), triage.Interns);
+router.post(
+  "/:_id/triage-assign",
+  CheckAdminLogin,
+  requirePermission("leads:triage:own"),
+  triage.Assign
+);
 // Lifecycle (Slice F): founder CSV import (the Zoho migration tool). Literal
 // paths above /:_id; multipart handled per-route via express-fileupload.
 router.get(
@@ -93,6 +120,13 @@ router.put(
   CheckAdminLogin,
   requirePermission("leads:edit:own"),
   cockpit.UpdateQualification
+);
+// MB6 Slice 6: the lead refuses a meeting — tag, escalate, notify.
+router.post(
+  "/:_id/meet-refused",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.MeetRefused
 );
 router.post(
   "/:_id/call-complete",

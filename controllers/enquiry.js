@@ -338,6 +338,10 @@ const GetAll = async (req, res) => {
         query.stage = "meeting_scheduled";
       } else if (view === "recycled") {
         query["recycled.isRecycled"] = true;
+      } else if (view === "triage") {
+        // MB5 Slice 4: the triage queue as a leads filter.
+        query.triagePending = true;
+        query["recycled.isRecycled"] = { $ne: true };
       }
     }
     if (date) {

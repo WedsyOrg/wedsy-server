@@ -81,5 +81,10 @@ router.use("/places", require("./places"));
 router.use("/venue-owner", require("./venueOwner"));
 router.use("/conversations", require("./conversation"));
 router.use("/wa", require("./waConversation")); // Kiara admin chat API
+router.use("/attendance", require("./attendance")); // HRMS brick #1 (MB5 Slice 2)
+router.use("/calendar", require("./calendar")); // Team calendar + meeting mode + huddles (MB5 Slice 3)
+router.use("/admin-notifications", require("./notifications")); // in-OS staff notifications (MB5)
+router.use("/google", require("./google")); // Google Workspace (MB6 Slice 8 — dormant until env-wired)
+router.use("/saved-views", require("./savedViews")); // per-user leads filter sets (MB6 Slice 9)
 
 module.exports = router;

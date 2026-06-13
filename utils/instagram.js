@@ -1,5 +1,8 @@
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 
+// Mock seam (MB6 Slice 7) — same idiom as META_GRAPH_BASE_URL in utils/whatsapp.
+const IG_GRAPH_BASE_URL = process.env.INSTAGRAM_GRAPH_BASE_URL || 'https://graph.instagram.com/v25.0';
+
 const sendInstagramDM = async (recipientId, message) => {
   const MAX_RETRIES = 2;
   let attempt = 0;
@@ -7,7 +10,7 @@ const sendInstagramDM = async (recipientId, message) => {
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await fetch(
-        'https://graph.instagram.com/v25.0/me/messages',
+        `${IG_GRAPH_BASE_URL}/me/messages`,
         {
           method: 'POST',
           headers: {

@@ -48,6 +48,18 @@ const UpdateQualification = async (req, res) => {
   }
 };
 
+// POST /enquiry/:_id/meet-refused (MB6 Slice 6)
+const MeetRefused = async (req, res) => {
+  try {
+    const updated = await CallCockpitService.meetRefused(req.params._id, req.auth.user_id);
+    res.status(200).json(updated);
+  } catch (error) {
+    const status = error.status || 500;
+    const message = status === 500 ? "Server error" : error.message;
+    res.status(status).json({ message });
+  }
+};
+
 // POST /enquiry/:_id/call-complete
 const CompleteCall = async (req, res) => {
   try {
@@ -80,6 +92,7 @@ module.exports = {
   LogCall,
   AddFollowUp,
   UpdateQualification,
+  MeetRefused,
   CompleteCall,
   GetInternalEvents,
 };
