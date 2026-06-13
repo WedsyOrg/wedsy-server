@@ -16,6 +16,7 @@ const { createQuote, listQuotes, getQuote, updateQuote, quotePdf } = require("..
 const { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
+const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
@@ -129,6 +130,8 @@ router.post("/:slug/contracts/:contractId/send", venueOwnerAuth, requireCapabili
 router.get("/:slug/contracts/:contractId/pdf", venueOwnerAuth, contractPdf);
 
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
+// Phase 4.3 competitor insights — venue vs anonymized zone-cohort (24h cache).
+router.get("/:slug/competitive", venueOwnerAuth, getCompetitive);
 
 // ── Phase 4.2 reviews: owner-facing display/monitor (24h venue-doc cache);
 //    manual refresh is rate-limited to protect the Places quota ──

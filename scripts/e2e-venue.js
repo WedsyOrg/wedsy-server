@@ -826,6 +826,23 @@ async function run() {
       list.status === 200 && items.length > 0 && items.every((x) => x.googleReviews === undefined), `n=${items.length}`);
   }
 
+  // ================= Phase 4.3: competitor insights (live endpoint shape + cache) =================
+  // (Cohort math + suppression are exercised deterministically by
+  // scripts/e2e-competitive.js; here we confirm the live route + caching + auth.)
+  if (process.env.E2E_COMPETITIVE === "1") {
+    const c1 = await api("GET", `/venues/${SLUG}/competitive`, { token });
+    const validShape = c1.status === 200 && c1.json && typeof c1.json.cohortSize === "number"
+      && (c1.json.suppressedAll === true || (c1.json.metrics && c1.json.metrics.enquiries));
+    check("competitive: GET returns a valid shape", validShape, `status ${c1.status} size=${c1.json && c1.json.cohortSize}`);
+    // Never leaks competitor identifiers regardless of cohort.
+    const blob = JSON.stringify(c1.json || {});
+    check("competitive: payload carries no other venue slugs/ids",
+      !/test-palace-two/.test(blob) && !/"slug"/.test(blob), "no per-competitor fields");
+    // Second call is served from the 24h cache.
+    const c2 = await api("GET", `/venues/${SLUG}/competitive`, { token });
+    check("competitive: second call is cached", c2.status === 200 && c2.json.cached === true, `cached=${c2.json && c2.json.cached}`);
+  }
+
   finish();
 }
 

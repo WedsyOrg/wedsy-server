@@ -151,6 +151,9 @@ async function run() {
     // dup-warn exists endpoint must not leak venue A leads to venue B's owner
     const r3 = await api("GET", `/venues/${A}/enquiries/exists?phone=9810000001`, { token: tokenB });
     ok("4 IDOR: venueB token GET venueA enquiries/exists -> 403/404", [403, 404].includes(r3.status), `status ${r3.status}`);
+    // competitor insights must be owner-scoped too
+    const r4 = await api("GET", `/venues/${A}/competitive`, { token: tokenB });
+    ok("4 IDOR: venueB token GET venueA competitive -> 403/404", [403, 404].includes(r4.status), `status ${r4.status}`);
   }
   // tampered / empty JWT
   {
