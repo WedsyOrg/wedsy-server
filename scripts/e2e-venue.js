@@ -124,6 +124,20 @@ async function run() {
     check("manual lead create", ok, `status ${status}`);
   }
 
+  // --- Check: duplicate-phone soft-warn exists endpoint ---
+  {
+    // The lead just created has phone 9871230001; a +91/spaced variant must
+    // still match on the last-10 canonical digits.
+    const hit = await api("GET", `/venues/${SLUG}/enquiries/exists?phone=${encodeURIComponent("+91 98712 30001")}`, { token });
+    check("dup-warn: existing phone (last-10 canonical) -> exists:true + lead",
+      hit.status === 200 && hit.json.exists === true && hit.json.lead && hit.json.lead._id,
+      `status ${hit.status} exists=${hit.json && hit.json.exists}`);
+    const miss = await api("GET", `/venues/${SLUG}/enquiries/exists?phone=9000000123`, { token });
+    check("dup-warn: unknown phone -> exists:false", miss.status === 200 && miss.json.exists === false, `exists=${miss.json && miss.json.exists}`);
+    const short = await api("GET", `/venues/${SLUG}/enquiries/exists?phone=123`, { token });
+    check("dup-warn: <10 digits -> exists:false (no false match)", short.status === 200 && short.json.exists === false, `exists=${short.json && short.json.exists}`);
+  }
+
   // --- Check: import endpoint with one duplicate ---
   {
     // 9810000001 is a seeded lead (duplicate -> skipped); the other is new.

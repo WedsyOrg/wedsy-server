@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
 const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
@@ -64,6 +64,8 @@ router.post("/:slug/enquiries/manual", venueOwnerAuth, requireCapability("leads"
 // CSV/Excel bulk import (write=leads) + import history (open read).
 router.post("/:slug/enquiries/import", venueOwnerAuth, requireCapability("leads"), importLeads);
 router.get("/:slug/enquiries/imports", venueOwnerAuth, getImports);
+// Duplicate-phone soft-warn lookup for the add-lead modal (open read).
+router.get("/:slug/enquiries/exists", venueOwnerAuth, checkEnquiryExists);
 // Bulk actions over selected leads (literal "bulk" segments — before /:enquiryId).
 router.post("/:slug/enquiries/bulk", venueOwnerAuth, requireCapability("leads"), bulkAction);
 router.post("/:slug/enquiries/bulk-whatsapp", venueOwnerAuth, requireCapability("leads"), bulkWhatsApp);
