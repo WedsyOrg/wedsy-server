@@ -52,6 +52,46 @@ const EVENT_TITLES = {
   meet_refused: "Refusing a meeting — tagged no-meet",
 };
 
+// Payload keys that carry an Admin id of a SECOND party (not the actor) — these
+// must be name-resolved so titles can read "from A to B". Slice 4 (design pass).
+const PARTY_ID_KEYS = [
+  "from", "to", "assignedTo", "internId", "managerId",
+  "originalOwnerId", "reassignedTo", "by", "decidedBy",
+];
+
+// Build the human title for an event, naming every party involved. `nameOf`
+// resolves ids → names; `payloadName(key)` prefers an explicit *Name field in
+// the payload, falling back to the resolved id. Returns null to use the static
+// EVENT_TITLES map.
+const dynamicTitle = (type, payload = {}, nameOf) => {
+  const id = (key) => (payload[key] ? nameOf.get(String(payload[key])) || "someone" : null);
+  // Prefer denormalized names captured at write time, else resolve the id.
+  const toName = payload.toName || id("to") || payload.assignedToName || id("assignedTo");
+  const fromName = payload.fromName || id("from");
+
+  switch (type) {
+    case "transferred":
+      if (payload.reason === "meet_handoff") {
+        return `Auto-transferred${fromName ? ` from ${fromName}` : ""} to ${toName || "the sales lead"} — meeting booked`;
+      }
+      return `Transferred${fromName ? ` from ${fromName}` : ""}${toName ? ` to ${toName}` : ""}`;
+    case "meet_handoff":
+      return `Auto-transferred from ${payload.internName || id("internId") || "the intern"} to ${payload.managerName || id("managerId") || "the manager"} — meeting booked`;
+    case "auto_assigned":
+      return `Auto-assigned${toName ? ` to ${toName}` : ""}`;
+    case "triage_assigned":
+      return payload.self ? "Took it from triage" : `Assigned from triage${toName ? ` to ${toName}` : ""}`;
+    case "triage_auto_assigned":
+      return `Auto-assigned from triage${toName ? ` to ${toName}` : ""}`;
+    case "resurfaced_by_reenquiry": {
+      const re = payload.reassignedTo ? id("reassignedTo") : null;
+      return `Resurfaced — they re-enquired${re ? ` · back to ${re}` : ""}`;
+    }
+    default:
+      return null;
+  }
+};
+
 // GET /enquiry/:_id/journey — every moment of a lead's life, one chronological
 // stream, normalized to { at, type, actor, title, detail }.
 const buildJourney = async (enquiryId) => {
@@ -65,9 +105,16 @@ const buildJourney = async (enquiryId) => {
     ActivityLog.find({ entityType: "lead", entityId: String(lead._id) }).lean(),
   ]);
 
-  // Resolve every actor name in one query.
+  // Resolve every actor name in one query — actors AND named payload parties
+  // (transfer from/to, handoff intern/manager, …) so titles can name everyone.
   const actorIds = new Set();
-  for (const e of internalEvents) if (e.actorId) actorIds.add(String(e.actorId));
+  for (const e of internalEvents) {
+    if (e.actorId) actorIds.add(String(e.actorId));
+    const p = e.payload || {};
+    for (const k of PARTY_ID_KEYS) {
+      if (p[k] && mongoose.Types.ObjectId.isValid(String(p[k]))) actorIds.add(String(p[k]));
+    }
+  }
   for (const a of activityRows) if (a.actorId) actorIds.add(String(a.actorId));
   for (const c of lead.callLog || []) if (c.loggedBy) actorIds.add(String(c.loggedBy));
   for (const f of lead.followUps || []) {
@@ -99,7 +146,8 @@ const buildJourney = async (enquiryId) => {
       at: e.createdAt,
       type: e.type,
       actor: actor(e.actorId),
-      title: EVENT_TITLES[e.type] || e.type,
+      // Name every party: dynamic actor-aware title first, static map as fallback.
+      title: dynamicTitle(e.type, e.payload || {}, nameOf) || EVENT_TITLES[e.type] || e.type,
       detail: e.payload || {},
     });
   }
