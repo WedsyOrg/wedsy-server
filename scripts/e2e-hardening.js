@@ -154,6 +154,17 @@ async function run() {
     // competitor insights must be owner-scoped too
     const r4 = await api("GET", `/venues/${A}/competitive`, { token: tokenB });
     ok("4 IDOR: venueB token GET venueA competitive -> 403/404", [403, 404].includes(r4.status), `status ${r4.status}`);
+    // multi-property portfolio is phone-scoped: B's portfolio never includes A's venues.
+    const pfB = await api("GET", "/venue-owner/portfolio/overview", { token: tokenB });
+    const pfBslugs = (pfB.json.venues || []).map((v) => v.slug);
+    ok("4 tenancy: phone B portfolio excludes phone A's venue (and member-only venues)",
+      pfB.status === 200 && !pfBslugs.includes(A) && !pfBslugs.includes("test-palace"),
+      `slugs=${pfBslugs.join(",")}`);
+    // my-venues is phone-scoped too: B cannot see A's owned identity.
+    const mvB = await api("GET", "/venue-owner/my-venues", { token: tokenB });
+    const mvBowned = (mvB.json.venues || []).filter((v) => v.kind === "owner").map((v) => v.slug);
+    ok("4 tenancy: phone B my-venues owned set never includes phone A's venue",
+      mvB.status === 200 && !mvBowned.includes("test-palace"), `owned=${mvBowned.join(",")}`);
   }
   // tampered / empty JWT
   {

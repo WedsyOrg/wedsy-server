@@ -6,6 +6,9 @@ const VenueTeamActivity = require("../models/VenueTeamActivity");
 const Venue = require("../models/Venue");
 const VenueClaimRequest = require("../models/VenueClaimRequest");
 const NotificationFailureLog = require("../models/NotificationFailureLog");
+const VenueEnquiry = require("../models/VenueEnquiry");
+const VenueBooking = require("../models/VenueBooking");
+const VenueInvoice = require("../models/VenueInvoice");
 const { SendOTP, VerifyOTP } = require("../utils/otp");
 const enrichVenue = require("../utils/enrichVenue");
 
@@ -519,4 +522,124 @@ const selectIdentity = async (req, res) => {
   }
 };
 
-module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, selectIdentity };
+// ─────────────── Multi-property (Phase: one owner, many venues) ───────────────
+// No VenueOwner schema change: "multi-property" is the set of owner/member
+// identities that share the authed token's phone (the multi-identity login
+// already models this). Every handler re-resolves the phone + its identities
+// FRESH from the DB and never trusts a client-supplied role or venue.
+
+// The authed JWT carries no phone claim — resolve it from the owner/member id.
+async function phoneFromAuth(req) {
+  const { venueOwnerId, memberId } = req.venueOwner || {};
+  if (venueOwnerId) {
+    const o = await VenueOwner.findById(venueOwnerId).select("phone").lean();
+    return o && o.phone;
+  }
+  if (memberId) {
+    const m = await VenueTeamMember.findById(memberId).select("phone").lean();
+    return m && m.phone;
+  }
+  return null;
+}
+
+// GET /venue-owner/my-venues — every identity for the authed phone, re-resolved
+// from DB (venue name/slug + role each), with the current one flagged.
+const myVenues = async (req, res) => {
+  try {
+    const phone = await phoneFromAuth(req);
+    if (!phone) return res.status(401).json({ message: "Could not resolve account" });
+    const identities = await collectIdentities(phone);
+    const currentVenueId = String(req.venueOwner.venueId);
+    const venues = identities.map((i) => ({
+      kind: i.kind,
+      venueId: i.venueId,
+      venueName: i.venueName,
+      slug: i.doc.venueId && i.doc.venueId.slug,
+      status: i.doc.venueId && i.doc.venueId.status,
+      role: i.role,
+      current: i.venueId === currentVenueId,
+    }));
+    return res.status(200).json({ venues, count: venues.length });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /venue-owner/switch-venue { venueId } — re-verify from DB that the authed
+// phone holds an identity at that venue, then mint that venue's session token
+// (server-derived role). 403 when the phone has no identity there.
+const switchVenue = async (req, res) => {
+  try {
+    const phone = await phoneFromAuth(req);
+    if (!phone) return res.status(401).json({ message: "Could not resolve account" });
+    const targetVenueId = req.body && req.body.venueId;
+    if (!targetVenueId) return res.status(400).json({ message: "venueId is required" });
+
+    const identities = await collectIdentities(phone);
+    // Prefer an owner identity over a member identity for the same venue.
+    const matches = identities.filter((i) => i.venueId === String(targetVenueId));
+    const identity = matches.find((i) => i.kind === "owner") || matches[0];
+    if (!identity) return res.status(403).json({ message: "You don't have access to that venue" });
+
+    const out = await loginAsIdentity(identity);
+    return res.status(200).json({ success: true, ...out });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// GET /venue-owner/portfolio/overview — cross-venue KPIs for the phone's OWNED
+// identities only (members manage but don't own; the portfolio is the owner's).
+const TERMINAL = ["booked", "lost"];
+const portfolioOverview = async (req, res) => {
+  try {
+    const phone = await phoneFromAuth(req);
+    if (!phone) return res.status(401).json({ message: "Could not resolve account" });
+    const identities = await collectIdentities(phone);
+    const owned = identities.filter((i) => i.kind === "owner");
+
+    const now = new Date();
+    const d7 = new Date(now.getTime() - 7 * 86400000);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const rows = await Promise.all(
+      owned.map(async (i) => {
+        const venueId = i.doc.venueId._id;
+        const [newLeads7d, followUpsDue, bookingsUpcoming, bookings, invoices] = await Promise.all([
+          VenueEnquiry.countDocuments({ venueId, createdAt: { $gte: d7 } }),
+          VenueEnquiry.countDocuments({ venueId, stage: { $nin: TERMINAL }, followUpDate: { $lte: endOfToday, $ne: null } }),
+          VenueBooking.countDocuments({ venue: venueId, status: { $ne: "cancelled" }, "days.date": { $gte: now } }),
+          VenueBooking.find({ venue: venueId, status: { $ne: "cancelled" } }).select("totalValue").lean(),
+          VenueInvoice.find({ venue: venueId }).select("payments").lean(),
+        ]);
+        const confirmed = bookings.reduce((s, b) => s + (Number(b.totalValue) || 0), 0);
+        const received = invoices.reduce((s, inv) => s + (inv.payments || []).reduce((a, p) => a + (Number(p.amount) || 0), 0), 0);
+        return {
+          venueId: i.venueId,
+          name: i.venueName,
+          slug: i.doc.venueId.slug,
+          newLeads7d,
+          followUpsDue,
+          bookingsUpcoming,
+          revenuePending: Math.max(0, confirmed - received),
+        };
+      })
+    );
+
+    const totals = rows.reduce(
+      (t, r) => ({
+        newLeads7d: t.newLeads7d + r.newLeads7d,
+        followUpsDue: t.followUpsDue + r.followUpsDue,
+        bookingsUpcoming: t.bookingsUpcoming + r.bookingsUpcoming,
+        revenuePending: t.revenuePending + r.revenuePending,
+      }),
+      { newLeads7d: 0, followUpsDue: 0, bookingsUpcoming: 0, revenuePending: 0 }
+    );
+
+    return res.status(200).json({ venues: rows, totals, count: rows.length });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, selectIdentity, myVenues, switchVenue, portfolioOverview };

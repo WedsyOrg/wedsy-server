@@ -843,6 +843,60 @@ async function run() {
     check("competitive: second call is cached", c2.status === 200 && c2.json.cached === true, `cached=${c2.json && c2.json.cached}`);
   }
 
+  // ================= Multi-property: my-venues / switch-venue / portfolio =================
+  if (process.env.E2E_MULTIPROP === "1") {
+    const PORT_PHONE = "7777777777";
+    // Owns 3 venues -> login returns a picker. Select one to get a session token.
+    const login3 = await api("POST", "/venue-owner/auth", { body: { phone: PORT_PHONE, otp: "000000", referenceId: "dev" } });
+    check("multiprop: 3-venue owner login -> picker with 3 owner identities",
+      login3.status === 200 && login3.json.multiple === true && (login3.json.identities || []).length === 3 && login3.json.identities.every((i) => i.kind === "owner"),
+      `n=${login3.json.identities && login3.json.identities.length}`);
+    const firstId = login3.json.identities[0];
+    const sel = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: login3.json.selectionToken, kind: "owner", id: firstId.id } });
+    const ptoken = sel.json && sel.json.token;
+    check("multiprop: select-identity mints a session token", sel.status === 200 && Boolean(ptoken), `status ${sel.status}`);
+
+    // my-venues: exactly the 3 owned venues; the deactivated test-palace membership is excluded.
+    const mv = await api("GET", "/venue-owner/my-venues", { token: ptoken });
+    const slugs = (mv.json.venues || []).map((v) => v.slug).sort();
+    check("multiprop: my-venues lists the 3 owned venues, deactivated membership excluded",
+      mv.status === 200 && mv.json.count === 3 && slugs.join(",") === "portfolio-alpha,portfolio-beta,portfolio-gamma" && mv.json.venues.every((v) => v.role === "owner"),
+      `slugs=${slugs.join(",")}`);
+    check("multiprop: my-venues flags exactly one current venue", (mv.json.venues || []).filter((v) => v.current).length === 1);
+
+    // switch-venue to another owned venue -> token works on that venue's dashboard.
+    const target = mv.json.venues.find((v) => !v.current);
+    const sw = await api("POST", "/venue-owner/switch-venue", { token: ptoken, body: { venueId: target.venueId } });
+    check("multiprop: switch-venue mints a token for the chosen venue", sw.status === 200 && sw.json.token, `status ${sw.status}`);
+    const swOv = await api("GET", "/venues/dashboard/overview", { token: sw.json.token });
+    check("multiprop: switched token authorizes that venue's dashboard", swOv.status === 200, `status ${swOv.status}`);
+    const swMv = await api("GET", "/venue-owner/my-venues", { token: sw.json.token });
+    const nowCurrent = (swMv.json.venues || []).find((v) => v.current);
+    check("multiprop: switched token's current venue is the target", nowCurrent && nowCurrent.venueId === target.venueId, `current=${nowCurrent && nowCurrent.slug}`);
+
+    // switch to a venue this phone does NOT own -> 403 (re-verified from DB).
+    const tp = await api("GET", `/venues/${SLUG}`, {});
+    const notOwned = tp.json.venue && tp.json.venue._id;
+    const swBad = await api("POST", "/venue-owner/switch-venue", { token: ptoken, body: { venueId: notOwned } });
+    check("multiprop: switch to a non-owned venue -> 403", swBad.status === 403, `status ${swBad.status}`);
+
+    // portfolio overview: 3 rows + totals = sum of rows.
+    const pf = await api("GET", "/venue-owner/portfolio/overview", { token: ptoken });
+    const rows = pf.json.venues || [];
+    const sumLeads = rows.reduce((s, r) => s + r.newLeads7d, 0);
+    const sumPending = rows.reduce((s, r) => s + r.revenuePending, 0);
+    check("multiprop: portfolio overview returns 3 owned venues with KPIs",
+      pf.status === 200 && pf.json.count === 3 && rows.every((r) => typeof r.newLeads7d === "number" && typeof r.revenuePending === "number" && typeof r.bookingsUpcoming === "number"),
+      `count=${pf.json.count}`);
+    check("multiprop: portfolio totals == sum of per-venue rows",
+      pf.json.totals && pf.json.totals.newLeads7d === sumLeads && pf.json.totals.revenuePending === sumPending,
+      `totals=${JSON.stringify(pf.json.totals)}`);
+    // Each portfolio venue seeded with 2 recent leads + 1 upcoming booking.
+    check("multiprop: seeded KPIs are non-zero (2 leads, 1 upcoming booking per venue)",
+      rows.every((r) => r.newLeads7d === 2 && r.bookingsUpcoming === 1 && r.followUpsDue >= 1),
+      JSON.stringify(rows.map((r) => ({ s: r.slug, l: r.newLeads7d, b: r.bookingsUpcoming, f: r.followUpsDue }))));
+  }
+
   finish();
 }
 

@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
-const { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, selectIdentity } = require("../controllers/venueOwner");
+const { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, selectIdentity, myVenues, switchVenue, portfolioOverview } = require("../controllers/venueOwner");
+const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 
 router.get("/claim-info/:slug", getClaimInfo);
 router.post("/claim", initiateClaim);
@@ -12,5 +13,11 @@ router.post("/auth", login);
 // Multi-identity disambiguation: exchange a selection token + chosen identity
 // for the venue_owner session token.
 router.post("/auth/select-identity", selectIdentity);
+
+// ── Multi-property (one owner, many venues) — all venueOwnerAuth, phone +
+//    identities re-resolved from DB inside each handler ──
+router.get("/my-venues", venueOwnerAuth, myVenues);
+router.post("/switch-venue", venueOwnerAuth, switchVenue);
+router.get("/portfolio/overview", venueOwnerAuth, portfolioOverview);
 
 module.exports = router;
