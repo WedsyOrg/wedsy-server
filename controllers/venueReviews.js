@@ -1,49 +1,43 @@
+/**
+ * controllers/venueReviews.js — couple-side Google reviews enrichment route
+ * (POST /venues/:slug/reviews, public + rate-limited).
+ *
+ * The fetch + cache logic now lives in utils/venueGoogleReviews (shared with
+ * the owner-facing reviews controller — one source of truth). This route keeps
+ * its historical 7-day TTL and its legacy response shape
+ * ({ reviews, rating, total, cached?/skipped?/error? }) so existing callers are
+ * unaffected.
+ */
 const Venue = require("../models/Venue");
+const { getVenueReviews } = require("../utils/venueGoogleReviews");
 
-const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
-const CACHE_MS = 7 * 24 * 60 * 60 * 1000;
+const CACHE_MS = 7 * 24 * 60 * 60 * 1000; // couple-side TTL (longer than the owner surface)
 
 const refreshReviews = async (req, res) => {
   try {
     const { slug } = req.params;
-    const venue = await Venue.findOne({ slug });
+    const venue = await Venue.findOne({ slug })
+      .select("_id googlePlaceId googleRating googleReviewCount googleReviews googleReviewsRefreshedAt")
+      .lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
-    if (!venue.googlePlaceId) {
+
+    const out = await getVenueReviews(venue, {
+      ttlMs: CACHE_MS,
+      // $set keeps unrelated validation drift on the venue doc from blocking
+      // this partial enrichment write (mirrors the previous behaviour).
+      save: (setFields) => Venue.updateOne({ _id: venue._id }, { $set: setFields }),
+    });
+
+    // Preserve the legacy public shape exactly: a skipped result (no placeId or
+    // no Google key) returns empty values, never partial cached data.
+    if (out.skipped) {
       return res.status(200).json({ reviews: [], rating: null, total: 0, skipped: true });
     }
-    if (venue.googleReviewsRefreshedAt &&
-        Date.now() - new Date(venue.googleReviewsRefreshedAt).getTime() < CACHE_MS) {
-      return res.status(200).json({
-        reviews: venue.googleReviews || [],
-        rating: venue.googleRating,
-        total: venue.googleReviewCount,
-        cached: true,
-      });
-    }
-    if (!GOOGLE_KEY) {
-      return res.status(200).json({ reviews: [], rating: null, total: 0, skipped: true });
-    }
-    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${venue.googlePlaceId}&fields=reviews,rating,user_ratings_total&key=${GOOGLE_KEY}`;
-    const resp = await fetch(url);
-    const data = await resp.json();
-    const reviews = (data?.result?.reviews || []).slice(0, 5).map(r => ({
-      authorName: r.author_name,
-      rating: r.rating,
-      text: r.text,
-      time: r.time,
-      profilePhotoUrl: r.profile_photo_url,
-    }));
-    // Use updateOne with $set so existing unrelated validation drift on the
-    // venue doc (e.g. amenities.outsideAlcohol: "") doesn't block this
-    // partial enrichment write.
-    const setFields = { googleReviews: reviews, googleReviewsRefreshedAt: new Date() };
-    if (typeof data?.result?.rating === "number") setFields.googleRating = data.result.rating;
-    if (typeof data?.result?.user_ratings_total === "number") setFields.googleReviewCount = data.result.user_ratings_total;
-    await Venue.updateOne({ _id: venue._id }, { $set: setFields });
     return res.status(200).json({
-      reviews,
-      rating: setFields.googleRating ?? venue.googleRating ?? null,
-      total: setFields.googleReviewCount ?? venue.googleReviewCount ?? 0,
+      reviews: out.reviews || [],
+      rating: out.rating ?? null,
+      total: out.count ?? 0,
+      ...(out.cached ? { cached: true } : {}),
     });
   } catch (err) {
     return res.status(200).json({ reviews: [], rating: null, total: 0, error: err.message });

@@ -787,6 +787,13 @@ async function run() {
     check("reviews: refresh with blank creds -> 200 skipped (cache intact)",
       rf.status === 200 && rf.json.skipped && rf.json.rating === 4.6, `status ${rf.status} skipped=${rf.json.skipped}`);
 
+    // Couple-side enrichment route (public) now shares utils/venueGoogleReviews:
+    // a fresh 7-day cache serves cached with the legacy { reviews, rating, total } shape.
+    const couple = await api("POST", `/venues/${SLUG}/reviews`, {});
+    check("reviews: couple-side route serves cached via shared util (legacy shape)",
+      couple.status === 200 && couple.json.cached === true && couple.json.rating === 4.6 && couple.json.total === 132 && Array.isArray(couple.json.reviews),
+      `status ${couple.status} rating=${couple.json.rating} total=${couple.json.total} cached=${couple.json.cached}`);
+
     // Refresh rate limit: burst past the limiter -> 429 present.
     const burst = await Promise.all(Array.from({ length: 6 }, () => api("POST", `/venues/${SLUG}/reviews/refresh`, { token })));
     check("reviews: refresh burst -> 429 rate limit", burst.some((r) => r.status === 429), `statuses ${[...new Set(burst.map((r) => r.status))].join(",")}`);
