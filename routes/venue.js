@@ -25,7 +25,8 @@ const { createAllotments, listAllotments, updateAllotment, occupancy } = require
 const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
-const { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter } = require("../utils/venueEnquiryRateLimit");
+const { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter, reviewsRefreshLimiter } = require("../utils/venueEnquiryRateLimit");
+const { getReviews, refreshOwnerReviews } = require("../controllers/venueOwnerReviews");
 const { adminOrVenueOwnerAuth } = require("../middlewares/adminOrVenueOwnerAuth");
 const { optionalAdminAuth } = require("../middlewares/optionalAdminAuth");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
@@ -126,6 +127,11 @@ router.post("/:slug/contracts/:contractId/send", venueOwnerAuth, requireCapabili
 router.get("/:slug/contracts/:contractId/pdf", venueOwnerAuth, contractPdf);
 
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
+
+// ── Phase 4.2 reviews: owner-facing display/monitor (24h venue-doc cache);
+//    manual refresh is rate-limited to protect the Places quota ──
+router.get("/:slug/reviews", venueOwnerAuth, getReviews);
+router.post("/:slug/reviews/refresh", venueOwnerAuth, reviewsRefreshLimiter, refreshOwnerReviews);
 
 // Google Sheets integration — ALL routes require the "leads" capability (ruling),
 // since the sync brings leads in. callback is public — authorized by the signed

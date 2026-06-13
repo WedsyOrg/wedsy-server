@@ -56,6 +56,12 @@ const getVenueBySlug = async (req, res) => {
   try {
     const { slug } = req.params;
     const venue = withPolicyDoc(await VenueService.getVenueBySlug(slug));
+    // Public detail exposes the aggregate rating + count ONLY — individual
+    // Google review texts are an owner-dashboard surface, not a public API.
+    if (venue) {
+      delete venue.googleReviews;
+      delete venue.googleReviewsRefreshedAt;
+    }
     // Stable public verification flag. Derived from status today (same as the
     // dashboard); when Wedsy OS ships a real orthogonal boolean, only this
     // derivation changes — the `isVerified` API name stays, so the couple-side
