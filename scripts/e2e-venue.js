@@ -558,9 +558,22 @@ async function run() {
     const ackAgain = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Again", phone: couplePhone } });
     check("contracts: double-acknowledge -> 409", ackAgain.status === 409, `status ${ackAgain.status}`);
 
-    // pdf bytes
+    // pdf bytes — clean (no logo set) renders without an image object
     const pdf = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
     check("contracts: PDF returns bytes", pdf.status === 200 && pdf.head.startsWith("%PDF") && pdf.bytes > 800, `bytes=${pdf.bytes}`);
+    check("contracts: PDF without logo has no image object", pdf.status === 200 && !pdf.body.includes("/XObject"), `hasImage=${pdf.body.includes("/XObject")}`);
+
+    // logo set -> contract PDF embeds the image object (graceful when cleared)
+    const sharpLib = require("sharp");
+    const logoJpeg = await sharpLib({ create: { width: 24, height: 24, channels: 3, background: { r: 107, g: 30, b: 46 } } }).jpeg().toBuffer();
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: `data:image/jpeg;base64,${logoJpeg.toString("base64")}` } });
+    const pdfLogo = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
+    check("contracts: PDF embeds image object when logo set",
+      pdfLogo.status === 200 && pdfLogo.head.startsWith("%PDF") && pdfLogo.body.includes("/XObject"),
+      `bytes=${pdfLogo.bytes} hasImage=${pdfLogo.body.includes("/XObject")}`);
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
+    const pdfClean = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
+    check("contracts: PDF clean again after logo cleared", pdfClean.status === 200 && !pdfClean.body.includes("/XObject"), `hasImage=${pdfClean.body.includes("/XObject")}`);
 
     // new version supersedes (voids) prior non-acknowledged; acknowledged stays
     const g2 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
