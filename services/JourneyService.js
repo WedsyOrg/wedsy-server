@@ -50,6 +50,14 @@ const EVENT_TITLES = {
   huddle_completed: "Huddle complete — team onboarded 🤝",
   kiara_safety_net_engaged: "Kiara safety net engaged ✦",
   meet_refused: "Refusing a meeting — tagged no-meet",
+  // MB7a — onboarding & money engine.
+  client_finalised: "Client finalised the plan",
+  wedsy_approved: "Wedsy approved the plan ✦",
+  agreement_signed: "Agreement accepted",
+  onboarding_started: "Onboarding started",
+  onboarding_payment_recorded: "Onboarding payment received ✦",
+  onboarded: "Onboarded — client is live ✦",
+  payment_recorded: "Payment recorded",
 };
 
 // Payload keys that carry an Admin id of a SECOND party (not the actor) — these
