@@ -25,7 +25,8 @@ const triageHolderIds = async () => {
     .filter((r) => permissionSatisfies(r.permissions || [], "leads:triage:own").allowed)
     .map((r) => r._id);
   const holders = holderRoleIds.length
-    ? await Admin.find({ roleId: { $in: holderRoleIds }, status: "active" }, { _id: 1 }).lean()
+    // RBAC v2: match the role on roleId OR any of roleIds[] (multi-role).
+    ? await Admin.find({ status: "active", $or: [{ roleId: { $in: holderRoleIds } }, { roleIds: { $in: holderRoleIds } }] }, { _id: 1 }).lean()
     : [];
   const ids = holders.map((h) => h._id);
   holderCache = { ids, expires: Date.now() + HOLDER_CACHE_TTL_MS };
@@ -36,8 +37,9 @@ const triageHolderIds = async () => {
 const internsWithStatus = async () => {
   const poolRoles = (await SettingsService.get("assignment.poolRoles")) || [];
   const roles = await Role.find({ name: { $in: poolRoles }, deletedAt: null }, { _id: 1 }).lean();
+  const roleIds = roles.map((r) => r._id);
   const interns = await Admin.find(
-    { roleId: { $in: roles.map((r) => r._id) }, status: "active" },
+    { status: "active", $or: [{ roleId: { $in: roleIds } }, { roleIds: { $in: roleIds } }] },
     { name: 1, reportingManagerId: 1, lastAssignedAt: 1 }
   ).lean();
   const CalendarEventService = require("./CalendarEventService");
@@ -161,7 +163,7 @@ const inWorkingHours = async (now = new Date()) => {
 const revenueHeadIds = async () => {
   const role = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
   if (!role) return [];
-  const heads = await Admin.find({ roleId: role._id, status: "active" }, { _id: 1 }).lean();
+  const heads = await Admin.find({ status: "active", $or: [{ roleId: role._id }, { roleIds: role._id }] }, { _id: 1 }).lean();
   return heads.map((h) => h._id);
 };
 

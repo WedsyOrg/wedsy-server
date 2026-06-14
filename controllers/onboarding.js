@@ -151,4 +151,31 @@ const GetStatus = async (req, res) => {
   }
 };
 
-module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus, StartOnboarding, ClientState, CreatePaymentLink, RecordOfflinePayment, ConfirmOnlinePayment };
+// GET /onboarding/cs/clients — CS dashboard onboarded-clients list (scoped).
+const CSClients = async (req, res) => {
+  try {
+    res.status(200).json({ list: await OnboardingService.listOnboardedClients(req.scopeFilter || {}) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// GET /onboarding/cs/clients.csv — same list as a CSV download (xlsx deferred).
+const CSClientsCsv = async (req, res) => {
+  try {
+    const rows = await OnboardingService.listOnboardedClients(req.scopeFilter || {});
+    const esc = (v) => `"${String(v == null ? "" : v).replace(/"/g, '""')}"`;
+    const header = ["Client", "Phone", "Onboarded", "Total (₹)", "Paid (₹)", "Due (₹)", "Agreement"];
+    const lines = [header.map(esc).join(",")];
+    for (const r of rows) {
+      lines.push([r.name, r.phone, r.onboardedAt ? new Date(r.onboardedAt).toISOString().slice(0, 10) : "", r.totalRupees, r.paidRupees, r.dueRupees, r.agreementAccepted ? "accepted" : "pending"].map(esc).join(","));
+    }
+    res.setHeader("Content-Type", "text/csv");
+    res.setHeader("Content-Disposition", 'attachment; filename="onboarded-clients.csv"');
+    res.status(200).send(lines.join("\n"));
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus, StartOnboarding, ClientState, CreatePaymentLink, RecordOfflinePayment, ConfirmOnlinePayment, CSClients, CSClientsCsv };

@@ -367,6 +367,53 @@ const confirmOnlineMilestonePaid = async ({ paymentId, actorId = null }) => {
   return { ok: true, invoicePath: `/payment/${payment._id}/invoice` };
 };
 
+// ── CS dashboard (Slice 7) ──────────────────────────────────────────────────
+// Onboarded clients in the caller's scope. scopeFilter is built on the Project
+// (ownerField csOwnerId): {} = all (CS manager), else narrowed to the CS owner.
+const listOnboardedClients = async (scopeFilter = {}) => {
+  const Project = require("../models/Project");
+  const projects = await Project.find(scopeFilter, { leadId: 1, coupleNames: 1, csOwnerId: 1, value: 1, eventIds: 1 }).lean();
+  const leadIds = projects.map((p) => p.leadId).filter(Boolean);
+  // Onboarded records whose lead is an in-scope project.
+  const onboardings = await Onboarding.find({ leadId: { $in: leadIds }, status: "onboarded" }).sort({ onboardedAt: -1 }).lean();
+  if (!onboardings.length) return [];
+
+  const Enquiry = require("../models/Enquiry");
+  const leads = await Enquiry.find({ _id: { $in: onboardings.map((o) => o.leadId) } }, { name: 1, phone: 1 }).lean();
+  const leadById = new Map(leads.map((l) => [String(l._id), l]));
+  const projByLead = new Map(projects.map((p) => [String(p.leadId), p]));
+
+  // Paid totals (rupees) per event from paid payments.
+  const eventIds = onboardings.map((o) => o.eventId).filter(Boolean);
+  const payments = eventIds.length
+    ? await Payment.find({ event: { $in: eventIds }, status: "paid" }, { event: 1, amountPaid: 1 }).lean()
+    : [];
+  const paidByEvent = new Map();
+  for (const p of payments) {
+    const k = String(p.event);
+    paidByEvent.set(k, (paidByEvent.get(k) || 0) + (p.amountPaid || 0) / 100);
+  }
+
+  return onboardings.map((o) => {
+    const lead = leadById.get(String(o.leadId));
+    const proj = projByLead.get(String(o.leadId));
+    const total = (o.milestones && o.milestones.total) || (proj && proj.value) || 0;
+    const paid = paidByEvent.get(String(o.eventId)) || 0;
+    return {
+      onboardingId: o._id,
+      leadId: o.leadId,
+      eventId: o.eventId,
+      name: (proj && proj.coupleNames) || (lead && lead.name) || "",
+      phone: lead ? lead.phone : "",
+      onboardedAt: o.onboardedAt,
+      totalRupees: total,
+      paidRupees: paid,
+      dueRupees: Math.max(0, total - paid),
+      agreementAccepted: !!(o.agreement && o.agreement.accepted),
+    };
+  });
+};
+
 // Flip the onboarding record to ONBOARDED, clear the client lock, journal, and
 // email the accepted agreement (seam — dormant-safe).
 const markOnboarded = async ({ leadId, eventId, paymentId, actorId = null }) => {
@@ -415,4 +462,5 @@ module.exports = {
   recordOfflinePayment,
   confirmOnlineMilestonePaid,
   markOnboarded,
+  listOnboardedClients,
 };

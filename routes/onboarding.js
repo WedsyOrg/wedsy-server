@@ -51,4 +51,19 @@ router.post(
   controller.ConfirmOnlinePayment
 );
 
+// CS dashboard (Slice 7) — onboarded clients list + CSV export, scoped by the
+// project's CS owner (projects:view).
+router.get(
+  "/cs/clients",
+  CheckAdminLogin,
+  requirePermission("projects:view:own", { ownerField: "csOwnerId" }),
+  controller.CSClients
+);
+router.get(
+  "/cs/clients.csv",
+  CheckAdminLogin,
+  requirePermission("projects:view:own", { ownerField: "csOwnerId" }),
+  controller.CSClientsCsv
+);
+
 module.exports = router;

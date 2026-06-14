@@ -785,14 +785,22 @@ const FirstResetPassword = async (req, res) => {
 const GetPermissions = async (req, res) => {
   try {
     const admin = await Admin.findById(req.auth.user_id).lean();
-    if (!admin || !admin.roleId) {
-      return res.status(200).send({ permissions: [] });
+    const { permissionsForAdmin, roleIdsOf } = require("../middlewares/requirePermission");
+    const ids = roleIdsOf(admin);
+    if (!admin || ids.length === 0) {
+      return res.status(200).send({ permissions: [], roleNames: [] });
     }
+    // RBAC v2: union of permissions across every role; roleNames lists all.
     const Role = require("../models/Role");
-    const role = await Role.findById(admin.roleId).lean();
+    const [permissions, roles] = await Promise.all([
+      permissionsForAdmin(admin),
+      Role.find({ _id: { $in: ids } }, { name: 1 }).lean(),
+    ]);
+    const roleNames = roles.map((r) => r.name);
     res.status(200).send({
-      permissions: role && Array.isArray(role.permissions) ? role.permissions : [],
-      roleName: role ? role.name : null,
+      permissions,
+      roleNames,
+      roleName: roleNames[0] || null, // back-compat
     });
   } catch (error) {
     res.status(500).send({ message: "Server error" });
