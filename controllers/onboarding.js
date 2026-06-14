@@ -1,5 +1,6 @@
 const Config = require("../models/Config");
 const OnboardingService = require("../services/OnboardingService");
+const SettingsService = require("../services/SettingsService");
 
 const respond = (res, error) =>
   res.status(error.status || 500).json({ message: error.message || "Server error" });
@@ -54,4 +55,44 @@ const PreviewMilestones = async (req, res) => {
   }
 };
 
-module.exports = { GetMilestones, PutMilestones, PreviewMilestones };
+// GET /onboarding/agreement — the agreement text + version for the onboard flow.
+// CheckLogin so the CLIENT (wedsy-user) can read it (the admin-only
+// /settings/public can't be reached by client tokens).
+const GetAgreementText = async (req, res) => {
+  try {
+    const [terms, version] = await Promise.all([
+      SettingsService.get("agreement.terms"),
+      SettingsService.get("agreement.version"),
+    ]);
+    res.status(200).json({ terms, version });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// POST /onboarding/agreement — client (or OS on their behalf) accepts the terms.
+// Body: { leadId, eventId?, acceptedName }. Records acceptance + journey.
+const AcceptAgreement = async (req, res) => {
+  try {
+    const { leadId, eventId, acceptedName } = req.body || {};
+    const actorId = req.auth && req.auth.isAdmin ? req.auth.user_id : null;
+    const doc = await OnboardingService.acceptAgreement({ leadId, eventId, acceptedName, actorId });
+    res.status(200).json({ message: "success", agreement: doc.agreement });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// GET /onboarding?leadId=&eventId= — onboarding status (OS).
+const GetStatus = async (req, res) => {
+  try {
+    const { leadId, eventId } = req.query;
+    if (!leadId) return res.status(400).json({ message: "leadId is required" });
+    const doc = await OnboardingService.getOnboarding(leadId, eventId || null);
+    res.status(200).json({ onboarding: doc || null });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus };

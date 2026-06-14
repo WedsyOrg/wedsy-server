@@ -102,6 +102,50 @@ const countDrafts = async (userId) =>
 const paymentUnlocked = (event) =>
   !!(event && event.status && event.status.finalized && event.status.approved);
 
+// ── Onboarding record helpers (Slices 3–6) ──────────────────────────────────
+const Onboarding = require("../models/Onboarding");
+const SettingsService = require("./SettingsService");
+
+const getOnboarding = async (leadId, eventId = null) =>
+  Onboarding.findOne({ leadId, eventId: eventId || null }).lean();
+
+// E-sign acceptance (Slice 3). Upserts the onboarding record (works whether or
+// not onboarding was formally started), stamps the accepted version, journals
+// agreement_signed. Returns the onboarding doc.
+const acceptAgreement = async ({ leadId, eventId = null, acceptedName, actorId = null }) => {
+  if (!mongoose.Types.ObjectId.isValid(leadId)) {
+    throw Object.assign(new Error("Invalid lead id"), { status: 400 });
+  }
+  const name = String(acceptedName || "").trim();
+  if (!name) throw Object.assign(new Error("acceptedName is required"), { status: 400 });
+
+  let version = "v1";
+  try { version = await SettingsService.get("agreement.version"); } catch (_) { /* default */ }
+
+  const now = new Date();
+  const doc = await Onboarding.findOneAndUpdate(
+    { leadId, eventId: eventId || null },
+    {
+      $setOnInsert: { leadId, eventId: eventId || null, status: "started" },
+      $set: {
+        "agreement.accepted": true,
+        "agreement.acceptedAt": now,
+        "agreement.acceptedName": name,
+        "agreement.agreementVersion": version,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  await LeadInternalEventService.record({
+    leadId,
+    type: "agreement_signed",
+    actorId,
+    payload: { acceptedName: name, agreementVersion: version, eventId: eventId ? String(eventId) : null },
+  });
+  return doc;
+};
+
 module.exports = {
   MAX_DRAFTS,
   MILESTONE_CODE,
@@ -112,4 +156,6 @@ module.exports = {
   recordEventJourney,
   countDrafts,
   paymentUnlocked,
+  getOnboarding,
+  acceptAgreement,
 };

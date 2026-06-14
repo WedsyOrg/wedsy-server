@@ -78,6 +78,16 @@ const DEFAULTS = {
     "both your names, the date or month you're aiming for, whether the venue is sorted, and the best email " +
     "to send our ideas to (yours and your partner's, if you like — that way nobody misses anything). " +
     "Two quick minutes, promise!",
+  // MB7a Slice 3 — e-sign agreement terms (founder-editable, settings_agreement).
+  // PLACEHOLDER, not legal text — the founder pastes the real terms later.
+  "agreement.terms":
+    "[PLACEHOLDER — replace with Wedsy's real service agreement before going live.] " +
+    "This Wedsy wedding services agreement sets out what we'll deliver, the payment " +
+    "milestones (onboarding fee, advance, and balance), timelines, and cancellation " +
+    "terms. By accepting, you confirm you've read and agree to these terms. " +
+    "Edit this in Settings → Agreement.",
+  // Bump when the terms change materially — stamped onto each acceptance.
+  "agreement.version": "v1",
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -114,6 +124,8 @@ const KEY_CATEGORY = {
   "cockpit.servicesScript": "settings_scripts",
   "cockpit.budgetScript": "settings_scripts",
   "cockpit.qualificationIntro": "settings_scripts",
+  "agreement.terms": "settings_agreement",
+  "agreement.version": "settings_agreement",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -141,6 +153,16 @@ const validateValue = (key, value) => {
         throw err(400, `${key} must be a string of at most 5000 chars`);
       }
       return value;
+    case "agreement.terms":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 50000) {
+        throw err(400, "agreement.terms must be a non-empty string of at most 50000 chars");
+      }
+      return value;
+    case "agreement.version":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 40) {
+        throw err(400, "agreement.version must be a non-empty string of at most 40 chars");
+      }
+      return value.trim();
     case "assignment.dailyCap":
       if (!isIntInRange(value, 1, 100)) throw err(400, "assignment.dailyCap must be an integer 1–100");
       return value;

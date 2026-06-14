@@ -70,6 +70,9 @@ const GetPublic = async (req, res) => {
       "cockpit.servicesScript",
       "cockpit.budgetScript",
       "cockpit.qualificationIntro",
+      // MB7a Slice 3: the onboard flow (and wedsy-user) read the agreement text.
+      "agreement.terms",
+      "agreement.version",
     ]);
     res.status(200).json(values);
   } catch (error) {

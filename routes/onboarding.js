@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 
 const controller = require("../controllers/onboarding");
-const { CheckAdminLogin } = require("../middlewares/auth");
+const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 const { requirePermission } = require("../middlewares/requirePermission");
 
 // Milestone settings (Slice 2). GET readable by any admin (operational);
@@ -15,5 +15,10 @@ router.put(
   requirePermission("settings_onboarding:edit:all"),
   controller.PutMilestones
 );
+
+// E-sign (Slice 3). Client-readable terms + accept (CheckLogin); status is OS.
+router.get("/agreement", CheckLogin, controller.GetAgreementText);
+router.post("/agreement", CheckLogin, controller.AcceptAgreement);
+router.get("/", CheckAdminLogin, controller.GetStatus);
 
 module.exports = router;
