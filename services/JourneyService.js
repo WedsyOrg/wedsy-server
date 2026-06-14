@@ -58,6 +58,13 @@ const EVENT_TITLES = {
   onboarding_payment_recorded: "Onboarding payment received ✦",
   onboarded: "Onboarded — client is live ✦",
   payment_recorded: "Payment recorded",
+  // MB7b — collaboration layer.
+  chat_started: "Internal chat started",
+  task_created: "Task created",
+  task_completed: "Task completed ✓",
+  wa_group_created: "WhatsApp group created with the couple ✦",
+  wa_group_missing: "No WhatsApp group yet — flagged",
+  nurture_touch: "Nurture touch",
 };
 
 // Payload keys that carry an Admin id of a SECOND party (not the actor) — these

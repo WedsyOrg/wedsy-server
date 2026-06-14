@@ -87,5 +87,7 @@ router.use("/admin-notifications", require("./notifications")); // in-OS staff n
 router.use("/google", require("./google")); // Google Workspace (MB6 Slice 8 — dormant until env-wired)
 router.use("/saved-views", require("./savedViews")); // per-user leads filter sets (MB6 Slice 9)
 router.use("/onboarding", require("./onboarding")); // onboarding & money engine (MB7a)
+router.use("/lead-tasks", require("./leadTask")); // collaboration tasks (MB7b Slice 2)
+router.use("/nurture-templates", require("./nurtureTemplate")); // nurture library (MB7b Slice 4)
 
 module.exports = router;
