@@ -162,6 +162,23 @@ const EnquirySchema = new mongoose.Schema(
       text: { type: String, default: "" },
       generatedAt: { type: Date, default: null },
     },
+    // ── MB7b Slice 4 (additive only) — nurture engine ───────────────────────
+    // The WhatsApp-group gate at G-Meet close: nurture only switches on once the
+    // CS person confirms the couple's group exists. A "No"/unanswered close
+    // raises whatsappGroupFlag (the red flag on the file + dashboard) until a
+    // one-tap flip to Yes. nurture.lastTouchAt is the cadence clock — reset by a
+    // completed nurture task OR a couple inbound message.
+    whatsappGroupCreated: { type: Boolean, default: false },
+    whatsappGroupCreatedAt: { type: Date, default: null },
+    whatsappGroupFlag: {
+      raised: { type: Boolean, default: false },
+      raisedAt: { type: Date, default: null },
+      clearedAt: { type: Date, default: null },
+    },
+    nurture: {
+      active: { type: Boolean, default: false },
+      lastTouchAt: { type: Date, default: null },
+    },
     // ── MB5 Slice 5 (additive only) — Kiara safety net engagement marker ────
     // Set once when the safety net sends the welcome template (after-hours
     // create or golden-window miss). Gates the once-per-lead rule and joins

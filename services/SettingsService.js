@@ -88,6 +88,10 @@ const DEFAULTS = {
     "Edit this in Settings → Agreement.",
   // Bump when the terms change materially — stamped onto each acceptance.
   "agreement.version": "v1",
+  // MB7b Slice 4 — nurture cadence (days between CS touches in the couple's
+  // WhatsApp group). Founder-editable; the rolling nurture task reschedules to
+  // now + this many days on every completed touch or couple inbound.
+  "nurture.cadenceDays": 2,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -126,6 +130,7 @@ const KEY_CATEGORY = {
   "cockpit.qualificationIntro": "settings_scripts",
   "agreement.terms": "settings_agreement",
   "agreement.version": "settings_agreement",
+  "nurture.cadenceDays": "settings_nurture",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -171,6 +176,9 @@ const validateValue = (key, value) => {
       return value;
     case "triage.escalateAfterMinutes":
       if (!isIntInRange(value, 1, 240)) throw err(400, "triage.escalateAfterMinutes must be an integer 1–240");
+      return value;
+    case "nurture.cadenceDays":
+      if (!isIntInRange(value, 1, 30)) throw err(400, "nurture.cadenceDays must be an integer 1–30");
       return value;
     case "assignment.autoAssignEnabled":
     case "lost.approvalRequired":

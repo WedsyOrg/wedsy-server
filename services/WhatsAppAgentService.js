@@ -261,6 +261,13 @@ const receiveMessage = async (phone, message, meta = {}) => {
       firstMessage: message
     });
 
+    // MB7b Slice 4: a couple inbound counts as a nurture touch — reset the
+    // cadence clock so we never nag an active group. Fire-safe; no-op unless
+    // nurture is active on the linked lead.
+    if (conversation.enquiryId) {
+      await require('./NurtureService').registerInboundTouch(conversation.enquiryId);
+    }
+
     // Human-owned or closed conversation: the message is stored for the team,
     // Kiara stays silent — zero Anthropic spend, no auto-reply.
     if (conversation.mode !== 'ai' || conversation.status === 'closed') return;
