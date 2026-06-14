@@ -128,6 +128,20 @@ router.post(
   requirePermission("leads:edit:own"),
   cockpit.MeetRefused
 );
+// Design-pass Slice 5: Kiara AI summary (lead-scoped; POST regenerates).
+const kiaraSummary = require("../controllers/kiaraSummary");
+router.get(
+  "/:_id/kiara-summary",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  kiaraSummary.Get
+);
+router.post(
+  "/:_id/kiara-summary",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  kiaraSummary.Regenerate
+);
 router.post(
   "/:_id/call-complete",
   CheckAdminLogin,
