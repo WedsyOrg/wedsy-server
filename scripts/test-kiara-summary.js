@@ -60,8 +60,11 @@ const mockServer = http.createServer((req, res) => {
     stage: "contacted", assignedTo: owner._id, qualified: true,
     qualificationData: { groomName: "Aarav", brideName: "Meera", weddingStyle: "South Indian", venueStatus: "looking", servicesRequired: ["Decor", "Catering"], budgetAmount: 1800000, email: "aarav@example.com" },
   });
+  // MB7b Slice 3: the summary now generates only for QUALIFIED leads, so the
+  // empty-data path lives behind the qualified gate — this fixture is qualified
+  // but carries no captured facts (exercises the "not enough info" branch).
   const emptyLead = await Enquiry.create({
-    name: "Walk-in Enquiry", phone: "919900000511", verified: false, source: "Website", additionalInfo: {}, stage: "new", assignedTo: owner._id,
+    name: "Walk-in Enquiry", phone: "919900000511", verified: false, source: "Website", additionalInfo: {}, stage: "new", assignedTo: owner._id, qualified: true,
   });
 
   await new Promise((r) => mockServer.listen(MOCK_PORT, r));

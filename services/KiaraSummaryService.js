@@ -21,7 +21,10 @@ const composeFacts = (lead, journeyEntries = []) => {
   const lines = [];
   // Every lead has name/source/stage — those alone don't count as "data".
   // `substantive` counts facts that actually tell the rep something.
-  const BOILERPLATE = new Set(["Name", "Source", "Stage"]);
+  // "Qualified" is a status flag, not a captured fact about the couple — it
+  // must not, on its own, make an otherwise-empty lead look like it has data
+  // (MB7b: the summary only runs for qualified leads, so the flag is implicit).
+  const BOILERPLATE = new Set(["Name", "Source", "Stage", "Qualified"]);
   let substantive = 0;
   const add = (label, val) => {
     if (val !== undefined && val !== null && String(val).trim() !== "") {
