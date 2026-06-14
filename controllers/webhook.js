@@ -5,19 +5,29 @@ const { SendUpdate } = require("../utils/update");
 const LeadIntakeService = require("../services/LeadIntakeService");
 const AdFormService = require("../services/AdFormService");
 
-// Whitelisted intake sources for the Make→OS Meta-lead bridge. The value stored
-// on the lead IS the LeadSource master title, so board grouping + the source
-// filter (free-string eq/in) match exactly. "Ads (Landing Screen)" is the
-// historical landing-page default and stays the fallback when `source` is absent.
+// Accepted intake sources for the Make→OS Meta-lead bridge. The value stored on
+// the lead IS the LeadSource master title, so board grouping + the source filter
+// (free-string eq/in) match exactly. "Ads (Landing Screen)" is the historical
+// landing-page default and stays the fallback when `source` is absent.
+//
+// Campaign labels are open-ended: any facebook_* / instagram_* shape is accepted
+// (facebook, facebook_general, facebook_june_decor, instagram, instagram_promo,
+// …) so new campaigns need no code change. Anything else is rejected (no
+// arbitrary junk). Campaign + landing_page values are lowercased for a
+// consistent master/filter key; the default literal is preserved verbatim.
 const DEFAULT_SOURCE = "Ads (Landing Screen)";
-const SOURCE_WHITELIST = new Set(["facebook", "instagram", "landing_page", DEFAULT_SOURCE]);
+const META_SOURCE_RE = /^(facebook|instagram)(_[a-z0-9]+)*$/;
 
-// Resolve the body's source to a whitelisted value. Absent → default. Unknown →
-// null (caller rejects 400).
+// Resolve the body's source to an accepted value. Absent → default. Unknown → null
+// (caller rejects 400).
 const resolveSource = (raw) => {
   if (raw === undefined || raw === null || String(raw).trim() === "") return DEFAULT_SOURCE;
-  const v = String(raw).trim();
-  return SOURCE_WHITELIST.has(v) ? v : null;
+  const trimmed = String(raw).trim();
+  if (trimmed === DEFAULT_SOURCE) return DEFAULT_SOURCE;
+  const v = trimmed.toLowerCase();
+  if (v === "landing_page") return "landing_page";
+  if (META_SOURCE_RE.test(v)) return v;
+  return null;
 };
 
 // Idempotently register a source in the lead-source master so it appears in the
