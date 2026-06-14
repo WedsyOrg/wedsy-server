@@ -15,6 +15,7 @@ const KiaraCrmSyncService = require('./KiaraCrmSyncService');
 const LeadIntakeService = require('./LeadIntakeService');
 const LeadInternalEventService = require('./LeadInternalEventService');
 const WAConversationRepository = require('../repositories/WAConversationRepository');
+const Enquiry = require('../models/Enquiry');
 
 // MB6 Slice 11: every Anthropic call rides the shared in-process queue
 // (serialized, exponential backoff on 429) — shared with the WhatsApp agent.
@@ -159,54 +160,154 @@ const checkQualified = async (history) => {
   }
 };
 
-// HOOK 3 support (MB6 Slice 7): once the extractor captured a REAL phone
-// number, link the IG conversation to a CRM lead — full intake semantics
-// (normalized-phone dedup, re-enquiry on terminal leads, shared create path).
-// Idempotent: an already-linked conversation returns untouched.
-const ensureLeadLinkedByPhone = async (conversation, data = {}) => {
+// ── IG lead creation — gated on WEDDING INTENT, not phone presence ───────────
+// An IG conversation becomes a lead when Kiara's extractor classifies it a
+// genuine wedding customer (classification === 'lead' — the EXISTING intent
+// reasoning; no change to what Kiara says). A phone is desirable but NOT
+// required: with a phone we use it (phone dedup); without one we still create
+// the lead off the IG profile name + sender id, flagged "awaiting number" so the
+// team nurtures toward it in the DM. No wedding intent → no lead (no junk).
+
+const igPlaceholderPhone = (igSenderId) => `ig:${igSenderId}`;
+const isPlaceholderPhone = (phone) => String(phone || '').startsWith('ig:');
+const toFullPhone = (digits) => (digits.length === 10 ? `91${digits}` : digits);
+
+// Existing lead for this IG person (no-number dedup key — the stable IG id).
+const findExistingByIgSenderId = async (igSenderId) =>
+  igSenderId ? Enquiry.findOne({ 'additionalInfo.instagramId': String(igSenderId) }) : null;
+
+// Upgrade-in-place: a no-number IG lead finally shares a phone. Run phone-dedup
+// across the CRM first — if the number already belongs to ANOTHER lead (e.g. a
+// WhatsApp lead for the same person), consolidate onto that lead (link the
+// conversation, mark this one merged) rather than duplicating; otherwise set the
+// phone on this lead and clear the awaiting-number flag.
+const upgradeLeadWithPhone = async (conversation, leadId, cleanPhone) => {
+  const full = toFullPhone(cleanPhone);
+  const byPhone = await LeadIntakeService.findExistingByNormalizedPhone(cleanPhone);
+  if (byPhone && String(byPhone._id) !== String(leadId)) {
+    await LeadIntakeService.recordReEnquiry(byPhone._id, {
+      source: 'instagram', message: `Instagram DM (${conversation.phone})`,
+    });
+    await Enquiry.updateOne(
+      { _id: byPhone._id, 'additionalInfo.instagramId': { $ne: String(conversation.phone) } },
+      { $set: { 'additionalInfo.instagramId': String(conversation.phone) } }
+    );
+    await Enquiry.updateOne({ _id: leadId }, {
+      $set: { 'additionalInfo.mergedIntoLeadId': String(byPhone._id), 'additionalInfo.awaitingNumber': false },
+    });
+    await WAConversationRepository.updateFieldsById(conversation._id, { enquiryId: byPhone._id });
+    await LeadInternalEventService.record({
+      leadId: byPhone._id, type: 'ig_lead_merged', actorId: null,
+      payload: { fromLeadId: String(leadId), instagramId: String(conversation.phone), phone: full },
+    });
+    return byPhone._id;
+  }
   try {
-    if (!conversation || conversation.enquiryId) return conversation;
-    const phoneNumber = String(data.phoneNumber || '').replace(/\D/g, '');
-    if (phoneNumber.length < 10) return conversation; // no usable phone yet
+    await Enquiry.updateOne({ _id: leadId }, {
+      $set: { phone: full, 'additionalInfo.awaitingNumber': false },
+    });
+  } catch (e) {
+    // Unique-phone race: the number was just taken by another lead → merge onto it.
+    const winner = await LeadIntakeService.findExistingByNormalizedPhone(cleanPhone);
+    if (winner && String(winner._id) !== String(leadId)) {
+      await Enquiry.updateOne({ _id: leadId }, { $set: { 'additionalInfo.mergedIntoLeadId': String(winner._id), 'additionalInfo.awaitingNumber': false } });
+      await WAConversationRepository.updateFieldsById(conversation._id, { enquiryId: winner._id });
+      return winner._id;
+    }
+    throw e;
+  }
+  await LeadInternalEventService.record({
+    leadId, type: 'ig_number_captured', actorId: null,
+    payload: { instagramId: String(conversation.phone), phone: full },
+  });
+  return leadId;
+};
+
+// Create or link the IG lead for a wedding-intent conversation. Dedup order:
+// (1) by phone (shared with the rest of the CRM), (2) by IG sender id (the
+// no-number case). Idempotent — an already-linked conversation only upgrades
+// with a phone when one arrives.
+const ensureIgLead = async (conversation, { phoneNumber, name } = {}) => {
+  try {
+    if (!conversation) return conversation;
+    const igSenderId = String(conversation.phone);
+    const cleanPhone = String(phoneNumber || '').replace(/\D/g, '');
+    const hasPhone = cleanPhone.length >= 10;
+    // No-number leads are named from the IG profile (the reliable identity we
+    // have); phone leads prefer the extractor-captured contact name.
+    const fallbackName = `Instagram ${igSenderId.slice(-4)}`;
+    const displayName = hasPhone
+      ? ((name || '').trim() || (conversation.profileName || '').trim() || fallbackName)
+      : ((conversation.profileName || '').trim() || (name || '').trim() || fallbackName);
+
+    // Already linked → the only remaining action is upgrading with a phone.
+    if (conversation.enquiryId) {
+      if (hasPhone) {
+        const lead = await Enquiry.findById(conversation.enquiryId, { phone: 1 }).lean();
+        if (lead && isPlaceholderPhone(lead.phone)) {
+          await upgradeLeadWithPhone(conversation, conversation.enquiryId, cleanPhone);
+        }
+      }
+      return conversation;
+    }
 
     let enquiryId = null;
-    const existing = await LeadIntakeService.findExistingByNormalizedPhone(phoneNumber);
-    if (existing) {
-      enquiryId = existing._id;
-      await LeadIntakeService.recordReEnquiry(existing._id, {
-        source: 'instagram',
-        message: `Instagram DM (${conversation.phone})`,
-      });
-    } else {
+
+    // Dedup 1 — by phone (existing CRM lead, e.g. they're also a WhatsApp lead).
+    if (hasPhone) {
+      const byPhone = await LeadIntakeService.findExistingByNormalizedPhone(cleanPhone);
+      if (byPhone) {
+        enquiryId = byPhone._id;
+        await LeadIntakeService.recordReEnquiry(byPhone._id, { source: 'instagram', message: `Instagram DM (${igSenderId})` });
+        await Enquiry.updateOne({ _id: byPhone._id, 'additionalInfo.instagramId': { $ne: igSenderId } }, { $set: { 'additionalInfo.instagramId': igSenderId } });
+      }
+    }
+
+    // Dedup 2 — by IG sender id (the same IG person; the no-number key).
+    if (!enquiryId) {
+      const byIg = await findExistingByIgSenderId(igSenderId);
+      if (byIg) {
+        enquiryId = byIg._id;
+        await LeadIntakeService.recordReEnquiry(byIg._id, { source: 'instagram', message: `Instagram DM (${igSenderId})` });
+        if (hasPhone && isPlaceholderPhone(byIg.phone)) {
+          await upgradeLeadWithPhone({ ...conversation, enquiryId: byIg._id }, byIg._id, cleanPhone);
+        }
+      }
+    }
+
+    // Create — wedding intent, brand-new contact. Phone if we have it, else a
+    // stable IG placeholder + awaitingNumber flag. createLead pins stage:new +
+    // round-robin assignment, so the team picks it up like any other new lead.
+    if (!enquiryId) {
       try {
         const created = await LeadIntakeService.createLead({
-          // Prefer the extractor name, then the fetched IG profile name (RC3),
-          // then the id-suffix fallback.
-          name: (data.name || '').trim() || (conversation.profileName || '').trim() || `Instagram ${String(conversation.phone).slice(-4)}`,
-          phone: phoneNumber.length === 10 ? `91${phoneNumber}` : phoneNumber,
+          name: displayName,
+          phone: hasPhone ? toFullPhone(cleanPhone) : igPlaceholderPhone(igSenderId),
           verified: false,
           source: 'instagram',
-          additionalInfo: { instagramId: conversation.phone },
+          additionalInfo: { instagramId: igSenderId, ...(hasPhone ? {} : { awaitingNumber: true }) },
         });
         enquiryId = created._id;
       } catch (e) {
-        const winner = await LeadIntakeService.findExistingByNormalizedPhone(phoneNumber);
+        // Race (duplicate webhook delivery) → fall back to whichever now exists.
+        const winner = (hasPhone && await LeadIntakeService.findExistingByNormalizedPhone(cleanPhone)) || await findExistingByIgSenderId(igSenderId);
         if (!winner) throw e;
         enquiryId = winner._id;
       }
     }
+
     const updated = await WAConversationRepository.updateFieldsById(conversation._id, { enquiryId });
     await LeadInternalEventService.record({
       leadId: enquiryId,
       type: 'ig_conversation_linked',
       actorId: null,
-      payload: { instagramId: conversation.phone, phoneNumber },
+      payload: { instagramId: igSenderId, phoneNumber: hasPhone ? cleanPhone : '', awaitingNumber: !hasPhone },
     });
     return updated;
   } catch (e) {
-    // RC1d: surface the previously-swallowed failure so a lead that should have
-    // been created but wasn't is VISIBLE (the "NO LEAD YET" symptom had no trail).
-    console.error('[InstagramAgent] ensureLeadLinkedByPhone failed:', e.message);
+    // Surface the previously-swallowed failure (the "NO LEAD YET" symptom had
+    // no trail).
+    console.error('[InstagramAgent] ensureIgLead failed:', e.message);
     try {
       await NotificationFailureLog.create({
         service: 'IgLeadLink',
@@ -222,12 +323,9 @@ const ensureLeadLinkedByPhone = async (conversation, data = {}) => {
   }
 };
 
-// ⚠️ REVIEW-REQUIRED (Phase 2 flagged) — deterministic phone capture.
-// The IG path creates a lead ONLY when the AI extractor returns data.phoneNumber
-// (root cause 1). This scans the raw user messages for a plausible Indian mobile
-// so lead creation no longer depends on the AI parse. It CHANGES WHEN an IG
-// conversation becomes a lead (any message with a 10-digit mobile), so it is a
-// new lead-creation TRIGGER and is flagged for human review rather than final.
+// Deterministic phone scan of the raw user messages — a phone is DESIRABLE but
+// not the gate (wedding intent is). When present it lets us create/upgrade the
+// lead with the real number instead of waiting on the AI extractor's parse.
 const phoneFromHistory = (history) => {
   for (let i = (history || []).length - 1; i >= 0; i--) {
     const m = history[i];
@@ -403,17 +501,19 @@ const receiveMessage = async (instagramId, message) => {
 
     const qualification = await checkQualified(updatedHistory);
 
-    // Phone captured → CRM lead linkage (dedup or shared create path).
-    // ⚠️ REVIEW-REQUIRED: the deterministic phoneFromHistory fallback below
-    // changes the lead-creation trigger (see helper note). Until reviewed, the
-    // AI-extractor phone remains the primary signal; this only ADDS a fallback.
-    const capturedPhone =
-      (qualification && qualification.data && qualification.data.phoneNumber) ||
-      phoneFromHistory(updatedHistory);
-    if (capturedPhone) {
-      conversation = await ensureLeadLinkedByPhone(conversation, {
-        ...((qualification && qualification.data) || {}),
+    // GATE: wedding intent (Kiara's existing classification), NOT phone presence.
+    // classification === 'lead' means a genuine wedding/engagement customer — so
+    // we create the lead with or without a number. A phone is captured if the
+    // extractor returned one or it's visible in the raw messages (desirable, not
+    // required). No wedding intent → no lead (keeps random DMs out of the CRM).
+    const weddingIntent = !!(qualification && qualification.classification === 'lead');
+    if (weddingIntent) {
+      const capturedPhone =
+        (qualification.data && qualification.data.phoneNumber) ||
+        phoneFromHistory(updatedHistory);
+      conversation = await ensureIgLead(conversation, {
         phoneNumber: capturedPhone,
+        name: (qualification.data && qualification.data.name) || '',
       });
     }
 
