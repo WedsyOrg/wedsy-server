@@ -4,6 +4,7 @@ const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
 const { CreateHash } = require("../utils/password");
+const ActivityLogService = require("../services/ActivityLogService");
 
 // Legacy roles[] kept in sync with the RBAC role's department so legacy gates
 // stay consistent (schema enum: owner|crm|sales|ops|finance).
@@ -217,8 +218,96 @@ const UpdateAdmin = async (req, res) => {
   }
 };
 
+// POST /admin/set-password (Slice 2) — an access-manager sets a NEW password for
+// ANY team member (forgot-password case): no current password required. Gated by
+// requirePermission("team:manage_access:all"). Audited (never the password).
+const SetMemberPassword = async (req, res) => {
+  try {
+    const { targetAdminId, newPassword } = req.body || {};
+    if (!mongoose.Types.ObjectId.isValid(targetAdminId)) {
+      return res.status(400).json({ message: "Invalid targetAdminId." });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+    const target = await Admin.findById(targetAdminId);
+    if (!target) return res.status(404).json({ message: "Target admin not found." });
+
+    target.password = await CreateHash(newPassword);
+    // The member now has a known password — clear any forced-reset flag.
+    target.mustResetPassword = false;
+    await target.save();
+
+    await ActivityLogService.record({
+      actorId: req.auth.user_id,
+      action: "admin.password_set",
+      entityType: "admin",
+      entityId: String(target._id),
+      summary: `Set a new password for ${target.name}`,
+      meta: { targetAdminId: String(target._id), targetName: target.name }, // NO password
+    });
+    console.log(`[admin] Password set for ${target._id} by ${req.auth.user_id}`);
+    return res.status(200).json({ message: "Password set" });
+  } catch (error) {
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// POST /admin/access (Slice 3) — disable / re-enable a team member's access.
+// Gated by requirePermission("team:manage_access:all"). A disabled admin cannot
+// log in AND existing tokens are rejected by CheckAdminLogin. Safety: cannot
+// disable self; a non-founder cannot disable a founder (wildcard) account.
+const SetMemberAccess = async (req, res) => {
+  try {
+    const { targetAdminId, disabled } = req.body || {};
+    if (!mongoose.Types.ObjectId.isValid(targetAdminId)) {
+      return res.status(400).json({ message: "Invalid targetAdminId." });
+    }
+    if (typeof disabled !== "boolean") {
+      return res.status(400).json({ message: "disabled must be a boolean." });
+    }
+    // Safety: never let an admin lock themselves out.
+    if (String(targetAdminId) === String(req.auth.user_id)) {
+      return res.status(400).json({ message: "You cannot disable your own access." });
+    }
+    const target = await Admin.findById(targetAdminId);
+    if (!target) return res.status(404).json({ message: "Target admin not found." });
+
+    // Protect the top account: a non-founder cannot disable a founder.
+    if (disabled) {
+      const { permissionsForAdmin } = require("../middlewares/requirePermission");
+      const acting = await Admin.findById(req.auth.user_id);
+      const [targetPerms, actingPerms] = await Promise.all([
+        permissionsForAdmin(target),
+        permissionsForAdmin(acting),
+      ]);
+      const isFounder = (perms) => (perms || []).includes("*:*:all");
+      if (isFounder(targetPerms) && !isFounder(actingPerms)) {
+        return res.status(403).json({ message: "You cannot disable a founder account." });
+      }
+    }
+
+    target.isDisabled = disabled;
+    await target.save();
+
+    await ActivityLogService.record({
+      actorId: req.auth.user_id,
+      action: disabled ? "admin.disabled" : "admin.enabled",
+      entityType: "admin",
+      entityId: String(target._id),
+      summary: `${disabled ? "Disabled" : "Re-enabled"} access for ${target.name}`,
+      meta: { targetAdminId: String(target._id), targetName: target.name, disabled },
+    });
+    return res.status(200).json({ message: disabled ? "Access disabled" : "Access enabled", isDisabled: disabled });
+  } catch (error) {
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 module.exports = {
   GetAll,
   CreateAdmin,
   UpdateAdmin,
+  SetMemberPassword,
+  SetMemberAccess,
 };
