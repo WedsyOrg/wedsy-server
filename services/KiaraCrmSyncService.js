@@ -75,6 +75,15 @@ const escalate = async (conversation, reason) => {
       actorId: null,
       payload: { reason: reason || "" },
     });
+    // ⚠️ REVIEW-REQUIRED (Phase 2 flagged): one-time transcript→facts extraction
+    // at HANDOFF (escalation is when a human takes over and the transcript is
+    // richest). Haiku, guarded once-per-lead by additionalInfo.factsExtractedAt.
+    // A NEW AI call on real conversations — parked for human review (prompt +
+    // trigger + cost shape in services/KiaraFactExtractionService.js).
+    await require("./KiaraFactExtractionService").extractFactsForLead(
+      conversation.enquiryId,
+      conversation.phone
+    );
   }
   return updated;
 };
