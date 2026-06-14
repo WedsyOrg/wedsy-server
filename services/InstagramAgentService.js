@@ -1,4 +1,4 @@
-const { sendInstagramDM } = require('../utils/instagram');
+const { sendInstagramDM, fetchInstagramProfile } = require('../utils/instagram');
 const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 const QualifiedLead = require('../models/QualifiedLead');
@@ -129,7 +129,17 @@ const checkQualified = async (history) => {
       if (text === null) return { qualified: false };
       try {
         return JSON.parse(text);
-      } catch {
+      } catch (parseErr) {
+        // RC1d: a parse failure silently dropped data.phoneNumber → no lead.
+        // Surface it (the extractor JSON is malformed) without changing the
+        // safe fallback behavior (not qualified, no routing).
+        console.error('[InstagramAgent] extractor JSON parse failed:', parseErr.message);
+        await NotificationFailureLog.create({
+          service: 'IgExtractorParse',
+          error: parseErr.message,
+          attempts: 1,
+          createdAt: new Date(),
+        }).catch(() => {});
         return { qualified: false };
       }
     } catch (error) {
@@ -170,7 +180,9 @@ const ensureLeadLinkedByPhone = async (conversation, data = {}) => {
     } else {
       try {
         const created = await LeadIntakeService.createLead({
-          name: (data.name || '').trim() || `Instagram ${String(conversation.phone).slice(-4)}`,
+          // Prefer the extractor name, then the fetched IG profile name (RC3),
+          // then the id-suffix fallback.
+          name: (data.name || '').trim() || (conversation.profileName || '').trim() || `Instagram ${String(conversation.phone).slice(-4)}`,
           phone: phoneNumber.length === 10 ? `91${phoneNumber}` : phoneNumber,
           verified: false,
           source: 'instagram',
@@ -192,7 +204,20 @@ const ensureLeadLinkedByPhone = async (conversation, data = {}) => {
     });
     return updated;
   } catch (e) {
+    // RC1d: surface the previously-swallowed failure so a lead that should have
+    // been created but wasn't is VISIBLE (the "NO LEAD YET" symptom had no trail).
     console.error('[InstagramAgent] ensureLeadLinkedByPhone failed:', e.message);
+    try {
+      await NotificationFailureLog.create({
+        service: 'IgLeadLink',
+        phone: conversation && conversation.phone,
+        error: e.message,
+        attempts: 1,
+        createdAt: new Date(),
+      });
+    } catch (logErr) {
+      console.error('[InstagramAgent] failed to log IgLeadLink failure:', logErr.message);
+    }
     return conversation;
   }
 };
@@ -332,6 +357,16 @@ const receiveMessage = async (instagramId, message) => {
     // HOOK 1 (adapted): conversation upsert keyed by the IG user id,
     // channel:'instagram'. NO lead linkage yet — that waits for a real phone.
     let conversation = await WAConversationService.recordInbound(instagramId, message, 'instagram');
+
+    // Instagram name (RC3): the message webhook carries no name, so fetch the
+    // profile once via Graph and store it. Fire-safe — a missing name never
+    // blocks the conversation.
+    if (!conversation.profileName) {
+      const profileName = await fetchInstagramProfile(instagramId);
+      if (profileName) {
+        conversation = await WAConversationRepository.updateFieldsById(conversation._id, { profileName });
+      }
+    }
 
     // Mode gate: a human owns the thread (takeover) or it's closed — the IG
     // bot stays silent, identically to WhatsApp. Zero Anthropic spend.
