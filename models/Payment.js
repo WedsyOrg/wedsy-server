@@ -43,6 +43,10 @@ const PaymentSchema = new mongoose.Schema(
     recordedBy: { type: ObjectId, ref: "Admin", default: null },
     // Reminder-due marker (the actual WhatsApp chase is template-gated/dormant).
     reminderDueAt: { type: Date, default: null },
+    // Auto-invoice (Slice 6): stamped when the payment is recorded so the
+    // invoice is "available" (downloadable at GET /payment/:id/invoice), not
+    // only generated on demand.
+    invoiceReadyAt: { type: Date, default: null },
     // Payment Status: null, created, attempted, paid, partially paid, expired, cancelled
     status: {
       type: String,

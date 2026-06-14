@@ -328,6 +328,7 @@ const recordOfflinePayment = async ({ leadId, eventId, milestone, amountRupees, 
     status: "paid",
     recordedBy: actorId,
     proof: { url: proofUrl || "", txnId: txnId || "", paidOn: paidOn ? new Date(paidOn) : new Date(), notes: notes || "" },
+    invoiceReadyAt: new Date(), // Slice 6: invoice available on record
   });
 
   await LeadInternalEventService.record({
@@ -340,7 +341,7 @@ const recordOfflinePayment = async ({ leadId, eventId, milestone, amountRupees, 
   if (milestone === "onboarding") {
     await markOnboarded({ leadId, eventId, paymentId: payment._id, actorId });
   }
-  return { paymentId: payment._id, amountRupees: rupees, amountPaise };
+  return { paymentId: payment._id, amountRupees: rupees, amountPaise, invoicePath: `/payment/${payment._id}/invoice` };
 };
 
 // Online milestone confirmation seam: when a Razorpay link is verified paid,
@@ -351,6 +352,7 @@ const confirmOnlineMilestonePaid = async ({ paymentId, actorId = null }) => {
   payment.status = "paid";
   payment.amountPaid = payment.amount;
   payment.amountDue = 0;
+  if (!payment.invoiceReadyAt) payment.invoiceReadyAt = new Date(); // Slice 6
   await payment.save();
   const leadId = await (async () => {
     const ev = payment.event ? await Event.findById(payment.event).lean() : null;
@@ -362,7 +364,7 @@ const confirmOnlineMilestonePaid = async ({ paymentId, actorId = null }) => {
       await markOnboarded({ leadId, eventId: payment.event, paymentId: payment._id, actorId });
     }
   }
-  return { ok: true };
+  return { ok: true, invoicePath: `/payment/${payment._id}/invoice` };
 };
 
 // Flip the onboarding record to ONBOARDED, clear the client lock, journal, and
@@ -385,7 +387,8 @@ const markOnboarded = async ({ leadId, eventId, paymentId, actorId = null }) => 
     if (user && user.email) {
       const terms = await SettingsService.get("agreement.terms");
       const version = (ob.agreement && ob.agreement.agreementVersion) || (await SettingsService.get("agreement.version"));
-      await OnboardingMailService.sendAgreementEmail({ to: user.email, name: user.name, termsText: terms, version });
+      const invoiceUrl = paymentId ? `/payment/${paymentId}/invoice` : null;
+      await OnboardingMailService.sendAgreementEmail({ to: user.email, name: user.name, termsText: terms, version, invoiceUrl });
     }
   } catch (e) {
     console.error("[onboarding] agreement email on onboard failed:", e.message);
