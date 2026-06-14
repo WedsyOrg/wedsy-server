@@ -510,6 +510,12 @@ const AdminLogin = (req, res) => {
       .then(async (user) => {
         if (user) {
           const { _id } = user;
+          // Access control (password-mgmt Slice 3): a disabled admin cannot log in.
+          if (user.isDisabled) {
+            return res
+              .status(403)
+              .send({ message: "Your access has been disabled. Contact your administrator." });
+          }
           if (
             password &&
             user.password &&

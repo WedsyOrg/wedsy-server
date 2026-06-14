@@ -24,6 +24,9 @@ const AdminSchema = new mongoose.Schema(
     resetTokenExpiresAt: { type: Date, default: null },
     // Settings Suite (additive): force a password change on first login.
     mustResetPassword: { type: Boolean, default: false },
+    // Access control (additive): a disabled admin cannot log in AND existing
+    // tokens are rejected by CheckAdminLogin — disabling cuts access immediately.
+    isDisabled: { type: Boolean, default: false },
     meta: {
       designation: { type: String, default: "" },
       employeeId: { type: String, default: "" },
