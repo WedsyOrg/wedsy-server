@@ -332,6 +332,10 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
     },
   });
 
+  // MB7b Slice 3: WhatsApp qualification also triggers the (Haiku) Kiara
+  // summary — once, fire-safe.
+  await require("./KiaraSummaryService").generateForQualified(enquiryId);
+
   return true;
 };
 

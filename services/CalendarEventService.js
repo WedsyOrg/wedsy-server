@@ -98,6 +98,10 @@ const handoffIfInternOwned = async (lead, actorId) => {
     message: "Huddle pending: align the team before the meeting.",
     leadId: lead._id,
   });
+  // MB7b Slice 3: the intern→sales-lead handoff is a qualification moment too —
+  // ensure the (Haiku) Kiara summary exists for the manager picking it up. The
+  // generator is fire-safe and a no-op if a summary already exists.
+  await require("./KiaraSummaryService").generateForQualified(lead._id);
   return { transferred: true, owner, manager };
 };
 
@@ -209,7 +213,14 @@ const saveNotes = async (eventId, actorId, notes) => {
 };
 
 // Close a meeting — NOTES ARE MANDATORY (founder rule: no meeting closes silent).
-const closeMeeting = async (eventId, actorId, { notes } = {}) => {
+//
+// MB7b Slice 4 extends the gate: for a lead-linked gmeet/meeting, the close
+// carries the "WhatsApp group created with the couple?" answer. true → nurture
+// switches on (clock + first task); false → a red flag is raised on the file +
+// dashboard. The answer is tolerated as optional here (a missing answer is a
+// no-op) so the MB5+6 close path stays backward-compatible — the mandatory
+// Yes/No lives in the close UI; an unanswered lead simply has no group on file.
+const closeMeeting = async (eventId, actorId, { notes, whatsappGroupCreated } = {}) => {
   assertValidId(eventId, "eventId");
   const event = await CalendarEvent.findOne({ _id: eventId, status: "scheduled" });
   if (!event) throw httpError(404, "Open meeting not found");
@@ -232,6 +243,15 @@ const closeMeeting = async (eventId, actorId, { notes } = {}) => {
       actorId,
       payload: { eventId: String(event._id), title: event.title, notes: finalNotes.slice(0, 500) },
     });
+    // WhatsApp-group gate (gmeet/meeting only). Fire-safe: a nurture hiccup must
+    // never block closing the meeting.
+    if (["gmeet", "meeting"].includes(event.type) && typeof whatsappGroupCreated === "boolean") {
+      try {
+        await require("./NurtureService").applyGroupAnswer(event.leadId, whatsappGroupCreated, actorId);
+      } catch (e) {
+        console.error("[CalendarEvent] WhatsApp-group gate failed:", e.message);
+      }
+    }
   }
   return event;
 };

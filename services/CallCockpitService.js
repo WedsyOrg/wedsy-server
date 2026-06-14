@@ -160,6 +160,12 @@ const logCall = async (
     },
   });
 
+  // MB7b Slice 3: a qualified call is the moment the Kiara summary is worth
+  // paying for — trigger it (Haiku, once). Fire-safe: never breaks the call log.
+  if (outcome === "qualified") {
+    await require("./KiaraSummaryService").generateForQualified(enquiryId);
+  }
+
   // Cadence (Slice C): on an unanswered outcome, surface the suggested next attempt
   // (the scheduler pre-fills it) or flag the lead unresponsive at MAX attempts.
   const doc = stamped || updated;

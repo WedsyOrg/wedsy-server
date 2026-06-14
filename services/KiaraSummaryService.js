@@ -68,24 +68,24 @@ const firstTextBlock = (response) => {
   return block ? block.text.trim() : null;
 };
 
-// Generate (or return cached) the summary. force=true regenerates.
-const getSummary = async (enquiryId, { force = false } = {}) => {
-  const lead = await Enquiry.findById(enquiryId);
-  if (!lead) throw httpError(404, "Enquiry not found");
+// MB7b Slice 3 — the summary now uses HAIKU (the cheap model) instead of Sonnet.
+// The whole point of the qualification-trigger is cost: we only ever pay for
+// leads worth a rep's time, and we pay the Haiku price, not the Sonnet price.
+const SUMMARY_MODEL = "claude-haiku-4-5";
 
-  if (!force && lead.kiaraSummary && lead.kiaraSummary.text) {
-    return { text: lead.kiaraSummary.text, generatedAt: lead.kiaraSummary.generatedAt, cached: true };
-  }
+// A lead is "closed" — Kiara never spends a token on disqualified / lost leads.
+const isClosed = (lead) =>
+  lead.stage === "lost" || lead.isLost === true || lead.lostStatus === "approved";
 
+// The Haiku call + cache write. Throws on a hard model failure (callers that
+// must stay fire-safe wrap this).
+const generate = async (lead) => {
   let journeyEntries = [];
   try {
-    journeyEntries = (await JourneyService.buildJourney(enquiryId)).entries;
+    journeyEntries = (await JourneyService.buildJourney(lead._id)).entries;
   } catch (_) { /* journey is advisory context */ }
 
   const { facts, hasData } = composeFacts(lead.toObject(), journeyEntries);
-
-  // Empty-data case: graceful, no model call, not cached (so it refreshes once
-  // real data lands).
   if (!hasData) {
     return {
       text: "Not enough info yet — Kiara hasn't captured the couple, their event, or what they want. Call them to discover the basics.",
@@ -96,7 +96,7 @@ const getSummary = async (enquiryId, { force = false } = {}) => {
   }
 
   const response = await callAnthropic({
-    model: "claude-sonnet-4-5",
+    model: SUMMARY_MODEL,
     max_tokens: 200,
     system: SYSTEM_PROMPT,
     messages: [{ role: "user", content: `Lead facts:\n${facts}\n\nWrite the briefing.` }],
@@ -110,4 +110,45 @@ const getSummary = async (enquiryId, { force = false } = {}) => {
   return { text, generatedAt, cached: false };
 };
 
-module.exports = { getSummary, composeFacts, SYSTEM_PROMPT };
+// GET — read the summary. The model is called ONLY for qualified, still-open
+// leads: a fresh (un-qualified) lead returns the pre-qualification placeholder
+// with NO API call; a closed lead returns the closed notice with NO API call.
+// force=true regenerates (qualified leads only).
+const getSummary = async (enquiryId, { force = false } = {}) => {
+  const lead = await Enquiry.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+
+  if (isClosed(lead)) {
+    return { text: "This lead is closed — no summary.", generatedAt: null, cached: false, blocked: true };
+  }
+  if (!lead.qualified) {
+    return {
+      text: "Summary available after qualification.",
+      generatedAt: null,
+      cached: false,
+      pending: true,
+    };
+  }
+  if (!force && lead.kiaraSummary && lead.kiaraSummary.text) {
+    return { text: lead.kiaraSummary.text, generatedAt: lead.kiaraSummary.generatedAt, cached: true };
+  }
+  return await generate(lead);
+};
+
+// TRIGGER — called from the qualification path (cockpit qualified-call outcome,
+// Kiara WhatsApp qualification, intern→sales-lead handoff). Fire-safe: a summary
+// failure must NEVER break the qualification action. Generates exactly once
+// (skips if a summary already exists), and never for closed leads.
+const generateForQualified = async (enquiryId) => {
+  try {
+    const lead = await Enquiry.findById(enquiryId);
+    if (!lead || isClosed(lead) || !lead.qualified) return null;
+    if (lead.kiaraSummary && lead.kiaraSummary.text) return null; // already generated
+    return await generate(lead);
+  } catch (e) {
+    console.error("[KiaraSummary] generateForQualified failed:", e.message);
+    return null;
+  }
+};
+
+module.exports = { getSummary, generateForQualified, composeFacts, SYSTEM_PROMPT, SUMMARY_MODEL };
