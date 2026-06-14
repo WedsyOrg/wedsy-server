@@ -106,6 +106,39 @@ const ClientState = async (req, res) => {
   }
 };
 
+// POST /onboarding/payment-link — generate a Razorpay link for a milestone
+// (dormant-safe). Body: { leadId, eventId, milestone }.
+const CreatePaymentLink = async (req, res) => {
+  try {
+    const { leadId, eventId, milestone } = req.body || {};
+    res.status(200).json(await OnboardingService.createMilestonePaymentLink({ leadId, eventId, milestone, actorId: req.auth.user_id }));
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// POST /onboarding/payment/offline — record an offline payment with proof.
+// Body: { leadId, eventId, milestone, amountRupees, method, txnId?, paidOn?, notes?, proofUrl? }.
+const RecordOfflinePayment = async (req, res) => {
+  try {
+    const b = req.body || {};
+    const out = await OnboardingService.recordOfflinePayment({ ...b, actorId: req.auth.user_id });
+    res.status(200).json({ message: "success", ...out });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// POST /onboarding/payment/:paymentId/confirm — mark an online milestone paid
+// (the verification seam; e.g. called after a Razorpay callback).
+const ConfirmOnlinePayment = async (req, res) => {
+  try {
+    res.status(200).json(await OnboardingService.confirmOnlineMilestonePaid({ paymentId: req.params.paymentId, actorId: req.auth.user_id }));
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
 // GET /onboarding?leadId=&eventId= — onboarding status (OS).
 const GetStatus = async (req, res) => {
   try {
@@ -118,4 +151,4 @@ const GetStatus = async (req, res) => {
   }
 };
 
-module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus, StartOnboarding, ClientState };
+module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus, StartOnboarding, ClientState, CreatePaymentLink, RecordOfflinePayment, ConfirmOnlinePayment };

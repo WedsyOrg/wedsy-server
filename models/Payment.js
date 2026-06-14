@@ -27,6 +27,22 @@ const PaymentSchema = new mongoose.Schema(
     },
     razporPayId: { type: String, default: "" },
     response: { type: [Object], default: [] },
+    // ── MB7a (additive) — onboarding & money engine ──────────────────────────
+    // Which milestone this payment is for (onboarding fee / advance / balance).
+    milestone: { type: String, enum: ["", "onboarding", "advance", "balance"], default: "" },
+    // Razorpay payment-link (when generated; dormant-safe).
+    paymentLinkId: { type: String, default: "" },
+    paymentLinkUrl: { type: String, default: "" },
+    // Offline payment proof. Screenshot URL (S3) mandatory for bank-transfer.
+    proof: {
+      url: { type: String, default: "" },
+      txnId: { type: String, default: "" },
+      paidOn: { type: Date, default: null },
+      notes: { type: String, default: "" },
+    },
+    recordedBy: { type: ObjectId, ref: "Admin", default: null },
+    // Reminder-due marker (the actual WhatsApp chase is template-gated/dormant).
+    reminderDueAt: { type: Date, default: null },
     // Payment Status: null, created, attempted, paid, partially paid, expired, cancelled
     status: {
       type: String,

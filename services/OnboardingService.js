@@ -222,6 +222,177 @@ const clientState = async (eventId, callerUserId, isAdmin) => {
   };
 };
 
+// ── Payments (Slice 5) ──────────────────────────────────────────────────────
+const Payment = require("../models/Payment");
+const { CreatePaymentLink, razorpayMode } = require("../utils/payment");
+
+const toPaise = (rupees) => Math.round((Number(rupees) || 0) * 100);
+
+// The three milestone amounts (RUPEES), summing to the total:
+//   onboarding = onboardingFee · advance = advanceRemaining · balance = balance
+const milestoneAmountRupees = (ms, milestone) => {
+  if (!ms) return 0;
+  if (milestone === "onboarding") return ms.onboardingFee || 0;
+  if (milestone === "advance") return ms.advanceRemaining || 0;
+  if (milestone === "balance") return ms.balance || 0;
+  return 0;
+};
+
+const _onboardingWithMilestones = async (leadId, eventId) => {
+  let ob = await Onboarding.findOne({ leadId, eventId: eventId || null });
+  let ms = ob && ob.milestones;
+  if (!ms && eventId) {
+    const event = await Event.findById(eventId).lean();
+    if (event) ms = computeMilestones((event.amount && event.amount.total) || 0, await getMilestoneConfig());
+  }
+  return { ob, ms };
+};
+
+// Generate a Razorpay payment link for a milestone. Dormant-safe.
+const createMilestonePaymentLink = async ({ leadId, eventId, milestone, actorId = null }) => {
+  if (!["onboarding", "advance", "balance"].includes(milestone)) {
+    throw Object.assign(new Error("milestone must be onboarding|advance|balance"), { status: 400 });
+  }
+  if (!eventId) throw Object.assign(new Error("eventId is required"), { status: 400 });
+  const event = await Event.findById(eventId).lean();
+  if (!event) throw Object.assign(new Error("Event not found"), { status: 404 });
+  const { ms } = await _onboardingWithMilestones(leadId, eventId);
+  const amountRupees = milestoneAmountRupees(ms, milestone);
+  if (amountRupees <= 0) throw Object.assign(new Error("Milestone amount is zero — check the event total/milestones"), { status: 422 });
+  const amountPaise = toPaise(amountRupees);
+
+  const user = event.user ? await User.findById(event.user, { name: 1, phone: 1, email: 1 }).lean() : null;
+  const payment = await Payment.create({
+    user: event.user,
+    event: eventId,
+    paymentFor: "event",
+    paymentMethod: "razporpay",
+    milestone,
+    amount: amountPaise,
+    amountDue: amountPaise,
+    amountPaid: 0,
+    status: "created",
+    reminderDueAt: new Date(),
+  });
+
+  const link = await CreatePaymentLink({
+    amountPaise,
+    description: `Wedsy ${milestone} payment`,
+    reference: String(payment._id),
+    customer: { name: user ? user.name : "", contact: user ? user.phone : "", email: user ? user.email : "" },
+  });
+  if (link && link.id) {
+    await Payment.findByIdAndUpdate(payment._id, { $set: { paymentLinkId: link.id, paymentLinkUrl: link.url, razporPayId: link.id } });
+  }
+  return {
+    paymentId: payment._id,
+    milestone,
+    amountRupees,
+    amountPaise,
+    dormant: !!(link && link.dormant),
+    mode: (link && link.mode) || razorpayMode(),
+    url: (link && link.url) || null,
+    error: (link && link.error) || null,
+  };
+};
+
+// Record an OFFLINE milestone payment with proof. Screenshot mandatory for
+// bank-transfer. Amount in RUPEES (→ paise on store). Marks ONBOARDED when the
+// onboarding-fee milestone is recorded.
+const recordOfflinePayment = async ({ leadId, eventId, milestone, amountRupees, method, txnId, paidOn, notes, proofUrl, actorId = null }) => {
+  if (!["onboarding", "advance", "balance"].includes(milestone)) {
+    throw Object.assign(new Error("milestone must be onboarding|advance|balance"), { status: 400 });
+  }
+  if (!["cash", "upi", "bank-transfer"].includes(method)) {
+    throw Object.assign(new Error("method must be cash|upi|bank-transfer"), { status: 400 });
+  }
+  if (method === "bank-transfer" && !proofUrl) {
+    throw Object.assign(new Error("A payment screenshot (proofUrl) is mandatory for bank transfers"), { status: 422 });
+  }
+  if (!eventId) throw Object.assign(new Error("eventId is required"), { status: 400 });
+  const event = await Event.findById(eventId, { user: 1 }).lean();
+  if (!event) throw Object.assign(new Error("Event not found"), { status: 404 });
+  const rupees = Number(amountRupees);
+  if (!Number.isFinite(rupees) || rupees <= 0) throw Object.assign(new Error("amount must be a positive number (rupees)"), { status: 400 });
+  const amountPaise = toPaise(rupees);
+
+  const payment = await Payment.create({
+    user: event.user,
+    event: eventId,
+    paymentFor: "event",
+    paymentMethod: method,
+    milestone,
+    amount: amountPaise,
+    amountPaid: amountPaise,
+    amountDue: 0,
+    status: "paid",
+    recordedBy: actorId,
+    proof: { url: proofUrl || "", txnId: txnId || "", paidOn: paidOn ? new Date(paidOn) : new Date(), notes: notes || "" },
+  });
+
+  await LeadInternalEventService.record({
+    leadId,
+    type: "payment_recorded",
+    actorId,
+    payload: { milestone, method, amountRupees: rupees, offline: true, hasProof: !!proofUrl },
+  });
+
+  if (milestone === "onboarding") {
+    await markOnboarded({ leadId, eventId, paymentId: payment._id, actorId });
+  }
+  return { paymentId: payment._id, amountRupees: rupees, amountPaise };
+};
+
+// Online milestone confirmation seam: when a Razorpay link is verified paid,
+// mark onboarded if it was the onboarding fee. Fire-safe.
+const confirmOnlineMilestonePaid = async ({ paymentId, actorId = null }) => {
+  const payment = await Payment.findById(paymentId);
+  if (!payment) throw Object.assign(new Error("Payment not found"), { status: 404 });
+  payment.status = "paid";
+  payment.amountPaid = payment.amount;
+  payment.amountDue = 0;
+  await payment.save();
+  const leadId = await (async () => {
+    const ev = payment.event ? await Event.findById(payment.event).lean() : null;
+    return ev ? resolveLeadIdForEvent(ev) : null;
+  })();
+  if (leadId) {
+    await LeadInternalEventService.record({ leadId, type: "payment_recorded", actorId, payload: { milestone: payment.milestone, method: "razorpay", online: true } });
+    if (payment.milestone === "onboarding") {
+      await markOnboarded({ leadId, eventId: payment.event, paymentId: payment._id, actorId });
+    }
+  }
+  return { ok: true };
+};
+
+// Flip the onboarding record to ONBOARDED, clear the client lock, journal, and
+// email the accepted agreement (seam — dormant-safe).
+const markOnboarded = async ({ leadId, eventId, paymentId, actorId = null }) => {
+  const now = new Date();
+  const ob = await Onboarding.findOneAndUpdate(
+    { leadId, eventId: eventId || null },
+    { $set: { status: "onboarded", onboardedAt: now, lockActive: false, onboardingPaymentId: paymentId || null } },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+  await LeadInternalEventService.record({ leadId, type: "onboarding_payment_recorded", actorId, payload: { eventId: eventId ? String(eventId) : null } });
+  await LeadInternalEventService.record({ leadId, type: "onboarded", actorId, payload: {} });
+
+  // Email the accepted agreement on success (fire-safe; dormant when Mailjet unset).
+  try {
+    const OnboardingMailService = require("./OnboardingMailService");
+    const event = eventId ? await Event.findById(eventId, { user: 1 }).lean() : null;
+    const user = event && event.user ? await User.findById(event.user, { name: 1, email: 1 }).lean() : null;
+    if (user && user.email) {
+      const terms = await SettingsService.get("agreement.terms");
+      const version = (ob.agreement && ob.agreement.agreementVersion) || (await SettingsService.get("agreement.version"));
+      await OnboardingMailService.sendAgreementEmail({ to: user.email, name: user.name, termsText: terms, version });
+    }
+  } catch (e) {
+    console.error("[onboarding] agreement email on onboard failed:", e.message);
+  }
+  return ob;
+};
+
 module.exports = {
   MAX_DRAFTS,
   MILESTONE_CODE,
@@ -236,4 +407,9 @@ module.exports = {
   acceptAgreement,
   startOnboarding,
   clientState,
+  milestoneAmountRupees,
+  createMilestonePaymentLink,
+  recordOfflinePayment,
+  confirmOnlineMilestonePaid,
+  markOnboarded,
 };

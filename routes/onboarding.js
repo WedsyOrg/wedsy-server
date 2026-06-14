@@ -30,4 +30,25 @@ router.post(
 );
 router.get("/state", CheckLogin, controller.ClientState);
 
+// Payments (Slice 5) — Razorpay link gen + offline-with-proof + online confirm.
+// Gated to onboarders (Revenue Head / founder).
+router.post(
+  "/payment-link",
+  CheckAdminLogin,
+  requirePermission("leads:onboard:own"),
+  controller.CreatePaymentLink
+);
+router.post(
+  "/payment/offline",
+  CheckAdminLogin,
+  requirePermission("leads:onboard:own"),
+  controller.RecordOfflinePayment
+);
+router.post(
+  "/payment/:paymentId/confirm",
+  CheckAdminLogin,
+  requirePermission("leads:onboard:own"),
+  controller.ConfirmOnlinePayment
+);
+
 module.exports = router;
