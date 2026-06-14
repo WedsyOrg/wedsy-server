@@ -222,6 +222,22 @@ const ensureLeadLinkedByPhone = async (conversation, data = {}) => {
   }
 };
 
+// ⚠️ REVIEW-REQUIRED (Phase 2 flagged) — deterministic phone capture.
+// The IG path creates a lead ONLY when the AI extractor returns data.phoneNumber
+// (root cause 1). This scans the raw user messages for a plausible Indian mobile
+// so lead creation no longer depends on the AI parse. It CHANGES WHEN an IG
+// conversation becomes a lead (any message with a 10-digit mobile), so it is a
+// new lead-creation TRIGGER and is flagged for human review rather than final.
+const phoneFromHistory = (history) => {
+  for (let i = (history || []).length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (!m || m.role !== 'user') continue;
+    const match = String(m.content || '').match(/(?:\+?91[\s-]?)?([6-9]\d{9})(?!\d)/);
+    if (match) return match[1];
+  }
+  return '';
+};
+
 const saveQualifiedLead = async (instagramId, data, conversation = null) => {
   const existing = await QualifiedLead.findOne({ phone: instagramId });
   if (existing && existing.googleSheetSynced && existing.crmSynced) {
@@ -388,8 +404,17 @@ const receiveMessage = async (instagramId, message) => {
     const qualification = await checkQualified(updatedHistory);
 
     // Phone captured → CRM lead linkage (dedup or shared create path).
-    if (qualification && qualification.data && qualification.data.phoneNumber) {
-      conversation = await ensureLeadLinkedByPhone(conversation, qualification.data);
+    // ⚠️ REVIEW-REQUIRED: the deterministic phoneFromHistory fallback below
+    // changes the lead-creation trigger (see helper note). Until reviewed, the
+    // AI-extractor phone remains the primary signal; this only ADDS a fallback.
+    const capturedPhone =
+      (qualification && qualification.data && qualification.data.phoneNumber) ||
+      phoneFromHistory(updatedHistory);
+    if (capturedPhone) {
+      conversation = await ensureLeadLinkedByPhone(conversation, {
+        ...((qualification && qualification.data) || {}),
+        phoneNumber: capturedPhone,
+      });
     }
 
     // HOOK 2 (adapted): escalation + classification routing — the same
