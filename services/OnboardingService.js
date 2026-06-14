@@ -146,6 +146,82 @@ const acceptAgreement = async ({ leadId, eventId = null, acceptedName, actorId =
   return doc;
 };
 
+// ── Onboard flow (Slice 4) ──────────────────────────────────────────────────
+// Revenue Head starts onboarding from the lead: locks the CLIENT dashboard,
+// snapshots the milestones from the event total, journals onboarding_started.
+// The 2-day-window / draft-shared rule is surfaced as info (warn), not a hard
+// block. Idempotent: re-starting returns the existing record.
+const startOnboarding = async ({ leadId, eventId = null, actorId = null }) => {
+  if (!mongoose.Types.ObjectId.isValid(leadId)) {
+    throw Object.assign(new Error("Invalid lead id"), { status: 400 });
+  }
+  let milestones = null;
+  let event = null;
+  if (eventId) {
+    if (!mongoose.Types.ObjectId.isValid(eventId)) {
+      throw Object.assign(new Error("Invalid event id"), { status: 400 });
+    }
+    event = await Event.findById(eventId).lean();
+    if (!event) throw Object.assign(new Error("Event not found"), { status: 404 });
+    const cfg = await getMilestoneConfig();
+    const total = (event.amount && event.amount.total) || 0; // rupees
+    milestones = computeMilestones(total, cfg);
+  }
+
+  const now = new Date();
+  const doc = await Onboarding.findOneAndUpdate(
+    { leadId, eventId: eventId || null },
+    {
+      $setOnInsert: { leadId, eventId: eventId || null },
+      $set: {
+        status: "started",
+        lockActive: true,
+        startedBy: actorId || null,
+        startedAt: now,
+        ...(milestones ? { milestones } : {}),
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  await LeadInternalEventService.record({
+    leadId,
+    type: "onboarding_started",
+    actorId,
+    payload: { eventId: eventId ? String(eventId) : null, milestones },
+  });
+
+  // Soft window note (info only — never blocks).
+  let windowNote = null;
+  if (event) {
+    const ageDays = (Date.now() - +new Date(event.createdAt)) / 86400000;
+    if (ageDays < 2) windowNote = "Heads up: the draft was shared less than 2 days ago — confirm the client is ready.";
+    if (!paymentUnlocked(event)) windowNote = "Note: the event isn't client-finalised + Wedsy-approved yet — payment stays locked until it is.";
+  }
+  return { onboarding: doc, windowNote };
+};
+
+// Client-facing onboarding state (wedsy-user reads this to gate the planner).
+// Resolved by eventId; verifies the event belongs to the caller unless admin.
+const clientState = async (eventId, callerUserId, isAdmin) => {
+  if (!mongoose.Types.ObjectId.isValid(eventId)) {
+    throw Object.assign(new Error("Invalid event id"), { status: 400 });
+  }
+  const event = await Event.findById(eventId, { user: 1 }).lean();
+  if (!event) throw Object.assign(new Error("Event not found"), { status: 404 });
+  if (!isAdmin && String(event.user) !== String(callerUserId)) {
+    throw Object.assign(new Error("Out of your scope"), { status: 403 });
+  }
+  const doc = await Onboarding.findOne({ eventId }).lean();
+  return {
+    eventId: String(eventId),
+    onboardingLockActive: !!(doc && doc.lockActive && doc.status !== "onboarded"),
+    onboarded: !!(doc && doc.status === "onboarded"),
+    agreementAccepted: !!(doc && doc.agreement && doc.agreement.accepted),
+    status: doc ? doc.status : "none",
+  };
+};
+
 module.exports = {
   MAX_DRAFTS,
   MILESTONE_CODE,
@@ -158,4 +234,6 @@ module.exports = {
   paymentUnlocked,
   getOnboarding,
   acceptAgreement,
+  startOnboarding,
+  clientState,
 };

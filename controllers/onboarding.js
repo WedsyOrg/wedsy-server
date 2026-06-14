@@ -83,6 +83,29 @@ const AcceptAgreement = async (req, res) => {
   }
 };
 
+// POST /onboarding/start — Revenue Head onboards a client (leads:onboard).
+// Body: { leadId, eventId? }. Locks the client dashboard, snapshots milestones.
+const StartOnboarding = async (req, res) => {
+  try {
+    const { leadId, eventId } = req.body || {};
+    const result = await OnboardingService.startOnboarding({ leadId, eventId, actorId: req.auth.user_id });
+    res.status(200).json({ message: "success", ...result });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// GET /onboarding/state?eventId= — CLIENT-facing lock/onboarded flags (wedsy-user).
+const ClientState = async (req, res) => {
+  try {
+    const { eventId } = req.query;
+    if (!eventId) return res.status(400).json({ message: "eventId is required" });
+    res.status(200).json(await OnboardingService.clientState(eventId, req.auth.user_id, !!(req.auth && req.auth.isAdmin)));
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
 // GET /onboarding?leadId=&eventId= — onboarding status (OS).
 const GetStatus = async (req, res) => {
   try {
@@ -95,4 +118,4 @@ const GetStatus = async (req, res) => {
   }
 };
 
-module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus };
+module.exports = { GetMilestones, PutMilestones, PreviewMilestones, GetAgreementText, AcceptAgreement, GetStatus, StartOnboarding, ClientState };

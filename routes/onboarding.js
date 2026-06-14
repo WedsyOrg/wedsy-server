@@ -21,4 +21,13 @@ router.get("/agreement", CheckLogin, controller.GetAgreementText);
 router.post("/agreement", CheckLogin, controller.AcceptAgreement);
 router.get("/", CheckAdminLogin, controller.GetStatus);
 
+// Onboard flow (Slice 4). Start = Revenue Head (leads:onboard); state = client.
+router.post(
+  "/start",
+  CheckAdminLogin,
+  requirePermission("leads:onboard:own"),
+  controller.StartOnboarding
+);
+router.get("/state", CheckLogin, controller.ClientState);
+
 module.exports = router;
