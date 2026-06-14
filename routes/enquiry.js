@@ -142,6 +142,49 @@ router.post(
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   kiaraSummary.Regenerate
 );
+
+// ── MB7b Slice 1 — internal multi-member chat per lead (lead-scoped) ──────────
+const leadChat = require("../controllers/leadChat");
+router.get(
+  "/:_id/chat",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadChat.List
+);
+router.get(
+  "/:_id/chat/members",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadChat.Members
+);
+router.post(
+  "/:_id/chat",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadChat.Post
+);
+// Edit/Delete are author-only (enforced in the service via authorId match).
+router.patch(
+  "/:_id/chat/:messageId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  leadChat.Edit
+);
+router.delete(
+  "/:_id/chat/:messageId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  leadChat.Remove
+);
+
+// ── MB7b Slice 4 — WhatsApp-group one-tap toggle (red-flag → Yes) ─────────────
+const nurture = require("../controllers/nurture");
+router.post(
+  "/:_id/whatsapp-group",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  nurture.SetGroup
+);
 router.post(
   "/:_id/call-complete",
   CheckAdminLogin,
