@@ -39,14 +39,15 @@ const liveMeetingAdminIds = async (now = new Date()) => {
 
 // ── Follow-up mirror + huddle + handoff (hooked from addFollowUp) ─────────────
 
-// Detect the intern class: role names configured as the auto-assignment pool.
+// Detect the intern class: ANY of the admin's roles (RBAC v2) is in the pool.
 const isInternOwner = async (admin) => {
-  if (!admin || !admin.roleId) return false;
+  const { roleIdsOf } = require("../middlewares/requirePermission");
+  const ids = roleIdsOf(admin);
+  if (!ids.length) return false;
   const Role = require("../models/Role");
-  const role = await Role.findById(admin.roleId, { name: 1 }).lean();
-  if (!role) return false;
+  const roles = await Role.find({ _id: { $in: ids } }, { name: 1 }).lean();
   const poolRoles = (await SettingsService.get("assignment.poolRoles")) || [];
-  return poolRoles.includes(role.name);
+  return roles.some((r) => poolRoles.includes(r.name));
 };
 
 // HANDOFF RULE: a meet follow-up booked on an intern-owned lead auto-transfers
@@ -54,7 +55,7 @@ const isInternOwner = async (admin) => {
 // via the set-once qualifiedBy field. Both sides get notified.
 const handoffIfInternOwned = async (lead, actorId) => {
   const owner = lead.assignedTo
-    ? await Admin.findById(lead.assignedTo, { name: 1, roleId: 1, reportingManagerId: 1, status: 1 }).lean()
+    ? await Admin.findById(lead.assignedTo, { name: 1, roleId: 1, roleIds: 1, reportingManagerId: 1, status: 1 }).lean()
     : null;
   if (!owner || !owner.reportingManagerId) return { transferred: false, owner };
   if (!(await isInternOwner(owner))) return { transferred: false, owner };

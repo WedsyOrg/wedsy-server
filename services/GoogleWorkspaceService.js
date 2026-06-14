@@ -139,13 +139,15 @@ const disconnect = async (adminId) => {
 // book on their reporting manager's calendar) and the Revenue-Head admin.
 const meetingAttendees = async (lead) => {
   let salesLeadAdmin = lead.assignedTo
-    ? await Admin.findById(lead.assignedTo, { name: 1, email: 1, roleId: 1, reportingManagerId: 1 }).lean()
+    ? await Admin.findById(lead.assignedTo, { name: 1, email: 1, roleId: 1, roleIds: 1, reportingManagerId: 1 }).lean()
     : null;
-  if (salesLeadAdmin && salesLeadAdmin.roleId && salesLeadAdmin.reportingManagerId) {
+  if (salesLeadAdmin && salesLeadAdmin.reportingManagerId) {
     const poolRoles = (await SettingsService.get("assignment.poolRoles")) || [];
-    const role = await Role.findById(salesLeadAdmin.roleId, { name: 1 }).lean();
-    if (role && poolRoles.includes(role.name)) {
-      // Intern-owned lead: the meet lives on the sales lead's calendar.
+    const { roleIdsOf } = require("../middlewares/requirePermission");
+    const ownerRoles = await Role.find({ _id: { $in: roleIdsOf(salesLeadAdmin) } }, { name: 1 }).lean();
+    if (ownerRoles.some((r) => poolRoles.includes(r.name))) {
+      // Intern-owned lead (any of their roles is a pool role): the meet lives on
+      // the sales lead's calendar.
       const manager = await Admin.findById(salesLeadAdmin.reportingManagerId, { name: 1, email: 1 }).lean();
       if (manager) salesLeadAdmin = manager;
     }
@@ -153,7 +155,7 @@ const meetingAttendees = async (lead) => {
   let revenueHead = null;
   const rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
   if (rhRole) {
-    revenueHead = await Admin.findOne({ roleId: rhRole._id, status: "active" }, { name: 1, email: 1 }).lean();
+    revenueHead = await Admin.findOne({ status: "active", $or: [{ roleId: rhRole._id }, { roleIds: rhRole._id }] }, { name: 1, email: 1 }).lean();
   }
   return { salesLeadAdmin, revenueHead };
 };

@@ -10,6 +10,9 @@ const AdminSchema = new mongoose.Schema(
     roles: { type: [String], required: true, enum: ["owner", "crm", "sales", "ops", "finance"] },
     // --- Wedsy OS RBAC Phase 2B (additive, optional — legacy roles[] unchanged) ---
     roleId: { type: ObjectId, ref: "Role", default: null },
+    // --- RBAC v2 (MB7a) — multi-role: permissions are the UNION of all roleIds.
+    // Additive + back-compat: empty roleIds falls back to the single roleId.
+    roleIds: { type: [{ type: ObjectId, ref: "Role" }], default: [] },
     departmentId: { type: ObjectId, ref: "Department", default: null },
     reportingManagerId: { type: ObjectId, ref: "Admin", default: null },
     status: { type: String, enum: ["active", "inactive", "on_leave"], default: "active" },

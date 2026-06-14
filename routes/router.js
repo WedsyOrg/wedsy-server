@@ -86,5 +86,6 @@ router.use("/calendar", require("./calendar")); // Team calendar + meeting mode 
 router.use("/admin-notifications", require("./notifications")); // in-OS staff notifications (MB5)
 router.use("/google", require("./google")); // Google Workspace (MB6 Slice 8 — dormant until env-wired)
 router.use("/saved-views", require("./savedViews")); // per-user leads filter sets (MB6 Slice 9)
+router.use("/onboarding", require("./onboarding")); // onboarding & money engine (MB7a)
 
 module.exports = router;
