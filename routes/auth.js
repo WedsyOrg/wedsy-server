@@ -34,6 +34,8 @@ router.post("/admin/forgot", forgotLimiter, auth.ForgotPassword);
 router.post("/admin/reset", auth.ResetPassword);
 // Forced first-login password change (Settings Suite Slice 9).
 router.post("/admin/first-reset", CheckAdminLogin, auth.FirstResetPassword);
+// Self password change — any logged-in admin, own password only (password-mgmt Slice 1).
+router.post("/admin/change-password", CheckAdminLogin, auth.ChangeOwnPassword);
 
 // Vendor Auth
 router.post("/vendor", auth.VendorLogin);
