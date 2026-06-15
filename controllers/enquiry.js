@@ -316,8 +316,27 @@ const GetAll = async (req, res) => {
     // MB9c — soft-deleted (archived) leads are excluded from the default list.
     query.archivedAt = null;
     const sortQuery = {};
+    // MB9c-fix — SOURCE filter, normalized. The stored `source` strings are
+    // messy ("Website", "whatsapp", "Instagram DM", "Kiara", …); the brand chips
+    // send canonical keys (comma-separated for multi-select) which we map to a
+    // case-insensitive regex over the raw strings — so a chip reliably matches.
     if (source) {
-      query.source = source;
+      const SOURCE_PATTERNS = {
+        whatsapp: "whatsapp",
+        kiara: "kiara",
+        instagram: "instagram|(^|[^a-z])ig([^a-z]|$)",
+        facebook: "facebook|(^|[^a-z])fb([^a-z]|$)|meta",
+        website: "web|site|default|form|landing|direct",
+        repeated: "repeat",
+      };
+      const keys = String(source).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const patterns = keys.map((k) => SOURCE_PATTERNS[k]).filter(Boolean);
+      if (patterns.length) {
+        query.source = { $regex: patterns.map((p) => `(${p})`).join("|"), $options: "i" };
+      } else {
+        // Unknown key → fall back to the legacy exact match (back-compat).
+        query.source = source;
+      }
     }
     if (assignedTo) {
       if (assignedTo === "unassigned") {
@@ -395,15 +414,26 @@ const GetAll = async (req, res) => {
         { phone: { $regex: new RegExp(safeSearch, "i") } },
       ];
     }
-    if (sort) {
-      if (sort === "Date: Oldest") {
-        sortQuery.createdAt = 1;
-      } else if (sort === "Date: Newest") {
-        sortQuery.createdAt = -1;
-      }
-    } else {
+    // MB9c-fix — SERVER-SIDE sort over the FULL set (not the loaded page).
+    //   sort = createdAt | activity (updatedAt) | name  (+ dir = asc|desc)
+    // Legacy "Date: Oldest/Newest" kept for back-compat. Default = newest
+    // created first. `_id` is always appended as the stable paging tiebreaker.
+    const dir = req.query.dir; // optional "asc" | "desc"
+    const D = (def) => (dir === "asc" ? 1 : dir === "desc" ? -1 : def);
+    if (sort === "Date: Oldest") {
+      sortQuery.createdAt = 1;
+    } else if (sort === "Date: Newest") {
       sortQuery.createdAt = -1;
+    } else if (sort === "name") {
+      sortQuery.name = D(1); // A→Z by default
+    } else if (sort === "activity") {
+      sortQuery.updatedAt = D(-1); // most-recently-touched by default
+    } else if (sort === "createdAt") {
+      sortQuery.createdAt = D(-1);
+    } else {
+      sortQuery.createdAt = -1; // default: newest created on top
     }
+    sortQuery._id = -1;
 
     // NEW: Filter by interested service stored in additionalInfo
     // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.

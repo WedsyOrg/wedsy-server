@@ -227,5 +227,8 @@ const EnquirySchema = new mongoose.Schema(
 
 // Create unique index on phone to prevent duplicates at database level
 EnquirySchema.index({ phone: 1 }, { unique: true });
+// MB9c-fix — the lead list's default + sort is newest-created-first; index it
+// (with _id as the stable paging tiebreaker).
+EnquirySchema.index({ createdAt: -1, _id: -1 });
 
 module.exports = mongoose.model("Enquiry", EnquirySchema);
