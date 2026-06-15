@@ -604,8 +604,8 @@ const GetAll = async (req, res) => {
             .limit(limit)
             .exec()
             .then((result) => {
-              // res.send({ list: result[0].result, totalPages, page, limit });
-              res.send({ list: result, totalPages, page, limit });
+              // MB9c-fix — include `total` so the list footer can show "X of Y".
+              res.send({ list: result, total, totalPages, page, limit });
             })
             .catch((error) => {
               res.status(400).send({
