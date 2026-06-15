@@ -135,6 +135,14 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   rescue.Queue
 );
+// MB9b — role dashboards' funnel + golden-window aggregate (literal, above /:_id).
+const funnelMetrics = require("../controllers/funnelMetrics");
+router.get(
+  "/funnel-metrics",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  funnelMetrics.Funnel
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
