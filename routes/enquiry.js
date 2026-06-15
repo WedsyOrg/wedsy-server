@@ -79,6 +79,16 @@ router.post(
   requirePermission("leads:edit:team", { ownerField: "assignedTo" }),
   lifecycle.BulkTransfer
 );
+// ── MB8a Slice 3 — leads I'm on the team for (additive "my leads" surface).
+// Literal path: MUST stay above /:_id. Roster-scoped inside the controller; no
+// ownerField narrowing (the roster IS the soft grant), no 403 gating added.
+const leadTeam = require("../controllers/leadTeam");
+router.get(
+  "/team/mine",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadTeam.MyLeads
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
@@ -175,6 +185,37 @@ router.delete(
   CheckAdminLogin,
   requirePermission("leads:edit:own"),
   leadChat.Remove
+);
+
+// ── MB8a Slices 1–2 — lead TEAM ROSTER (Client Journey Engine foundation) ─────
+// Read routes: leads:view scope. Modify routes: leads:edit scope. BOTH gate via
+// ownerField assignedTo, so the lead's OWNER (the sales lead, own-scope) manages
+// their own lead's team, while a broader-scope role (Revenue Head, team scope)
+// manages teams across the leads in their scope. No new permission, no RBAC
+// vocabulary change, no roster-based 403 gating — visibility stays soft (v1).
+router.get(
+  "/:_id/team",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadTeam.Get
+);
+router.get(
+  "/:_id/team/options",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadTeam.Options
+);
+router.post(
+  "/:_id/team",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadTeam.Add
+);
+router.delete(
+  "/:_id/team/:memberId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadTeam.Remove
 );
 
 // ── MB7b Slice 4 — WhatsApp-group one-tap toggle (red-flag → Yes) ─────────────
