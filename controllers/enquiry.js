@@ -313,6 +313,8 @@ const GetAll = async (req, res) => {
       dateTo,
     } = req.query;
     const query = {};
+    // MB9c — soft-deleted (archived) leads are excluded from the default list.
+    query.archivedAt = null;
     const sortQuery = {};
     if (source) {
       query.source = source;
@@ -341,6 +343,17 @@ const GetAll = async (req, res) => {
       } else if (view === "triage") {
         // MB5 Slice 4: the triage queue as a leads filter.
         query.triagePending = true;
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "qualified") {
+        // MB9c — the Qualified saved-view segment.
+        query.qualified = true;
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "golden") {
+        // MB9c — the Golden-window segment: uncontacted, active leads (the same
+        // set Respond-now works from — reconciles).
+        query.firstCalledAt = null;
+        query.qualified = { $ne: true };
+        query.isLost = { $ne: true };
         query["recycled.isRecycled"] = { $ne: true };
       }
     }

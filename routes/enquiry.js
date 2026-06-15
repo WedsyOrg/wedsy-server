@@ -79,6 +79,34 @@ router.post(
   requirePermission("leads:edit:team", { ownerField: "assignedTo" }),
   lifecycle.BulkTransfer
 );
+// ── MB9c — list bulk actions (literal paths above /:_id). Scope-verified in the
+// service. tag/stage/lost gate leads:edit; DELETE (soft) gates leads:delete:all
+// (founder by default — existing RBAC vocab, no new permission).
+const leadBulk = require("../controllers/leadBulk");
+router.post(
+  "/bulk-tag",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadBulk.Tag
+);
+router.post(
+  "/bulk-stage",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadBulk.Stage
+);
+router.post(
+  "/bulk-lost",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadBulk.Lost
+);
+router.post(
+  "/bulk-archive",
+  CheckAdminLogin,
+  requirePermission("leads:delete:all", { ownerField: "assignedTo" }),
+  leadBulk.Archive
+);
 // ── MB8a Slice 3 — leads I'm on the team for (additive "my leads" surface).
 // Literal path: MUST stay above /:_id. Roster-scoped inside the controller; no
 // ownerField narrowing (the roster IS the soft grant), no 403 gating added.

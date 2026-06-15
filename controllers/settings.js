@@ -60,6 +60,8 @@ const GetPublic = async (req, res) => {
       "whatsapp.templates",
       "tags.available",
       "golden.windowMinutes",
+      // MB9c — the speed-to-lead SLA duration drives the in-row golden-window clock.
+      "sla.goldenWindowMinutes",
       "golden.workStartHour",
       "golden.workEndHour",
       // MB6 Slice 6: the cockpit reads these without settings permissions.
