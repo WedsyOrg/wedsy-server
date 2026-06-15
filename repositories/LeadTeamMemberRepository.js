@@ -49,6 +49,17 @@ const findActiveLeadIdsByPerson = async (personId) => {
   return rows.map((r) => r.leadId);
 };
 
+// ── MB8c-1 dashboard reads ───────────────────────────────────────────────────
+// Distinct lead ids any of these persons are CURRENTLY on the team for.
+const findActiveLeadIdsByPersons = async (personIds) => {
+  const rows = await LeadTeamMember.find({ personId: { $in: personIds }, activeTo: null }, { leadId: 1 }).lean();
+  return [...new Set(rows.map((r) => String(r.leadId)))];
+};
+
+// Current members for a set of leads (the pipeline "who's on the team" column).
+const findCurrentByLeadIds = async (leadIds) =>
+  LeadTeamMember.find({ leadId: { $in: leadIds }, activeTo: null }, { leadId: 1, personId: 1 }).lean();
+
 module.exports = {
   create,
   findByLead,
@@ -57,4 +68,6 @@ module.exports = {
   findActiveMembership,
   close,
   findActiveLeadIdsByPerson,
+  findActiveLeadIdsByPersons,
+  findCurrentByLeadIds,
 };

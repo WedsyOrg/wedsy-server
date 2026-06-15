@@ -47,6 +47,10 @@ const LeadStepSchema = new mongoose.Schema(
 );
 
 LeadStepSchema.index({ leadId: 1, order: 1 });
+// MB8c-1 — the My Work dashboard reads steps by owner + status; pipeline reads
+// by leadId. These keep the cross-lead aggregations indexed.
+LeadStepSchema.index({ ownerIds: 1, status: 1 });
+LeadStepSchema.index({ dueAt: 1 });
 
 module.exports = mongoose.models.LeadStep || mongoose.model("LeadStep", LeadStepSchema);
 module.exports.STATUSES = STATUSES;

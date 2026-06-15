@@ -89,6 +89,22 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   leadTeam.MyLeads
 );
+// ── MB8c-1 — cross-lead journey dashboards. Literal paths: MUST stay above
+// /:_id. The gate sets req.scope from the caller's existing leads:view grant;
+// the service reuses that scope for breadth (own/team/dept/all). No new gating.
+const journeyDashboard = require("../controllers/journeyDashboard");
+router.get(
+  "/steps/my-work",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  journeyDashboard.MyWork
+);
+router.get(
+  "/pipeline-overview",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  journeyDashboard.PipelineOverview
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
