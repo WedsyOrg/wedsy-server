@@ -113,6 +113,28 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   followup.Mine
 );
+// ── MB9a-2 — golden-window SLA + rescue (literal paths, above /:_id). The gate
+// sets req.scope from the caller's existing leads:view grant; reused for breadth.
+const goldenWindow = require("../controllers/goldenWindow");
+const rescue = require("../controllers/rescue");
+router.get(
+  "/respond-now",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  goldenWindow.RespondNow
+);
+router.get(
+  "/golden-window/metrics",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  goldenWindow.Metrics
+);
+router.get(
+  "/rescue-queue",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  rescue.Queue
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
@@ -382,6 +404,33 @@ router.post(
   CheckAdminLogin,
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   lifecycle.Qualify
+);
+// ── MB9a-2 — per-lead golden-window clock + rescue actions. Claim/reassign/
+// dismiss gate leads:edit + ownerField, so only a manager/RevHead whose scope
+// covers the breached lead can rescue it (an own-scope IC is out of scope).
+router.get(
+  "/:_id/golden-window",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  goldenWindow.LeadClock
+);
+router.post(
+  "/:_id/rescue/claim",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  rescue.Claim
+);
+router.post(
+  "/:_id/rescue/reassign",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  rescue.Reassign
+);
+router.post(
+  "/:_id/rescue/dismiss",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  rescue.Dismiss
 );
 router.post(
   "/:_id/recycle",

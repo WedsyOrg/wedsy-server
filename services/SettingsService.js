@@ -97,6 +97,13 @@ const DEFAULTS = {
   // The command-center banner, the chat follow-up cards, and the Pipeline
   // "stuck" flag ALL derive from this single value (default 3 days).
   "accountability.staleDays": 3,
+  // MB9a-2 — speed-to-lead SLA. The golden-window clock duration (minutes from
+  // "human needed" to first human contact) + the rescue-escalation thresholds.
+  // Distinct from the legacy MB5 golden.windowMinutes (the cockpit/safety-net
+  // display) so neither changes the other.
+  "sla.goldenWindowMinutes": 30,
+  "sla.rescueTier1Minutes": 5,
+  "sla.rescueTier2Minutes": 1,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -138,6 +145,9 @@ const KEY_CATEGORY = {
   "nurture.cadenceDays": "settings_nurture",
   // Accountability threshold rides the SLA settings category.
   "accountability.staleDays": "settings_sla",
+  "sla.goldenWindowMinutes": "settings_sla",
+  "sla.rescueTier1Minutes": "settings_sla",
+  "sla.rescueTier2Minutes": "settings_sla",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -189,6 +199,15 @@ const validateValue = (key, value) => {
       return value;
     case "accountability.staleDays":
       if (!isIntInRange(value, 1, 30)) throw err(400, "accountability.staleDays must be an integer 1–30");
+      return value;
+    case "sla.goldenWindowMinutes":
+      if (!isIntInRange(value, 5, 480)) throw err(400, "sla.goldenWindowMinutes must be an integer 5–480");
+      return value;
+    case "sla.rescueTier1Minutes":
+      if (!isIntInRange(value, 1, 60)) throw err(400, "sla.rescueTier1Minutes must be an integer 1–60");
+      return value;
+    case "sla.rescueTier2Minutes":
+      if (!isIntInRange(value, 1, 30)) throw err(400, "sla.rescueTier2Minutes must be an integer 1–30");
       return value;
     case "assignment.autoAssignEnabled":
     case "lost.approvalRequired":
