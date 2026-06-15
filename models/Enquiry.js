@@ -216,6 +216,11 @@ const EnquirySchema = new mongoose.Schema(
       originalOwnerId: { type: ObjectId, ref: "Admin", default: null },
       resurfacedAt: { type: Date, default: null },
     },
+    // ── MB9c (additive, nullable) — SOFT DELETE. The list "Delete" (founder-only)
+    // sets these; archived leads are excluded from default list queries but are
+    // NEVER hard-removed (recoverable). The ONLY Enquiry change in MB9c.
+    archivedAt: { type: Date, default: null },
+    archivedBy: { type: ObjectId, ref: "Admin", default: null },
   },
   { timestamps: true }
 );

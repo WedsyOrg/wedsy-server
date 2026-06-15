@@ -313,6 +313,8 @@ const GetAll = async (req, res) => {
       dateTo,
     } = req.query;
     const query = {};
+    // MB9c — soft-deleted (archived) leads are excluded from the default list.
+    query.archivedAt = null;
     const sortQuery = {};
     if (source) {
       query.source = source;

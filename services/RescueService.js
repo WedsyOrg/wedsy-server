@@ -45,6 +45,7 @@ const rescueQueue = async (adminId, scope, now = new Date()) => {
     qualified: { $ne: true },
     isLost: { $ne: true },
     "recycled.isRecycled": { $ne: true },
+    archivedAt: null,
     createdAt: { $gte: new Date(+now - HORIZON_MS) },
   };
   if (scope !== "all") {

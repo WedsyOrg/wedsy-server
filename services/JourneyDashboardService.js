@@ -130,7 +130,7 @@ const pipelineOverview = async (adminId, scope, { phase, stuckOnly, memberId } =
   let leads;
   if (scope === "all") {
     leads = await Enquiry.find(
-      { isLost: { $ne: true }, "recycled.isRecycled": { $ne: true } },
+      { isLost: { $ne: true }, "recycled.isRecycled": { $ne: true }, archivedAt: null },
       { name: 1, stage: 1, assignedTo: 1 }
     ).lean();
   } else {

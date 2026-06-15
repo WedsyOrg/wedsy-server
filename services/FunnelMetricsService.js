@@ -66,7 +66,7 @@ const funnel = async (adminId, scope, { period = "week" } = {}, now = new Date()
   const since = new Date(+now - periodDays * DAY);
   const owners = await GoldenWindowService.ownerScopeIds(adminId, scope); // null = all
 
-  const leadFilter = { createdAt: { $gte: since } };
+  const leadFilter = { createdAt: { $gte: since }, archivedAt: null };
   if (owners) leadFilter.assignedTo = { $in: owners.map((o) => new mongoose.Types.ObjectId(idStr(o))) };
   const leads = await Enquiry.find(leadFilter, {
     assignedTo: 1, createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, lostStatus: 1, recycled: 1, name: 1,

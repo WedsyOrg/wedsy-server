@@ -100,6 +100,7 @@ const respondNow = async (adminId, now = new Date()) => {
       qualified: { $ne: true },
       isLost: { $ne: true },
       "recycled.isRecycled": { $ne: true },
+      archivedAt: null,
       createdAt: { $gte: new Date(+now - RESPOND_HORIZON_MS) },
     },
     { name: 1, phone: 1, source: 1, marketingSource: 1, createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1 }
@@ -142,7 +143,7 @@ const ownerScopeIds = async (adminId, scope) => {
 const metrics = async (adminId, scope, { periodDays = 7 } = {}, now = new Date()) => {
   const owners = await ownerScopeIds(adminId, scope);
   const since = new Date(+now - periodDays * 24 * 60 * MIN);
-  const filter = { createdAt: { $gte: since }, isLost: { $ne: true }, "recycled.isRecycled": { $ne: true } };
+  const filter = { createdAt: { $gte: since }, isLost: { $ne: true }, "recycled.isRecycled": { $ne: true }, archivedAt: null };
   if (owners) filter.assignedTo = { $in: owners.map((o) => new mongoose.Types.ObjectId(idStr(o))) };
   const leads = await Enquiry.find(filter, { createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1 }).lean();
   const t = await thresholds();
