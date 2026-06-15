@@ -65,6 +65,9 @@ const EVENT_TITLES = {
   wa_group_created: "WhatsApp group created with the couple ✦",
   wa_group_missing: "No WhatsApp group yet — flagged",
   nurture_touch: "Nurture touch",
+  // MB8a — lead team roster (Client Journey Engine foundation).
+  team_member_added: "Team member added 🤝",
+  team_member_removed: "Team member removed",
 };
 
 // Payload keys that carry an Admin id of a SECOND party (not the actor) — these
@@ -101,6 +104,15 @@ const dynamicTitle = (type, payload = {}, nameOf) => {
     case "resurfaced_by_reenquiry": {
       const re = payload.reassignedTo ? id("reassignedTo") : null;
       return `Resurfaced — they re-enquired${re ? ` · back to ${re}` : ""}`;
+    }
+    // MB8a — name the person + their serving department (actor shown separately).
+    case "team_member_added": {
+      const who = payload.personName || id("personId") || "someone";
+      return `Added ${who}${payload.departmentName ? ` (${payload.departmentName})` : ""} to the team`;
+    }
+    case "team_member_removed": {
+      const who = payload.personName || id("personId") || "someone";
+      return `Removed ${who}${payload.departmentName ? ` (${payload.departmentName})` : ""} from the team`;
     }
     default:
       return null;
