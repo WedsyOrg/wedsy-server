@@ -29,10 +29,20 @@ const ADMIN_PHONE = "919180000002";
   const Admin = require("../models/Admin");
   const Role = require("../models/Role");
   const Department = require("../models/Department");
+  // MB8a/MB8b/MB8c-1 — clean the journey artifacts the browser suite creates on
+  // the fixture lead so they don't orphan across runs.
+  const LeadStep = require("../models/LeadStep");
+  const LeadTeamMember = require("../models/LeadTeamMember");
+  const LeadChatMessage = require("../models/LeadChatMessage");
 
   const teardown = async () => {
     const lead = await Enquiry.findOne({ phone: LEAD_PHONE }).lean();
-    if (lead) await LeadInternalEvent.deleteMany({ leadId: lead._id });
+    if (lead) {
+      await LeadInternalEvent.deleteMany({ leadId: lead._id });
+      await LeadStep.deleteMany({ leadId: lead._id });
+      await LeadTeamMember.deleteMany({ leadId: lead._id });
+      await LeadChatMessage.deleteMany({ leadId: lead._id });
+    }
     await Enquiry.deleteMany({ phone: LEAD_PHONE });
     await WAConversation.deleteMany({ phone: LEAD_PHONE });
     await WAAgentMessage.deleteMany({ phone: LEAD_PHONE });
