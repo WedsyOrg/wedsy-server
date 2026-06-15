@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const LeadStepService = require("../services/LeadStepService");
+const LeadTaskService = require("../services/LeadTaskService");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -63,4 +64,49 @@ const AddNote = async (req, res) => {
   }
 };
 
-module.exports = { List, Instantiate, Patch, AddNote };
+// ── MB8c-2a-i — per-step tasks ───────────────────────────────────────────────
+// GET /enquiry/:_id/steps/:stepId/tasks
+const ListTasks = async (req, res) => {
+  try {
+    await assertInScope(req.params._id, req.scopeFilter);
+    res.status(200).json({ list: await LeadTaskService.listForStep(req.params.stepId) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// POST /enquiry/:_id/steps/:stepId/tasks — { title, assigneeId?, dueAt? }
+const CreateTask = async (req, res) => {
+  try {
+    await assertInScope(req.params._id, req.scopeFilter);
+    const task = await LeadTaskService.createStepTask(
+      req.params._id,
+      req.params.stepId,
+      { title: req.body?.title, assigneeId: req.body?.assigneeId, dueAt: req.body?.dueAt },
+      req.auth.user_id
+    );
+    res.status(201).json(task);
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// PATCH /enquiry/:_id/steps/:stepId/tasks/:taskId — edit (title/assignee/due) or
+// toggle done (when body.toggle is true).
+const PatchTask = async (req, res) => {
+  try {
+    await assertInScope(req.params._id, req.scopeFilter);
+    const task = req.body && req.body.toggle
+      ? await LeadTaskService.toggleStepTask(req.params.taskId, req.auth.user_id)
+      : await LeadTaskService.editStepTask(req.params.taskId, {
+          title: req.body?.title,
+          assigneeId: req.body?.assigneeId,
+          dueAt: req.body?.dueAt,
+        });
+    res.status(200).json(task);
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { List, Instantiate, Patch, AddNote, ListTasks, CreateTask, PatchTask };

@@ -14,6 +14,9 @@ const jwt = require("jsonwebtoken");
 const MARKER = "BROWSER-E2E";
 const LEAD_PHONE = "919180000001";
 const ADMIN_PHONE = "919180000002";
+// MB8c-2a-i — a dedicated QUALIFIED lead (with roster + journey steps + brief
+// facts) so the command-center e2e never has to mutate the pristine LEAD_PHONE.
+const QUALIFIED_LEAD_PHONE = "919180000004";
 
 (async () => {
   const cmd = process.argv[2];
@@ -35,15 +38,21 @@ const ADMIN_PHONE = "919180000002";
   const LeadTeamMember = require("../models/LeadTeamMember");
   const LeadChatMessage = require("../models/LeadChatMessage");
 
+  const LeadTask = require("../models/LeadTask");
+  const cleanLeadArtifacts = async (phone) => {
+    const l = await Enquiry.findOne({ phone }).lean();
+    if (!l) return;
+    await LeadInternalEvent.deleteMany({ leadId: l._id });
+    await LeadStep.deleteMany({ leadId: l._id });
+    await LeadTeamMember.deleteMany({ leadId: l._id });
+    await LeadChatMessage.deleteMany({ leadId: l._id });
+    await LeadTask.deleteMany({ leadId: l._id });
+  };
+
   const teardown = async () => {
-    const lead = await Enquiry.findOne({ phone: LEAD_PHONE }).lean();
-    if (lead) {
-      await LeadInternalEvent.deleteMany({ leadId: lead._id });
-      await LeadStep.deleteMany({ leadId: lead._id });
-      await LeadTeamMember.deleteMany({ leadId: lead._id });
-      await LeadChatMessage.deleteMany({ leadId: lead._id });
-    }
-    await Enquiry.deleteMany({ phone: LEAD_PHONE });
+    await cleanLeadArtifacts(LEAD_PHONE);
+    await cleanLeadArtifacts(QUALIFIED_LEAD_PHONE);
+    await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE] } });
     await WAConversation.deleteMany({ phone: LEAD_PHONE });
     await WAAgentMessage.deleteMany({ phone: LEAD_PHONE });
     await Admin.deleteMany({ phone: ADMIN_PHONE });
@@ -104,8 +113,28 @@ const ADMIN_PHONE = "919180000002";
     { phone: LEAD_PHONE, role: "assistant", message: "How lovely! Tell me more ✦" },
   ]);
 
+  // ── MB8c-2a-i — a QUALIFIED lead for the command-center e2e ──────────────────
+  // (LeadTeamMember is already required above for teardown.)
+  const StepDefinitionService = require("../services/StepDefinitionService");
+  const LeadStepService = require("../services/LeadStepService");
+  const qLead = await Enquiry.create({
+    name: "Aarav Mehta",
+    phone: QUALIFIED_LEAD_PHONE,
+    verified: true,
+    source: "whatsapp",
+    stage: "qualified",
+    qualified: true,
+    assignedTo: admin._id,
+    qualificationData: { groomName: "Aarav", brideName: "Diya", weddingStyle: "Boho", venueArea: "Goa", venueStatus: "looking", servicesRequired: ["Decor", "Makeup"], budgetAmount: 1500000 },
+    additionalInfo: { adFormAnswers: { city: "Goa", weddingDate: "2026-12-12", guests: "300" } },
+  });
+  // The founder is on the roster (so they can own steps/tasks); seed defs + steps.
+  await LeadTeamMember.create({ leadId: qLead._id, personId: admin._id, departmentName: `${MARKER} Dept`, addedBy: admin._id });
+  await StepDefinitionService.seed();
+  await LeadStepService.instantiateForLead(qLead._id, admin._id);
+
   await mongoose.disconnect();
   console.log(
-    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id) })
+    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id) })
   );
 })();
