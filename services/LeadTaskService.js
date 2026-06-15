@@ -1,11 +1,13 @@
 const mongoose = require("mongoose");
 const LeadTask = require("../models/LeadTask");
+const LeadStep = require("../models/LeadStep");
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 const Enquiry = require("../models/Enquiry");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const AdminNotificationService = require("./AdminNotificationService");
 const LeadChatService = require("./LeadChatService");
+const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
@@ -129,7 +131,8 @@ const decorate = async (rows) => {
   return rows.map((r) => ({
     ...r,
     lead: r.leadId ? leadById.get(String(r.leadId)) || null : null,
-    overdue: r.status === "open" && new Date(r.dueAt).getTime() < now,
+    // Overdue only when a due date is actually set (step tasks may be undated).
+    overdue: r.status === "open" && !!r.dueAt && new Date(r.dueAt).getTime() < now,
   }));
 };
 
@@ -181,6 +184,117 @@ const escalateOverdue = async (now = new Date()) => {
   return { escalated };
 };
 
+// ── MB8c-2a-i — PER-STEP TASKS ───────────────────────────────────────────────
+// Micro-tasks attached to a journey step (LeadStep). Reuse this model via the
+// optional stepId link. Unlike MB7b collaboration tasks these are quiet in the
+// lead chat (notes are the chat citizens) — they emit journey events only.
+
+const assertStepInLead = async (leadId, stepId) => {
+  if (!isId(leadId) || !isId(stepId)) throw httpError(400, "Invalid id");
+  const step = await LeadStep.findById(stepId, { leadId: 1, name: 1 }).lean();
+  if (!step || String(step.leadId) !== String(leadId)) throw httpError(404, "Step not found on this lead");
+  return step;
+};
+
+// An assignee, when set, must be on the lead's CURRENT roster (MB8a).
+const assertOwnerOnRoster = async (leadId, assigneeId) => {
+  if (!assigneeId) return null;
+  if (!isId(assigneeId)) throw httpError(400, "Invalid owner id");
+  const roster = await LeadTeamMemberRepository.findCurrentByLead(leadId);
+  if (!roster.some((r) => String(r.personId) === String(assigneeId)))
+    throw httpError(400, "The owner must be a current member of the lead's team");
+  return assigneeId;
+};
+
+const createStepTask = async (leadId, stepId, { title, assigneeId, dueAt } = {}, assignerId) => {
+  const step = await assertStepInLead(leadId, stepId);
+  const cleanTitle = String(title || "").trim();
+  if (!cleanTitle) throw httpError(400, "A task needs a title");
+  await assertOwnerOnRoster(leadId, assigneeId);
+  let due = null;
+  if (dueAt) {
+    due = new Date(dueAt);
+    if (Number.isNaN(due.getTime())) throw httpError(400, "Invalid dueAt");
+  }
+
+  const task = await LeadTask.create({
+    leadId,
+    stepId,
+    title: cleanTitle.slice(0, 300),
+    assigneeId: assigneeId || null,
+    assignerId: assignerId || null,
+    dueAt: due,
+    kind: "task",
+  });
+
+  await LeadInternalEventService.record({
+    leadId,
+    type: "step_task_created",
+    actorId: assignerId || null,
+    payload: { taskId: String(task._id), title: cleanTitle, stepId: String(stepId), stepName: step.name, assigneeId: assigneeId ? String(assigneeId) : null },
+  });
+  if (assigneeId) {
+    await AdminNotificationService.notify(assigneeId, {
+      type: "task_assigned",
+      title: `New task: ${cleanTitle}`,
+      message: `On step "${step.name}"`,
+      leadId,
+      payload: { taskId: String(task._id), stepId: String(stepId) },
+    });
+  }
+  return (await decorate([task.toObject()]))[0];
+};
+
+const listForStep = async (stepId) => {
+  if (!isId(stepId)) throw httpError(400, "Invalid stepId");
+  const rows = await LeadTask.find({ stepId }).sort({ status: 1, dueAt: 1, createdAt: 1 }).lean();
+  return decorate(rows);
+};
+
+const editStepTask = async (taskId, { title, assigneeId, dueAt } = {}) => {
+  if (!isId(taskId)) throw httpError(400, "Invalid taskId");
+  const task = await LeadTask.findById(taskId);
+  if (!task || !task.stepId) throw httpError(404, "Step task not found");
+  if (title !== undefined) {
+    const t = String(title).trim();
+    if (!t) throw httpError(400, "Title cannot be empty");
+    task.title = t.slice(0, 300);
+  }
+  if (assigneeId !== undefined) {
+    if (assigneeId) await assertOwnerOnRoster(task.leadId, assigneeId);
+    task.assigneeId = assigneeId || null;
+  }
+  if (dueAt !== undefined) {
+    if (!dueAt) task.dueAt = null;
+    else {
+      const d = new Date(dueAt);
+      if (Number.isNaN(d.getTime())) throw httpError(400, "Invalid dueAt");
+      task.dueAt = d;
+    }
+  }
+  await task.save();
+  return (await decorate([task.toObject()]))[0];
+};
+
+// Toggle open<->done. Step tasks stay quiet in chat; journey event only.
+const toggleStepTask = async (taskId, actorId) => {
+  if (!isId(taskId)) throw httpError(400, "Invalid taskId");
+  const task = await LeadTask.findById(taskId);
+  if (!task || !task.stepId) throw httpError(404, "Step task not found");
+  const toDone = task.status === "open";
+  task.status = toDone ? "done" : "open";
+  task.completedAt = toDone ? new Date() : null;
+  task.completedBy = toDone ? actorId || null : null;
+  await task.save();
+  await LeadInternalEventService.record({
+    leadId: task.leadId,
+    type: toDone ? "step_task_completed" : "step_task_reopened",
+    actorId: actorId || null,
+    payload: { taskId: String(task._id), title: task.title, stepId: String(task.stepId) },
+  });
+  return (await decorate([task.toObject()]))[0];
+};
+
 module.exports = {
   idsByRoleName,
   createTask,
@@ -188,4 +302,8 @@ module.exports = {
   listForLead,
   myTasks,
   escalateOverdue,
+  createStepTask,
+  listForStep,
+  editStepTask,
+  toggleStepTask,
 };

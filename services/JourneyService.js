@@ -72,6 +72,10 @@ const EVENT_TITLES = {
   journey_started: "Journey steps created",
   step_status_changed: "Step updated",
   step_owners_assigned: "Step owners assigned",
+  // MB8c-2a-i — per-step tasks.
+  step_task_created: "Task added",
+  step_task_completed: "Task done ✓",
+  step_task_reopened: "Task reopened",
 };
 
 const STEP_STATUS_LABEL = {
@@ -136,6 +140,13 @@ const dynamicTitle = (type, payload = {}, nameOf) => {
         : "no one";
       return `Assigned ${names} to "${payload.stepName || "a step"}"`;
     }
+    // MB8c-2a-i — name the task + its step (actor shown separately).
+    case "step_task_created":
+      return `Task added: "${payload.title || "task"}"${payload.stepName ? ` · ${payload.stepName}` : ""}`;
+    case "step_task_completed":
+      return `Task done: "${payload.title || "task"}" ✓`;
+    case "step_task_reopened":
+      return `Task reopened: "${payload.title || "task"}"`;
     default:
       return null;
   }

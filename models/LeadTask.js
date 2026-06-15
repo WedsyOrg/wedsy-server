@@ -10,10 +10,18 @@ const ObjectId = mongoose.Schema.Types.ObjectId;
 const LeadTaskSchema = new mongoose.Schema(
   {
     leadId: { type: ObjectId, ref: "Enquiry", required: true, index: true },
+    // MB8c-2a-i — optional link to a journey step (LeadStep). Set → a per-step
+    // micro-task surfaced in the step's inline panel; null → a lead-level
+    // collaboration task (MB7b). Reuses this model rather than a parallel one.
+    stepId: { type: ObjectId, ref: "LeadStep", default: null, index: true },
     title: { type: String, required: true },
-    assigneeId: { type: ObjectId, ref: "Admin", required: true, index: true },
+    // assignee/dueAt stay REQUIRED for MB7b collaboration tasks (the createTask
+    // service validates them) but are OPTIONAL at the schema level so step
+    // micro-tasks can start ownerless / undated and pick up an owner from the
+    // roster later.
+    assigneeId: { type: ObjectId, ref: "Admin", default: null, index: true },
     assignerId: { type: ObjectId, ref: "Admin", required: true },
-    dueAt: { type: Date, required: true },
+    dueAt: { type: Date, default: null },
     status: { type: String, enum: ["open", "done"], default: "open", index: true },
     // "task" = born-in-chat / standalone (Slice 2); "nurture" = the rolling CS
     // nurture touch (Slice 4), which carries ready-to-copy text.
@@ -30,5 +38,6 @@ const LeadTaskSchema = new mongoose.Schema(
 
 LeadTaskSchema.index({ assigneeId: 1, status: 1, dueAt: 1 });
 LeadTaskSchema.index({ leadId: 1, kind: 1, status: 1 });
+LeadTaskSchema.index({ stepId: 1, status: 1 });
 
 module.exports = mongoose.models.LeadTask || mongoose.model("LeadTask", LeadTaskSchema);

@@ -263,6 +263,25 @@ router.post(
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   leadStep.AddNote
 );
+// ── MB8c-2a-i — per-step tasks (reuses leads:view/edit scope + ownerField). ───
+router.get(
+  "/:_id/steps/:stepId/tasks",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadStep.ListTasks
+);
+router.post(
+  "/:_id/steps/:stepId/tasks",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadStep.CreateTask
+);
+router.patch(
+  "/:_id/steps/:stepId/tasks/:taskId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadStep.PatchTask
+);
 
 // ── MB7b Slice 4 — WhatsApp-group one-tap toggle (red-flag → Yes) ─────────────
 const nurture = require("../controllers/nurture");
