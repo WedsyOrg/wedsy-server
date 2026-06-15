@@ -68,6 +68,17 @@ const EVENT_TITLES = {
   // MB8a — lead team roster (Client Journey Engine foundation).
   team_member_added: "Team member added 🤝",
   team_member_removed: "Team member removed",
+  // MB8b — journey steps.
+  journey_started: "Journey steps created",
+  step_status_changed: "Step updated",
+  step_owners_assigned: "Step owners assigned",
+};
+
+const STEP_STATUS_LABEL = {
+  not_started: "Not started",
+  in_progress: "In progress",
+  awaiting_client: "Awaiting client",
+  complete: "Complete",
 };
 
 // Payload keys that carry an Admin id of a SECOND party (not the actor) — these
@@ -113,6 +124,17 @@ const dynamicTitle = (type, payload = {}, nameOf) => {
     case "team_member_removed": {
       const who = payload.personName || id("personId") || "someone";
       return `Removed ${who}${payload.departmentName ? ` (${payload.departmentName})` : ""} from the team`;
+    }
+    // MB8b — name the step + the readable status / owners (actor shown separately).
+    case "step_status_changed": {
+      const to = STEP_STATUS_LABEL[payload.to] || payload.to || "updated";
+      return `${payload.stepName || "Step"} → ${to}`;
+    }
+    case "step_owners_assigned": {
+      const names = Array.isArray(payload.ownerNames) && payload.ownerNames.length
+        ? payload.ownerNames.join(", ")
+        : "no one";
+      return `Assigned ${names} to "${payload.stepName || "a step"}"`;
     }
     default:
       return null;

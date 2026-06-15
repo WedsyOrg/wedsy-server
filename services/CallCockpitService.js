@@ -164,6 +164,14 @@ const logCall = async (
   // paying for — trigger it (Haiku, once). Fire-safe: never breaks the call log.
   if (outcome === "qualified") {
     await require("./KiaraSummaryService").generateForQualified(enquiryId);
+    // MB8b: qualification is when the lead enters the journey — stamp the
+    // configurable steps (idempotent: a no-op if already instantiated).
+    // Fire-safe: a failure here must never break the call log.
+    try {
+      await require("./LeadStepService").instantiateForLead(enquiryId, actorId);
+    } catch (e) {
+      console.error("LeadStep.instantiateForLead failed:", e.message);
+    }
   }
 
   // Cadence (Slice C): on an unanswered outcome, surface the suggested next attempt
