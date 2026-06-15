@@ -10,6 +10,13 @@ const enquiryImport = require("../controllers/enquiry-import");
 const fileUpload = require("express-fileupload");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
 const { requirePermission } = require("../middlewares/requirePermission");
+// MB10 Slice 4 — per-document scope check on lead WRITE routes (runs after the
+// requirePermission gate that sets req.scopeFilter via ownerField "assignedTo").
+const { enforceLeadScope } = require("../middlewares/enforceLeadScope");
+const LEADS_EDIT_SCOPED = [
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  enforceLeadScope("_id"),
+];
 
 router.post("/", enquiry.CreateNew);
 router.get("/", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.GetAll);
@@ -184,9 +191,12 @@ router.delete(
   CheckAdminLogin,
   enquiry.DeleteConversation
 );
-router.put("/:_id/", CheckAdminLogin, enquiry.UpdateLead);
-router.put("/:_id/notes", CheckAdminLogin, enquiry.UpdateNotes);
-router.put("/:_id/call", CheckAdminLogin, enquiry.UpdateCallSchedule);
+// MB10 Slice 4 — write-route scope sweep: these mutate a single lead by :_id and
+// were previously CheckAdminLogin-only (any logged-in admin could write any lead).
+// Now scope-gated consistent with reads.
+router.put("/:_id/", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiry.UpdateLead);
+router.put("/:_id/notes", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiry.UpdateNotes);
+router.put("/:_id/call", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiry.UpdateCallSchedule);
 router.put(
   "/:_id/first-call",
   CheckAdminLogin,
@@ -418,7 +428,7 @@ router.put(
 router.post(
   "/:_id/note",
   CheckAdminLogin,
-  requirePermission("leads:edit:own"),
+  ...LEADS_EDIT_SCOPED,
   lifecycle.AddNote
 );
 router.put(
@@ -480,13 +490,16 @@ router.post(
   requirePermission("leads:edit:own"),
   lifecycle.Convert
 );
-router.put("/:_id/stage", CheckAdminLogin, enquiryPipeline.UpdateStage);
-router.put("/:_id/assign", CheckAdminLogin, enquiryPipeline.UpdateAssignedTo);
-// Requesting a disqualification needs edit rights on the lead (Sales Executive has leads:edit:own).
+// MB10 Slice 4 — stage + assign were CheckAdminLogin-only; now scope-gated.
+router.put("/:_id/stage", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateStage);
+router.put("/:_id/assign", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateAssignedTo);
+// Requesting a disqualification needs edit rights on the lead (Sales Executive has
+// leads:edit:own). MB10 Slice 4: now also scope-checked per-document (ownerField +
+// enforceLeadScope) so an out-of-scope caller cannot mark a lead disqualified.
 router.post(
   "/:_id/disqualify",
   CheckAdminLogin,
-  requirePermission("leads:edit:own"),
+  ...LEADS_EDIT_SCOPED,
   disqualify.RequestDisqualify
 );
 // No requirePermission here — eligibility (manager OR leads:approve) is computed in the controller.
