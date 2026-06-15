@@ -24,6 +24,18 @@ const updateAssignedToById = async (_id, assignedTo, updatedBy) => {
   );
 };
 
+// MB9a-2 — ATOMIC first-claim-wins reassign. The update applies ONLY while the
+// lead is still owned by `expectedOwnerId`; MongoDB serializes the conditional
+// findOneAndUpdate, so of two concurrent claimers exactly one matches (the other
+// gets null → 409). No new schema field — the assignedTo precondition IS the lock.
+const claimByReassign = async (_id, expectedOwnerId, newOwnerId, updatedBy) => {
+  return await Enquiry.findOneAndUpdate(
+    { _id, assignedTo: expectedOwnerId },
+    { $set: { assignedTo: newOwnerId, updatedBy: updatedBy || null } },
+    { new: true }
+  ).lean();
+};
+
 // Set arbitrary fields on an enquiry by _id. Returns the updated document or null.
 const updateFieldsById = async (_id, fields) => {
   return await Enquiry.findByIdAndUpdate(
@@ -70,6 +82,7 @@ module.exports = {
   updateStageById,
   updateAssignedToById,
   updateFieldsById,
+  claimByReassign,
   pushCallLogById,
   pushFollowUpById,
   stampFirstCalledAt,
