@@ -25,6 +25,9 @@ const LeadChatMessageSchema = new mongoose.Schema(
     // Per-message read receipts — GET marks the thread read for the caller.
     readBy: { type: [ObjectId], ref: "Admin", default: [] },
     taskId: { type: ObjectId, ref: "LeadTask", default: null },
+    // MB8b Slice 3 — set on a mirrored step-note system message; the chat echo
+    // links back to the step's notes thread. Additive, default null.
+    stepId: { type: ObjectId, ref: "LeadStep", default: null },
     editedAt: { type: Date, default: null },
   },
   { timestamps: true }

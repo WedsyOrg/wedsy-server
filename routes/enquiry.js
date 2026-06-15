@@ -218,6 +218,36 @@ router.delete(
   leadTeam.Remove
 );
 
+// ── MB8b Slices 2–4 — per-lead JOURNEY STEPS (status, owners, deps, notes) ────
+// Reads gate leads:view scope; mutations gate leads:edit scope. Both via
+// ownerField assignedTo (same model as the roster) — owner manages own lead's
+// steps, broader-scope roles manage across their scope.
+const leadStep = require("../controllers/leadStep");
+router.get(
+  "/:_id/steps",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadStep.List
+);
+router.post(
+  "/:_id/steps/instantiate",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadStep.Instantiate
+);
+router.patch(
+  "/:_id/steps/:stepId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadStep.Patch
+);
+router.post(
+  "/:_id/steps/:stepId/notes",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadStep.AddNote
+);
+
 // ── MB7b Slice 4 — WhatsApp-group one-tap toggle (red-flag → Yes) ─────────────
 const nurture = require("../controllers/nurture");
 router.post(

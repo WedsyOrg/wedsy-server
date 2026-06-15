@@ -112,9 +112,16 @@ const postMessage = async (leadId, authorId, { body, attachments, mentions } = {
   return enriched;
 };
 
-// System message — task lifecycle narration (Slice 2) + nurture (Slice 4).
-const postSystemMessage = async (leadId, { body, systemType = "", taskId = null } = {}) => {
+// System message — task lifecycle narration (Slice 2) + nurture (Slice 4) +
+// MB8b step-note mirror. `stepId` links the chat echo back to a step; `mentions`
+// carries the original note's @tags so chat_mention notifications still fire
+// even though the message itself is authored by the system.
+const postSystemMessage = async (
+  leadId,
+  { body, systemType = "", taskId = null, stepId = null, mentions = [] } = {}
+) => {
   if (!isId(leadId)) return null;
+  const ments = Array.isArray(mentions) ? mentions.filter((m) => isId(m)).map(String) : [];
   const msg = await LeadChatMessage.create({
     leadId,
     authorId: null,
@@ -122,6 +129,8 @@ const postSystemMessage = async (leadId, { body, systemType = "", taskId = null 
     systemType,
     body: String(body || "").slice(0, MAX_BODY),
     taskId: taskId && isId(taskId) ? taskId : null,
+    stepId: stepId && isId(stepId) ? stepId : null,
+    mentions: ments,
   });
   return msg;
 };

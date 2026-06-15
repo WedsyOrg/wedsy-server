@@ -14,6 +14,7 @@ router.use("/enquiry", require("./enquiry"));
 router.use("/project", require("./project")); // Lifecycle Slice D
 router.use("/settings", require("./settings")); // Settings Suite
 router.use("/custom-field", require("./custom-field")); // Settings Suite
+router.use("/step-definition", require("./step-definition")); // MB8b journey steps
 router.use("/decor", require("./decor"));
 router.use("/decor-package", require("./decor-package"));
 router.use("/search", require("./search"));
