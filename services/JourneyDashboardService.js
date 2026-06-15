@@ -4,14 +4,16 @@ const Enquiry = require("../models/Enquiry");
 const { PHASES } = require("../models/StepDefinition");
 const LeadStepRepository = require("../repositories/LeadStepRepository");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+const FollowupRepository = require("../repositories/FollowupRepository");
+const LeadTask = require("../models/LeadTask");
+const AccountabilityService = require("./AccountabilityService");
 const { getSubordinateIds, getDepartmentMemberIds } = require("../middlewares/requirePermission");
 
 const DAY = 24 * 60 * 60 * 1000;
 const WEEK = 7 * DAY;
-// STUCK rule (documented): a journey lead is "stuck" if it has any overdue step
-// (a non-complete, non-N/A step whose dueAt is in the past) OR no step movement
-// in STUCK_DAYS days (its most-recently-updated step is older than that).
-const STUCK_DAYS = 5;
+// MB8c-2a-ii RECONCILE: the pipeline "stuck" flag now derives from the SINGLE
+// shared accountability rule + threshold (AccountabilityService) — the same rule
+// the command-center banner and chat follow-up cards use. They never disagree.
 
 const idStr = (v) => String(v);
 
@@ -138,16 +140,34 @@ const pipelineOverview = async (adminId, scope, { phase, stuckOnly, memberId } =
   }
 
   const leadIds = leads.map((l) => l._id);
-  const [allSteps, rosterRows] = await Promise.all([
+  // Batch everything the SHARED accountability rule needs (steps + tasks +
+  // follow-ups) so many leads are assessed without N+1.
+  const [allSteps, rosterRows, allTasks, allFollowups, staleDays] = await Promise.all([
     LeadStepRepository.findByLeadIds(leadIds),
     LeadTeamMemberRepository.findCurrentByLeadIds(leadIds),
+    LeadTask.find({ leadId: { $in: leadIds } }).lean(),
+    FollowupRepository.findByLeadIds(leadIds),
+    AccountabilityService.thresholdDays(),
   ]);
+  const thresholdMs = staleDays * DAY;
 
   const stepsByLead = new Map();
   for (const s of allSteps) {
     const k = idStr(s.leadId);
     if (!stepsByLead.has(k)) stepsByLead.set(k, []);
     stepsByLead.get(k).push(s);
+  }
+  const tasksByLead = new Map();
+  for (const t of allTasks) {
+    const k = idStr(t.leadId);
+    if (!tasksByLead.has(k)) tasksByLead.set(k, []);
+    tasksByLead.get(k).push(t);
+  }
+  const followupsByLead = new Map();
+  for (const f of allFollowups) {
+    const k = idStr(f.leadId);
+    if (!followupsByLead.has(k)) followupsByLead.set(k, []);
+    followupsByLead.get(k).push(f);
   }
   const teamByLead = new Map();
   for (const r of rosterRows) {
@@ -176,10 +196,22 @@ const pipelineOverview = async (adminId, scope, { phase, stuckOnly, memberId } =
       progress = { done: steps.length, total: steps.length, phase: "Completed" };
     }
 
-    const overdue = steps.some((s) => isOverdueStep(s, now));
-    const lastMove = steps.reduce((mx, s) => Math.max(mx, +new Date(s.updatedAt || 0)), 0);
-    const noMovement = steps.length > 0 && lastMove > 0 && lastMove < +now - STUCK_DAYS * DAY;
-    const stuck = steps.length > 0 && (overdue || noMovement);
+    // STUCK = the SHARED accountability rule (stale step OR overdue follow-up OR
+    // overdue task), at the SHARED threshold. Identical to the banner's rule.
+    const a = AccountabilityService.assess(
+      steps,
+      tasksByLead.get(idStr(l._id)) || [],
+      followupsByLead.get(idStr(l._id)) || [],
+      now,
+      thresholdMs,
+      l.assignedTo
+    );
+    const reasonFor = (mu) => {
+      if (!mu) return null;
+      if (mu.kind === "overdue_followup") return "overdue follow-up";
+      if (mu.kind === "overdue_task") return "overdue task";
+      return `no update in ${mu.magnitude || staleDays}d`;
+    };
 
     const team = (teamByLead.get(idStr(l._id)) || []).map((pid) => ({ _id: pid, name: nameOf.get(pid) || "—" }));
     return {
@@ -191,8 +223,8 @@ const pipelineOverview = async (adminId, scope, { phase, stuckOnly, memberId } =
       hasJourney: steps.length > 0,
       progress,
       team,
-      stuck,
-      stuckReason: stuck ? (overdue ? "overdue step" : `no movement in ${STUCK_DAYS}d`) : null,
+      stuck: a.needsAttention,
+      stuckReason: reasonFor(a.mostUrgent),
     };
   });
 
@@ -219,7 +251,7 @@ const pipelineOverview = async (adminId, scope, { phase, stuckOnly, memberId } =
     stuck: rows.filter((r) => r.stuck).length,
     byPhase: groups.map((g) => ({ phase: g.bucket, count: g.count })),
   };
-  return { groups, summary, scope, stuckDays: STUCK_DAYS };
+  return { groups, summary, scope, stuckDays: staleDays };
 };
 
-module.exports = { myWork, pipelineOverview, STUCK_DAYS };
+module.exports = { myWork, pipelineOverview };

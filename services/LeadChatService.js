@@ -118,7 +118,7 @@ const postMessage = async (leadId, authorId, { body, attachments, mentions } = {
 // even though the message itself is authored by the system.
 const postSystemMessage = async (
   leadId,
-  { body, systemType = "", taskId = null, stepId = null, mentions = [] } = {}
+  { body, systemType = "", taskId = null, stepId = null, followupId = null, mentions = [] } = {}
 ) => {
   if (!isId(leadId)) return null;
   const ments = Array.isArray(mentions) ? mentions.filter((m) => isId(m)).map(String) : [];
@@ -130,6 +130,7 @@ const postSystemMessage = async (
     body: String(body || "").slice(0, MAX_BODY),
     taskId: taskId && isId(taskId) ? taskId : null,
     stepId: stepId && isId(stepId) ? stepId : null,
+    followupId: followupId && isId(followupId) ? followupId : null,
     mentions: ments,
   });
   return msg;

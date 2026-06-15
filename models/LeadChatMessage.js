@@ -28,6 +28,9 @@ const LeadChatMessageSchema = new mongoose.Schema(
     // MB8b Slice 3 — set on a mirrored step-note system message; the chat echo
     // links back to the step's notes thread. Additive, default null.
     stepId: { type: ObjectId, ref: "LeadStep", default: null },
+    // MB8c-2a-ii — set on a follow-up event card (set / due); the card's
+    // Mark-done / Snooze actions act on this follow-up. Additive, default null.
+    followupId: { type: ObjectId, ref: "Followup", default: null },
     editedAt: { type: Date, default: null },
   },
   { timestamps: true }
