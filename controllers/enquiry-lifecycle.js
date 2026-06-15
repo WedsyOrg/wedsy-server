@@ -43,6 +43,24 @@ const CompleteFollowUp = async (req, res) => {
   }
 };
 
+// POST /enquiry/:_id/qualify — the explicit qualify hinge (assignee OR manager).
+// Scope-checked against the caller's leads:edit scope; converges on the SAME
+// LeadLifecycleService.qualifyLead transition as the cockpit qualified path.
+const Qualify = async (req, res) => {
+  try {
+    const Enquiry = require("../models/Enquiry");
+    const mongoose = require("mongoose");
+    const id = req.params._id;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid lead id" });
+    const inScope = await Enquiry.findOne({ $and: [{ _id: id }, req.scopeFilter || {}] }, { _id: 1 }).lean();
+    if (!inScope) return res.status(403).json({ message: "Out of your scope" });
+    const result = await LeadLifecycleService.qualifyLead(id, req.auth.user_id);
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
 // POST /enquiry/:_id/recycle
 const Recycle = async (req, res) => {
   try {
@@ -136,4 +154,4 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify };

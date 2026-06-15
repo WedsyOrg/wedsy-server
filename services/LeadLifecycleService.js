@@ -403,6 +403,70 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
   return { transferred: leadIds.length, to: String(target._id), toName: target.name };
 };
 
+// ── MB9a Slice 3 — THE QUALIFY HINGE (single source of the qualified transition).
+// Both the Call Cockpit qualified-outcome path AND the explicit Qualify button
+// converge HERE so there is no fork. On the (idempotent) transition:
+//   1. mark the lead qualified;
+//   2. hand ownership to the sales lead — the assignee's reporting manager — or
+//      keep the assignee if they have no manager (they ARE the lead);
+//   3. instantiate the journey steps (MB8b) — the journey is BORN here, and the
+//      MB8b guard keeps it a no-op if steps already exist;
+//   4. trigger the Kiara summary.
+// Fire-safe: the journey/summary side-effects never throw out of the transition.
+const qualifyLead = async (enquiryId, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await Enquiry.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  // Idempotent: qualifying an already-qualified lead is a no-op (no double
+  // journey instantiation, no second handoff).
+  if (lead.qualified) return { lead: lead.toObject(), alreadyQualified: true, handedOff: false };
+
+  // Ownership handoff to the sales lead (the assignee's reporting manager).
+  let newOwnerId = lead.assignedTo || null;
+  if (lead.assignedTo) {
+    const assignee = await Admin.findById(lead.assignedTo, { reportingManagerId: 1 }).lean();
+    if (assignee && assignee.reportingManagerId) newOwnerId = assignee.reportingManagerId;
+  }
+  const handedOff = !!newOwnerId && String(newOwnerId) !== String(lead.assignedTo || "");
+
+  const fields = { qualified: true };
+  if (handedOff) fields.assignedTo = newOwnerId;
+  await EnquiryRepository.updateFieldsById(enquiryId, fields);
+
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "qualified",
+    actorId: actorId || null,
+    payload: { handedOff, owner: newOwnerId ? String(newOwnerId) : null },
+  });
+  // The ownership handoff reads as a transfer in the journey (from/to are
+  // name-resolved by JourneyService).
+  if (handedOff) {
+    await LeadInternalEventService.record({
+      leadId: enquiryId,
+      type: "transferred",
+      actorId: actorId || null,
+      payload: { from: String(lead.assignedTo), to: String(newOwnerId), reason: "qualify_handoff" },
+    });
+  }
+
+  // The journey is BORN here (MB8b idempotent guard inside). Fire-safe.
+  try {
+    await require("./LeadStepService").instantiateForLead(enquiryId, actorId);
+  } catch (e) {
+    console.error("[qualifyLead] journey instantiate failed:", e.message);
+  }
+  // Kiara summary — worth paying for once qualified. Fire-safe.
+  try {
+    await require("./KiaraSummaryService").generateForQualified(enquiryId);
+  } catch (e) {
+    console.error("[qualifyLead] summary failed:", e.message);
+  }
+
+  const fresh = await Enquiry.findById(enquiryId).lean();
+  return { lead: fresh, alreadyQualified: false, handedOff };
+};
+
 module.exports = {
   recycleLead,
   resurfaceDueLeads,
@@ -411,6 +475,7 @@ module.exports = {
   setTags,
   bulkTransfer,
   addNote,
+  qualifyLead,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };

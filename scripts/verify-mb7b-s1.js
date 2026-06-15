@@ -75,7 +75,9 @@ const waitFor = async (fn, l, t = 30000) => { const u = Date.now() + t; while (D
     const deniedPost = await api("POST", `/enquiry/${lead._id}/chat`, cT, { body: "x" });
     ok(deniedPost.status === 403, "out-of-scope admin → 403 on POST chat");
     const members = await api("GET", `/enquiry/${lead._id}/chat/members`, aT);
-    ok(members.status === 200 && Array.isArray(members.data.list) && members.data.list.length >= 3, "mention candidates list returns active admins");
+    // MB9a: chat membership is now PHASE-GATED. This pre-qual lead is assigned to
+    // A (who has no reporting manager) → members = [A] only.
+    ok(members.status === 200 && Array.isArray(members.data.list) && members.data.list.length === 1 && String(members.data.list[0]._id) === String(A._id), "pre-qual chat members = the assignee (phase-gated, MB9a)");
 
     console.log("\n── Pagination ──");
     for (let i = 0; i < 5; i++) await api("POST", `/enquiry/${lead._id}/chat`, aT, { body: `bulk ${i}` });

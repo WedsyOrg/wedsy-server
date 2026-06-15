@@ -157,10 +157,44 @@ const deleteMessage = async (messageId, authorId) => {
 };
 
 // Scope-aware @mention candidates: active admins (the picker only needs name+id;
-// the actual notification fires solely to whoever is chosen).
+// the actual notification fires solely to whoever is chosen). Retained for any
+// caller that wants the full roster of admins.
 const mentionCandidates = async () => {
   const admins = await Admin.find({ status: "active" }, { name: 1 }).sort({ name: 1 }).lean();
   return admins.map((a) => ({ _id: a._id, name: a.name }));
+};
+
+// ── MB9a Slice 2 — PHASE-GATED chat membership ───────────────────────────────
+// The lead chat's participants depend on the lifecycle window:
+//   • PRE-QUAL  → the ASSIGNEE + the assignee's REPORTING MANAGER (only). If the
+//     assignee has no manager, just the assignee.
+//   • POST-QUAL → the MB8a roster (the huddle team).
+// History is never touched — this only governs who participates / is mentionable
+// / is notified going forward. Additive to MB7b (the legacy mentionCandidates
+// remains for other callers).
+const chatMembers = async (leadId) => {
+  if (!isId(leadId)) throw httpError(400, "Invalid leadId");
+  const lead = await Enquiry.findById(leadId, { assignedTo: 1, qualified: 1 }).lean();
+  if (!lead) throw httpError(404, "Lead not found");
+
+  let ids = [];
+  if (lead.qualified) {
+    const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+    const roster = await LeadTeamMemberRepository.findCurrentByLead(leadId);
+    ids = roster.map((r) => String(r.personId));
+  } else if (lead.assignedTo) {
+    const assignee = await Admin.findById(lead.assignedTo, { name: 1, reportingManagerId: 1 }).lean();
+    if (assignee) {
+      ids = [String(assignee._id)];
+      if (assignee.reportingManagerId) ids.push(String(assignee.reportingManagerId));
+    }
+  }
+  ids = [...new Set(ids)];
+  if (!ids.length) return [];
+  const admins = await Admin.find({ _id: { $in: ids } }, { name: 1 }).lean();
+  const nameOf = new Map(admins.map((a) => [String(a._id), a.name]));
+  // Preserve the order ids were derived in (assignee first, then manager).
+  return ids.map((id) => ({ _id: id, name: nameOf.get(id) || "—" })).filter((m) => m.name !== undefined);
 };
 
 module.exports = {
@@ -171,4 +205,5 @@ module.exports = {
   editMessage,
   deleteMessage,
   mentionCandidates,
+  chatMembers,
 };
