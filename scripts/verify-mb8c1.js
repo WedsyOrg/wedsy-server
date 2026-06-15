@@ -49,6 +49,11 @@ const waitFor = async (fn, l, t = 30000) => { const u = Date.now() + t; while (D
   const D1 = await LeadStep.create({ leadId: LeadD._id, name: "Decor Concept Discussion", phase: ph(1), order: 10, ownerIds: [MANAGER._id], status: "in_progress" });
   // D1 has no movement for 10 days (set updatedAt without bumping it).
   await LeadStep.updateOne({ _id: D1._id }, { $set: { updatedAt: new Date(now - 10 * 86400000) } }, { timestamps: false });
+  // MB8c-2a-ii reconcile: the pipeline "stuck" flag now uses the SHARED
+  // accountability rule (stale in_progress step / overdue follow-up / overdue
+  // task) at the shared threshold (3) — overdue STEP DUE-DATE alone no longer
+  // makes a lead stuck. Make LeadA stuck the unified way: A1 stale (no movement).
+  await LeadStep.updateOne({ _id: A1._id }, { $set: { updatedAt: new Date(now - 10 * 86400000) } }, { timestamps: false });
   // Roster: SUB on LeadA + LeadC; OUTSIDER on LeadB; MANAGER on LeadD.
   await LeadTeamMember.create({ leadId: LeadA._id, personId: SUB._id, addedBy: SUB._id });
   await LeadTeamMember.create({ leadId: LeadC._id, personId: SUB._id, addedBy: MANAGER._id });
@@ -101,14 +106,14 @@ const waitFor = async (fn, l, t = 30000) => { const u = Date.now() + t; while (D
     console.log("\n── Slice 2: Pipeline Overview (all scope = REVHEAD) ──");
     const pipe = await api("GET", "/enquiry/pipeline-overview", tok(REVHEAD));
     ok(pipe.status === 200 && Array.isArray(pipe.data.groups), "pipeline returns grouped data");
-    ok(pipe.data.stuckDays === 5, "stuck rule documents N=5 days");
+    ok(pipe.data.stuckDays === 3, "stuck rule uses the shared accountability threshold (3)");
     const flat = pipe.data.groups.flatMap((g) => g.leads);
     const byId = Object.fromEntries(flat.map((l) => [l._id, l]));
     const a = byId[String(LeadA._id)], c = byId[String(LeadC._id)], d = byId[String(LeadD._id)];
     ok(a && a.bucket === ph(0), "LeadA grouped under its current journey phase (Lead Understanding)");
     ok(a && a.progress && a.progress.done === 0 && a.progress.total === 2, "LeadA progress 0/2 in current phase");
-    ok(a && a.stuck && a.stuckReason === "overdue step", "LeadA stuck via overdue step");
-    ok(d && d.stuck && /no movement/.test(d.stuckReason), "LeadD stuck via no-movement rule");
+    ok(a && a.stuck && /no update/.test(a.stuckReason), "LeadA stuck via the stale-step rule (no update)");
+    ok(d && d.stuck && /no update/.test(d.stuckReason), "LeadD stuck via the stale-step rule (no update)");
     ok(c && !c.stuck, "LeadC not stuck");
     ok(a && a.team.some((t) => t._id === String(SUB._id)), "LeadA shows its team (SUB)");
 

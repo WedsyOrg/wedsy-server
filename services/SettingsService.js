@@ -92,6 +92,11 @@ const DEFAULTS = {
   // WhatsApp group). Founder-editable; the rolling nurture task reschedules to
   // now + this many days on every completed touch or couple inbound.
   "nurture.cadenceDays": 2,
+  // MB8c-2a-ii — the ONE accountability threshold. A step in_progress (or
+  // assigned & not_started) with no movement in this many days needs attention.
+  // The command-center banner, the chat follow-up cards, and the Pipeline
+  // "stuck" flag ALL derive from this single value (default 3 days).
+  "accountability.staleDays": 3,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -131,6 +136,8 @@ const KEY_CATEGORY = {
   "agreement.terms": "settings_agreement",
   "agreement.version": "settings_agreement",
   "nurture.cadenceDays": "settings_nurture",
+  // Accountability threshold rides the SLA settings category.
+  "accountability.staleDays": "settings_sla",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -179,6 +186,9 @@ const validateValue = (key, value) => {
       return value;
     case "nurture.cadenceDays":
       if (!isIntInRange(value, 1, 30)) throw err(400, "nurture.cadenceDays must be an integer 1–30");
+      return value;
+    case "accountability.staleDays":
+      if (!isIntInRange(value, 1, 30)) throw err(400, "accountability.staleDays must be an integer 1–30");
       return value;
     case "assignment.autoAssignEnabled":
     case "lost.approvalRequired":

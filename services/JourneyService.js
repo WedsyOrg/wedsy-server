@@ -76,6 +76,9 @@ const EVENT_TITLES = {
   step_task_created: "Task added",
   step_task_completed: "Task done ✓",
   step_task_reopened: "Task reopened",
+  // MB8c-2a-ii — client follow-ups.
+  followup_created: "Follow-up set",
+  followup_completed: "Follow-up done ✓",
 };
 
 const STEP_STATUS_LABEL = {
@@ -147,6 +150,11 @@ const dynamicTitle = (type, payload = {}, nameOf) => {
       return `Task done: "${payload.title || "task"}" ✓`;
     case "step_task_reopened":
       return `Task reopened: "${payload.title || "task"}"`;
+    // MB8c-2a-ii — name the follow-up + its owner (the person who reaches out).
+    case "followup_created":
+      return `Follow-up set: "${payload.title || "touch"}"${payload.ownerName ? ` · ${payload.ownerName}` : ""}`;
+    case "followup_completed":
+      return `Follow-up done: "${payload.title || "touch"}" ✓`;
     default:
       return null;
   }

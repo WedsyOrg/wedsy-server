@@ -105,6 +105,14 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   journeyDashboard.PipelineOverview
 );
+// MB8c-2a-ii — "my follow-ups due" (literal path, above /:_id).
+const followup = require("../controllers/followup");
+router.get(
+  "/followups/mine",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  followup.Mine
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
@@ -281,6 +289,39 @@ router.patch(
   CheckAdminLogin,
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   leadStep.PatchTask
+);
+
+// ── MB8c-2a-ii — client FOLLOW-UPS + the accountability banner/nudge ──────────
+router.get(
+  "/:_id/followups",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  followup.ListForLead
+);
+router.post(
+  "/:_id/followups",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  followup.Create
+);
+router.patch(
+  "/:_id/followups/:followupId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  followup.Patch
+);
+const accountability = require("../controllers/accountability");
+router.get(
+  "/:_id/accountability",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  accountability.Assess
+);
+router.post(
+  "/:_id/accountability/nudge",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  accountability.Nudge
 );
 
 // ── MB7b Slice 4 — WhatsApp-group one-tap toggle (red-flag → Yes) ─────────────
