@@ -143,8 +143,11 @@ const logCall = async (
     notes: notes || "",
     loggedBy: actorId || null,
   };
-  const extraSet = outcome === "qualified" ? { qualified: true } : {};
-  const updated = await EnquiryRepository.pushCallLogById(enquiryId, entry, extraSet);
+  // MB9a: the qualified flip + journey + handoff + summary now all run through
+  // LeadLifecycleService.qualifyLead (the single hinge) AFTER the call-log write
+  // — so the cockpit and the Qualify button can never diverge. The call-log push
+  // itself no longer sets `qualified`.
+  const updated = await EnquiryRepository.pushCallLogById(enquiryId, entry, {});
 
   // First call on this lead → stamp the TAT anchor (no-op for later calls).
   const stamped = await EnquiryRepository.stampFirstCalledAt(enquiryId);
@@ -160,17 +163,15 @@ const logCall = async (
     },
   });
 
-  // MB7b Slice 3: a qualified call is the moment the Kiara summary is worth
-  // paying for — trigger it (Haiku, once). Fire-safe: never breaks the call log.
+  // A qualified call is the hinge: run the SINGLE qualify transition (marks
+  // qualified, hands ownership to the sales lead, instantiates the journey ONCE,
+  // triggers the Kiara summary). Idempotent + fire-safe — never breaks the log.
+  let qualifyResult = null;
   if (outcome === "qualified") {
-    await require("./KiaraSummaryService").generateForQualified(enquiryId);
-    // MB8b: qualification is when the lead enters the journey — stamp the
-    // configurable steps (idempotent: a no-op if already instantiated).
-    // Fire-safe: a failure here must never break the call log.
     try {
-      await require("./LeadStepService").instantiateForLead(enquiryId, actorId);
+      qualifyResult = await require("./LeadLifecycleService").qualifyLead(enquiryId, actorId);
     } catch (e) {
-      console.error("LeadStep.instantiateForLead failed:", e.message);
+      console.error("[logCall] qualifyLead failed:", e.message);
     }
   }
 
@@ -178,6 +179,12 @@ const logCall = async (
   // (the scheduler pre-fills it) or flag the lead unresponsive at MAX attempts.
   const doc = stamped || updated;
   const leadObj = doc.toObject ? doc.toObject() : doc;
+  // Reflect the qualify transition in the returned object (handoff may have moved
+  // assignedTo) so the caller doesn't see a stale pre-qualify snapshot.
+  if (qualifyResult && qualifyResult.lead) {
+    leadObj.qualified = true;
+    leadObj.assignedTo = qualifyResult.lead.assignedTo;
+  }
   if (UNANSWERED_OUTCOMES.includes(entry.outcome)) {
     const cadCfg = await cadenceConfig();
     const flaggedNow = await flagUnresponsiveIfNeeded(

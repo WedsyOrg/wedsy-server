@@ -376,6 +376,13 @@ router.put(
   requirePermission("leads:edit:own"),
   lifecycle.CompleteFollowUp
 );
+// MB9a — the explicit Qualify hinge (assignee OR their manager; scope-checked).
+router.post(
+  "/:_id/qualify",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  lifecycle.Qualify
+);
 router.post(
   "/:_id/recycle",
   CheckAdminLogin,

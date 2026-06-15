@@ -79,6 +79,8 @@ const EVENT_TITLES = {
   // MB8c-2a-ii — client follow-ups.
   followup_created: "Follow-up set",
   followup_completed: "Follow-up done ✓",
+  // MB9a — the qualify hinge.
+  qualified: "Qualified ✦",
 };
 
 const STEP_STATUS_LABEL = {

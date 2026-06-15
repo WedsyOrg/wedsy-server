@@ -60,11 +60,12 @@ const Remove = async (req, res) => {
   }
 };
 
-// GET /enquiry/:_id/chat/members — @mention candidates (scope-aware)
+// GET /enquiry/:_id/chat/members — PHASE-GATED chat participants (MB9a Slice 2):
+// pre-qual → assignee + their reporting manager; post-qual → the roster.
 const Members = async (req, res) => {
   try {
     await assertInScope(req.params._id, req.scopeFilter);
-    res.status(200).json({ list: await LeadChatService.mentionCandidates() });
+    res.status(200).json({ list: await LeadChatService.chatMembers(req.params._id) });
   } catch (error) {
     respond(res, error);
   }

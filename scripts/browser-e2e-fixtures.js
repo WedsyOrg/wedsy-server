@@ -17,6 +17,9 @@ const ADMIN_PHONE = "919180000002";
 // MB8c-2a-i — a dedicated QUALIFIED lead (with roster + journey steps + brief
 // facts) so the command-center e2e never has to mutate the pristine LEAD_PHONE.
 const QUALIFIED_LEAD_PHONE = "919180000004";
+// MB9a — a dedicated PRE-QUAL intake lead the lifecycle e2e can qualify without
+// touching the shared LEAD_PHONE fixture.
+const INTAKE_LEAD_PHONE = "919180000005";
 
 (async () => {
   const cmd = process.argv[2];
@@ -52,7 +55,8 @@ const QUALIFIED_LEAD_PHONE = "919180000004";
   const teardown = async () => {
     await cleanLeadArtifacts(LEAD_PHONE);
     await cleanLeadArtifacts(QUALIFIED_LEAD_PHONE);
-    await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE] } });
+    await cleanLeadArtifacts(INTAKE_LEAD_PHONE);
+    await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE, INTAKE_LEAD_PHONE] } });
     await WAConversation.deleteMany({ phone: LEAD_PHONE });
     await WAAgentMessage.deleteMany({ phone: LEAD_PHONE });
     await Admin.deleteMany({ phone: ADMIN_PHONE });
@@ -133,8 +137,20 @@ const QUALIFIED_LEAD_PHONE = "919180000004";
   await StepDefinitionService.seed();
   await LeadStepService.instantiateForLead(qLead._id, admin._id);
 
+  // ── MB9a — a PRE-QUAL intake lead (assigned to the founder, no journey/roster)
+  // the lifecycle e2e can qualify.
+  const intakeLead = await Enquiry.create({
+    name: "Ishaan Rao",
+    phone: INTAKE_LEAD_PHONE,
+    verified: false,
+    source: "Website",
+    stage: "new",
+    assignedTo: admin._id,
+    additionalInfo: {},
+  });
+
   await mongoose.disconnect();
   console.log(
-    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id) })
+    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id), intakeLeadId: String(intakeLead._id) })
   );
 })();
