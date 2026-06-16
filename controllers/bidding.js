@@ -9,6 +9,7 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const mongoose = require("mongoose");
 const { send } = require("../services/NotificationService");
+const { sendWhatsApp } = require("../utils/whatsapp");
 
 /**
  * CreateNew - Creates a new bidding and sends it to verified, visible vendors
@@ -487,6 +488,58 @@ const UserAcceptBiddingBid = async (req, res) => {
         const userForBidNotify = await User.findById(user_id).select('phone email name').lean();
         send('mua_bid_accept', { phone: result.vendor?.phone, email: result.vendor?.email, name: result.vendor?.businessName || result.vendor?.name, variables: [result.vendor?.businessName || result.vendor?.name || ''] });
         send('cx_bid_cnfrm', { phone: userForBidNotify?.phone, email: userForBidNotify?.email, name: userForBidNotify?.name, variables: [userForBidNotify?.name || ''] });
+
+        // MUA-3: Winner-takes-all. Once the customer accepts one vendor's bid the
+        // bidding round is closed — reject every OTHER vendor's bid for this Bidding,
+        // finalize the Bidding, and send each losing vendor a courtesy "opportunity
+        // filled" WhatsApp (mua_bid_lost). Isolated in its own try/catch so a cleanup
+        // failure can never undo the successful acceptance/response above.
+        try {
+          const losingBids = await BiddingBid.find({
+            bidding: _id,
+            _id: { $ne: bidId },
+          }).populate('vendor');
+
+          // Mark every losing bid as userRejected (MUA-4 lesson: return the promise
+          // from .map and await Promise.all — never fire-and-forget).
+          await Promise.all(
+            losingBids.map((losingBid) =>
+              BiddingBid.findByIdAndUpdate(losingBid._id, {
+                $set: { "status.userRejected": true },
+              })
+            )
+          );
+
+          // Cap the bidding round.
+          await Bidding.findByIdAndUpdate(_id, {
+            $set: { "status.finalized": true },
+          });
+
+          // Build courtesy-notification variables from the Bidding.
+          const finalizedBidding = await Bidding.findById(_id).lean();
+          const eventCity = finalizedBidding?.requirements?.city || "";
+          const eventDate =
+            (Array.isArray(finalizedBidding?.events) ? finalizedBidding.events : [])
+              .map((e) => e?.date)
+              .filter(Boolean)[0] || "";
+
+          // Notify losing vendors who have not opted out of bidding notifications.
+          await Promise.all(
+            losingBids
+              .filter((losingBid) => losingBid?.vendor?.notifications?.bidding && losingBid?.vendor?.phone)
+              .map((losingBid) => {
+                const vendorName =
+                  losingBid.vendor?.businessName || losingBid.vendor?.name || "";
+                return sendWhatsApp(losingBid.vendor.phone, "mua_bid_lost", [
+                  vendorName,
+                  eventDate,
+                  eventCity,
+                ]);
+              })
+          );
+        } catch (error) {
+          console.error("Error in MUA-3 winner-takes-all for bidding:", _id, error.message);
+        }
 
         res.status(200).send({ message: "success", chat: chat?._id });
       } else {
