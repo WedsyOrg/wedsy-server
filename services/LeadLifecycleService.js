@@ -429,8 +429,16 @@ const qualifyLead = async (enquiryId, actorId) => {
   }
   const handedOff = !!newOwnerId && String(newOwnerId) !== String(lead.assignedTo || "");
 
-  const fields = { qualified: true };
+  // MB11c — carry the qualifier's credit forward at the handoff. qualifiedAt is
+  // set-once here (this branch only runs on the first qualification — the early
+  // idempotent return guards re-entry). qualifiedBy is set-once too: we don't
+  // clobber an existing credit (e.g. the MB5 meet-handoff intern), otherwise we
+  // record whoever fired the hinge. The pre-qual record (callLog, notes,
+  // qualificationData, kiaraAnswers, kiaraSummary) already lives on this same
+  // Enquiry doc and survives untouched — this only adds the missing "who/when".
+  const fields = { qualified: true, qualifiedAt: lead.qualifiedAt || new Date() };
   if (handedOff) fields.assignedTo = newOwnerId;
+  if (!lead.qualifiedBy && actorId) fields.qualifiedBy = actorId;
   await EnquiryRepository.updateFieldsById(enquiryId, fields);
 
   await LeadInternalEventService.record({
