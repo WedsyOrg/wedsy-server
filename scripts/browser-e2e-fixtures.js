@@ -20,6 +20,10 @@ const QUALIFIED_LEAD_PHONE = "919180000004";
 // MB9a — a dedicated PRE-QUAL intake lead the lifecycle e2e can qualify without
 // touching the shared LEAD_PHONE fixture.
 const INTAKE_LEAD_PHONE = "919180000005";
+// MB11c — a lead qualified THROUGH the hinge, carrying pre-qual history (call
+// logs with notes + a note event) so the continuity e2e can prove the command
+// center surfaces the qualifier's record, "qualified by X", and the timeline.
+const CONTINUITY_LEAD_PHONE = "919180000006";
 
 (async () => {
   const cmd = process.argv[2];
@@ -56,7 +60,8 @@ const INTAKE_LEAD_PHONE = "919180000005";
     await cleanLeadArtifacts(LEAD_PHONE);
     await cleanLeadArtifacts(QUALIFIED_LEAD_PHONE);
     await cleanLeadArtifacts(INTAKE_LEAD_PHONE);
-    await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE, INTAKE_LEAD_PHONE] } });
+    await cleanLeadArtifacts(CONTINUITY_LEAD_PHONE);
+    await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE, INTAKE_LEAD_PHONE, CONTINUITY_LEAD_PHONE] } });
     await WAConversation.deleteMany({ phone: LEAD_PHONE });
     await WAAgentMessage.deleteMany({ phone: LEAD_PHONE });
     await Admin.deleteMany({ phone: ADMIN_PHONE });
@@ -149,8 +154,39 @@ const INTAKE_LEAD_PHONE = "919180000005";
     additionalInfo: {},
   });
 
+  // ── MB11c — a lead with PRE-QUAL history, qualified through the real hinge ──
+  // Pre-qual call logs (with notes) + Kiara facts live on the doc; a note event
+  // + the qualifyLead transition give the command center a full timeline and the
+  // "qualified by X · date" credit. qualifyLead sets qualifiedBy/qualifiedAt.
+  const LeadInternalEventService = require("../services/LeadInternalEventService");
+  const LeadLifecycleService = require("../services/LeadLifecycleService");
+  const contLead = await Enquiry.create({
+    name: "Veer & Tara",
+    phone: CONTINUITY_LEAD_PHONE,
+    verified: true,
+    source: "Website",
+    stage: "contacted",
+    assignedTo: admin._id,
+    qualificationData: { groomName: "Veer", brideName: "Tara", weddingStyle: "Classic", venueArea: "Jaipur", servicesRequired: ["Decor"] },
+    additionalInfo: { kiaraAnswers: { city: "Jaipur", budget: "20L" } },
+    callLog: [
+      { startedAt: new Date(Date.now() - 3600000), durationSeconds: 0, connected: false, outcome: "", notes: "No answer — left a voicemail.", loggedBy: admin._id },
+      { startedAt: new Date(Date.now() - 1800000), durationSeconds: 240, connected: true, outcome: "qualified", notes: "Discovery call: 20L budget, Jaipur, Dec wedding.", loggedBy: admin._id },
+    ],
+    updates: { notes: "Keen couple — send the deck before the next call." },
+  });
+  await LeadInternalEventService.record({
+    leadId: contLead._id,
+    type: "commented",
+    actorId: admin._id,
+    payload: { text: "Keen couple — send the deck before the next call." },
+  });
+  // The real hinge: sets qualified + qualifiedBy + qualifiedAt, records the
+  // "qualified" event, instantiates the journey (idempotent).
+  await LeadLifecycleService.qualifyLead(contLead._id, admin._id);
+
   await mongoose.disconnect();
   console.log(
-    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id), intakeLeadId: String(intakeLead._id) })
+    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id), intakeLeadId: String(intakeLead._id), continuityLeadId: String(contLead._id) })
   );
 })();
