@@ -194,6 +194,9 @@ const EnquirySchema = new mongoose.Schema(
     // Set-once credit: the intern who booked the meet that triggered the
     // handoff. Their stats keep this lead permanently.
     qualifiedBy: { type: ObjectId, ref: "Admin", default: null },
+    // ── MB11c (additive) ─ Set-once timestamp of the qualify hinge, so the
+    // command center can surface "qualified by X · on date" at the handoff.
+    qualifiedAt: { type: Date, default: null },
     // Lightweight event-team assignments captured at huddle completion.
     eventTeam: {
       type: [
