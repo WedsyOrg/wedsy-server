@@ -136,6 +136,10 @@ const EnquirySchema = new mongoose.Schema(
       // Partner/fiancé emails — Slice 8's calendar invites include these.
       additionalEmails: { type: [String], default: [] },
     },
+    // ── SEQ-1 (additive) ─ The qualifier's free-text discovery notes. Written
+    // anytime pre-qual via PUT /enquiry/:_id (scoped); a plain field, so it
+    // survives qualification untouched. No migration needed (empty default).
+    qualifierNotes: { type: String, default: "" },
     // Outcome of the cockpit's complete-call action. gaps holds the missing items
     // acknowledged on an incomplete save (flagged on the lead, per the approved design).
     callCompletion: {
