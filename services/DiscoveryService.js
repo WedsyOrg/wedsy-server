@@ -1,12 +1,20 @@
-// SEQ-1 — the discovery brief's completeness, COMPUTED on read (never stored, so
-// it can't drift). A lead's "discovery" is complete when the four core facts are
-// captured: event date, city, guest count, and services. Budget is intentionally
-// NOT required.
+// SEQ-1 / SEQ-3c — the discovery brief's completeness, COMPUTED on read (never
+// stored, so it can't drift).
 //
-// The facts live across a few shapes (a lead can be enriched by the cockpit's
-// structured qualificationData OR by Kiara's extracted additionalInfo answers OR
-// by the ad-form answers), so each check resolves all known paths — mirroring how
-// the lead page already reads them.
+// SEQ-3c CORRECTS the gate. A lead's discovery is complete when just two things
+// are captured:
+//   1. a NAME — the enquiry name, or the groom/bride name; and
+//   2. a discovery EVENT DATE the intern filled — an exact date AND/OR a
+//      part-of-day (morning/afternoon/evening). Either alone is enough.
+//
+// City, guests/pax, services and budget are OPTIONAL added info — they no longer
+// gate (this replaces the old eventDate AND city AND guests AND services rule).
+//
+// CRITICAL EXCLUSION: the event date for the gate is ONLY the intern-filled
+// discovery field (qualificationData.eventDate / eventDatePart). The ad-form
+// month BAND (adFormAnswers.eventMonth / "between_3-6_months" / "beyond_6_months"
+// …) and Kiara's coarse auto-captured band are a DIFFERENT, fuzzy field and are
+// deliberately ignored here — a band must never satisfy the gate.
 
 const present = (v) => {
   if (v === null || v === undefined) return false;
@@ -17,36 +25,22 @@ const present = (v) => {
 // Compute the discovery snapshot for a lead doc (a plain object or a lean doc).
 const computeDiscovery = (lead) => {
   const qd = (lead && lead.qualificationData) || {};
-  const ai = (lead && lead.additionalInfo) || {};
-  const ka = ai.kiaraAnswers && typeof ai.kiaraAnswers === "object" ? ai.kiaraAnswers : {};
-  const af = ai.adFormAnswers && typeof ai.adFormAnswers === "object" ? ai.adFormAnswers : {};
 
-  // Event date — Kiara/ad-form captured value, or a real Event join if present.
-  const eventFromEvents = Array.isArray(lead && lead.events)
-    ? lead.events.some(
-        (e) => Array.isArray(e && e.eventDays) && e.eventDays.some((d) => present(d && d.date))
-      )
-    : false;
-  const hasEventDate =
-    present(ka.eventDate) || present(af.weddingDate) || present(af.eventDate) || present(af.date) || eventFromEvents;
-  const hasCity = present(qd.venueArea) || present(ka.city) || present(af.city) || present(af.location);
-  const hasGuests =
-    present(ka.guests) || present(af.guests) || present(ka.numberOfGuests) || present(af.numberOfGuests);
-  const hasServices =
-    (Array.isArray(qd.servicesRequired) && qd.servicesRequired.length > 0) ||
-    present(ka.servicesRequired) ||
-    present(af.servicesRequired);
+  // Name — the enquiry name, or a captured groom/bride name.
+  const hasName = present(lead && lead.name) || present(qd.groomName) || present(qd.brideName);
+
+  // Event date — ONLY the intern-filled discovery date: an exact date and/or a
+  // part-of-day. NOT the ad-form/Kiara month band (see the exclusion above).
+  const hasEventDate = present(qd.eventDate) || present(qd.eventDatePart);
 
   const missing = [];
+  if (!hasName) missing.push("name");
   if (!hasEventDate) missing.push("eventDate");
-  if (!hasCity) missing.push("city");
-  if (!hasGuests) missing.push("guests");
-  if (!hasServices) missing.push("services");
   const complete = missing.length === 0;
 
   return {
     discoveryComplete: complete,
-    discovery: { complete, missing, hasEventDate, hasCity, hasGuests, hasServices },
+    discovery: { complete, missing, hasName, hasEventDate },
   };
 };
 
