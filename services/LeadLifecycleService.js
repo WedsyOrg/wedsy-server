@@ -439,6 +439,11 @@ const qualifyLead = async (enquiryId, actorId) => {
   const fields = { qualified: true, qualifiedAt: lead.qualifiedAt || new Date() };
   if (handedOff) fields.assignedTo = newOwnerId;
   if (!lead.qualifiedBy && actorId) fields.qualifiedBy = actorId;
+  // SEQ-3b — qualifying gives the lead a clear path forward, so any "no further
+  // action" marker from an earlier no-next-step save is cleared at the hinge.
+  fields["noFurtherAction.flagged"] = false;
+  fields["noFurtherAction.flaggedAt"] = null;
+  fields["noFurtherAction.flaggedReason"] = "";
   await EnquiryRepository.updateFieldsById(enquiryId, fields);
 
   await LeadInternalEventService.record({

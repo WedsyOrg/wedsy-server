@@ -148,6 +148,18 @@ const EnquirySchema = new mongoose.Schema(
       completedAt: { type: Date, default: null },
       completedBy: { type: ObjectId, ref: "Admin", default: null },
     },
+    // SEQ-3b (additive) — "no further action" marker. Set when a call is SAVED
+    // with discovery still incomplete AND no scheduled next step (follow-up/meet),
+    // so the lead has nowhere to go. Cleared the moment a next step is scheduled
+    // (CallCockpitService.addFollowUp, incl. the G-Meet path) or the lead is
+    // qualified. Surfaced on the enquiry GET for the intern's own view. No
+    // migration (empty default); no escalation wiring yet (those dashboards
+    // don't exist) — see the TODO(escalation) at the set site.
+    noFurtherAction: {
+      flagged: { type: Boolean, default: false },
+      flaggedAt: { type: Date, default: null },
+      flaggedReason: { type: String, default: "" },
+    },
     // ── Settings Suite (additive only) ──────────────────────────────────────
     // Values for CustomFieldDef-defined fields ({ defKey: value }).
     customFields: { type: Object, default: {} },

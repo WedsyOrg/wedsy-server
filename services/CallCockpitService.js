@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
+const { computeDiscovery } = require("./DiscoveryService");
 
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
 const FOLLOW_UP_TYPES = ["meet", "call", "visit"];
@@ -57,6 +58,41 @@ const hasFutureFollowUp = (enquiry, now = new Date()) =>
   (enquiry.followUps || []).some(
     (f) => f.scheduledAt && new Date(f.scheduledAt) > now
   );
+
+// SEQ-3b — the "no further action" marker (additive, fire-safe). Set when a call
+// is SAVED with discovery still incomplete AND no scheduled next step, leaving
+// the lead with nowhere to go; cleared the moment a next step is scheduled
+// (addFollowUp, incl. the G-Meet path) or the lead is qualified (see
+// LeadLifecycleService.qualifyLead). The save itself is NEVER blocked — this only
+// sets/clears the flag, and a failure here must never break the save/schedule.
+const setNoFurtherAction = async (enquiryId, flagged, actorId, reason) => {
+  try {
+    const fields = flagged
+      ? {
+          "noFurtherAction.flagged": true,
+          "noFurtherAction.flaggedAt": new Date(),
+          "noFurtherAction.flaggedReason":
+            reason || "Saved without a next step (discovery incomplete)",
+        }
+      : {
+          "noFurtherAction.flagged": false,
+          "noFurtherAction.flaggedAt": null,
+          "noFurtherAction.flaggedReason": "",
+        };
+    await EnquiryRepository.updateFieldsById(enquiryId, fields);
+    if (flagged) {
+      // TODO(escalation): notify sales lead + revenue head when their dashboards exist.
+      await LeadInternalEventService.record({
+        leadId: enquiryId,
+        type: "no_further_action_flagged",
+        actorId: actorId || null,
+        payload: { reason: reason || "no_next_step" },
+      });
+    }
+  } catch (e) {
+    console.error("[setNoFurtherAction] failed:", e.message);
+  }
+};
 
 // Attempt-cadence state for a lead's call log (Lifecycle Slice C). attempts =
 // unanswered (busy/unknown) calls so far. Below MAX: suggest the next attempt per
@@ -245,6 +281,11 @@ const addFollowUp = async (
     actorId
   );
 
+  // SEQ-3b — a scheduled next step (this covers busy/unknown, the locked next
+  // step, AND the G-Meet finale, which books through this same path) clears any
+  // "no further action" flag set by an earlier no-next-step save.
+  await setNoFurtherAction(enquiryId, false, actorId);
+
   return updated;
 };
 
@@ -359,6 +400,18 @@ const completeCall = async (enquiryId, { incomplete, gaps } = {}, actorId) => {
     actorId,
     payload: { incomplete: isIncomplete, gaps: isIncomplete ? gaps || [] : [] },
   });
+
+  // SEQ-3b — the save is NEVER blocked (Slice 1). But a save that leaves the lead
+  // with no path forward — discovery STILL incomplete (the same 4-core rule the
+  // GET computes) AND no future follow-up/meet locked — gets the "no further
+  // action" marker so the intern's view surfaces it. Otherwise (discovery
+  // complete, or a next step exists) we clear it. computeDiscovery runs on the
+  // lead doc exactly as the GET does (no events join either side), so the two
+  // never drift.
+  const leadObj = enquiry.toObject ? enquiry.toObject() : enquiry;
+  const { discoveryComplete } = computeDiscovery(leadObj);
+  const hasNextStep = hasFutureFollowUp(enquiry);
+  await setNoFurtherAction(enquiryId, !discoveryComplete && !hasNextStep, actorId);
 
   return updated;
 };
