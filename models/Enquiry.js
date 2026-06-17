@@ -128,6 +128,12 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
+      // ── SEQ-3c (additive) — the intern-filled DISCOVERY event date. This is
+      // the ONLY date the discovery gate reads (the ad-form/Kiara month band is
+      // excluded). An exact date AND/OR a part-of-day; either alone is enough,
+      // both allowed. No migration (empty defaults).
+      eventDate: { type: String, default: "" }, // exact date, e.g. "2026-12-20"
+      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" },
       // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
       // Multi-select from the services.available master list.
       servicesRequired: { type: [String], default: [] },

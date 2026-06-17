@@ -30,8 +30,12 @@ const QUALIFICATION_STRING_FIELDS = [
   "venueShortlistNote",
   "email",
   "whatsappNumber",
+  // SEQ-3c — the intern-filled discovery exact date (free-form string).
+  "eventDate",
 ];
 const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber"];
+// SEQ-3c — the discovery date's part-of-day companion (validated against the enum).
+const EVENT_DATE_PARTS = ["", "morning", "afternoon", "evening"];
 
 const httpError = (status, message) => {
   const err = new Error(message);
@@ -311,6 +315,15 @@ const updateQualification = async (enquiryId, body = {}, actorId) => {
       set[`qualificationData.${field}`] = body[field];
     }
   }
+  // SEQ-3c — the discovery date's part-of-day (enum-validated). Independent of
+  // the exact eventDate above: writing one never clobbers the other (each is a
+  // separate $set key, and omitted fields are left untouched).
+  if (body.eventDatePart !== undefined) {
+    if (typeof body.eventDatePart !== "string" || !EVENT_DATE_PARTS.includes(body.eventDatePart)) {
+      throw httpError(400, `Invalid eventDatePart (expected one of: ${EVENT_DATE_PARTS.filter(Boolean).join(", ")})`);
+    }
+    set["qualificationData.eventDatePart"] = body.eventDatePart;
+  }
   // MB6 Slice 6 — Cockpit v2 fields.
   if (body.servicesRequired !== undefined) {
     if (!Array.isArray(body.servicesRequired) || body.servicesRequired.some((s) => typeof s !== "string")) {
@@ -477,6 +490,9 @@ module.exports = {
   updateQualification,
   completeCall,
   listInternalEvents,
+  // SEQ-3c — exported so the lead-page follow-up route (FollowupService.create)
+  // clears the flag through the SAME helper, no duplicated logic.
+  setNoFurtherAction,
   hasFutureFollowUp,
   cadenceFor,
   cadenceConfig,
