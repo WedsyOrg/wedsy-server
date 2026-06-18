@@ -119,6 +119,9 @@ const VenueSchema = new mongoose.Schema({
   },
   coverPhoto: { type: String, default: "" },
   featurePhoto: { type: String, default: "" },
+  // Venue brand logo (URL from the /file/upload flow, or a data: URI). Rendered
+  // top-left on quote/invoice PDFs when set; absence degrades gracefully.
+  logo: { type: String, default: "" },
   policies: {
     cancellation: { type: String, default: "" },
     refund: { type: String, default: "" },
