@@ -68,4 +68,15 @@ const publicReadLimiter = rateLimit({
   message: { message: "Too many requests, please slow down." },
 });
 
-module.exports = { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter };
+// Owner-triggered Google reviews refresh — quota-guarding, deliberately tight.
+const REVIEWS_REFRESH_WINDOW_MS = num(process.env.VENUE_REVIEWS_REFRESH_WINDOW_MS, 60 * 60 * 1000); // 1h
+const REVIEWS_REFRESH_MAX = num(process.env.VENUE_REVIEWS_REFRESH_MAX, 4);
+const reviewsRefreshLimiter = rateLimit({
+  windowMs: REVIEWS_REFRESH_WINDOW_MS,
+  max: REVIEWS_REFRESH_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Reviews were refreshed recently — try again in a bit." },
+});
+
+module.exports = { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter, reviewsRefreshLimiter };
