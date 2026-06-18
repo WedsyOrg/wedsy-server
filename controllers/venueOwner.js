@@ -366,6 +366,13 @@ const sendLoginOTP = async (req, res) => {
     if (!venueOwner && !member) {
       return res.status(404).json({ message: "No venue account found for this phone number" });
     }
+    // E2E/dev bypass: skip the SMS/WhatsApp provider entirely. Gated on an
+    // explicit env flag AND non-production so prod behaviour cannot change.
+    // Verification already honours DEV_OTP 000000 outside production; this makes
+    // the *send* step work in automated runs where provider creds are blanked.
+    if (process.env.OTP_DEV_BYPASS === "true" && process.env.NODE_ENV !== "production") {
+      return res.status(200).json({ success: true, referenceId: "dev-bypass" });
+    }
     const { ReferenceId } = await SendOTP(phone);
     return res.status(200).json({ success: true, referenceId: ReferenceId });
   } catch (err) {
