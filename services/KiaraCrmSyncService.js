@@ -260,11 +260,11 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
   const fillQd = (field, value) => {
     if (value && !qd[field]) set[`qualificationData.${field}`] = String(value);
   };
-  // Single extractor "name": surfaced as the couple fact only when neither
-  // name is on file (no gender guess to make — it's just "the name we have").
-  if (data.name && !qd.groomName && !qd.brideName) {
-    set["qualificationData.groomName"] = String(data.name);
-  }
+  // Bug #5: the extractor "name" is the WhatsApp contact's name — it belongs in
+  // the top-level `name` field, NOT the couple's groom/bride names. Copying it
+  // into qualificationData.groomName made the lead's display name (groom & bride)
+  // show the contact name instead of the captured FB-form name. The contact name
+  // is preserved on top-level `name` (and still upgrades placeholder names below).
   fillQd("venueStatus", normalizeVenueStatus(data.venueStatus));
   fillQd("venueName", data.venueName);
   fillQd("weddingStyle", data.weddingStyle);
