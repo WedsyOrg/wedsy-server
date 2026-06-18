@@ -483,8 +483,34 @@ const meetRefused = async (enquiryId, actorId) => {
   return await EnquiryRepository.findById(enquiryId);
 };
 
+// POST /enquiry/:_id/whatsapp-activity — log the cockpit/lead "WhatsApp" press
+// (a wa.me deep link that otherwise hits no server) as EMPLOYEE activity so it
+// shows in the timeline and clears the "contacted but silent" dashboard flag.
+// Deliberately does NOT stamp firstCalledAt or push to callLog: a call is still
+// owed, so this must NOT satisfy the golden-window / "call owed" signal.
+const logWhatsappActivity = async (enquiryId, { message } = {}, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+
+  // Optional pre-typed template text — stored for the timeline (length-capped).
+  const note =
+    typeof message === "string" && message.trim()
+      ? message.trim().slice(0, 2000)
+      : "";
+
+  const event = await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "whatsapp_outbound",
+    actorId: actorId || null,
+    payload: note ? { message: note } : {},
+  });
+  return event || { ok: true };
+};
+
 module.exports = {
   logCall,
+  logWhatsappActivity,
   addFollowUp,
   meetRefused,
   updateQualification,

@@ -32,6 +32,23 @@ const AddFollowUp = async (req, res) => {
   }
 };
 
+// POST /enquiry/:_id/whatsapp-activity — log a WhatsApp deep-link press as
+// employee activity (timeline + clears "contacted silent"); never sets firstCalledAt.
+const WhatsappActivity = async (req, res) => {
+  try {
+    const event = await CallCockpitService.logWhatsappActivity(
+      req.params._id,
+      req.body,
+      req.auth.user_id
+    );
+    res.status(200).json(event);
+  } catch (error) {
+    const status = error.status || 500;
+    const message = status === 500 ? "Server error" : error.message;
+    res.status(status).json({ message });
+  }
+};
+
 // PUT /enquiry/:_id/qualification
 const UpdateQualification = async (req, res) => {
   try {
@@ -90,6 +107,7 @@ const GetInternalEvents = async (req, res) => {
 
 module.exports = {
   LogCall,
+  WhatsappActivity,
   AddFollowUp,
   UpdateQualification,
   MeetRefused,

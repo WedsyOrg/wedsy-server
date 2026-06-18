@@ -217,6 +217,13 @@ router.post(
   requirePermission("leads:edit:own"),
   cockpit.AddFollowUp
 );
+// WhatsApp deep-link press logged as employee activity (same edit gate as call-log).
+router.post(
+  "/:_id/whatsapp-activity",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own"),
+  cockpit.WhatsappActivity
+);
 router.put(
   "/:_id/qualification",
   CheckAdminLogin,
