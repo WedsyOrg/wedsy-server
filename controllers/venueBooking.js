@@ -6,6 +6,7 @@
  */
 const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
+const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 
 async function resolveOwnedVenue(req, res) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select("_id").lean();
@@ -22,7 +23,7 @@ async function createDraftBookingForEnquiry(venueId, enquiry, ownerId) {
   const existing = await VenueBooking.findOne({ enquiry: enquiry._id });
   if (existing) return existing;
   try {
-    return await VenueBooking.create({
+    const booking = await VenueBooking.create({
       venue: venueId,
       enquiry: enquiry._id,
       coupleName: enquiry.coupleName || enquiry.name || "",
@@ -32,6 +33,8 @@ async function createDraftBookingForEnquiry(venueId, enquiry, ownerId) {
       status: "confirmed",
       createdBy: ownerId,
     });
+    await seedRunsheetForBooking(booking); // default event-day skeleton per day
+    return booking;
   } catch (e) {
     // Concurrent create lost the race on the unique index — return the winner.
     if (e.code === 11000) return VenueBooking.findOne({ enquiry: enquiry._id });
@@ -75,6 +78,7 @@ const createBooking = async (req, res) => {
       status: status || "confirmed",
       createdBy: req.venueOwner.venueOwnerId,
     });
+    await seedRunsheetForBooking(booking); // default event-day skeleton per day
     return res.status(201).json({ booking });
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ message: "A booking already exists for this enquiry" });
@@ -93,6 +97,8 @@ const updateBooking = async (req, res) => {
       if (req.body[k] !== undefined) booking[k] = req.body[k];
     }
     await booking.save();
+    // Newly added days get the default runsheet skeleton (no-op for existing).
+    if (req.body.days !== undefined) await seedRunsheetForBooking(booking);
     return res.status(200).json({ booking });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
