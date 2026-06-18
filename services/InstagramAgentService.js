@@ -21,6 +21,10 @@ const Enquiry = require('../models/Enquiry');
 // (serialized, exponential backoff on 429) — shared with the WhatsApp agent.
 // The queue owns the ANTHROPIC_API_URL test seam.
 const { callAnthropic } = require('../utils/anthropicQueue');
+// Fence-tolerant parse for extractor output — models intermittently wrap the
+// JSON in a ```json fence or add prose, which broke the raw JSON.parse and
+// silently dropped classification (no lead created).
+const parseModelJson = require('../utils/parseModelJson');
 
 // CRASH FIX (mirrors MB4's WhatsApp fix): response.data.content[0].text threw
 // on empty content arrays and tool/thinking-first responses. Find the first
@@ -128,21 +132,23 @@ const checkQualified = async (history) => {
       });
       const text = firstTextBlock(response);
       if (text === null) return { qualified: false };
-      try {
-        return JSON.parse(text);
-      } catch (parseErr) {
-        // RC1d: a parse failure silently dropped data.phoneNumber → no lead.
-        // Surface it (the extractor JSON is malformed) without changing the
-        // safe fallback behavior (not qualified, no routing).
-        console.error('[InstagramAgent] extractor JSON parse failed:', parseErr.message);
-        await NotificationFailureLog.create({
-          service: 'IgExtractorParse',
-          error: parseErr.message,
-          attempts: 1,
-          createdAt: new Date(),
-        }).catch(() => {});
-        return { qualified: false };
-      }
+      // Fence-tolerant: strips a ```json fence / surrounding prose before parsing
+      // so a wrapped-but-valid object still yields classification (→ lead created).
+      const parsed = parseModelJson(text);
+      if (parsed !== null) return parsed;
+      // RC1d: a parse failure silently dropped data.phoneNumber → no lead.
+      // Surface it (the extractor JSON is genuinely malformed) without changing
+      // the safe fallback behavior (not qualified, no routing). Log a truncated
+      // snippet of the raw text so we can see what the model actually sent.
+      const snippet = String(text).replace(/\s+/g, ' ').slice(0, 300);
+      console.error('[InstagramAgent] extractor JSON parse failed:', `raw="${snippet}"`);
+      await NotificationFailureLog.create({
+        service: 'IgExtractorParse',
+        error: `unparseable extractor output: ${snippet}`,
+        attempts: 1,
+        createdAt: new Date(),
+      }).catch(() => {});
+      return { qualified: false };
     } catch (error) {
       attempt++;
       if (attempt > MAX_RETRIES) {
