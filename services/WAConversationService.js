@@ -113,16 +113,36 @@ const listInbox = async ({ mode, needsHuman, status, enquiryId, page = 1, limit 
   if (mode === "ai" || mode === "human") filter.mode = mode;
   if (needsHuman === "true" || needsHuman === true) filter.needsHuman = true;
   if (status === "active" || status === "closed") filter.status = status;
-  if (enquiryId && mongoose.Types.ObjectId.isValid(enquiryId)) filter.enquiryId = enquiryId;
 
-  const unscoped = Object.keys(scopeFilter).length === 0;
-  if (!unscoped) {
-    const inScope = await Enquiry.find(scopeFilter, { _id: 1 }).lean();
-    filter.enquiryId = { $in: inScope.map((l) => l._id) };
-  }
+  const requestedEnquiryId =
+    enquiryId && mongoose.Types.ObjectId.isValid(enquiryId) ? enquiryId : null;
 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const lim = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+
+  // Resolve the enquiryId filter as an INTERSECTION of (a) the specific lead the
+  // caller asked for and (b) the caller's scope. Never let one bypass the other:
+  // a scoped admin must not see an out-of-scope conversation just by passing its
+  // enquiryId, and a requested enquiryId must not be widened back to "all in scope".
+  const unscoped = Object.keys(scopeFilter).length === 0;
+  if (unscoped) {
+    // Super-admin: honour the requested lead if any, otherwise no enquiry filter.
+    if (requestedEnquiryId) filter.enquiryId = requestedEnquiryId;
+  } else {
+    const inScope = await Enquiry.find(scopeFilter, { _id: 1 }).lean();
+    const inScopeIds = inScope.map((l) => l._id);
+    if (requestedEnquiryId) {
+      // Enforce scope: the requested lead must be one of the caller's in-scope
+      // ids, else return empty — do NOT leak an out-of-scope conversation.
+      const inScopeStr = new Set(inScopeIds.map(String));
+      if (!inScopeStr.has(String(requestedEnquiryId))) {
+        return { list: [], total: 0, page: pageNum, totalPages: 1 };
+      }
+      filter.enquiryId = requestedEnquiryId;
+    } else {
+      filter.enquiryId = { $in: inScopeIds };
+    }
+  }
   const [rows, total] = await Promise.all([
     WAConversationRepository.list(filter, { skip: (pageNum - 1) * lim, limit: lim }),
     WAConversationRepository.count(filter),
