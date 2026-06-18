@@ -451,6 +451,14 @@ router.post(
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   lifecycle.Qualify
 );
+// #8 — reverse a qualification. No requirePermission gate here: eligibility
+// (leads:approve OR the assignee's manager) is computed in the controller, EXACTLY
+// like disqualify-decision, so interns are blocked while their manager isn't.
+router.post(
+  "/:_id/unqualify",
+  CheckAdminLogin,
+  lifecycle.Unqualify
+);
 // ── MB9a-2 — per-lead golden-window clock + rescue actions. Claim/reassign/
 // dismiss gate leads:edit + ownerField, so only a manager/RevHead whose scope
 // covers the breached lead can rescue it (an own-scope IC is out of scope).
