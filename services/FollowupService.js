@@ -77,6 +77,10 @@ const create = async (leadId, { title, dueAt, ownerId } = {}, createdBy) => {
       leadId, payload: { followupId: String(f._id) },
     });
   }
+  // SEQ-3c — a follow-up scheduled from the lead detail page is a next step, so
+  // it clears any "no further action" flag (SEQ-3b). Reuses the same fire-safe
+  // helper; never blocks the create.
+  await require("./CallCockpitService").setNoFurtherAction(leadId, false, createdBy);
   return (await decorate([f.toObject()]))[0];
 };
 

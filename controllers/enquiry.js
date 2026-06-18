@@ -16,6 +16,7 @@ const { buildFilterConditions } = require("../utils/leadFilterBuilder");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
+const { computeDiscovery } = require("../services/DiscoveryService");
 
 const CreateNew = (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
@@ -774,13 +775,19 @@ const Update = (req, res) => {
 // which is used by the admin lead-details page for things like Store Access and Client Budget.
 const UpdateLead = async (req, res) => {
   const { _id } = req.params;
-  const { name, phone, email, marketingSource, additionalInfoUpdates } =
+  const { name, phone, email, marketingSource, additionalInfoUpdates, qualifierNotes } =
     req.body;
 
   const updateFields = {};
 
   if (name) {
     updateFields.name = name;
+  }
+
+  // SEQ-1 — the qualifier's discovery notes (writable anytime pre-qual via this
+  // scoped route). Empty string is allowed (lets the intern clear them).
+  if (typeof qualifierNotes === "string") {
+    updateFields.qualifierNotes = qualifierNotes;
   }
 
   if (typeof phone === "string" && phone.trim().length > 0) {
@@ -920,6 +927,10 @@ const Get = (req, res) => {
         }
 
         const proceedWith = (finalResultObj) => {
+          // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
+          // (discoveryComplete + discovery.missing). Computed, never stored.
+          // qualifierNotes is a plain stored field and already rides toObject().
+          finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
           User.findOne({ phone: result.phone })
             .then((user) => {
               if (!user) {

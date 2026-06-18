@@ -128,6 +128,12 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
+      // ── SEQ-3c (additive) — the intern-filled DISCOVERY event date. This is
+      // the ONLY date the discovery gate reads (the ad-form/Kiara month band is
+      // excluded). An exact date AND/OR a part-of-day; either alone is enough,
+      // both allowed. No migration (empty defaults).
+      eventDate: { type: String, default: "" }, // exact date, e.g. "2026-12-20"
+      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" },
       // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
       // Multi-select from the services.available master list.
       servicesRequired: { type: [String], default: [] },
@@ -136,6 +142,10 @@ const EnquirySchema = new mongoose.Schema(
       // Partner/fiancé emails — Slice 8's calendar invites include these.
       additionalEmails: { type: [String], default: [] },
     },
+    // ── SEQ-1 (additive) ─ The qualifier's free-text discovery notes. Written
+    // anytime pre-qual via PUT /enquiry/:_id (scoped); a plain field, so it
+    // survives qualification untouched. No migration needed (empty default).
+    qualifierNotes: { type: String, default: "" },
     // Outcome of the cockpit's complete-call action. gaps holds the missing items
     // acknowledged on an incomplete save (flagged on the lead, per the approved design).
     callCompletion: {
@@ -143,6 +153,18 @@ const EnquirySchema = new mongoose.Schema(
       gaps: { type: [String], default: [] },
       completedAt: { type: Date, default: null },
       completedBy: { type: ObjectId, ref: "Admin", default: null },
+    },
+    // SEQ-3b (additive) — "no further action" marker. Set when a call is SAVED
+    // with discovery still incomplete AND no scheduled next step (follow-up/meet),
+    // so the lead has nowhere to go. Cleared the moment a next step is scheduled
+    // (CallCockpitService.addFollowUp, incl. the G-Meet path) or the lead is
+    // qualified. Surfaced on the enquiry GET for the intern's own view. No
+    // migration (empty default); no escalation wiring yet (those dashboards
+    // don't exist) — see the TODO(escalation) at the set site.
+    noFurtherAction: {
+      flagged: { type: Boolean, default: false },
+      flaggedAt: { type: Date, default: null },
+      flaggedReason: { type: String, default: "" },
     },
     // ── Settings Suite (additive only) ──────────────────────────────────────
     // Values for CustomFieldDef-defined fields ({ defKey: value }).
