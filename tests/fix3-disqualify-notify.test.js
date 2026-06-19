@@ -111,6 +111,56 @@ const makeOpenLead = (suffix, { assignedTo }) =>
     ok(r4.lostStatus === "pending", "unassigned lead still advances to pending");
     const n4 = await AdminNotification.find({ leadId: l4._id }).lean();
     ok(n4.length === 0, "no AdminNotification for an unassigned lead");
+
+    // ── Case 5: decideDisqualification APPROVE → original requester notified.
+    console.log("Case 5: decideDisqualification approve notifies the requester");
+    await SettingsService.set("lost.approvalRequired", true);
+    const l5 = await makeOpenLead("c5", { assignedTo: rep._id });
+    leadIds.push(l5._id);
+    await EnquiryService.requestDisqualification(l5._id, { reason: "budget" }, rep._id);
+    // canApprove is computed by the controller; pass true to exercise the service path.
+    const r5 = await EnquiryService.decideDisqualification(
+      l5._id, { decision: "approve", note: "agreed" }, manager._id, true
+    );
+    // State machine output unchanged:
+    ok(r5.lostStatus === "approved", "lostStatus → approved (unchanged)");
+    ok(r5.stage === "lost", "stage moved to lost (unchanged)");
+    ok(String(r5.lostDecidedBy) === String(manager._id), "lostDecidedBy = decider");
+    // Notify-back to the requester (lostRequestedBy = rep):
+    const n5 = await AdminNotification.find({ adminId: rep._id, leadId: l5._id, type: "lead_disqualify_approved" }).lean();
+    ok(n5.length === 1, "exactly one approve notification for the requester");
+    ok(n5.length === 1 && n5[0].title === `Disqualification approved: ${l5.name}`, "approve title names the lead");
+    ok(n5.length === 1 && n5[0].message === "agreed", "approve message = decision note");
+    ok(n5.length === 1 && String(n5[0].leadId) === String(l5._id), "approve leadId correct");
+    ok(n5.length === 1 && String(n5[0].payload.decidedBy) === String(manager._id), "payload.decidedBy = decider");
+
+    // ── Case 6: decideDisqualification REJECT → original requester notified.
+    console.log("Case 6: decideDisqualification reject notifies the requester");
+    const l6 = await makeOpenLead("c6", { assignedTo: rep._id });
+    leadIds.push(l6._id);
+    await EnquiryService.requestDisqualification(l6._id, { reason: "competitor" }, rep._id);
+    const r6 = await EnquiryService.decideDisqualification(
+      l6._id, { decision: "reject", note: "keep working it" }, manager._id, true
+    );
+    ok(r6.lostStatus === "rejected", "lostStatus → rejected (unchanged)");
+    ok(r6.stage === "meeting_scheduled", "stage restored to stageBeforeLost (unchanged)");
+    const n6 = await AdminNotification.find({ adminId: rep._id, leadId: l6._id, type: "lead_disqualify_rejected" }).lean();
+    ok(n6.length === 1, "exactly one reject notification for the requester");
+    ok(n6.length === 1 && n6[0].title === `Disqualification rejected: ${l6.name}`, "reject title names the lead");
+    ok(n6.length === 1 && String(n6[0].leadId) === String(l6._id), "reject leadId correct");
+
+    // ── Case 7: decision with no lostRequestedBy → clean no-op (no notify, no throw).
+    console.log("Case 7: decision with absent requester → no notify-back, no throw");
+    const l7 = await makeOpenLead("c7", { assignedTo: orphanRep._id });
+    leadIds.push(l7._id);
+    // actorId null on the request → lostRequestedBy stays null.
+    await EnquiryService.requestDisqualification(l7._id, { reason: "not_a_fit" }, null);
+    const r7 = await EnquiryService.decideDisqualification(
+      l7._id, { decision: "approve", note: "" }, manager._id, true
+    );
+    ok(r7.lostStatus === "approved", "state machine still advances to approved");
+    const n7 = await AdminNotification.find({ leadId: l7._id, type: { $in: ["lead_disqualify_approved", "lead_disqualify_rejected"] } }).lean();
+    ok(n7.length === 0, "no decision notify-back when lostRequestedBy is absent");
   } finally {
     if (leadIds.length) {
       await AdminNotification.deleteMany({ leadId: { $in: leadIds } });

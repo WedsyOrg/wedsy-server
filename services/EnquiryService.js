@@ -41,6 +41,25 @@ const notifyManagerOfDisqualification = async (enquiry, { type, title, message, 
   }
 };
 
+// Symmetric notify-back: tell the original requester the outcome of their
+// disqualification request. Recipient is already on the doc (lostRequestedBy) —
+// no lookup. Same best-effort contract as the submit-side helper: guarded, and
+// notify no-ops on a null recipient, so the decision op can never be broken.
+const notifyRequesterOfDecision = async (enquiry, { type, title, note, actorId }) => {
+  try {
+    if (!enquiry || !enquiry.lostRequestedBy) return;
+    await AdminNotificationService.notify(enquiry.lostRequestedBy, {
+      type,
+      title,
+      message: note || "",
+      leadId: enquiry._id,
+      payload: { decidedBy: actorId || null },
+    });
+  } catch (e) {
+    console.error("notifyRequesterOfDecision failed:", e.message);
+  }
+};
+
 // Update an enquiry's pipeline stage.
 // Throws { status, message } shaped errors for the controller to map to HTTP responses.
 const updateStage = async (enquiryId, stage, updatedBy) => {
@@ -236,6 +255,12 @@ const decideDisqualification = async (
       summary: "Disqualification approved",
       meta: { movedToStage: "lost", reason: enquiry.lostReason },
     });
+    await notifyRequesterOfDecision(enquiry, {
+      type: "lead_disqualify_approved",
+      title: `Disqualification approved: ${enquiry.name}`,
+      note,
+      actorId,
+    });
     return updated;
   }
 
@@ -257,6 +282,12 @@ const decideDisqualification = async (
     entityId: String(enquiryId),
     summary: "Disqualification rejected",
     meta: { restoredStage: enquiry.stageBeforeLost, note: note || "" },
+  });
+  await notifyRequesterOfDecision(enquiry, {
+    type: "lead_disqualify_rejected",
+    title: `Disqualification rejected: ${enquiry.name}`,
+    note,
+    actorId,
   });
   return updated;
 };
