@@ -32,10 +32,31 @@ const QUALIFICATION_STRING_FIELDS = [
   "whatsappNumber",
   // SEQ-3c — the intern-filled discovery exact date (free-form string).
   "eventDate",
+  // Lead-schema foundation — free-form city set by the FE dropdown.
+  "city",
 ];
-const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber"];
+const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber", "destinationWedding"];
 // SEQ-3c — the discovery date's part-of-day companion (validated against the enum).
 const EVENT_DATE_PARTS = ["", "morning", "afternoon", "evening"];
+// Lead-schema foundation — coverage zones a lead spans.
+const ZONES = ["north", "south", "east", "west", "central"];
+
+// Earliest dated EventBuilder day → the canonical qualificationData.eventDate.
+// Accepts an array of "YYYY-MM-DD" strings OR objects with a `.date` string;
+// dateless / "not finalised" days are ignored. Returns "" when none are dated.
+// (ISO YYYY-MM-DD sorts chronologically as plain strings.)
+const isIsoDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
+const deriveCanonicalEventDate = (eventDays = []) => {
+  if (!Array.isArray(eventDays)) {
+    throw httpError(400, "Invalid eventDays (expected an array)");
+  }
+  const dates = eventDays
+    .map((d) => (typeof d === "string" ? d : d && typeof d === "object" ? d.date : null))
+    .filter((s) => isIsoDate(s))
+    .map((s) => s.trim());
+  if (!dates.length) return "";
+  return dates.reduce((earliest, d) => (d < earliest ? d : earliest));
+};
 
 const httpError = (status, message) => {
   const err = new Error(message);
@@ -355,6 +376,22 @@ const updateQualification = async (enquiryId, body = {}, actorId) => {
       ...new Set(body.additionalEmails.map((e) => e.trim().toLowerCase()).filter(Boolean)),
     ];
   }
+  // Lead-schema foundation — coverage zones (enum-validated array).
+  if (body.zones !== undefined) {
+    if (!Array.isArray(body.zones) || body.zones.some((z) => typeof z !== "string" || !ZONES.includes(z))) {
+      throw httpError(400, `Invalid zones (expected an array of: ${ZONES.join(", ")})`);
+    }
+    set["qualificationData.zones"] = [...new Set(body.zones)];
+  }
+  // Lead-schema foundation — canonical eventDate sync. When the EventBuilder days
+  // are saved, the earliest dated day becomes qualificationData.eventDate (the
+  // single field the gate + brief read). Empty when every day is dateless. This
+  // runs AFTER the string-field loop so the days are canonical over any raw
+  // eventDate also sent in the same payload.
+  if (body.eventDays !== undefined) {
+    set["qualificationData.eventDate"] = deriveCanonicalEventDate(body.eventDays);
+  }
+
   if (Object.keys(set).length === 0) {
     throw httpError(400, "No valid qualification fields provided");
   }
@@ -523,7 +560,9 @@ module.exports = {
   cadenceFor,
   cadenceConfig,
   flagUnresponsiveIfNeeded,
+  deriveCanonicalEventDate,
   ATTEMPT_OFFSETS_DAYS,
   MAX_ATTEMPTS,
   UNANSWERED_OUTCOMES,
+  ZONES,
 };

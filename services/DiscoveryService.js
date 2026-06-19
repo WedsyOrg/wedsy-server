@@ -1,20 +1,20 @@
-// SEQ-1 / SEQ-3c — the discovery brief's completeness, COMPUTED on read (never
-// stored, so it can't drift).
+// Lead-schema foundation — the discovery brief's completeness, COMPUTED on read
+// (never stored, so it can't drift).
 //
-// SEQ-3c CORRECTS the gate. A lead's discovery is complete when just two things
-// are captured:
-//   1. a NAME — the enquiry name, or the groom/bride name; and
-//   2. a discovery EVENT DATE the intern filled — an exact date AND/OR a
-//      part-of-day (morning/afternoon/evening). Either alone is enough.
+// THE GATE is exactly two things, BOTH required:
+//   1. a canonical EVENT DATE — qualificationData.eventDate (the earliest dated
+//      EventBuilder day, synced server-side); AND
+//   2. SERVICES — qualificationData.servicesRequired non-empty.
 //
-// City, guests/pax, services and budget are OPTIONAL added info — they no longer
-// gate (this replaces the old eventDate AND city AND guests AND services rule).
+// This REPLACES the prior name+date rule. eventDatePart is RETIRED from the gate
+// (part-of-day now lives per-function in the Event store, not as a gate field).
+// Name, city, zones, guests/pax and budget are OPTIONAL added info — they do not
+// gate.
 //
-// CRITICAL EXCLUSION: the event date for the gate is ONLY the intern-filled
-// discovery field (qualificationData.eventDate / eventDatePart). The ad-form
-// month BAND (adFormAnswers.eventMonth / "between_3-6_months" / "beyond_6_months"
-// …) and Kiara's coarse auto-captured band are a DIFFERENT, fuzzy field and are
-// deliberately ignored here — a band must never satisfy the gate.
+// CRITICAL EXCLUSION: the gate's date is ONLY the canonical qualificationData.
+// eventDate. The ad-form month BAND (adFormAnswers.eventMonth / "between_3-6_
+// months" …) and Kiara's coarse auto-captured band are a DIFFERENT, fuzzy field
+// and are deliberately ignored — a band must never satisfy the gate.
 
 const present = (v) => {
   if (v === null || v === undefined) return false;
@@ -26,21 +26,22 @@ const present = (v) => {
 const computeDiscovery = (lead) => {
   const qd = (lead && lead.qualificationData) || {};
 
-  // Name — the enquiry name, or a captured groom/bride name.
+  // Gate 1 — canonical event date ONLY (NOT eventDatePart, NOT the ad-form/Kiara
+  // month band; see the exclusion above).
+  const hasEventDate = present(qd.eventDate);
+  // Gate 2 — at least one required service captured.
+  const hasServices = present(qd.servicesRequired);
+  // Retained for display/back-compat — does NOT gate.
   const hasName = present(lead && lead.name) || present(qd.groomName) || present(qd.brideName);
 
-  // Event date — ONLY the intern-filled discovery date: an exact date and/or a
-  // part-of-day. NOT the ad-form/Kiara month band (see the exclusion above).
-  const hasEventDate = present(qd.eventDate) || present(qd.eventDatePart);
-
   const missing = [];
-  if (!hasName) missing.push("name");
   if (!hasEventDate) missing.push("eventDate");
+  if (!hasServices) missing.push("services");
   const complete = missing.length === 0;
 
   return {
     discoveryComplete: complete,
-    discovery: { complete, missing, hasName, hasEventDate },
+    discovery: { complete, missing, hasEventDate, hasServices, hasName },
   };
 };
 

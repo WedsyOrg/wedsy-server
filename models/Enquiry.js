@@ -141,6 +141,14 @@ const EnquirySchema = new mongoose.Schema(
       budgetNote: { type: String, default: "" },
       // Partner/fiancé emails — Slice 8's calendar invites include these.
       additionalEmails: { type: [String], default: [] },
+      // ── Lead-schema foundation (additive) — cockpit/brief redesign ──────────
+      // Free-form city the FE dropdown sets (no backend city list). When the FE
+      // picks a Karnataka-destination city it also sets destinationWedding=true;
+      // the server just stores both. zones: coverage zones the lead spans
+      // (north|south|east|west|central). venueArea above is retained untouched.
+      city: { type: String, default: "" },
+      destinationWedding: { type: Boolean, default: false },
+      zones: { type: [String], default: [] },
     },
     // ── SEQ-1 (additive) ─ The qualifier's free-text discovery notes. Written
     // anytime pre-qual via PUT /enquiry/:_id (scoped); a plain field, so it
