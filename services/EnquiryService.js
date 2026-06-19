@@ -3,6 +3,8 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
+const AdminNotificationService = require("./AdminNotificationService");
+const Admin = require("../models/Admin");
 
 // Default disqualification reasons. Runtime list comes from SettingsService
 // ("lost.reasons"), which defaults to exactly this constant.
@@ -13,6 +15,30 @@ const httpError = (status, message) => {
   const err = new Error(message);
   err.status = status;
   return err;
+};
+
+// Best-effort INTERNAL notification to the assigned owner's reporting manager when a
+// lead is disqualified (request or auto-approve). Never the external NotificationService,
+// and never allowed to break the disqualify op: the Admin lookup is guarded, and
+// AdminNotificationService.notify is itself fire-safe and no-ops on a null recipient.
+// (To also alert Revenue Heads later, union LeadTaskService.idsByRoleName("Revenue Head")
+// into the recipient list before calling notify — left out for now to avoid noise.)
+const notifyManagerOfDisqualification = async (enquiry, { type, title, message, actorId }) => {
+  try {
+    if (!enquiry || !enquiry.assignedTo) return;
+    const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
+    const reportingManagerId = owner && owner.reportingManagerId;
+    if (!reportingManagerId) return;
+    await AdminNotificationService.notify(reportingManagerId, {
+      type,
+      title,
+      message: message || "",
+      leadId: enquiry._id,
+      payload: { requestedBy: actorId || null },
+    });
+  } catch (e) {
+    console.error("notifyManagerOfDisqualification failed:", e.message);
+  }
 };
 
 // Update an enquiry's pipeline stage.
@@ -130,6 +156,12 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
       summary: `Disqualified directly (approval disabled; reason: ${reason})`,
       meta: { reason, note: note || "", autoApproved: true },
     });
+    await notifyManagerOfDisqualification(enquiry, {
+      type: "lead_disqualified",
+      title: `Lead disqualified: ${enquiry.name}`,
+      message: reason,
+      actorId,
+    });
     return updatedDirect;
   }
 
@@ -149,6 +181,13 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
     entityId: String(enquiryId),
     summary: `Disqualification requested (reason: ${reason})`,
     meta: { reason, note: note || "" },
+  });
+
+  await notifyManagerOfDisqualification(enquiry, {
+    type: "lead_disqualify_requested",
+    title: `Disqualification requested: ${enquiry.name}`,
+    message: reason,
+    actorId,
   });
 
   return updated;
