@@ -18,6 +18,9 @@
 const Enquiry = require("../models/Enquiry");
 const WAAgentMessageRepository = require("../repositories/WAAgentMessageRepository");
 const { callAnthropic } = require("../utils/anthropicQueue");
+// Fence-tolerant parse for extractor output — models intermittently wrap the
+// JSON in a ```json fence or add prose, which broke the raw JSON.parse.
+const parseModelJson = require("../utils/parseModelJson");
 
 const MODEL = "claude-haiku-4-5";
 
@@ -74,11 +77,14 @@ const extractFactsForLead = async (leadId, conversationPhone) => {
     const text = firstTextBlock(response);
     if (!text) return null;
 
-    let facts;
-    try {
-      facts = JSON.parse(text);
-    } catch (e) {
-      console.error("[KiaraFactExtraction] JSON parse failed:", e.message);
+    // Fence-tolerant: strip a ```json fence / surrounding prose before parsing.
+    const facts = parseModelJson(text);
+    if (facts === null) {
+      // Genuinely unparseable — keep the safe fallback (return null), and log a
+      // truncated raw snippet next to the existing error line so we can see what
+      // the model actually sent.
+      const snippet = String(text).replace(/\s+/g, " ").slice(0, 300);
+      console.error("[KiaraFactExtraction] JSON parse failed:", `raw="${snippet}"`);
       return null;
     }
 

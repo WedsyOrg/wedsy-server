@@ -12,6 +12,9 @@ const { google } = require('googleapis');
 // (serialized, exponential backoff on 429) — shared with the Instagram agent.
 // The queue owns the ANTHROPIC_API_URL test seam now.
 const { callAnthropic } = require('../utils/anthropicQueue');
+// Fence-tolerant parse for extractor output — models intermittently wrap the
+// JSON in a ```json fence or add prose, which broke the raw JSON.parse.
+const parseModelJson = require('../utils/parseModelJson');
 
 // Kiara's persona now lives in Settings (kiara.systemPrompt, founder-gated,
 // 60s cache) and defaults to the verbatim former hardcoded text — an empty
@@ -91,12 +94,14 @@ const checkQualified = async (history) => {
       });
       const text = firstTextBlock(response);
       if (text === null) throw new Error('Anthropic response had no text block');
-      try {
-        return JSON.parse(text);
-      } catch {
-        // JSON parse failure keeps the pre-Kiara fallback: not qualified, no routing.
-        return { qualified: false };
-      }
+      // Fence-tolerant: strip a ```json fence / surrounding prose before parsing.
+      const parsed = parseModelJson(text);
+      if (parsed !== null) return parsed;
+      // JSON parse failure keeps the pre-Kiara fallback: not qualified, no routing.
+      // Log a truncated raw snippet so we can see what the model actually sent.
+      const snippet = String(text).replace(/\s+/g, ' ').slice(0, 300);
+      console.error('[WhatsAppAgent] extractor JSON parse failed:', `raw="${snippet}"`);
+      return { qualified: false };
     } catch (error) {
       attempt++;
       if (attempt > MAX_RETRIES) {
