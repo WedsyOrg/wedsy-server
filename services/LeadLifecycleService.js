@@ -6,6 +6,7 @@ const EnquiryService = require("./EnquiryService");
 const CallCockpitService = require("./CallCockpitService");
 const LeadAssignmentService = require("./LeadAssignmentService");
 const LeadInternalEventService = require("./LeadInternalEventService");
+const AdminNotificationService = require("./AdminNotificationService");
 
 // Default recycle reasons. Runtime list comes from SettingsService ("recycle.reasons").
 const RECYCLE_REASONS = [
@@ -480,6 +481,66 @@ const qualifyLead = async (enquiryId, actorId) => {
   return { lead: fresh, alreadyQualified: false, handedOff };
 };
 
+// ── #8 — UNQUALIFY (reverse a qualification). A sales lead / revenue head (or the
+// assignee's manager — eligibility checked in the controller) can undo a wrongly
+// qualified lead: it flips `qualified` back off, returns ownership to the intern
+// who qualified it, tags it "Unqualified", and notifies that intern internally.
+// Deliberately NON-destructive: stage, qualificationData, qualifierNotes, name,
+// callLog, kiaraSummary and the journey steps are all left untouched.
+const UNQUALIFIED_TAG = "Unqualified";
+const unqualifyLead = async (enquiryId, actorId, { reason } = {}) => {
+  assertValidId(enquiryId);
+  const lead = await Enquiry.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  // Idempotent: nothing to reverse on a lead that isn't qualified.
+  if (!lead.qualified) return lead.toObject();
+  // A reason is mandatory (audit trail + the intern's notification body).
+  const cleanReason = typeof reason === "string" ? reason.trim() : "";
+  if (!cleanReason) throw httpError(400, "A reason is required to unqualify a lead");
+
+  // Capture BEFORE mutating — qualifiedBy is the intern we return the lead to.
+  const intern = lead.qualifiedBy || null;
+  const previousOwner = lead.assignedTo || null;
+
+  // Make "Unqualified" a recognized, filterable tag: add it to the Settings
+  // library if missing, then union it onto the lead's tags.
+  const library = await SettingsService.get("tags.available");
+  if (!library.includes(UNQUALIFIED_TAG)) {
+    await SettingsService.set("tags.available", [...library, UNQUALIFIED_TAG], actorId);
+  }
+  const nextTags = [...new Set([...(lead.tags || []), UNQUALIFIED_TAG])];
+
+  await EnquiryRepository.updateFieldsById(enquiryId, {
+    qualified: false,
+    qualifiedAt: null,
+    qualifiedBy: null,
+    assignedTo: intern, // back to the intern who qualified it
+    tags: nextTags,
+  });
+
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "unqualified",
+    actorId: actorId || null,
+    payload: {
+      reason: cleanReason,
+      previousOwner: previousOwner ? String(previousOwner) : null,
+      returnedTo: intern ? String(intern) : null,
+    },
+  });
+
+  // Internal notification ONLY (never the external NotificationService). notify
+  // is fire-safe and no-ops on a null recipient.
+  await AdminNotificationService.notify(intern, {
+    type: "lead_unqualified",
+    title: `Lead unqualified: ${lead.name}`,
+    message: cleanReason,
+    leadId: enquiryId,
+  });
+
+  return await Enquiry.findById(enquiryId).lean();
+};
+
 module.exports = {
   recycleLead,
   resurfaceDueLeads,
@@ -489,6 +550,7 @@ module.exports = {
   bulkTransfer,
   addNote,
   qualifyLead,
+  unqualifyLead,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };
