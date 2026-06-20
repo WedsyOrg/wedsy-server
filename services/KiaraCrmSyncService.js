@@ -354,11 +354,18 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
     if (matched.length) set["qualificationData.servicesRequired"] = matched;
   }
   if (data.budget && qd.budgetAmount == null && !qd.budgetNote) {
-    // Range-aware normalizer: parses single values AND ranges (lower bound stored),
-    // preserves the raw phrasing in budgetNote, nulls absurd output. See normalizeBudget.
+    // OVERALL wedding budget → the headline scalar. Range-aware normalizer: parses
+    // single values AND ranges (lower bound stored), preserves the raw phrasing in
+    // budgetNote, nulls absurd output. See normalizeBudget.
     const { amount, note } = normalizeBudget(data.budget);
     if (amount != null) set["qualificationData.budgetAmount"] = amount;
     set["qualificationData.budgetNote"] = note;
+  }
+  // PER-SERVICE budget (e.g. "catering ~3L") is NOT the whole-wedding figure — store
+  // the raw labeled string verbatim and NEVER run it through normalizeBudget into the
+  // headline budgetAmount. Fill-only-empty, mirroring the overall-budget guard above.
+  if (data.budgetPerService && !qd.budgetPerService) {
+    set["qualificationData.budgetPerService"] = String(data.budgetPerService).slice(0, 500);
   }
 
   // Placeholder lead names ("WhatsApp 1234") upgrade to the real one.
