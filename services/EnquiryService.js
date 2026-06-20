@@ -3,6 +3,8 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
+const AdminNotificationService = require("./AdminNotificationService");
+const Admin = require("../models/Admin");
 
 // Default disqualification reasons. Runtime list comes from SettingsService
 // ("lost.reasons"), which defaults to exactly this constant.
@@ -13,6 +15,49 @@ const httpError = (status, message) => {
   const err = new Error(message);
   err.status = status;
   return err;
+};
+
+// Best-effort INTERNAL notification to the assigned owner's reporting manager when a
+// lead is disqualified (request or auto-approve). Never the external NotificationService,
+// and never allowed to break the disqualify op: the Admin lookup is guarded, and
+// AdminNotificationService.notify is itself fire-safe and no-ops on a null recipient.
+// (To also alert Revenue Heads later, union LeadTaskService.idsByRoleName("Revenue Head")
+// into the recipient list before calling notify — left out for now to avoid noise.)
+const notifyManagerOfDisqualification = async (enquiry, { type, title, message, actorId }) => {
+  try {
+    if (!enquiry || !enquiry.assignedTo) return;
+    const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
+    const reportingManagerId = owner && owner.reportingManagerId;
+    if (!reportingManagerId) return;
+    await AdminNotificationService.notify(reportingManagerId, {
+      type,
+      title,
+      message: message || "",
+      leadId: enquiry._id,
+      payload: { requestedBy: actorId || null },
+    });
+  } catch (e) {
+    console.error("notifyManagerOfDisqualification failed:", e.message);
+  }
+};
+
+// Symmetric notify-back: tell the original requester the outcome of their
+// disqualification request. Recipient is already on the doc (lostRequestedBy) —
+// no lookup. Same best-effort contract as the submit-side helper: guarded, and
+// notify no-ops on a null recipient, so the decision op can never be broken.
+const notifyRequesterOfDecision = async (enquiry, { type, title, note, actorId }) => {
+  try {
+    if (!enquiry || !enquiry.lostRequestedBy) return;
+    await AdminNotificationService.notify(enquiry.lostRequestedBy, {
+      type,
+      title,
+      message: note || "",
+      leadId: enquiry._id,
+      payload: { decidedBy: actorId || null },
+    });
+  } catch (e) {
+    console.error("notifyRequesterOfDecision failed:", e.message);
+  }
 };
 
 // Update an enquiry's pipeline stage.
@@ -130,6 +175,12 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
       summary: `Disqualified directly (approval disabled; reason: ${reason})`,
       meta: { reason, note: note || "", autoApproved: true },
     });
+    await notifyManagerOfDisqualification(enquiry, {
+      type: "lead_disqualified",
+      title: `Lead disqualified: ${enquiry.name}`,
+      message: reason,
+      actorId,
+    });
     return updatedDirect;
   }
 
@@ -149,6 +200,13 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
     entityId: String(enquiryId),
     summary: `Disqualification requested (reason: ${reason})`,
     meta: { reason, note: note || "" },
+  });
+
+  await notifyManagerOfDisqualification(enquiry, {
+    type: "lead_disqualify_requested",
+    title: `Disqualification requested: ${enquiry.name}`,
+    message: reason,
+    actorId,
   });
 
   return updated;
@@ -197,6 +255,12 @@ const decideDisqualification = async (
       summary: "Disqualification approved",
       meta: { movedToStage: "lost", reason: enquiry.lostReason },
     });
+    await notifyRequesterOfDecision(enquiry, {
+      type: "lead_disqualify_approved",
+      title: `Disqualification approved: ${enquiry.name}`,
+      note,
+      actorId,
+    });
     return updated;
   }
 
@@ -218,6 +282,12 @@ const decideDisqualification = async (
     entityId: String(enquiryId),
     summary: "Disqualification rejected",
     meta: { restoredStage: enquiry.stageBeforeLost, note: note || "" },
+  });
+  await notifyRequesterOfDecision(enquiry, {
+    type: "lead_disqualify_rejected",
+    title: `Disqualification rejected: ${enquiry.name}`,
+    note,
+    actorId,
   });
   return updated;
 };

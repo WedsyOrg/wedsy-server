@@ -189,6 +189,63 @@ const normalizeVenueStatus = (raw) => {
   return "";
 };
 
+// Budget normalizer (CRM-scoped). Kiara / FB-form budget answers arrive as free
+// text — single values ("15k", "1.5 lakh", "50000") or RANGES ("10-15k",
+// "10 – 15k", "10 to 15 lakh"). The cockpit needs ONE scalar (budgetAmount); the
+// original phrasing is always kept in budgetNote so a span is never lost.
+//
+// Range handling is the whole point of this helper: the old digit-strip
+// (raw.replace(/[^\d.]/g,"")) deleted the hyphen, concatenating "10-15k" into
+// "1015" → ×1000 → ₹10.15L. We instead detect a range, parse BOTH bounds, apply
+// the unit suffix to EACH, and store the LOWER bound — a conservative floor that
+// never inflates a lead into a higher budget tier.
+//
+// Units (case-insensitive, applied to the parsed number, not a stripped concat):
+//   k        → ×1e3      l / lakh / lac → ×1e5      cr / crore → ×1e7
+// Absurd / unparseable output (NaN, ≤0, or > ₹100 crore) yields amount=null so a
+// garbage scalar is never stored — only the raw note survives.
+const BUDGET_MAX = 1e9; // ₹100 crore — anything above is implausible for a lead
+
+// Unit may be attached to a digit ("2cr", "15k") or spaced ("2 lakh"). We match a
+// trailing word boundary and use a (?<![a-z]) lookbehind so the token isn't part of
+// a longer word (won't fire on "micro", "while", etc.) yet still fires after a digit.
+const budgetUnitFactor = (s) => {
+  const lower = String(s).toLowerCase();
+  if (/crore\b|(?<![a-z])cr\b/.test(lower)) return 1e7;
+  if (/lakh\b|lac\b|(?<![a-z])l\b/.test(lower)) return 1e5;
+  if (/(?<![a-z])k\b/.test(lower)) return 1e3; // "15k", "10-15k", "2k"
+  return 1;
+};
+
+const normalizeBudget = (raw) => {
+  const note = String(raw == null ? "" : raw).slice(0, 500);
+  const str = String(raw == null ? "" : raw).trim();
+  if (!str) return { amount: null, note };
+
+  const factor = budgetUnitFactor(str);
+
+  // Range first: two numbers separated by hyphen / en-dash / em-dash / "to".
+  const range = str.match(/(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)/i);
+  let amount;
+  if (range) {
+    const a = parseFloat(range[1]);
+    const b = parseFloat(range[2]);
+    // Store the LOWER bound (conservative floor), unit applied to the parsed number.
+    amount = Math.min(a, b) * factor;
+  } else {
+    // Single value: digit-strip is safe here (keeps thousands separators, e.g.
+    // "50,000" → 50000) — the range case has already been handled above.
+    const cleaned = str.replace(/[^\d.]/g, "");
+    amount = cleaned ? parseFloat(cleaned) * factor : NaN;
+  }
+
+  // Guard absurd / unparseable output → null + keep the raw note.
+  if (!Number.isFinite(amount) || amount <= 0 || amount > BUDGET_MAX) {
+    return { amount: null, note };
+  }
+  return { amount, note };
+};
+
 const isoDay = (d) => d.toISOString().slice(0, 10);
 
 // Event Store sync: User by phone (created if absent) → Event with
@@ -297,17 +354,18 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
     if (matched.length) set["qualificationData.servicesRequired"] = matched;
   }
   if (data.budget && qd.budgetAmount == null && !qd.budgetNote) {
-    const raw = String(data.budget);
-    const digits = raw.replace(/[^\d.]/g, "");
-    let amount = digits ? parseFloat(digits) : null;
-    const lower = raw.toLowerCase();
-    if (amount != null && Number.isFinite(amount)) {
-      if (/(lakh|lac|\bl\b)/.test(lower)) amount *= 100000;
-      else if (/(crore|\bcr\b)/.test(lower)) amount *= 10000000;
-      else if (/\d\s*k\b/.test(lower)) amount *= 1000;
-      set["qualificationData.budgetAmount"] = amount;
-    }
-    set["qualificationData.budgetNote"] = raw.slice(0, 500);
+    // OVERALL wedding budget → the headline scalar. Range-aware normalizer: parses
+    // single values AND ranges (lower bound stored), preserves the raw phrasing in
+    // budgetNote, nulls absurd output. See normalizeBudget.
+    const { amount, note } = normalizeBudget(data.budget);
+    if (amount != null) set["qualificationData.budgetAmount"] = amount;
+    set["qualificationData.budgetNote"] = note;
+  }
+  // PER-SERVICE budget (e.g. "catering ~3L") is NOT the whole-wedding figure — store
+  // the raw labeled string verbatim and NEVER run it through normalizeBudget into the
+  // headline budgetAmount. Fill-only-empty, mirroring the overall-budget guard above.
+  if (data.budgetPerService && !qd.budgetPerService) {
+    set["qualificationData.budgetPerService"] = String(data.budgetPerService).slice(0, 500);
   }
 
   // Placeholder lead names ("WhatsApp 1234") upgrade to the real one.
@@ -356,4 +414,5 @@ module.exports = {
   parseEventDate,
   parseCount,
   normalizeVenueStatus,
+  normalizeBudget,
 };

@@ -28,9 +28,13 @@ const SYSTEM_PROMPT =
   "You mine a chat transcript between a wedding-planning assistant (Kiara) and a " +
   "prospective customer into structured facts. Use ONLY what the customer actually " +
   "said — never invent. Leave a field as an empty string if it wasn't mentioned. " +
+  '"budget" is the OVERALL wedding budget only — the total for the whole wedding. ' +
+  '"budgetPerService" is a figure tied to ONE service; capture it WITH its label, ' +
+  'e.g. "catering ~3L" or "decor 50k". Never put a single-service figure in "budget", ' +
+  'and never put the overall total in "budgetPerService". ' +
   "Respond ONLY with valid JSON, no markdown, no preamble. Format: " +
   '{"eventType":"","city":"","eventDate":"","numberOfEvents":"","venueStatus":"",' +
-  '"venueName":"","servicesRequired":"","budget":"","weddingStyle":"","guests":"",' +
+  '"venueName":"","servicesRequired":"","budget":"","budgetPerService":"","weddingStyle":"","guests":"",' +
   '"summary":""}';
 
 const firstTextBlock = (response) => {
@@ -42,7 +46,7 @@ const firstTextBlock = (response) => {
 
 const ANSWER_KEYS = [
   "eventType", "city", "eventDate", "numberOfEvents", "venueStatus",
-  "venueName", "servicesRequired", "budget", "weddingStyle", "guests",
+  "venueName", "servicesRequired", "budget", "budgetPerService", "weddingStyle", "guests",
 ];
 
 // Build the [{role, content}] history Anthropic expects from the stored thread.

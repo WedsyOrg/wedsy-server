@@ -139,6 +139,11 @@ const EnquirySchema = new mongoose.Schema(
       servicesRequired: { type: [String], default: [] },
       budgetAmount: { type: Number, default: null },
       budgetNote: { type: String, default: "" },
+      // Overall-vs-per-service split: budgetAmount/budgetNote are the WHOLE-wedding
+      // budget; budgetPerService holds a labeled single-service figure (e.g.
+      // "catering ~3L") so it never inflates the headline budget. Additive, empty
+      // default, no migration (matches the venueBudget precedent above).
+      budgetPerService: { type: String, default: "" },
       // Partner/fiancé emails — Slice 8's calendar invites include these.
       additionalEmails: { type: [String], default: [] },
       // ── Lead-schema foundation (additive) — cockpit/brief redesign ──────────

@@ -48,6 +48,7 @@ const composeFacts = (lead, journeyEntries = []) => {
   add("Services wanted", services);
   if (q.budgetAmount) add("Budget", `₹${q.budgetAmount}`);
   add("Budget note", q.budgetNote || ka.budget);
+  add("Per-service budget", q.budgetPerService);
   add("Email on file", q.email || lead.email ? "yes" : "");
   add("Qualified", lead.qualified ? "yes" : "");
 
