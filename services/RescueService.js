@@ -84,6 +84,12 @@ const rescueQueue = async (adminId, scope, now = new Date()) => {
       secondsLeft: clock.secondsLeft,
       breached: clock.breached, // tier-3 = the persistent breached ones
       tier: clock.breached ? 3 : 2,
+      // Single derivable cause for this queue (uncontacted first-call golden
+      // window, per the query predicate) — read off the already-computed clock.
+      reason: clock.breached
+        ? "No first response — golden window breached"
+        : "Golden window closing — first response overdue",
+      cause: clock.breached ? "first_call_breached" : "first_call_at_risk",
     }))
     .sort((a, b) => a.secondsLeft - b.secondsLeft);
 
