@@ -3,6 +3,10 @@ const JourneyService = require("../services/JourneyService");
 const CustomFieldService = require("../services/CustomFieldService");
 const LeadLifecycleService = require("../services/LeadLifecycleService");
 const ProjectService = require("../services/ProjectService");
+// #8 — eligibility helpers shared with the disqualify-decision flow: a leads:approve
+// holder (Sales Lead / Revenue Head) OR the assignee's manager chain may approve.
+const { actorHasApprovePermission, isManagerOfAssigned } = require("./disqualify");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const respondError = (res, error) => {
   const status = error.status || 500;
@@ -36,6 +40,52 @@ const CompleteFollowUp = async (req, res) => {
       req.params.followUpId,
       req.body,
       req.auth.user_id
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// POST /enquiry/:_id/qualify — the explicit qualify hinge (assignee OR manager).
+// Scope-checked against the caller's leads:edit scope; converges on the SAME
+// LeadLifecycleService.qualifyLead transition as the cockpit qualified path.
+const Qualify = async (req, res) => {
+  try {
+    const Enquiry = require("../models/Enquiry");
+    const mongoose = require("mongoose");
+    const id = req.params._id;
+    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid lead id" });
+    const inScope = await Enquiry.findOne({ $and: [{ _id: id }, req.scopeFilter || {}] }, { _id: 1 }).lean();
+    if (!inScope) return res.status(403).json({ message: "Out of your scope" });
+    const result = await LeadLifecycleService.qualifyLead(id, req.auth.user_id);
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// POST /enquiry/:_id/unqualify — reverse a qualification. No requirePermission on
+// the route: eligibility is computed here EXACTLY like disqualify-decision, so only
+// a leads:approve holder (Sales Lead / Revenue Head) OR the assignee's manager may
+// do it — interns are blocked (403). Body: { reason } (required).
+const Unqualify = async (req, res) => {
+  try {
+    const actorId = req.auth.user_id;
+    const enquiry = await EnquiryRepository.findById(req.params._id);
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+
+    const canApprove =
+      (await actorHasApprovePermission(actorId)) ||
+      (await isManagerOfAssigned(actorId, enquiry.assignedTo));
+    if (!canApprove) {
+      return res.status(403).json({ message: "Only a sales lead or revenue head can unqualify a lead" });
+    }
+
+    const result = await LeadLifecycleService.unqualifyLead(
+      req.params._id,
+      actorId,
+      { reason: req.body.reason }
     );
     res.status(200).json(result);
   } catch (error) {
@@ -136,4 +186,4 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify };

@@ -128,7 +128,37 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
+      // ── SEQ-3c (additive) — the intern-filled DISCOVERY event date. This is
+      // the ONLY date the discovery gate reads (the ad-form/Kiara month band is
+      // excluded). An exact date AND/OR a part-of-day; either alone is enough,
+      // both allowed. No migration (empty defaults).
+      eventDate: { type: String, default: "" }, // exact date, e.g. "2026-12-20"
+      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" },
+      // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
+      // Multi-select from the services.available master list.
+      servicesRequired: { type: [String], default: [] },
+      budgetAmount: { type: Number, default: null },
+      budgetNote: { type: String, default: "" },
+      // Overall-vs-per-service split: budgetAmount/budgetNote are the WHOLE-wedding
+      // budget; budgetPerService holds a labeled single-service figure (e.g.
+      // "catering ~3L") so it never inflates the headline budget. Additive, empty
+      // default, no migration (matches the venueBudget precedent above).
+      budgetPerService: { type: String, default: "" },
+      // Partner/fiancé emails — Slice 8's calendar invites include these.
+      additionalEmails: { type: [String], default: [] },
+      // ── Lead-schema foundation (additive) — cockpit/brief redesign ──────────
+      // Free-form city the FE dropdown sets (no backend city list). When the FE
+      // picks a Karnataka-destination city it also sets destinationWedding=true;
+      // the server just stores both. zones: coverage zones the lead spans
+      // (north|south|east|west|central). venueArea above is retained untouched.
+      city: { type: String, default: "" },
+      destinationWedding: { type: Boolean, default: false },
+      zones: { type: [String], default: [] },
     },
+    // ── SEQ-1 (additive) ─ The qualifier's free-text discovery notes. Written
+    // anytime pre-qual via PUT /enquiry/:_id (scoped); a plain field, so it
+    // survives qualification untouched. No migration needed (empty default).
+    qualifierNotes: { type: String, default: "" },
     // Outcome of the cockpit's complete-call action. gaps holds the missing items
     // acknowledged on an incomplete save (flagged on the lead, per the approved design).
     callCompletion: {
@@ -136,6 +166,18 @@ const EnquirySchema = new mongoose.Schema(
       gaps: { type: [String], default: [] },
       completedAt: { type: Date, default: null },
       completedBy: { type: ObjectId, ref: "Admin", default: null },
+    },
+    // SEQ-3b (additive) — "no further action" marker. Set when a call is SAVED
+    // with discovery still incomplete AND no scheduled next step (follow-up/meet),
+    // so the lead has nowhere to go. Cleared the moment a next step is scheduled
+    // (CallCockpitService.addFollowUp, incl. the G-Meet path) or the lead is
+    // qualified. Surfaced on the enquiry GET for the intern's own view. No
+    // migration (empty default); no escalation wiring yet (those dashboards
+    // don't exist) — see the TODO(escalation) at the set site.
+    noFurtherAction: {
+      flagged: { type: Boolean, default: false },
+      flaggedAt: { type: Date, default: null },
+      flaggedReason: { type: String, default: "" },
     },
     // ── Settings Suite (additive only) ──────────────────────────────────────
     // Values for CustomFieldDef-defined fields ({ defKey: value }).
@@ -149,6 +191,57 @@ const EnquirySchema = new mongoose.Schema(
     unresponsiveFlaggedAt: { type: Date, default: null },
     // CSV import marker: historical imports are excluded from auto-assignment.
     importedAt: { type: Date, default: null },
+    // ── Design-pass Slice 5 (additive) — cached Kiara AI summary ────────────
+    // Founder-voice synopsis composed from captured data; "Regenerate" refreshes.
+    kiaraSummary: {
+      text: { type: String, default: "" },
+      generatedAt: { type: Date, default: null },
+    },
+    // ── MB7b Slice 4 (additive only) — nurture engine ───────────────────────
+    // The WhatsApp-group gate at G-Meet close: nurture only switches on once the
+    // CS person confirms the couple's group exists. A "No"/unanswered close
+    // raises whatsappGroupFlag (the red flag on the file + dashboard) until a
+    // one-tap flip to Yes. nurture.lastTouchAt is the cadence clock — reset by a
+    // completed nurture task OR a couple inbound message.
+    whatsappGroupCreated: { type: Boolean, default: false },
+    whatsappGroupCreatedAt: { type: Date, default: null },
+    whatsappGroupFlag: {
+      raised: { type: Boolean, default: false },
+      raisedAt: { type: Date, default: null },
+      clearedAt: { type: Date, default: null },
+    },
+    nurture: {
+      active: { type: Boolean, default: false },
+      lastTouchAt: { type: Date, default: null },
+    },
+    // ── MB5 Slice 5 (additive only) — Kiara safety net engagement marker ────
+    // Set once when the safety net sends the welcome template (after-hours
+    // create or golden-window miss). Gates the once-per-lead rule and joins
+    // the lead into mission-quiet.
+    kiaraSafetyNetAt: { type: Date, default: null },
+    // ── MB5 Slice 4 (additive only) — triage mode ───────────────────────────
+    // In assignment.mode='triage', new leads land here unassigned until a
+    // triage holder assigns them (or the escalation chain auto-assigns).
+    triagePending: { type: Boolean, default: false },
+    triageEnteredAt: { type: Date, default: null },
+    triageEscalatedAt: { type: Date, default: null },
+    // ── MB5 Slice 3 (additive only) ─────────────────────────────────────────
+    // Set-once credit: the intern who booked the meet that triggered the
+    // handoff. Their stats keep this lead permanently.
+    qualifiedBy: { type: ObjectId, ref: "Admin", default: null },
+    // ── MB11c (additive) ─ Set-once timestamp of the qualify hinge, so the
+    // command center can surface "qualified by X · on date" at the handoff.
+    qualifiedAt: { type: Date, default: null },
+    // Lightweight event-team assignments captured at huddle completion.
+    eventTeam: {
+      type: [
+        {
+          adminId: { type: ObjectId, ref: "Admin", required: true },
+          label: { type: String, default: "" },
+        },
+      ],
+      default: [],
+    },
     // Recycle — the third terminal state. Excluded from all active views while
     // isRecycled; lazily resurfaced (and reassigned) once revisitAt passes.
     recycled: {
@@ -161,11 +254,19 @@ const EnquirySchema = new mongoose.Schema(
       originalOwnerId: { type: ObjectId, ref: "Admin", default: null },
       resurfacedAt: { type: Date, default: null },
     },
+    // ── MB9c (additive, nullable) — SOFT DELETE. The list "Delete" (founder-only)
+    // sets these; archived leads are excluded from default list queries but are
+    // NEVER hard-removed (recoverable). The ONLY Enquiry change in MB9c.
+    archivedAt: { type: Date, default: null },
+    archivedBy: { type: ObjectId, ref: "Admin", default: null },
   },
   { timestamps: true }
 );
 
 // Create unique index on phone to prevent duplicates at database level
 EnquirySchema.index({ phone: 1 }, { unique: true });
+// MB9c-fix — the lead list's default + sort is newest-created-first; index it
+// (with _id as the stable paging tiebreaker).
+EnquirySchema.index({ createdAt: -1, _id: -1 });
 
 module.exports = mongoose.model("Enquiry", EnquirySchema);

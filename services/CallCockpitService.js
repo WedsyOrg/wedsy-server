@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
+const { computeDiscovery } = require("./DiscoveryService");
 
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
 const FOLLOW_UP_TYPES = ["meet", "call", "visit"];
@@ -29,8 +30,33 @@ const QUALIFICATION_STRING_FIELDS = [
   "venueShortlistNote",
   "email",
   "whatsappNumber",
+  // SEQ-3c — the intern-filled discovery exact date (free-form string).
+  "eventDate",
+  // Lead-schema foundation — free-form city set by the FE dropdown.
+  "city",
 ];
-const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber"];
+const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber", "destinationWedding"];
+// SEQ-3c — the discovery date's part-of-day companion (validated against the enum).
+const EVENT_DATE_PARTS = ["", "morning", "afternoon", "evening"];
+// Lead-schema foundation — coverage zones a lead spans.
+const ZONES = ["north", "south", "east", "west", "central"];
+
+// Earliest dated EventBuilder day → the canonical qualificationData.eventDate.
+// Accepts an array of "YYYY-MM-DD" strings OR objects with a `.date` string;
+// dateless / "not finalised" days are ignored. Returns "" when none are dated.
+// (ISO YYYY-MM-DD sorts chronologically as plain strings.)
+const isIsoDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
+const deriveCanonicalEventDate = (eventDays = []) => {
+  if (!Array.isArray(eventDays)) {
+    throw httpError(400, "Invalid eventDays (expected an array)");
+  }
+  const dates = eventDays
+    .map((d) => (typeof d === "string" ? d : d && typeof d === "object" ? d.date : null))
+    .filter((s) => isIsoDate(s))
+    .map((s) => s.trim());
+  if (!dates.length) return "";
+  return dates.reduce((earliest, d) => (d < earliest ? d : earliest));
+};
 
 const httpError = (status, message) => {
   const err = new Error(message);
@@ -57,6 +83,41 @@ const hasFutureFollowUp = (enquiry, now = new Date()) =>
   (enquiry.followUps || []).some(
     (f) => f.scheduledAt && new Date(f.scheduledAt) > now
   );
+
+// SEQ-3b — the "no further action" marker (additive, fire-safe). Set when a call
+// is SAVED with discovery still incomplete AND no scheduled next step, leaving
+// the lead with nowhere to go; cleared the moment a next step is scheduled
+// (addFollowUp, incl. the G-Meet path) or the lead is qualified (see
+// LeadLifecycleService.qualifyLead). The save itself is NEVER blocked — this only
+// sets/clears the flag, and a failure here must never break the save/schedule.
+const setNoFurtherAction = async (enquiryId, flagged, actorId, reason) => {
+  try {
+    const fields = flagged
+      ? {
+          "noFurtherAction.flagged": true,
+          "noFurtherAction.flaggedAt": new Date(),
+          "noFurtherAction.flaggedReason":
+            reason || "Saved without a next step (discovery incomplete)",
+        }
+      : {
+          "noFurtherAction.flagged": false,
+          "noFurtherAction.flaggedAt": null,
+          "noFurtherAction.flaggedReason": "",
+        };
+    await EnquiryRepository.updateFieldsById(enquiryId, fields);
+    if (flagged) {
+      // TODO(escalation): notify sales lead + revenue head when their dashboards exist.
+      await LeadInternalEventService.record({
+        leadId: enquiryId,
+        type: "no_further_action_flagged",
+        actorId: actorId || null,
+        payload: { reason: reason || "no_next_step" },
+      });
+    }
+  } catch (e) {
+    console.error("[setNoFurtherAction] failed:", e.message);
+  }
+};
 
 // Attempt-cadence state for a lead's call log (Lifecycle Slice C). attempts =
 // unanswered (busy/unknown) calls so far. Below MAX: suggest the next attempt per
@@ -143,8 +204,11 @@ const logCall = async (
     notes: notes || "",
     loggedBy: actorId || null,
   };
-  const extraSet = outcome === "qualified" ? { qualified: true } : {};
-  const updated = await EnquiryRepository.pushCallLogById(enquiryId, entry, extraSet);
+  // MB9a: the qualified flip + journey + handoff + summary now all run through
+  // LeadLifecycleService.qualifyLead (the single hinge) AFTER the call-log write
+  // — so the cockpit and the Qualify button can never diverge. The call-log push
+  // itself no longer sets `qualified`.
+  const updated = await EnquiryRepository.pushCallLogById(enquiryId, entry, {});
 
   // First call on this lead → stamp the TAT anchor (no-op for later calls).
   const stamped = await EnquiryRepository.stampFirstCalledAt(enquiryId);
@@ -160,10 +224,28 @@ const logCall = async (
     },
   });
 
+  // A qualified call is the hinge: run the SINGLE qualify transition (marks
+  // qualified, hands ownership to the sales lead, instantiates the journey ONCE,
+  // triggers the Kiara summary). Idempotent + fire-safe — never breaks the log.
+  let qualifyResult = null;
+  if (outcome === "qualified") {
+    try {
+      qualifyResult = await require("./LeadLifecycleService").qualifyLead(enquiryId, actorId);
+    } catch (e) {
+      console.error("[logCall] qualifyLead failed:", e.message);
+    }
+  }
+
   // Cadence (Slice C): on an unanswered outcome, surface the suggested next attempt
   // (the scheduler pre-fills it) or flag the lead unresponsive at MAX attempts.
   const doc = stamped || updated;
   const leadObj = doc.toObject ? doc.toObject() : doc;
+  // Reflect the qualify transition in the returned object (handoff may have moved
+  // assignedTo) so the caller doesn't see a stale pre-qualify snapshot.
+  if (qualifyResult && qualifyResult.lead) {
+    leadObj.qualified = true;
+    leadObj.assignedTo = qualifyResult.lead.assignedTo;
+  }
   if (UNANSWERED_OUTCOMES.includes(entry.outcome)) {
     const cadCfg = await cadenceConfig();
     const flaggedNow = await flagUnresponsiveIfNeeded(
@@ -212,6 +294,23 @@ const addFollowUp = async (
     payload: { followUpType: type, scheduledAt: scheduledAtDate, promiseNote: promiseNote || "" },
   });
 
+  // MB5 Slice 3 (fire-safe inside): meet/visit mirror into the team calendar,
+  // gmeet huddle auto-create, intern→manager handoff with qualifiedBy credit.
+  const justAdded = (updated.followUps || [])
+    .filter((f) => f.type === type)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+  const CalendarEventService = require("./CalendarEventService");
+  await CalendarEventService.onFollowUpBooked(
+    enquiryId,
+    { _id: justAdded ? justAdded._id : null, type, scheduledAt: scheduledAtDate },
+    actorId
+  );
+
+  // SEQ-3b — a scheduled next step (this covers busy/unknown, the locked next
+  // step, AND the G-Meet finale, which books through this same path) clears any
+  // "no further action" flag set by an earlier no-next-step save.
+  await setNoFurtherAction(enquiryId, false, actorId);
+
   return updated;
 };
 
@@ -237,6 +336,62 @@ const updateQualification = async (enquiryId, body = {}, actorId) => {
       set[`qualificationData.${field}`] = body[field];
     }
   }
+  // SEQ-3c — the discovery date's part-of-day (enum-validated). Independent of
+  // the exact eventDate above: writing one never clobbers the other (each is a
+  // separate $set key, and omitted fields are left untouched).
+  if (body.eventDatePart !== undefined) {
+    if (typeof body.eventDatePart !== "string" || !EVENT_DATE_PARTS.includes(body.eventDatePart)) {
+      throw httpError(400, `Invalid eventDatePart (expected one of: ${EVENT_DATE_PARTS.filter(Boolean).join(", ")})`);
+    }
+    set["qualificationData.eventDatePart"] = body.eventDatePart;
+  }
+  // MB6 Slice 6 — Cockpit v2 fields.
+  if (body.servicesRequired !== undefined) {
+    if (!Array.isArray(body.servicesRequired) || body.servicesRequired.some((s) => typeof s !== "string")) {
+      throw httpError(400, "Invalid servicesRequired (expected an array of strings)");
+    }
+    set["qualificationData.servicesRequired"] = [...new Set(body.servicesRequired.map((s) => s.trim()).filter(Boolean))];
+  }
+  if (body.budgetAmount !== undefined) {
+    if (body.budgetAmount !== null && (typeof body.budgetAmount !== "number" || !Number.isFinite(body.budgetAmount) || body.budgetAmount < 0)) {
+      throw httpError(400, "Invalid budgetAmount (expected a non-negative number or null)");
+    }
+    set["qualificationData.budgetAmount"] = body.budgetAmount;
+  }
+  if (body.budgetNote !== undefined) {
+    if (typeof body.budgetNote !== "string" || body.budgetNote.length > 1000) {
+      throw httpError(400, "Invalid budgetNote");
+    }
+    set["qualificationData.budgetNote"] = body.budgetNote;
+  }
+  if (body.additionalEmails !== undefined) {
+    const emailish = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (
+      !Array.isArray(body.additionalEmails) ||
+      body.additionalEmails.some((e) => typeof e !== "string" || (e.trim() && !emailish.test(e.trim())))
+    ) {
+      throw httpError(400, "Invalid additionalEmails (expected an array of email addresses)");
+    }
+    set["qualificationData.additionalEmails"] = [
+      ...new Set(body.additionalEmails.map((e) => e.trim().toLowerCase()).filter(Boolean)),
+    ];
+  }
+  // Lead-schema foundation — coverage zones (enum-validated array).
+  if (body.zones !== undefined) {
+    if (!Array.isArray(body.zones) || body.zones.some((z) => typeof z !== "string" || !ZONES.includes(z))) {
+      throw httpError(400, `Invalid zones (expected an array of: ${ZONES.join(", ")})`);
+    }
+    set["qualificationData.zones"] = [...new Set(body.zones)];
+  }
+  // Lead-schema foundation — canonical eventDate sync. When the EventBuilder days
+  // are saved, the earliest dated day becomes qualificationData.eventDate (the
+  // single field the gate + brief read). Empty when every day is dateless. This
+  // runs AFTER the string-field loop so the days are canonical over any raw
+  // eventDate also sent in the same payload.
+  if (body.eventDays !== undefined) {
+    set["qualificationData.eventDate"] = deriveCanonicalEventDate(body.eventDays);
+  }
+
   if (Object.keys(set).length === 0) {
     throw httpError(400, "No valid qualification fields provided");
   }
@@ -296,6 +451,18 @@ const completeCall = async (enquiryId, { incomplete, gaps } = {}, actorId) => {
     payload: { incomplete: isIncomplete, gaps: isIncomplete ? gaps || [] : [] },
   });
 
+  // SEQ-3b — the save is NEVER blocked (Slice 1). But a save that leaves the lead
+  // with no path forward — discovery STILL incomplete (the same 4-core rule the
+  // GET computes) AND no future follow-up/meet locked — gets the "no further
+  // action" marker so the intern's view surfaces it. Otherwise (discovery
+  // complete, or a next step exists) we clear it. computeDiscovery runs on the
+  // lead doc exactly as the GET does (no events join either side), so the two
+  // never drift.
+  const leadObj = enquiry.toObject ? enquiry.toObject() : enquiry;
+  const { discoveryComplete } = computeDiscovery(leadObj);
+  const hasNextStep = hasFutureFollowUp(enquiry);
+  await setNoFurtherAction(enquiryId, !discoveryComplete && !hasNextStep, actorId);
+
   return updated;
 };
 
@@ -304,17 +471,98 @@ const listInternalEvents = async (enquiryId) => {
   return await LeadInternalEventService.listForLead(enquiryId);
 };
 
+// MB6 Slice 6 — meet-refuser: the lead won't take a meeting. Tags 'no-meet',
+// escalates to the owner's sales lead, notifies the Revenue Head, journey event.
+const meetRefused = async (enquiryId, actorId) => {
+  assertValidId(enquiryId);
+  const enquiry = await EnquiryRepository.findById(enquiryId);
+  if (!enquiry) throw httpError(404, "Enquiry not found");
+
+  const Enquiry = require("../models/Enquiry");
+  const Admin = require("../models/Admin");
+  const Role = require("../models/Role");
+  const AdminNotificationService = require("./AdminNotificationService");
+
+  await Enquiry.findByIdAndUpdate(enquiryId, { $addToSet: { tags: "no-meet" } });
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "meet_refused",
+    actorId,
+    payload: {},
+  });
+
+  // Escalate to the owner's sales lead (reportingManager).
+  const owner = enquiry.assignedTo
+    ? await Admin.findById(enquiry.assignedTo, { name: 1, reportingManagerId: 1 }).lean()
+    : null;
+  if (owner && owner.reportingManagerId) {
+    await AdminNotificationService.notify(owner.reportingManagerId, {
+      type: "meet_refused",
+      title: `${enquiry.name} is refusing a meeting`,
+      message: `Tagged no-meet by ${owner.name} — step in or coach the close.`,
+      leadId: enquiryId,
+    });
+  }
+  // Notify the Revenue Head(s).
+  const rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
+  if (rhRole) {
+    const heads = await Admin.find({ roleId: rhRole._id, status: "active" }, { _id: 1 }).lean();
+    await AdminNotificationService.notify(
+      heads.map((h) => h._id),
+      {
+        type: "meet_refused",
+        title: `Meet-refuser: ${enquiry.name}`,
+        message: "Lead is dodging the meeting — tagged no-meet.",
+        leadId: enquiryId,
+      }
+    );
+  }
+  return await EnquiryRepository.findById(enquiryId);
+};
+
+// POST /enquiry/:_id/whatsapp-activity — log the cockpit/lead "WhatsApp" press
+// (a wa.me deep link that otherwise hits no server) as EMPLOYEE activity so it
+// shows in the timeline and clears the "contacted but silent" dashboard flag.
+// Deliberately does NOT stamp firstCalledAt or push to callLog: a call is still
+// owed, so this must NOT satisfy the golden-window / "call owed" signal.
+const logWhatsappActivity = async (enquiryId, { message } = {}, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+
+  // Optional pre-typed template text — stored for the timeline (length-capped).
+  const note =
+    typeof message === "string" && message.trim()
+      ? message.trim().slice(0, 2000)
+      : "";
+
+  const event = await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "whatsapp_outbound",
+    actorId: actorId || null,
+    payload: note ? { message: note } : {},
+  });
+  return event || { ok: true };
+};
+
 module.exports = {
   logCall,
+  logWhatsappActivity,
   addFollowUp,
+  meetRefused,
   updateQualification,
   completeCall,
   listInternalEvents,
+  // SEQ-3c — exported so the lead-page follow-up route (FollowupService.create)
+  // clears the flag through the SAME helper, no duplicated logic.
+  setNoFurtherAction,
   hasFutureFollowUp,
   cadenceFor,
   cadenceConfig,
   flagUnresponsiveIfNeeded,
+  deriveCanonicalEventDate,
   ATTEMPT_OFFSETS_DAYS,
   MAX_ATTEMPTS,
   UNANSWERED_OUTCOMES,
+  ZONES,
 };

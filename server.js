@@ -44,12 +44,19 @@ app.use(bodyParser.json({
 //Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 2000,
   message: { error: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
   // Skip localhost — both IPv4 and IPv6 loopback (::1, and the IPv4-mapped form).
-  skip: (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip), // skip localhost
+  // Also skip session verification and the chat polling reads: the Client File
+  // chat polls every 5s, which would saturate any per-IP budget and 429 the
+  // whole app. Auth on those routes still rejects unauthenticated callers;
+  // per-user keyed limits land in MB5.
+  skip: (req) =>
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || // skip localhost
+    (req.method === 'GET' &&
+      (req.path === '/auth/admin' || req.path.startsWith('/wa/conversations'))),
 });
 app.use(limiter);
 

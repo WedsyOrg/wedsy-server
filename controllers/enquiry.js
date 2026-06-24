@@ -16,6 +16,7 @@ const { buildFilterConditions } = require("../utils/leadFilterBuilder");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
+const { computeDiscovery } = require("../services/DiscoveryService");
 
 const CreateNew = (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
@@ -313,9 +314,30 @@ const GetAll = async (req, res) => {
       dateTo,
     } = req.query;
     const query = {};
+    // MB9c — soft-deleted (archived) leads are excluded from the default list.
+    query.archivedAt = null;
     const sortQuery = {};
+    // MB9c-fix — SOURCE filter, normalized. The stored `source` strings are
+    // messy ("Website", "whatsapp", "Instagram DM", "Kiara", …); the brand chips
+    // send canonical keys (comma-separated for multi-select) which we map to a
+    // case-insensitive regex over the raw strings — so a chip reliably matches.
     if (source) {
-      query.source = source;
+      const SOURCE_PATTERNS = {
+        whatsapp: "whatsapp",
+        kiara: "kiara",
+        instagram: "instagram|(^|[^a-z])ig([^a-z]|$)",
+        facebook: "facebook|(^|[^a-z])fb([^a-z]|$)|meta",
+        website: "web|site|default|form|landing|direct",
+        repeated: "repeat",
+      };
+      const keys = String(source).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      const patterns = keys.map((k) => SOURCE_PATTERNS[k]).filter(Boolean);
+      if (patterns.length) {
+        query.source = { $regex: patterns.map((p) => `(${p})`).join("|"), $options: "i" };
+      } else {
+        // Unknown key → fall back to the legacy exact match (back-compat).
+        query.source = source;
+      }
     }
     if (assignedTo) {
       if (assignedTo === "unassigned") {
@@ -338,6 +360,21 @@ const GetAll = async (req, res) => {
         query.stage = "meeting_scheduled";
       } else if (view === "recycled") {
         query["recycled.isRecycled"] = true;
+      } else if (view === "triage") {
+        // MB5 Slice 4: the triage queue as a leads filter.
+        query.triagePending = true;
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "qualified") {
+        // MB9c — the Qualified saved-view segment.
+        query.qualified = true;
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "golden") {
+        // MB9c — the Golden-window segment: uncontacted, active leads (the same
+        // set Respond-now works from — reconciles).
+        query.firstCalledAt = null;
+        query.qualified = { $ne: true };
+        query.isLost = { $ne: true };
+        query["recycled.isRecycled"] = { $ne: true };
       }
     }
     if (date) {
@@ -378,15 +415,26 @@ const GetAll = async (req, res) => {
         { phone: { $regex: new RegExp(safeSearch, "i") } },
       ];
     }
-    if (sort) {
-      if (sort === "Date: Oldest") {
-        sortQuery.createdAt = 1;
-      } else if (sort === "Date: Newest") {
-        sortQuery.createdAt = -1;
-      }
-    } else {
+    // MB9c-fix — SERVER-SIDE sort over the FULL set (not the loaded page).
+    //   sort = createdAt | activity (updatedAt) | name  (+ dir = asc|desc)
+    // Legacy "Date: Oldest/Newest" kept for back-compat. Default = newest
+    // created first. `_id` is always appended as the stable paging tiebreaker.
+    const dir = req.query.dir; // optional "asc" | "desc"
+    const D = (def) => (dir === "asc" ? 1 : dir === "desc" ? -1 : def);
+    if (sort === "Date: Oldest") {
+      sortQuery.createdAt = 1;
+    } else if (sort === "Date: Newest") {
       sortQuery.createdAt = -1;
+    } else if (sort === "name") {
+      sortQuery.name = D(1); // A→Z by default
+    } else if (sort === "activity") {
+      sortQuery.updatedAt = D(-1); // most-recently-touched by default
+    } else if (sort === "createdAt") {
+      sortQuery.createdAt = D(-1);
+    } else {
+      sortQuery.createdAt = -1; // default: newest created on top
     }
+    sortQuery._id = -1;
 
     // NEW: Filter by interested service stored in additionalInfo
     // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.
@@ -557,8 +605,8 @@ const GetAll = async (req, res) => {
             .limit(limit)
             .exec()
             .then((result) => {
-              // res.send({ list: result[0].result, totalPages, page, limit });
-              res.send({ list: result, totalPages, page, limit });
+              // MB9c-fix — include `total` so the list footer can show "X of Y".
+              res.send({ list: result, total, totalPages, page, limit });
             })
             .catch((error) => {
               res.status(400).send({
@@ -727,13 +775,19 @@ const Update = (req, res) => {
 // which is used by the admin lead-details page for things like Store Access and Client Budget.
 const UpdateLead = async (req, res) => {
   const { _id } = req.params;
-  const { name, phone, email, marketingSource, additionalInfoUpdates } =
+  const { name, phone, email, marketingSource, additionalInfoUpdates, qualifierNotes } =
     req.body;
 
   const updateFields = {};
 
   if (name) {
     updateFields.name = name;
+  }
+
+  // SEQ-1 — the qualifier's discovery notes (writable anytime pre-qual via this
+  // scoped route). Empty string is allowed (lets the intern clear them).
+  if (typeof qualifierNotes === "string") {
+    updateFields.qualifierNotes = qualifierNotes;
   }
 
   if (typeof phone === "string" && phone.trim().length > 0) {
@@ -873,6 +927,10 @@ const Get = (req, res) => {
         }
 
         const proceedWith = (finalResultObj) => {
+          // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
+          // (discoveryComplete + discovery.missing). Computed, never stored.
+          // qualifierNotes is a plain stored field and already rides toObject().
+          finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
           User.findOne({ phone: result.phone })
             .then((user) => {
               if (!user) {

@@ -1,7 +1,7 @@
 const SettingsService = require("../services/SettingsService");
 const AdminRepository = require("../repositories/AdminRepository");
 const RoleRepository = require("../repositories/RoleRepository");
-const { permissionSatisfies } = require("../middlewares/requirePermission");
+const { permissionSatisfies, permissionsForAdmin } = require("../middlewares/requirePermission");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -9,12 +9,10 @@ const respond = (res, error) => {
   res.status(status).json({ message: status === 500 ? "Server error" : error.message });
 };
 
-// Caller's resolved permission strings (empty array when role-less).
+// Caller's resolved permission strings — RBAC v2 union across all roles.
 const callerPermissions = async (adminId) => {
   const admin = await AdminRepository.findById(adminId);
-  if (!admin || !admin.roleId) return [];
-  const role = await RoleRepository.findById(admin.roleId);
-  return role && Array.isArray(role.permissions) ? role.permissions : [];
+  return permissionsForAdmin(admin);
 };
 
 const canEditCategory = (perms, category) =>
@@ -62,8 +60,19 @@ const GetPublic = async (req, res) => {
       "whatsapp.templates",
       "tags.available",
       "golden.windowMinutes",
+      // MB9c — the speed-to-lead SLA duration drives the in-row golden-window clock.
+      "sla.goldenWindowMinutes",
       "golden.workStartHour",
       "golden.workEndHour",
+      // MB6 Slice 6: the cockpit reads these without settings permissions.
+      "services.available",
+      "cockpit.briefScript",
+      "cockpit.servicesScript",
+      "cockpit.budgetScript",
+      "cockpit.qualificationIntro",
+      // MB7a Slice 3: the onboard flow (and wedsy-user) read the agreement text.
+      "agreement.terms",
+      "agreement.version",
     ]);
     res.status(200).json(values);
   } catch (error) {

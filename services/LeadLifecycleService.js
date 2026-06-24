@@ -6,6 +6,7 @@ const EnquiryService = require("./EnquiryService");
 const CallCockpitService = require("./CallCockpitService");
 const LeadAssignmentService = require("./LeadAssignmentService");
 const LeadInternalEventService = require("./LeadInternalEventService");
+const AdminNotificationService = require("./AdminNotificationService");
 
 // Default recycle reasons. Runtime list comes from SettingsService ("recycle.reasons").
 const RECYCLE_REASONS = [
@@ -403,6 +404,143 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
   return { transferred: leadIds.length, to: String(target._id), toName: target.name };
 };
 
+// ── MB9a Slice 3 — THE QUALIFY HINGE (single source of the qualified transition).
+// Both the Call Cockpit qualified-outcome path AND the explicit Qualify button
+// converge HERE so there is no fork. On the (idempotent) transition:
+//   1. mark the lead qualified;
+//   2. hand ownership to the sales lead — the assignee's reporting manager — or
+//      keep the assignee if they have no manager (they ARE the lead);
+//   3. instantiate the journey steps (MB8b) — the journey is BORN here, and the
+//      MB8b guard keeps it a no-op if steps already exist;
+//   4. trigger the Kiara summary.
+// Fire-safe: the journey/summary side-effects never throw out of the transition.
+const qualifyLead = async (enquiryId, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await Enquiry.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  // Idempotent: qualifying an already-qualified lead is a no-op (no double
+  // journey instantiation, no second handoff).
+  if (lead.qualified) return { lead: lead.toObject(), alreadyQualified: true, handedOff: false };
+
+  // Ownership handoff to the sales lead (the assignee's reporting manager).
+  let newOwnerId = lead.assignedTo || null;
+  if (lead.assignedTo) {
+    const assignee = await Admin.findById(lead.assignedTo, { reportingManagerId: 1 }).lean();
+    if (assignee && assignee.reportingManagerId) newOwnerId = assignee.reportingManagerId;
+  }
+  const handedOff = !!newOwnerId && String(newOwnerId) !== String(lead.assignedTo || "");
+
+  // MB11c — carry the qualifier's credit forward at the handoff. qualifiedAt is
+  // set-once here (this branch only runs on the first qualification — the early
+  // idempotent return guards re-entry). qualifiedBy is set-once too: we don't
+  // clobber an existing credit (e.g. the MB5 meet-handoff intern), otherwise we
+  // record whoever fired the hinge. The pre-qual record (callLog, notes,
+  // qualificationData, kiaraAnswers, kiaraSummary) already lives on this same
+  // Enquiry doc and survives untouched — this only adds the missing "who/when".
+  const fields = { qualified: true, qualifiedAt: lead.qualifiedAt || new Date() };
+  if (handedOff) fields.assignedTo = newOwnerId;
+  if (!lead.qualifiedBy && actorId) fields.qualifiedBy = actorId;
+  // SEQ-3b — qualifying gives the lead a clear path forward, so any "no further
+  // action" marker from an earlier no-next-step save is cleared at the hinge.
+  fields["noFurtherAction.flagged"] = false;
+  fields["noFurtherAction.flaggedAt"] = null;
+  fields["noFurtherAction.flaggedReason"] = "";
+  await EnquiryRepository.updateFieldsById(enquiryId, fields);
+
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "qualified",
+    actorId: actorId || null,
+    payload: { handedOff, owner: newOwnerId ? String(newOwnerId) : null },
+  });
+  // The ownership handoff reads as a transfer in the journey (from/to are
+  // name-resolved by JourneyService).
+  if (handedOff) {
+    await LeadInternalEventService.record({
+      leadId: enquiryId,
+      type: "transferred",
+      actorId: actorId || null,
+      payload: { from: String(lead.assignedTo), to: String(newOwnerId), reason: "qualify_handoff" },
+    });
+  }
+
+  // The journey is BORN here (MB8b idempotent guard inside). Fire-safe.
+  try {
+    await require("./LeadStepService").instantiateForLead(enquiryId, actorId);
+  } catch (e) {
+    console.error("[qualifyLead] journey instantiate failed:", e.message);
+  }
+  // Kiara summary — worth paying for once qualified. Fire-safe.
+  try {
+    await require("./KiaraSummaryService").generateForQualified(enquiryId);
+  } catch (e) {
+    console.error("[qualifyLead] summary failed:", e.message);
+  }
+
+  const fresh = await Enquiry.findById(enquiryId).lean();
+  return { lead: fresh, alreadyQualified: false, handedOff };
+};
+
+// ── #8 — UNQUALIFY (reverse a qualification). A sales lead / revenue head (or the
+// assignee's manager — eligibility checked in the controller) can undo a wrongly
+// qualified lead: it flips `qualified` back off, returns ownership to the intern
+// who qualified it, tags it "Unqualified", and notifies that intern internally.
+// Deliberately NON-destructive: stage, qualificationData, qualifierNotes, name,
+// callLog, kiaraSummary and the journey steps are all left untouched.
+const UNQUALIFIED_TAG = "Unqualified";
+const unqualifyLead = async (enquiryId, actorId, { reason } = {}) => {
+  assertValidId(enquiryId);
+  const lead = await Enquiry.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  // Idempotent: nothing to reverse on a lead that isn't qualified.
+  if (!lead.qualified) return lead.toObject();
+  // A reason is mandatory (audit trail + the intern's notification body).
+  const cleanReason = typeof reason === "string" ? reason.trim() : "";
+  if (!cleanReason) throw httpError(400, "A reason is required to unqualify a lead");
+
+  // Capture BEFORE mutating — qualifiedBy is the intern we return the lead to.
+  const intern = lead.qualifiedBy || null;
+  const previousOwner = lead.assignedTo || null;
+
+  // Make "Unqualified" a recognized, filterable tag: add it to the Settings
+  // library if missing, then union it onto the lead's tags.
+  const library = await SettingsService.get("tags.available");
+  if (!library.includes(UNQUALIFIED_TAG)) {
+    await SettingsService.set("tags.available", [...library, UNQUALIFIED_TAG], actorId);
+  }
+  const nextTags = [...new Set([...(lead.tags || []), UNQUALIFIED_TAG])];
+
+  await EnquiryRepository.updateFieldsById(enquiryId, {
+    qualified: false,
+    qualifiedAt: null,
+    qualifiedBy: null,
+    assignedTo: intern, // back to the intern who qualified it
+    tags: nextTags,
+  });
+
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "unqualified",
+    actorId: actorId || null,
+    payload: {
+      reason: cleanReason,
+      previousOwner: previousOwner ? String(previousOwner) : null,
+      returnedTo: intern ? String(intern) : null,
+    },
+  });
+
+  // Internal notification ONLY (never the external NotificationService). notify
+  // is fire-safe and no-ops on a null recipient.
+  await AdminNotificationService.notify(intern, {
+    type: "lead_unqualified",
+    title: `Lead unqualified: ${lead.name}`,
+    message: cleanReason,
+    leadId: enquiryId,
+  });
+
+  return await Enquiry.findById(enquiryId).lean();
+};
+
 module.exports = {
   recycleLead,
   resurfaceDueLeads,
@@ -411,6 +549,8 @@ module.exports = {
   setTags,
   bulkTransfer,
   addNote,
+  qualifyLead,
+  unqualifyLead,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };
