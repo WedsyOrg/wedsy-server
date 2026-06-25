@@ -1,4 +1,5 @@
 const { sendInstagramDM, fetchInstagramProfile } = require('../utils/instagram');
+const { uploadBufferToS3, extensionFor } = require('../utils/s3Upload');
 const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 const QualifiedLead = require('../models/QualifiedLead');
@@ -470,6 +471,60 @@ const saveQualifiedLead = async (instagramId, data, conversation = null) => {
   return leadDoc.googleSheetSynced && leadDoc.crmSynced ? true : null;
 };
 
+// IG → our vocab. IG sends 'file' for documents; the rest pass through.
+const IG_TYPE_MAP = { image: 'image', video: 'video', audio: 'audio', file: 'document' };
+
+// INBOUND ONLY: download an IG attachment and store it on our S3. IG attachment
+// URLs (attachment.payload.url) are directly fetchable signed CDN links — no
+// token or metadata round-trip (unlike WhatsApp). Returns the stored descriptor,
+// or null on any failure (caller persists the row with mediaUrl null).
+const storeInstagramMedia = async (url) => {
+  if (!url) return null;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`IG media download failed: ${res.status}`);
+    const mimeType = res.headers.get('content-type') || 'application/octet-stream';
+    const buffer = Buffer.from(await res.arrayBuffer());
+    const key = `ig-agent-media/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${extensionFor(mimeType)}`;
+    const storedUrl = await uploadBufferToS3({ buffer, key, contentType: mimeType });
+    return { mediaUrl: storedUrl, mediaMimeType: mimeType, mediaSize: buffer.length || null };
+  } catch (error) {
+    console.error('[InstagramAgent] media store failed -', error.message);
+    return null;
+  }
+};
+
+// Non-text inbound (image/video/audio/file): mirror the WhatsApp media path —
+// download → S3 → media* fields, conversation bump, NO AI reply. A store
+// failure never blocks ingest (row records with mediaUrl null).
+const receiveAttachment = async (instagramId, attachment, meta = {}) => {
+  try {
+    const igType = attachment && attachment.type;
+    const mediaType = IG_TYPE_MAP[igType] || igType || null;
+    const url = attachment && attachment.payload && attachment.payload.url;
+
+    const stored = url ? await storeInstagramMedia(url) : null;
+    const message = `[media: ${mediaType || 'unknown'}]`;
+
+    await WAAgentMessageRepository.saveMessage(instagramId, 'user', message, {
+      mediaType,
+      mediaUrl: stored ? stored.mediaUrl : null,
+      mediaMimeType: stored ? stored.mediaMimeType : null,
+      mediaSize: stored ? stored.mediaSize : null,
+    });
+
+    let conversation = await WAConversationService.recordInbound(instagramId, message, 'instagram');
+    if (!conversation.profileName) {
+      const profileName = await fetchInstagramProfile(instagramId);
+      if (profileName) {
+        await WAConversationRepository.updateFieldsById(conversation._id, { profileName });
+      }
+    }
+  } catch (error) {
+    console.error('[InstagramAgent] receiveAttachment error:', error.message);
+  }
+};
+
 const receiveMessage = async (instagramId, message) => {
   try {
     await WAAgentMessageRepository.saveMessage(instagramId, 'user', message);
@@ -536,4 +591,4 @@ const receiveMessage = async (instagramId, message) => {
   }
 };
 
-module.exports = { receiveMessage };
+module.exports = { receiveMessage, receiveAttachment };

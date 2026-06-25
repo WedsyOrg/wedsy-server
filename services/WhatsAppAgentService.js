@@ -1,4 +1,5 @@
 const { sendWhatsAppText } = require('../utils/whatsapp');
+const { storeWhatsAppMedia } = require('./WhatsAppMediaService');
 const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
 const WAConversationRepository = require('../repositories/WAConversationRepository');
 const WAConversationService = require('./WAConversationService');
@@ -305,17 +306,42 @@ const receiveMessage = async (phone, message, meta = {}) => {
   }
 };
 
-// Non-text inbound (image/audio/video/sticker/…): stored as a placeholder so
-// humans see it in the thread, conversation freshness/unread bumped, lead
-// ensured — but NO Claude call and NO auto-reply.
+// Non-text inbound (image/document/video/audio/sticker): the bytes are now
+// downloaded from Meta and stored on our S3, and the row carries the media*
+// fields so the CRM can render the couple's attachment. Conversation
+// freshness/unread is bumped and the lead ensured — but still NO Claude call
+// and NO auto-reply (unchanged). A media-store failure never blocks ingest:
+// the row records with mediaUrl null (flag-don't-fake).
 const receiveMedia = async (phone, type, meta = {}) => {
   try {
-    const placeholder = `[media: ${type || 'unknown'}]`;
-    await WAAgentMessageRepository.saveMessage(phone, 'user', placeholder);
-    const conversation = await WAConversationService.recordInbound(phone, placeholder);
+    // Download + store first (isolated, returns null on any failure).
+    let stored = null;
+    if (meta.mediaId) {
+      stored = await storeWhatsAppMedia(meta.mediaId, {
+        mimeType: meta.mimeType,
+        filename: meta.filename,
+      });
+    }
+
+    const caption = meta.caption || '';
+    // Keep the message body non-empty: real caption when present, else the
+    // existing `[media: type]` placeholder — `message` is required and also
+    // feeds Claude history on the next text turn, so '' is unsafe here.
+    const message = caption || `[media: ${type || 'unknown'}]`;
+
+    await WAAgentMessageRepository.saveMessage(phone, 'user', message, {
+      mediaType: type || null,
+      mediaUrl: stored ? stored.mediaUrl : null,
+      mediaMimeType: stored ? stored.mediaMimeType : (meta.mimeType || null),
+      mediaFilename: meta.filename || null,
+      mediaCaption: caption || null,
+      mediaSize: stored ? stored.mediaSize : null,
+    });
+
+    const conversation = await WAConversationService.recordInbound(phone, message);
     await WAConversationService.ensureLeadLinked(conversation, {
       profileName: meta.profileName,
-      firstMessage: placeholder
+      firstMessage: message
     });
   } catch (error) {
     console.error('[WhatsAppAgent] receiveMedia error:', error.message);
