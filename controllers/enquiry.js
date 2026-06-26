@@ -350,7 +350,20 @@ const GetAll = async (req, res) => {
     if (req.query.view) {
       const view = req.query.view;
       if (view === "active") {
-        query.stage = { $nin: ["won", "lost"] };
+        // Active = in-pipeline: not won, not lost — INCLUDING leads whose stage
+        // is unset (null / missing). A bare `$nin` drops null docs in Mongo, so
+        // the ~329 stage:null leads would vanish from the default list; the $or
+        // brings them back. $and-merge so we don't clobber any pre-existing $or.
+        query.$and = [
+          ...(query.$and || []),
+          {
+            $or: [
+              { stage: { $nin: ["won", "lost"] } },
+              { stage: null },
+              { stage: { $exists: false } },
+            ],
+          },
+        ];
         query["recycled.isRecycled"] = { $ne: true };
       } else if (view === "won") {
         query.stage = "won";
