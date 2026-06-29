@@ -1,6 +1,7 @@
 // Core models and utilities used throughout the Enquiry controller
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
+const Admin = require("../models/Admin");
 const { VerifyOTP } = require("../utils/otp");
 const jwt = require("jsonwebtoken");
 const jwtConfig = require("../config/jwt");
@@ -983,6 +984,37 @@ const Get = (req, res) => {
           // (discoveryComplete + discovery.missing). Computed, never stored.
           // qualifierNotes is a plain stored field and already rides toObject().
           finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
+
+          // ── State-1 (ADDITIVE, read-only) — surface the lead OWNER'S MANAGER
+          // first name: lead.assignedTo → Admin → reportingManagerId → that
+          // Admin's first name (assignedToManagerName). Best-effort: any failure
+          // leaves the payload UNCHANGED. assignedTo's own shape is untouched.
+          const ownerId = finalResultObj.assignedTo;
+          if (ownerId) {
+            Admin.findById(ownerId, { reportingManagerId: 1 })
+              .lean()
+              .then((owner) => {
+                if (owner && owner.reportingManagerId) {
+                  return Admin.findById(owner.reportingManagerId, { name: 1 }).lean();
+                }
+                return null;
+              })
+              .then((manager) => {
+                if (manager && manager.name) {
+                  const firstName = String(manager.name).trim().split(/\s+/)[0] || "";
+                  finalResultObj = { ...finalResultObj, assignedToManagerName: firstName };
+                }
+                continueWithUser(finalResultObj);
+              })
+              .catch(() => continueWithUser(finalResultObj));
+          } else {
+            continueWithUser(finalResultObj);
+          }
+        };
+
+        // Existing user-resolution + summary chain, factored out unchanged so the
+        // manager lookup above can run first without altering any response shape.
+        const continueWithUser = (finalResultObj) => {
           User.findOne({ phone: result.phone })
             .then((user) => {
               if (!user) {

@@ -77,13 +77,90 @@ const clockFor = (lead, handoffAt, t, now) => {
   };
 };
 
+// ── State-1 (ADDITIVE) — richer banner fields for the single-lead hero ONLY.
+// PURE; does NOT touch the existing `clock` object. Computed off the same lead +
+// base clock and merged into leadClock()'s return as NEW keys. respond-now and
+// metrics never call this, so their outputs are byte-identical.
+//
+// respondedAt is the earliest of: firstCalledAt and the first
+// updates.conversations[].createdAt (the timestamped note signal). NOTE: tasks
+// live in a SEPARATE collection (LeadTask, keyed by leadId) and are NOT loaded
+// here, so they are intentionally excluded from respondedAt — call+note only, as
+// specced. The updates.notes blob is a single timestampless String, so it cannot
+// contribute a timestamp to respondedAt (it still counts toward hasActivity).
+const bannerFields = (lead, clock, now) => {
+  try {
+    const nowMs = +now;
+    const deadlineMs = clock && clock.deadlineAt ? +new Date(clock.deadlineAt) : null;
+
+    const callMs = lead.firstCalledAt ? +new Date(lead.firstCalledAt) : null;
+    const convos = lead.updates && Array.isArray(lead.updates.conversations) ? lead.updates.conversations : [];
+    let firstNoteMs = null;
+    for (const c of convos) {
+      if (!c || !c.createdAt) continue;
+      const ms = +new Date(c.createdAt);
+      if (!Number.isNaN(ms) && (firstNoteMs == null || ms < firstNoteMs)) firstNoteMs = ms;
+    }
+    const respondMs = [callMs, firstNoteMs].filter((v) => v != null && !Number.isNaN(v));
+    const respondedAtMs = respondMs.length ? Math.min(...respondMs) : null;
+    const responded = respondedAtMs != null;
+    const respondedWithinWindow = responded && deadlineMs != null && respondedAtMs <= deadlineMs;
+
+    // nextAction = earliest FUTURE, not-yet-completed follow-up (call|meet|visit).
+    const followUps = Array.isArray(lead.followUps) ? lead.followUps : [];
+    let next = null;
+    let nextMs = null;
+    for (const f of followUps) {
+      if (!f || !f.scheduledAt || f.completedAt) continue;
+      const ms = +new Date(f.scheduledAt);
+      if (Number.isNaN(ms) || ms <= nowMs) continue;
+      if (nextMs == null || ms < nextMs) {
+        nextMs = ms;
+        next = { type: f.type, scheduledAt: new Date(ms).toISOString() };
+      }
+    }
+    const nextAction = next;
+
+    const notesBlobSet = !!(lead.updates && lead.updates.notes && String(lead.updates.notes).trim() !== "");
+    const hasCallLog = Array.isArray(lead.callLog) && lead.callLog.length > 0;
+    const hasActivity = callMs != null || convos.length > 0 || notesBlobSet || followUps.length > 0 || hasCallLog;
+
+    // Precedence: next_action_due > responded > no_activity. Separate from `state`.
+    let bannerState;
+    if (nextAction) bannerState = "next_action_due";
+    else if (responded) bannerState = "responded";
+    else bannerState = "no_activity";
+
+    return {
+      respondedAt: respondedAtMs != null ? new Date(respondedAtMs).toISOString() : null,
+      responded,
+      respondedWithinWindow,
+      nextAction,
+      hasActivity,
+      bannerState,
+    };
+  } catch (e) {
+    // Additive + non-fatal: on any failure the base clock is returned untouched.
+    return {};
+  }
+};
+
 // Single-lead clock (the pre-qual hero).
 const leadClock = async (leadId) => {
   if (!isId(leadId)) throw err(400, "Invalid leadId");
-  const lead = await Enquiry.findById(leadId, { createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1 }).lean();
+  // Projection EXTENDED additively (updates/followUps/callLog) to feed the new
+  // banner fields. The existing clock fields are computed from the same base
+  // fields and are unchanged.
+  const lead = await Enquiry.findById(leadId, {
+    createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1,
+    updates: 1, followUps: 1, callLog: 1,
+  }).lean();
   if (!lead) throw err(404, "Lead not found");
   const [t, hm] = await Promise.all([thresholds(), handoffMap([lead._id])]);
-  return clockFor(lead, hm.get(idStr(lead._id)), t, new Date());
+  const now = new Date();
+  const clock = clockFor(lead, hm.get(idStr(lead._id)), t, now);
+  // ADDITIVE: merge the new banner fields alongside the verbatim clock fields.
+  return { ...clock, ...bannerFields(lead, clock, now) };
 };
 
 // SLICE 2 — the caller's "Respond now" queue: their UNCONTACTED, active (in-window
