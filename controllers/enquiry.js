@@ -14,6 +14,16 @@ const { GetPaymentTransactions } = require("../utils/payment");
 const { computeLeadHealth } = require("../utils/leadHealth");
 const { buildFilterConditions } = require("../utils/leadFilterBuilder");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
+const {
+  LIFECYCLE_KEYS,
+  lifecycleFragment,
+  bucketOf,
+  TEMPERATURE_KEYS,
+  temperatureCutoffs,
+  temperatureOf,
+  temperatureLabelOf,
+  temperatureFilter,
+} = require("../utils/leadLifecycle");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
 const { computeDiscovery } = require("../services/DiscoveryService");
@@ -263,6 +273,134 @@ const CreateNew = (req, res) => {
   }
 };
 
+const escapeRegExp = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Builds the BASE (non-bucket) listing query from the request params — the part
+// shared by the list (GetAll) and the lifecycle-counts endpoint, so both narrow
+// identically. Excludes `view`, `lifecycle`, `temperature`, sort, RBAC scope,
+// visibility and the whitelisted filter-builder (those are applied by callers).
+// Order of assignments preserved from the original GetAll for behavioural parity.
+const buildBaseQuery = (req) => {
+  const {
+    source,
+    date,
+    search,
+    status,
+    service,
+    eventCreated,
+    eventMonth,
+    bidRequest,
+    storeAccess,
+    assignedTo,
+    dateFrom,
+    dateTo,
+  } = req.query;
+  const query = {};
+  // MB9c — soft-deleted (archived) leads are excluded from the default list.
+  query.archivedAt = null;
+  // MB9c-fix — SOURCE filter, normalized (messy stored strings → canonical keys).
+  if (source) {
+    const SOURCE_PATTERNS = {
+      whatsapp: "whatsapp",
+      kiara: "kiara",
+      instagram: "instagram|(^|[^a-z])ig([^a-z]|$)",
+      facebook: "facebook|(^|[^a-z])fb([^a-z]|$)|meta",
+      website: "web|site|default|form|landing|direct",
+      repeated: "repeat",
+    };
+    const keys = String(source).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const patterns = keys.map((k) => SOURCE_PATTERNS[k]).filter(Boolean);
+    if (patterns.length) {
+      query.source = { $regex: patterns.map((p) => `(${p})`).join("|"), $options: "i" };
+    } else {
+      query.source = source;
+    }
+  }
+  if (assignedTo) {
+    query.assignedTo = assignedTo === "unassigned" ? null : assignedTo;
+  }
+  if (date) {
+    const startDate = new Date(date);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(date);
+    endDate.setHours(23, 59, 59, 999);
+    query.createdAt = { $gte: startDate, $lt: endDate };
+  }
+  if (!date && (dateFrom || dateTo)) {
+    const range = {};
+    if (dateFrom) {
+      const start = new Date(dateFrom);
+      if (!isNaN(start.getTime())) {
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      if (!isNaN(end.getTime())) {
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+    }
+    if (Object.keys(range).length > 0) query.createdAt = range;
+  }
+  if (search) {
+    const safeSearch = escapeRegExp(search);
+    query.$or = [
+      { name: { $regex: new RegExp(safeSearch, "i") } },
+      { email: { $regex: new RegExp(safeSearch, "i") } },
+      { phone: { $regex: new RegExp(safeSearch, "i") } },
+    ];
+  }
+  if (service) {
+    const serviceRegex = new RegExp(`^${escapeRegExp(service)}$`, "i");
+    query.$and = query.$and || [];
+    query.$and.push({
+      $or: [
+        { "additionalInfo.service": serviceRegex },
+        { "additionalInfo.interestedService": serviceRegex },
+      ],
+    });
+  }
+  if (eventCreated === "Yes") {
+    query["additionalInfo.eventCreated"] = true;
+  } else if (eventCreated === "No") {
+    query["additionalInfo.eventCreated"] = { $ne: true };
+  }
+  if (eventMonth && eventMonth !== "All months") {
+    query["additionalInfo.eventMonth"] = eventMonth;
+  }
+  if (bidRequest === "Yes") {
+    query["additionalInfo.bidRequest"] = true;
+  } else if (bidRequest === "No") {
+    query["additionalInfo.bidRequest"] = { $ne: true };
+  }
+  if (storeAccess === "Yes") {
+    query["additionalInfo.storeAccess"] = true;
+  } else if (storeAccess === "No") {
+    query["additionalInfo.storeAccess"] = { $ne: true };
+  }
+  if (status) {
+    // Fresh, New, Lost, Interested, Verified, Not Verified (Hot/Potential/Cold
+    // are the legacy events-based path handled separately in GetAll).
+    if (status === "Interested") {
+      query.isInterested = true;
+    } else if (status === "Lost") {
+      query.isLost = true;
+    } else if (status === "Verified") {
+      query.verified = true;
+    } else if (status === "NotVerified") {
+      query.verified = false;
+    } else if (status === "Fresh" || status === "New") {
+      let tempDate = new Date();
+      tempDate.setHours(0, 0, 0, 0);
+      tempDate.setDate(tempDate.getDate() - (status === "Fresh" ? 1 : 7));
+      query.createdAt = { $gte: tempDate };
+    }
+  }
+  return query;
+};
+
 const GetAll = async (req, res) => {
   if (req.query.stats === "true") {
     let stats = {
@@ -294,60 +432,20 @@ const GetAll = async (req, res) => {
     });
     res.send({ stats });
   } else {
-    const escapeRegExp = (str) =>
-      String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const {
-      source,
-      date,
-      search,
-      sort,
-      status,
-      service,
-      eventCreated,
-      eventMonth,
-      bidRequest,
-      storeAccess,
-      assignedTo,
-      dateFrom,
-      dateTo,
-    } = req.query;
-    const query = {};
-    // MB9c — soft-deleted (archived) leads are excluded from the default list.
-    query.archivedAt = null;
+    const { sort, status } = req.query;
+    // Base (non-bucket) narrowers — shared with the lifecycle-counts endpoint.
+    const query = buildBaseQuery(req);
     const sortQuery = {};
-    // MB9c-fix — SOURCE filter, normalized. The stored `source` strings are
-    // messy ("Website", "whatsapp", "Instagram DM", "Kiara", …); the brand chips
-    // send canonical keys (comma-separated for multi-select) which we map to a
-    // case-insensitive regex over the raw strings — so a chip reliably matches.
-    if (source) {
-      const SOURCE_PATTERNS = {
-        whatsapp: "whatsapp",
-        kiara: "kiara",
-        instagram: "instagram|(^|[^a-z])ig([^a-z]|$)",
-        facebook: "facebook|(^|[^a-z])fb([^a-z]|$)|meta",
-        website: "web|site|default|form|landing|direct",
-        repeated: "repeat",
-      };
-      const keys = String(source).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-      const patterns = keys.map((k) => SOURCE_PATTERNS[k]).filter(Boolean);
-      if (patterns.length) {
-        query.source = { $regex: patterns.map((p) => `(${p})`).join("|"), $options: "i" };
-      } else {
-        // Unknown key → fall back to the legacy exact match (back-compat).
-        query.source = source;
-      }
-    }
-    if (assignedTo) {
-      if (assignedTo === "unassigned") {
-        query.assignedTo = null;
-      } else {
-        query.assignedTo = assignedTo;
-      }
-    }
-    // Lifecycle (Slice I, additive): lead-list view chips. Absent → behavior unchanged.
-    if (req.query.view) {
+
+    // Lifecycle bucket (additive, server-side). When a valid `lifecycle` is sent
+    // it is the single source of truth for the bucket and WINS over `view` (the
+    // view's bucket mapping is skipped). Absent → the existing saved-view
+    // behaviour is unchanged.
+    const lifecycleKey = req.query.lifecycle;
+    const hasLifecycle = LIFECYCLE_KEYS.includes(lifecycleKey);
+    if (!hasLifecycle && req.query.view) {
       const view = req.query.view;
       if (view === "active") {
         // Active = in-pipeline: not won, not lost — INCLUDING leads whose stage
@@ -390,44 +488,7 @@ const GetAll = async (req, res) => {
         query["recycled.isRecycled"] = { $ne: true };
       }
     }
-    if (date) {
-      const startDate = new Date(date);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
-      query.createdAt = {
-        $gte: startDate,
-        $lt: endDate,
-      };
-    }
-    if (!date && (dateFrom || dateTo)) {
-      const range = {};
-      if (dateFrom) {
-        const start = new Date(dateFrom);
-        if (!isNaN(start.getTime())) {
-          start.setHours(0, 0, 0, 0);
-          range.$gte = start;
-        }
-      }
-      if (dateTo) {
-        const end = new Date(dateTo);
-        if (!isNaN(end.getTime())) {
-          end.setHours(23, 59, 59, 999);
-          range.$lte = end;
-        }
-      }
-      if (Object.keys(range).length > 0) {
-        query.createdAt = range;
-      }
-    }
-    if (search) {
-      const safeSearch = escapeRegExp(search);
-      query.$or = [
-        { name: { $regex: new RegExp(safeSearch, "i") } },
-        { email: { $regex: new RegExp(safeSearch, "i") } },
-        { phone: { $regex: new RegExp(safeSearch, "i") } },
-      ];
-    }
+
     // MB9c-fix — SERVER-SIDE sort over the FULL set (not the loaded page).
     //   sort = createdAt | activity (updatedAt) | name  (+ dir = asc|desc)
     // Legacy "Date: Oldest/Newest" kept for back-compat. Default = newest
@@ -449,72 +510,19 @@ const GetAll = async (req, res) => {
     }
     sortQuery._id = -1;
 
-    // NEW: Filter by interested service stored in additionalInfo
-    // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.
-    if (service) {
-      const serviceRegex = new RegExp(`^${escapeRegExp(service)}$`, "i");
-      // Match either additionalInfo.service or additionalInfo.interestedService
-      query.$and = query.$and || [];
-      query.$and.push({
-        $or: [
-          { "additionalInfo.service": serviceRegex },
-          { "additionalInfo.interestedService": serviceRegex },
-        ],
-      });
+    // Additive bucket / temperature fragments AND-ed into the scoped filter below.
+    const cutoffs = temperatureCutoffs();
+    const bucketFragments = [];
+    if (hasLifecycle) {
+      const frag = lifecycleFragment(lifecycleKey, cutoffs.today);
+      if (frag) bucketFragments.push(frag);
+    }
+    const temperatureKey = req.query.temperature;
+    if (TEMPERATURE_KEYS.includes(temperatureKey)) {
+      const tFrag = temperatureFilter(temperatureKey, cutoffs);
+      if (tFrag) bucketFragments.push(tFrag);
     }
 
-    // NEW: Event created filter.
-    // Backed by a boolean flag in additionalInfo.eventCreated (to be populated alongside event creation flows).
-    if (eventCreated === "Yes") {
-      query["additionalInfo.eventCreated"] = true;
-    } else if (eventCreated === "No") {
-      query["additionalInfo.eventCreated"] = { $ne: true };
-    }
-
-    // NEW: Event month filter.
-    // Backed by a string field in additionalInfo.eventMonth like "January", "February", etc.
-    if (eventMonth && eventMonth !== "All months") {
-      query["additionalInfo.eventMonth"] = eventMonth;
-    }
-
-    // NEW: Bid request filter.
-    // Backed by a boolean flag in additionalInfo.bidRequest (true => has bid request).
-    if (bidRequest === "Yes") {
-      query["additionalInfo.bidRequest"] = true;
-    } else if (bidRequest === "No") {
-      query["additionalInfo.bidRequest"] = { $ne: true };
-    }
-
-    // NEW: Store access filter.
-    // Backed by a boolean flag in additionalInfo.storeAccess (true => has store access).
-    if (storeAccess === "Yes") {
-      query["additionalInfo.storeAccess"] = true;
-    } else if (storeAccess === "No") {
-      query["additionalInfo.storeAccess"] = { $ne: true };
-    }
-    if (status) {
-      // Fresh, New, Hot, Potential, Cold, Lost, Interested, Verified, Not Verified
-      if (status === "Interested") {
-        query.isInterested = true;
-      } else if (status === "Lost") {
-        query.isLost = true;
-      } else if (status === "Verified") {
-        query.verified = true;
-      } else if (status === "NotVerified") {
-        query.verified = false;
-      } else if (status === "Fresh" || status === "New") {
-        let tempDate = new Date();
-        tempDate.setHours(0, 0, 0, 0);
-        if (status === "Fresh") {
-          tempDate.setDate(tempDate.getDate() - 1);
-        } else if (status === "New") {
-          tempDate.setDate(tempDate.getDate() - 7);
-        }
-        query.createdAt = {
-          $gte: tempDate,
-        };
-      }
-    }
     // Filter builder (Settings Suite): strict-whitelisted {field,op,value} filters.
     // Unknown field/op → 400. ALWAYS combined under the same mandatory $and below.
     let filterConditions = [];
@@ -528,7 +536,7 @@ const GetAll = async (req, res) => {
     // RBAC scope: combine req.scopeFilter (built by requirePermission with ownerField
     // "assignedTo") as a MANDATORY $and constraint, so caller params can only narrow
     // within scope, never widen it. For "all" scope req.scopeFilter is {} -> unchanged.
-    const scopedFilter = { $and: [query, req.scopeFilter || {}, visibility, ...filterConditions] };
+    const scopedFilter = { $and: [query, req.scopeFilter || {}, visibility, ...filterConditions, ...bucketFragments] };
     if (!(status && ["Hot", "Potential", "Cold"].includes(status))) {
       Enquiry.countDocuments(scopedFilter)
         .then((total) => {
@@ -618,8 +626,26 @@ const GetAll = async (req, res) => {
             .limit(limit)
             .exec()
             .then((result) => {
+              // Additive: decorate each row (on the toObject COPY — never a DB
+              // write) with its `lifecycle` bucket + event-date `temperature`.
+              // `lifecycle` uses the same per-request `today` as temperature, and
+              // bucketOf mirrors lifecycleFragment so a row returned under
+              // ?lifecycle=<k> always has row.lifecycle === <k>.
+              const list = result.map((doc) => {
+                const o = typeof doc.toObject === "function" ? doc.toObject() : doc;
+                o.lifecycle = bucketOf(o, cutoffs.today);
+                o.temperature = temperatureOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                o.temperatureLabel = temperatureLabelOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                return o;
+              });
               // MB9c-fix — include `total` so the list footer can show "X of Y".
-              res.send({ list: result, total, totalPages, page, limit });
+              res.send({ list, total, totalPages, page, limit });
             })
             .catch((error) => {
               res.status(400).send({
@@ -729,7 +755,20 @@ const GetAll = async (req, res) => {
             { $sort: sortQuery },
           ])
             .then((result) => {
-              res.send({ list: result, totalPages, page, limit });
+              const list = result.map((doc) => {
+                const o = typeof doc.toObject === "function" ? doc.toObject() : doc;
+                o.lifecycle = bucketOf(o, cutoffs.today);
+                o.temperature = temperatureOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                o.temperatureLabel = temperatureLabelOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                return o;
+              });
+              res.send({ list, totalPages, page, limit });
             })
             .catch((error) => {
               res.status(400).send({
@@ -1271,9 +1310,61 @@ const SetFirstCall = async (req, res) => {
   }
 };
 
+// GET /enquiry/lifecycle-counts — real DB counts per lifecycle bucket, computed
+// via a single $facet aggregation (no docs loaded, NO cap). Honours the SAME
+// base narrowers as the list (search / filters / source / date / temperature)
+// AND the SAME RBAC scope (req.scopeFilter) + visibility, so the chip badges
+// match exactly what the caller is allowed to see. Buckets come from the shared
+// lifecycleFragment, so counts and the list can never disagree.
+const LifecycleCounts = async (req, res) => {
+  try {
+    const base = buildBaseQuery(req);
+    let filterConditions = [];
+    try {
+      filterConditions = await buildFilterConditions(req.query.filters);
+    } catch (fbError) {
+      return res.status(fbError.status || 400).send({ message: fbError.message });
+    }
+    const visibility = await currentVisibilityFilter();
+    // One cutoff set per request → the SAME today-boundary feeds both the
+    // lifecycle "past event" fold and the temperature filter (single source).
+    const cutoffs = temperatureCutoffs();
+    const bucketFragments = [];
+    const temperatureKey = req.query.temperature;
+    if (TEMPERATURE_KEYS.includes(temperatureKey)) {
+      const tFrag = temperatureFilter(temperatureKey, cutoffs);
+      if (tFrag) bucketFragments.push(tFrag);
+    }
+    // Same mandatory $and shape the list uses (scope can only narrow, never widen).
+    const baseMatch = {
+      $and: [base, req.scopeFilter || {}, visibility, ...filterConditions, ...bucketFragments],
+    };
+    const facet = {};
+    for (const key of LIFECYCLE_KEYS) {
+      facet[key] = [{ $match: lifecycleFragment(key, cutoffs.today) }, { $count: "n" }];
+    }
+    facet.all = [{ $count: "n" }];
+    const agg = await Enquiry.aggregate([{ $match: baseMatch }, { $facet: facet }]);
+    const f = agg[0] || {};
+    const num = (k) => (f[k] && f[k][0] ? f[k][0].n : 0);
+    res.send({
+      fresh: num("fresh"),
+      touched: num("touched"),
+      qualified: num("qualified"),
+      meeting: num("meeting"),
+      lost: num("lost"),
+      all: num("all"),
+    });
+  } catch (error) {
+    console.error("[lifecycle-counts]", error);
+    res.status(500).send({ message: "error", error: error.message });
+  }
+};
+
 module.exports = {
   CreateNew,
   GetAll,
+  LifecycleCounts,
   Get,
   Update,
   UpdateLead,

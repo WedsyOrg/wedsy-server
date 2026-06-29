@@ -20,6 +20,14 @@ const LEADS_EDIT_SCOPED = [
 
 router.post("/", enquiry.CreateNew);
 router.get("/", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.GetAll);
+// Lifecycle bucket counts (additive). Literal path — MUST stay above /:_id.
+// Same RBAC scope/permission as the list GET.
+router.get(
+  "/lifecycle-counts",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  enquiry.LifecycleCounts
+);
 router.put("/", CheckAdminLogin, enquiry.Update);
 router.delete("/", CheckAdminLogin, enquiry.Delete);
 // Lifecycle (Slice A): role-aware dashboard. Literal path — MUST stay above /:_id.
