@@ -404,6 +404,75 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
   return { transferred: leadIds.length, to: String(target._id), toName: target.name };
 };
 
+// ── Lead-detail cockpit — build the formal Event (events collection) from the
+// lead's captured day/function draft (qualificationData.eventDays). This is the
+// ONLY place the Event is born now: the per-call /qualification save stores the
+// draft on the lead and creates NO Event. Flattens days → one Event day per
+// FULLY-SPECIFIED function (type + time + venue all present). The Event model
+// requires a date, so a qualifying function on a dateless day falls back to the
+// lead's derived canonical eventDate; if neither yields a date, that entry is
+// skipped (it cannot satisfy the required schema). Fire-safe: never throws out
+// of the qualify transition, mirroring the journey/summary side-effects.
+const buildEventFromDraft = async (lead) => {
+  try {
+    const qd = lead.qualificationData || {};
+    const days = Array.isArray(qd.eventDays) ? qd.eventDays : [];
+    if (!days.length) return;
+    const canonicalDate = isIsoLike(qd.eventDate) ? qd.eventDate : "";
+
+    const eventDays = [];
+    for (const day of days) {
+      if (!day || typeof day !== "object") continue;
+      const dayDate =
+        typeof day.date === "string" && day.date.trim() ? day.date.trim() : canonicalDate;
+      if (!dayDate) continue; // Event.eventDays.date is required.
+      const fns = Array.isArray(day.functions) ? day.functions : [];
+      for (const fn of fns) {
+        if (!fn || typeof fn !== "object") continue;
+        const type = (fn.type || "").trim();
+        const time = (fn.time || "").trim();
+        const venue = (fn.venue || "").trim();
+        if (!type || !time || !venue) continue; // fully-specified only
+        eventDays.push({
+          name: type,
+          date: dayDate,
+          time,
+          venue,
+          eventSpace: (fn.space || "").trim(),
+          notes: (fn.pax || "").trim() ? `Pax: ${(fn.pax || "").trim()}` : "",
+        });
+      }
+    }
+    if (!eventDays.length) return;
+
+    // Link (or create) the User by phone, mirroring the Kiara CRM-sync idiom.
+    const User = require("../models/User");
+    const Event = require("../models/Event");
+    let user = await User.findOne({ phone: lead.phone });
+    if (!user) {
+      user = await new User({ name: lead.name, phone: lead.phone }).save();
+    }
+    // Idempotent: an existing Event means the sales team curates from there —
+    // never overwrite (matches KiaraCrmSyncService.ensureEventDays).
+    const existing = await Event.findOne({ user: user._id });
+    if (existing) return;
+
+    await new Event({
+      user: user._id,
+      name: lead.name,
+      groomName: qd.groomName || null,
+      brideName: qd.brideName || null,
+      eventType: qd.weddingStyle || "",
+      eventDate: canonicalDate,
+      eventDays,
+    }).save();
+  } catch (e) {
+    console.error("[qualifyLead] event creation failed:", e.message);
+  }
+};
+
+const isIsoLike = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
+
 // ── MB9a Slice 3 — THE QUALIFY HINGE (single source of the qualified transition).
 // Both the Call Cockpit qualified-outcome path AND the explicit Qualify button
 // converge HERE so there is no fork. On the (idempotent) transition:
@@ -463,6 +532,10 @@ const qualifyLead = async (enquiryId, actorId) => {
       payload: { from: String(lead.assignedTo), to: String(newOwnerId), reason: "qualify_handoff" },
     });
   }
+
+  // Lead-detail cockpit — the formal Event is BORN here from the captured draft
+  // (never on a plain discovery-call save). Fire-safe.
+  await buildEventFromDraft(lead);
 
   // The journey is BORN here (MB8b idempotent guard inside). Fire-safe.
   try {

@@ -157,6 +157,35 @@ const EnquirySchema = new mongoose.Schema(
       // Free-form qualifier notes captured during qualification (additive, empty
       // default, no migration). Stored like the other string fields above.
       additionalNotes: { type: String, default: "" },
+      // ── Lead-detail cockpit (additive) — the FULL day/function draft the
+      // cockpit edits. Persisted verbatim on every /qualification save so
+      // reopening the cockpit re-hydrates the draft instead of re-seeding blank.
+      // The formal Event (events collection) is built from this ONLY at
+      // qualification. The scalar eventDate above stays the DERIVED canonical
+      // date (earliest dated, non-dateUnknown day). No migration (empty default).
+      eventDays: {
+        type: [
+          {
+            date: { type: String, default: "" }, // "YYYY-MM-DD" or ""
+            tentative: { type: Boolean, default: false }, // approximate date (date present, soft)
+            dateUnknown: { type: Boolean, default: false }, // "dates not finalised" — no date known
+            functions: {
+              type: [
+                {
+                  type: { type: String, default: "" },
+                  time: { type: String, default: "" }, // "HH:mm" 24h
+                  session: { type: String, default: "" }, // "" | morning | afternoon | evening
+                  venue: { type: String, default: "" },
+                  pax: { type: String, default: "" },
+                  space: { type: String, default: "" },
+                },
+              ],
+              default: [],
+            },
+          },
+        ],
+        default: [],
+      },
     },
     // ── SEQ-1 (additive) ─ The qualifier's free-text discovery notes. Written
     // anytime pre-qual via PUT /enquiry/:_id (scoped); a plain field, so it
