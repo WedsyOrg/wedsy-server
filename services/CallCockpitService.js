@@ -34,6 +34,8 @@ const QUALIFICATION_STRING_FIELDS = [
   "eventDate",
   // Lead-schema foundation — free-form city set by the FE dropdown.
   "city",
+  // Free-form qualifier notes captured during qualification (additive).
+  "additionalNotes",
 ];
 const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber", "destinationWedding"];
 // SEQ-3c — the discovery date's part-of-day companion (validated against the enum).

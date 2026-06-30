@@ -154,6 +154,9 @@ const EnquirySchema = new mongoose.Schema(
       city: { type: String, default: "" },
       destinationWedding: { type: Boolean, default: false },
       zones: { type: [String], default: [] },
+      // Free-form qualifier notes captured during qualification (additive, empty
+      // default, no migration). Stored like the other string fields above.
+      additionalNotes: { type: String, default: "" },
     },
     // ── SEQ-1 (additive) ─ The qualifier's free-text discovery notes. Written
     // anytime pre-qual via PUT /enquiry/:_id (scoped); a plain field, so it
