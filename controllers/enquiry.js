@@ -957,6 +957,10 @@ const Get = (req, res) => {
         // Important: if we migrate, we re-read the updated doc so subdocuments get real _id values immediately
         // (required for editing/updating a specific note from the admin UI).
         let resultObj = result.toObject();
+        // Per-request cutoffs, computed ONCE and in scope for proceedWith below,
+        // where the lifecycle/temperature decoration is applied to the response
+        // copy (see proceedWith) so BOTH the common and migration exit paths carry it.
+        const cutoffs = temperatureCutoffs();
         let needsConversationMigration = false;
         if (
           resultObj.updates?.conversations &&
@@ -980,6 +984,24 @@ const Get = (req, res) => {
         }
 
         const proceedWith = (finalResultObj) => {
+          // Additive: decorate the single-lead response COPY (in-memory object —
+          // never a DB write) with its `lifecycle` bucket + event-date
+          // `temperature`, mirroring GetAll's list rows verbatim. Placed in this
+          // SHARED exit so it runs exactly once for EVERY return path — including
+          // the legacy conversation-migration branch, which passes its own
+          // migrated.toObject() copy through here. bucketOf mirrors
+          // lifecycleFragment, so the lead-detail header shows the SAME values
+          // the list shows for this lead. Later spreads preserve these keys.
+          finalResultObj.lifecycle = bucketOf(finalResultObj, cutoffs.today);
+          finalResultObj.temperature = temperatureOf(
+            finalResultObj.qualificationData && finalResultObj.qualificationData.eventDate,
+            cutoffs
+          );
+          finalResultObj.temperatureLabel = temperatureLabelOf(
+            finalResultObj.qualificationData && finalResultObj.qualificationData.eventDate,
+            cutoffs
+          );
+
           // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
           // (discoveryComplete + discovery.missing). Computed, never stored.
           // qualifierNotes is a plain stored field and already rides toObject().
