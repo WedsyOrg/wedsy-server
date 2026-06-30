@@ -513,6 +513,9 @@ router.post(
   requirePermission("leads:edit:own"),
   lifecycle.Convert
 );
+// Recover a lost lead back into the pipeline — same scope gate as the stage move
+// it mirrors (LEADS_EDIT_SCOPED: leads:edit:own + ownerField + enforceLeadScope).
+router.post("/:_id/recover", CheckAdminLogin, ...LEADS_EDIT_SCOPED, lifecycle.Recover);
 // MB10 Slice 4 — stage + assign were CheckAdminLogin-only; now scope-gated.
 router.put("/:_id/stage", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateStage);
 router.put("/:_id/assign", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateAssignedTo);

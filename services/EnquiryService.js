@@ -60,6 +60,81 @@ const notifyRequesterOfDecision = async (enquiry, { type, title, note, actorId }
   }
 };
 
+// Best-effort INTERNAL notification when a lost lead is recovered: the assignee's
+// reporting manager (if any) PLUS all Revenue Heads. Same guarded contract as the
+// disqualify helpers above — the Admin lookup is wrapped, notify is itself fire-safe
+// and filters falsy recipients, so a recover op can never be broken by notify.
+const notifyOfRecovery = async (enquiry, { type, title, message }) => {
+  try {
+    if (!enquiry) return;
+    const recipients = [];
+    if (enquiry.assignedTo) {
+      const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
+      if (owner && owner.reportingManagerId) recipients.push(owner.reportingManagerId);
+    }
+    const TriageService = require("./TriageService");
+    recipients.push(...(await TriageService.revenueHeadIds()));
+    await AdminNotificationService.notify(recipients, {
+      type,
+      title,
+      message: message || "",
+      leadId: enquiry._id,
+    });
+  } catch (e) {
+    console.error("notifyOfRecovery failed:", e.message);
+  }
+};
+
+// Recover a lost lead: un-lost an APPROVED-lost lead and put it back into the pipeline.
+// Additive sibling to the reopen branch in updateStage — same un-lost field writes,
+// but it KEEPS every lost audit field (lostReason/lostRequestedBy/At/lostDecidedBy/At/
+// lostDecisionNote) so we retain the full history of what happened. No migration.
+const recoverLead = async (enquiryId, actorId) => {
+  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+    throw httpError(400, "Invalid enquiry id");
+  }
+  const enquiry = await EnquiryRepository.findById(enquiryId);
+  if (!enquiry) {
+    throw httpError(404, "Enquiry not found");
+  }
+  if (enquiry.lostStatus !== "approved") {
+    throw httpError(400, "Lead is not lost");
+  }
+
+  const hadStageBeforeLost = !!enquiry.stageBeforeLost;
+  const restoredStage = enquiry.stageBeforeLost || "new";
+  const priorReason = enquiry.lostReason || "";
+
+  // Reset the ACTIVE lost state only; audit fields are intentionally NOT written here.
+  const recovered = await EnquiryRepository.updateFieldsById(enquiryId, {
+    stage: restoredStage,
+    updatedBy: actorId,
+    lostStatus: "none",
+    isLost: false,
+    stageBeforeLost: "",
+  });
+  if (!recovered) {
+    throw httpError(404, "Enquiry not found");
+  }
+
+  await ActivityLogService.record({
+    actorId,
+    action: "lead.recovered",
+    entityType: "lead",
+    entityId: String(enquiryId),
+    summary: `Lead recovered (was lost: ${priorReason})`,
+    meta: { restoredStage, hadStageBeforeLost },
+  });
+
+  await notifyOfRecovery(enquiry, {
+    type: "lead_recovered",
+    title: `Lead recovered: ${enquiry.name}`,
+    message: `${actorId || "Someone"} recovered this lead (was lost: ${priorReason})`,
+  });
+
+  return recovered;
+};
+
 // Update an enquiry's pipeline stage.
 // Throws { status, message } shaped errors for the controller to map to HTTP responses.
 const updateStage = async (enquiryId, stage, updatedBy) => {
@@ -337,5 +412,6 @@ module.exports = {
   updateAssignedTo,
   requestDisqualification,
   decideDisqualification,
+  recoverLead,
   LOST_REASONS,
 };

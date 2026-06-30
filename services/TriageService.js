@@ -277,5 +277,6 @@ module.exports = {
   triageHolderIds,
   sweepEscalations,
   inWorkingHours,
+  revenueHeadIds,
   _holderCache: holderCache,
 };
