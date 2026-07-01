@@ -204,6 +204,25 @@ function temperatureFilter(key, cutoffs) {
   return { $and: [valid, { [path]: { $gte: cutoffs.plus6mo } }] };
 }
 
+// ── Date-status (per-day event-draft flags) — additive, event-date family ──────
+// Orthogonal to temperature (which reads the derived scalar eventDate): these
+// select on the per-day flags in qualificationData.eventDays. "tentative" = any
+// day marked approximate; "unknown" = any day marked "dates not finalised".
+const DATE_STATUS_KEYS = ["tentative", "unknown"];
+
+function dateStatusFragment(key) {
+  if (key === "tentative") return { "qualificationData.eventDays": { $elemMatch: { tentative: true } } };
+  if (key === "unknown") return { "qualificationData.eventDays": { $elemMatch: { dateUnknown: true } } };
+  return null;
+}
+
+// Parse the ?dateStatus param (comma-list or array) → whitelisted keys only.
+function parseDateStatus(raw) {
+  if (!raw) return [];
+  const arr = Array.isArray(raw) ? raw : String(raw).split(",");
+  return arr.map((s) => s.trim()).filter((k) => DATE_STATUS_KEYS.includes(k));
+}
+
 module.exports = {
   LIFECYCLE_KEYS,
   lifecycleFragment,
@@ -214,4 +233,7 @@ module.exports = {
   temperatureLabelOf,
   temperatureFilter,
   isValidEventDate,
+  DATE_STATUS_KEYS,
+  dateStatusFragment,
+  parseDateStatus,
 };
