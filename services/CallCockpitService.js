@@ -34,6 +34,8 @@ const QUALIFICATION_STRING_FIELDS = [
   "eventDate",
   // Lead-schema foundation — free-form city set by the FE dropdown.
   "city",
+  // Free-form qualifier notes captured during qualification (additive).
+  "additionalNotes",
 ];
 const QUALIFICATION_BOOLEAN_FIELDS = ["emailNotWilling", "whatsappSameNumber", "destinationWedding"];
 // SEQ-3c — the discovery date's part-of-day companion (validated against the enum).
@@ -42,20 +44,54 @@ const EVENT_DATE_PARTS = ["", "morning", "afternoon", "evening"];
 const ZONES = ["north", "south", "east", "west", "central"];
 
 // Earliest dated EventBuilder day → the canonical qualificationData.eventDate.
-// Accepts an array of "YYYY-MM-DD" strings OR objects with a `.date` string;
-// dateless / "not finalised" days are ignored. Returns "" when none are dated.
-// (ISO YYYY-MM-DD sorts chronologically as plain strings.)
+// Accepts an array of "YYYY-MM-DD" strings OR day objects with a `.date` string.
+// Days flagged dateUnknown ("dates not finalised") are skipped; tentative
+// (approximate) dates still count. Dateless days are ignored. Returns "" when no
+// usable date exists. (ISO YYYY-MM-DD sorts chronologically as plain strings.)
 const isIsoDate = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s.trim());
 const deriveCanonicalEventDate = (eventDays = []) => {
   if (!Array.isArray(eventDays)) {
     throw httpError(400, "Invalid eventDays (expected an array)");
   }
   const dates = eventDays
+    .filter((d) => !(d && typeof d === "object" && d.dateUnknown === true))
     .map((d) => (typeof d === "string" ? d : d && typeof d === "object" ? d.date : null))
     .filter((s) => isIsoDate(s))
     .map((s) => s.trim());
   if (!dates.length) return "";
   return dates.reduce((earliest, d) => (d < earliest ? d : earliest));
+};
+
+// Lead-detail cockpit — coerce the cockpit's day/function draft to the schema
+// shape so the stored doc stays clean, WITHOUT filtering: every day and every
+// function is preserved (a function with a time but no venue MUST persist), so
+// reopening the cockpit re-hydrates the draft exactly. Throws only if the
+// top-level value is not an array.
+const normalizeEventDays = (eventDays) => {
+  if (!Array.isArray(eventDays)) {
+    throw httpError(400, "Invalid eventDays (expected an array)");
+  }
+  const str = (v) => (typeof v === "string" ? v : "");
+  return eventDays.map((day) => {
+    const d = day && typeof day === "object" ? day : {};
+    const functions = Array.isArray(d.functions) ? d.functions : [];
+    return {
+      date: str(d.date),
+      tentative: d.tentative === true,
+      dateUnknown: d.dateUnknown === true,
+      functions: functions.map((fn) => {
+        const f = fn && typeof fn === "object" ? fn : {};
+        return {
+          type: str(f.type),
+          time: str(f.time),
+          session: str(f.session),
+          venue: str(f.venue),
+          pax: str(f.pax),
+          space: str(f.space),
+        };
+      }),
+    };
+  });
 };
 
 const httpError = (status, message) => {
@@ -383,13 +419,17 @@ const updateQualification = async (enquiryId, body = {}, actorId) => {
     }
     set["qualificationData.zones"] = [...new Set(body.zones)];
   }
-  // Lead-schema foundation — canonical eventDate sync. When the EventBuilder days
-  // are saved, the earliest dated day becomes qualificationData.eventDate (the
-  // single field the gate + brief read). Empty when every day is dateless. This
-  // runs AFTER the string-field loop so the days are canonical over any raw
-  // eventDate also sent in the same payload.
+  // Lead-detail cockpit — persist the FULL day/function draft verbatim (no
+  // filtering) AND sync the canonical eventDate. The earliest dated, non-
+  // dateUnknown day becomes qualificationData.eventDate (the single field the
+  // gate + brief read); empty when no day carries a usable date. This runs AFTER
+  // the string-field loop so the days are canonical over any raw eventDate also
+  // sent in the same payload. No formal Event is created here — that happens only
+  // at qualification (see LeadLifecycleService.qualifyLead).
   if (body.eventDays !== undefined) {
-    set["qualificationData.eventDate"] = deriveCanonicalEventDate(body.eventDays);
+    const days = normalizeEventDays(body.eventDays);
+    set["qualificationData.eventDays"] = days;
+    set["qualificationData.eventDate"] = deriveCanonicalEventDate(days);
   }
 
   if (Object.keys(set).length === 0) {

@@ -3,6 +3,7 @@ const JourneyService = require("../services/JourneyService");
 const CustomFieldService = require("../services/CustomFieldService");
 const LeadLifecycleService = require("../services/LeadLifecycleService");
 const ProjectService = require("../services/ProjectService");
+const EnquiryService = require("../services/EnquiryService");
 // #8 — eligibility helpers shared with the disqualify-decision flow: a leads:approve
 // holder (Sales Lead / Revenue Head) OR the assignee's manager chain may approve.
 const { actorHasApprovePermission, isManagerOfAssigned } = require("./disqualify");
@@ -107,6 +108,19 @@ const Recycle = async (req, res) => {
   }
 };
 
+// POST /enquiry/:_id/recover — un-lost an approved-lost lead back into the pipeline.
+const Recover = async (req, res) => {
+  try {
+    const updated = await EnquiryService.recoverLead(
+      req.params._id,
+      req.auth.user_id
+    );
+    res.status(200).json(updated);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
 // POST /enquiry/:_id/convert — Meeting Scheduled → Project (terminal "won").
 const Convert = async (req, res) => {
   try {
@@ -186,4 +200,4 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify };

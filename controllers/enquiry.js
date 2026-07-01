@@ -1,6 +1,7 @@
 // Core models and utilities used throughout the Enquiry controller
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
+const Admin = require("../models/Admin");
 const { VerifyOTP } = require("../utils/otp");
 const jwt = require("jsonwebtoken");
 const jwtConfig = require("../config/jwt");
@@ -23,6 +24,9 @@ const {
   temperatureOf,
   temperatureLabelOf,
   temperatureFilter,
+  DATE_STATUS_KEYS,
+  dateStatusFragment,
+  parseDateStatus,
 } = require("../utils/leadLifecycle");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
@@ -517,11 +521,22 @@ const GetAll = async (req, res) => {
       const frag = lifecycleFragment(lifecycleKey, cutoffs.today);
       if (frag) bucketFragments.push(frag);
     }
+    // Event-date family (temperature bucket + per-day date-status flags) — the
+    // members OR together (a lead matches if it fits ANY selected event-date
+    // option), then the group is AND-ed into the scoped filter as one narrower.
+    // Lifecycle stays a separate mandatory AND (pushed above), NOT in this OR.
+    const eventDateFrags = [];
     const temperatureKey = req.query.temperature;
     if (TEMPERATURE_KEYS.includes(temperatureKey)) {
       const tFrag = temperatureFilter(temperatureKey, cutoffs);
-      if (tFrag) bucketFragments.push(tFrag);
+      if (tFrag) eventDateFrags.push(tFrag);
     }
+    for (const k of parseDateStatus(req.query.dateStatus)) {
+      const f = dateStatusFragment(k);
+      if (f) eventDateFrags.push(f);
+    }
+    if (eventDateFrags.length === 1) bucketFragments.push(eventDateFrags[0]);
+    else if (eventDateFrags.length > 1) bucketFragments.push({ $or: eventDateFrags });
 
     // Filter builder (Settings Suite): strict-whitelisted {field,op,value} filters.
     // Unknown field/op → 400. ALWAYS combined under the same mandatory $and below.
@@ -642,6 +657,10 @@ const GetAll = async (req, res) => {
                   o.qualificationData && o.qualificationData.eventDate,
                   cutoffs
                 );
+                o.dateNotDecided = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.dateUnknown);
+                o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.tentative);
                 return o;
               });
               // MB9c-fix — include `total` so the list footer can show "X of Y".
@@ -766,6 +785,10 @@ const GetAll = async (req, res) => {
                   o.qualificationData && o.qualificationData.eventDate,
                   cutoffs
                 );
+                o.dateNotDecided = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.dateUnknown);
+                o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.tentative);
                 return o;
               });
               res.send({ list, totalPages, page, limit });
@@ -956,6 +979,10 @@ const Get = (req, res) => {
         // Important: if we migrate, we re-read the updated doc so subdocuments get real _id values immediately
         // (required for editing/updating a specific note from the admin UI).
         let resultObj = result.toObject();
+        // Per-request cutoffs, computed ONCE and in scope for proceedWith below,
+        // where the lifecycle/temperature decoration is applied to the response
+        // copy (see proceedWith) so BOTH the common and migration exit paths carry it.
+        const cutoffs = temperatureCutoffs();
         let needsConversationMigration = false;
         if (
           resultObj.updates?.conversations &&
@@ -979,10 +1006,63 @@ const Get = (req, res) => {
         }
 
         const proceedWith = (finalResultObj) => {
+          // Additive: decorate the single-lead response COPY (in-memory object —
+          // never a DB write) with its `lifecycle` bucket + event-date
+          // `temperature`, mirroring GetAll's list rows verbatim. Placed in this
+          // SHARED exit so it runs exactly once for EVERY return path — including
+          // the legacy conversation-migration branch, which passes its own
+          // migrated.toObject() copy through here. bucketOf mirrors
+          // lifecycleFragment, so the lead-detail header shows the SAME values
+          // the list shows for this lead. Later spreads preserve these keys.
+          finalResultObj.lifecycle = bucketOf(finalResultObj, cutoffs.today);
+          finalResultObj.temperature = temperatureOf(
+            finalResultObj.qualificationData && finalResultObj.qualificationData.eventDate,
+            cutoffs
+          );
+          finalResultObj.temperatureLabel = temperatureLabelOf(
+            finalResultObj.qualificationData && finalResultObj.qualificationData.eventDate,
+            cutoffs
+          );
+          finalResultObj.dateNotDecided = Array.isArray(finalResultObj.qualificationData?.eventDays) &&
+            finalResultObj.qualificationData.eventDays.some((d) => d && d.dateUnknown);
+          finalResultObj.datesTentative = Array.isArray(finalResultObj.qualificationData?.eventDays) &&
+            finalResultObj.qualificationData.eventDays.some((d) => d && d.tentative);
+
           // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
           // (discoveryComplete + discovery.missing). Computed, never stored.
           // qualifierNotes is a plain stored field and already rides toObject().
           finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
+
+          // ── State-1 (ADDITIVE, read-only) — surface the lead OWNER'S MANAGER
+          // first name: lead.assignedTo → Admin → reportingManagerId → that
+          // Admin's first name (assignedToManagerName). Best-effort: any failure
+          // leaves the payload UNCHANGED. assignedTo's own shape is untouched.
+          const ownerId = finalResultObj.assignedTo;
+          if (ownerId) {
+            Admin.findById(ownerId, { reportingManagerId: 1 })
+              .lean()
+              .then((owner) => {
+                if (owner && owner.reportingManagerId) {
+                  return Admin.findById(owner.reportingManagerId, { name: 1 }).lean();
+                }
+                return null;
+              })
+              .then((manager) => {
+                if (manager && manager.name) {
+                  const firstName = String(manager.name).trim().split(/\s+/)[0] || "";
+                  finalResultObj = { ...finalResultObj, assignedToManagerName: firstName };
+                }
+                continueWithUser(finalResultObj);
+              })
+              .catch(() => continueWithUser(finalResultObj));
+          } else {
+            continueWithUser(finalResultObj);
+          }
+        };
+
+        // Existing user-resolution + summary chain, factored out unchanged so the
+        // manager lookup above can run first without altering any response shape.
+        const continueWithUser = (finalResultObj) => {
           User.findOne({ phone: result.phone })
             .then((user) => {
               if (!user) {
@@ -1330,11 +1410,20 @@ const LifecycleCounts = async (req, res) => {
     // lifecycle "past event" fold and the temperature filter (single source).
     const cutoffs = temperatureCutoffs();
     const bucketFragments = [];
+    // Same event-date OR group the list uses (temperature bucket + per-day
+    // date-status flags), so counts stay in lock-step with the filtered list.
+    const eventDateFrags = [];
     const temperatureKey = req.query.temperature;
     if (TEMPERATURE_KEYS.includes(temperatureKey)) {
       const tFrag = temperatureFilter(temperatureKey, cutoffs);
-      if (tFrag) bucketFragments.push(tFrag);
+      if (tFrag) eventDateFrags.push(tFrag);
     }
+    for (const k of parseDateStatus(req.query.dateStatus)) {
+      const f = dateStatusFragment(k);
+      if (f) eventDateFrags.push(f);
+    }
+    if (eventDateFrags.length === 1) bucketFragments.push(eventDateFrags[0]);
+    else if (eventDateFrags.length > 1) bucketFragments.push({ $or: eventDateFrags });
     // Same mandatory $and shape the list uses (scope can only narrow, never widen).
     const baseMatch = {
       $and: [base, req.scopeFilter || {}, visibility, ...filterConditions, ...bucketFragments],
