@@ -31,6 +31,21 @@ const {
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
 const { computeDiscovery } = require("../services/DiscoveryService");
+const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+
+// Signal Matrix Slice 3 — opt-in roster widening. ?includeTeam=1 ORs the leads
+// the caller is CURRENTLY rostered on (LeadTeamMember, activeTo null) into
+// their ownership scope, so a team member can see roster leads in the normal
+// list without a separate surface. OFF by default: no view widens silently.
+// "all" scope ({}) needs no widening and stays {}.
+const effectiveScopeFilter = async (req) => {
+  const scope = req.scopeFilter || {};
+  const wanted = req.query.includeTeam === "1" || req.query.includeTeam === "true";
+  if (!wanted || !Object.keys(scope).length) return scope;
+  const ids = await LeadTeamMemberRepository.findActiveLeadIdsByPerson(req.auth.user_id);
+  if (!ids.length) return scope;
+  return { $or: [scope, { _id: { $in: ids } }] };
+};
 
 const CreateNew = (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
@@ -551,7 +566,9 @@ const GetAll = async (req, res) => {
     // RBAC scope: combine req.scopeFilter (built by requirePermission with ownerField
     // "assignedTo") as a MANDATORY $and constraint, so caller params can only narrow
     // within scope, never widen it. For "all" scope req.scopeFilter is {} -> unchanged.
-    const scopedFilter = { $and: [query, req.scopeFilter || {}, visibility, ...filterConditions, ...bucketFragments] };
+    // ?includeTeam=1 (opt-in) ORs the caller's roster leads into that scope.
+    const callerScope = await effectiveScopeFilter(req);
+    const scopedFilter = { $and: [query, callerScope, visibility, ...filterConditions, ...bucketFragments] };
     if (!(status && ["Hot", "Potential", "Cold"].includes(status))) {
       Enquiry.countDocuments(scopedFilter)
         .then((total) => {
@@ -752,7 +769,7 @@ const GetAll = async (req, res) => {
                       },
                     },
                   ]),
-              req.scopeFilter || {},
+              callerScope,
               visibility,
               ...filterConditions,
             ],
@@ -1424,9 +1441,11 @@ const LifecycleCounts = async (req, res) => {
     }
     if (eventDateFrags.length === 1) bucketFragments.push(eventDateFrags[0]);
     else if (eventDateFrags.length > 1) bucketFragments.push({ $or: eventDateFrags });
-    // Same mandatory $and shape the list uses (scope can only narrow, never widen).
+    // Same mandatory $and shape the list uses (scope can only narrow, never
+    // widen) — including the same opt-in ?includeTeam=1 roster widening, so the
+    // chip badges always match the list.
     const baseMatch = {
-      $and: [base, req.scopeFilter || {}, visibility, ...filterConditions, ...bucketFragments],
+      $and: [base, await effectiveScopeFilter(req), visibility, ...filterConditions, ...bucketFragments],
     };
     const facet = {};
     for (const key of LIFECYCLE_KEYS) {
@@ -1465,4 +1484,5 @@ module.exports = {
   UpdateNotes,
   UpdateCallSchedule,
   SetFirstCall,
+  effectiveScopeFilter,
 };

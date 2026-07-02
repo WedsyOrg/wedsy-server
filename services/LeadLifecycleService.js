@@ -531,6 +531,23 @@ const qualifyLead = async (enquiryId, actorId) => {
       actorId: actorId || null,
       payload: { from: String(lead.assignedTo), to: String(newOwnerId), reason: "qualify_handoff" },
     });
+    // Signal Matrix Slice 3 — roster continuity: the handoff moves assignedTo to
+    // the manager, which would otherwise drop the qualifying rep out of edit
+    // scope on their own lead. Keep them on as a team member (idempotent:
+    // addMember 409s on an existing active membership). Fire-safe — a roster
+    // hiccup (e.g. multi-department person needing an explicit pick) must never
+    // break the qualify hinge.
+    try {
+      await require("./LeadTeamService").addMember(
+        enquiryId,
+        { personId: lead.assignedTo },
+        actorId
+      );
+    } catch (e) {
+      if (e.status !== 409) {
+        console.error("[qualifyLead] roster continuity add failed:", e.message);
+      }
+    }
   }
 
   // Lead-detail cockpit — the formal Event is BORN here from the captured draft
