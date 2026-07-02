@@ -17,19 +17,32 @@ const httpError = (status, message) => {
   return err;
 };
 
-// Best-effort INTERNAL notification to the assigned owner's reporting manager when a
-// lead is disqualified (request or auto-approve). Never the external NotificationService,
-// and never allowed to break the disqualify op: the Admin lookup is guarded, and
-// AdminNotificationService.notify is itself fire-safe and no-ops on a null recipient.
-// (To also alert Revenue Heads later, union LeadTaskService.idsByRoleName("Revenue Head")
-// into the recipient list before calling notify — left out for now to avoid noise.)
+// Best-effort INTERNAL notification when a lead is disqualified (request or
+// auto-approve): the assigned owner's reporting manager (if set) PLUS every
+// Revenue Head — so a rep whose manager link was never configured can no longer
+// make a lose-lead request vanish silently (Signal Matrix Slice 2). The actor is
+// excluded (no self-notify). Never the external NotificationService, and never
+// allowed to break the disqualify op: lookups are guarded and
+// AdminNotificationService.notify is itself fire-safe.
 const notifyManagerOfDisqualification = async (enquiry, { type, title, message, actorId }) => {
   try {
-    if (!enquiry || !enquiry.assignedTo) return;
-    const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
-    const reportingManagerId = owner && owner.reportingManagerId;
-    if (!reportingManagerId) return;
-    await AdminNotificationService.notify(reportingManagerId, {
+    if (!enquiry) return;
+    const recipients = new Set();
+    if (enquiry.assignedTo) {
+      const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
+      if (owner && owner.reportingManagerId) recipients.add(String(owner.reportingManagerId));
+    }
+    const TriageService = require("./TriageService");
+    for (const id of await TriageService.revenueHeadIds()) recipients.add(String(id));
+    if (actorId) recipients.delete(String(actorId));
+    if (!recipients.size) {
+      console.warn(
+        `notifyManagerOfDisqualification: NO recipients for lead ${enquiry._id} — ` +
+          "owner has no reportingManagerId and no active Revenue Head exists"
+      );
+      return;
+    }
+    await AdminNotificationService.notify([...recipients], {
       type,
       title,
       message: message || "",

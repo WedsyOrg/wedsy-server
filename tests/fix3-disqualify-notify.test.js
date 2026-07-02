@@ -5,8 +5,9 @@
  * existing state write + ActivityLogService audit row, it notifies the assigned
  * owner's reporting manager via the INTERNAL AdminNotificationService. Fires on
  * BOTH the normal pending path AND the auto-approved path (lost.approvalRequired
- * off). Best-effort: no-ops cleanly when the owner has no manager, and the
- * state-machine output is unchanged.
+ * off). Signal Matrix Slice 2: Revenue Heads are ALWAYS unioned into the
+ * recipient list (the actor excluded), so an unset reportingManagerId no longer
+ * drops the notification silently. State-machine output is unchanged.
  *
  *   node tests/fix3-disqualify-notify.test.js
  *
@@ -19,6 +20,7 @@ const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const AdminNotification = require("../models/AdminNotification");
+const Role = require("../models/Role");
 const SettingsService = require("../services/SettingsService");
 const EnquiryService = require("../services/EnquiryService");
 
@@ -44,12 +46,21 @@ const makeOpenLead = (suffix, { assignedTo }) =>
   const approvalSnapshot = await SettingsService.get("lost.approvalRequired"); // restore later
 
   const adminIds = [], leadIds = [];
+  let createdRhRole = null;
   try {
     const rep = await makeAdmin("rep");
     const manager = await makeAdmin("manager");
     rep.reportingManagerId = manager._id; await rep.save();
     const orphanRep = await makeAdmin("orphan"); // no reportingManagerId
-    adminIds.push(rep._id, manager._id, orphanRep._id);
+    // Slice 2: a Revenue Head to catch the fallback (role created only if the
+    // DB doesn't already define it; removed in finally if we created it).
+    let rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null }).lean();
+    if (!rhRole) {
+      createdRhRole = await Role.create({ name: "Revenue Head" });
+      rhRole = createdRhRole;
+    }
+    const revHead = await makeAdmin("revhead", { roleIds: [rhRole._id] });
+    adminIds.push(rep._id, manager._id, orphanRep._id, revHead._id);
 
     // ── Case 1: normal pending path → manager notified, state machine unchanged.
     console.log("Case 1: requestDisqualification (approval ON) notifies the manager");
@@ -74,6 +85,9 @@ const makeOpenLead = (suffix, { assignedTo }) =>
     // No notification leaked to the rep themselves:
     const n1self = await AdminNotification.find({ adminId: rep._id, leadId: l1._id }).lean();
     ok(n1self.length === 0, "requesting rep is NOT notified");
+    // Slice 2: Revenue Heads are always unioned in.
+    const n1rh = await AdminNotification.find({ adminId: revHead._id, leadId: l1._id, type: "lead_disqualify_requested" }).lean();
+    ok(n1rh.length === 1, "Revenue Head is ALSO notified alongside the manager");
 
     // ── Case 2: auto-approved path (approval OFF) → manager still notified.
     console.log("Case 2: requestDisqualification (approval OFF) auto-approves AND notifies");
@@ -89,8 +103,8 @@ const makeOpenLead = (suffix, { assignedTo }) =>
     ok(n2.length === 1, "manager notified on the auto-approved path");
     ok(n2.length === 1 && n2[0].title === `Lead disqualified: ${l2.name}`, "auto-approve title names the lead");
 
-    // ── Case 3: owner has no manager → clean no-op (no notification, no throw).
-    console.log("Case 3: owner without a reporting manager → no notification, no throw");
+    // ── Case 3: owner has no manager → falls back to the Revenue Head(s).
+    console.log("Case 3: owner without a reporting manager → Revenue Head fallback");
     await SettingsService.set("lost.approvalRequired", true);
     const l3 = await makeOpenLead("c3", { assignedTo: orphanRep._id });
     leadIds.push(l3._id);
@@ -98,19 +112,29 @@ const makeOpenLead = (suffix, { assignedTo }) =>
       l3._id, { reason: "not_a_fit" }, orphanRep._id
     );
     ok(r3.lostStatus === "pending", "state machine still advances to pending");
-    const n3 = await AdminNotification.find({ leadId: l3._id }).lean();
-    ok(n3.length === 0, "no AdminNotification created when owner has no manager");
+    const n3rh = await AdminNotification.find({ adminId: revHead._id, leadId: l3._id, type: "lead_disqualify_requested" }).lean();
+    ok(n3rh.length === 1, "Revenue Head notified when owner has no manager (fallback)");
+    const n3mgr = await AdminNotification.find({ adminId: manager._id, leadId: l3._id }).lean();
+    ok(n3mgr.length === 0, "unrelated manager NOT notified");
 
-    // ── Case 4: unassigned lead → clean no-op (no recipient to resolve).
-    console.log("Case 4: unassigned lead → no notification, no throw");
+    // ── Case 3b: the actor is excluded — an RH requesting doesn't self-notify.
+    console.log("Case 3b: Revenue Head as the actor is excluded from recipients");
+    const l3b = await makeOpenLead("c3b", { assignedTo: orphanRep._id });
+    leadIds.push(l3b._id);
+    await EnquiryService.requestDisqualification(l3b._id, { reason: "other" }, revHead._id);
+    const n3b = await AdminNotification.find({ adminId: revHead._id, leadId: l3b._id }).lean();
+    ok(n3b.length === 0, "acting Revenue Head does NOT notify themselves");
+
+    // ── Case 4: unassigned lead → Revenue Heads still notified (no silent drop).
+    console.log("Case 4: unassigned lead → Revenue Head still notified");
     const l4 = await makeOpenLead("c4", { assignedTo: null });
     leadIds.push(l4._id);
     const r4 = await EnquiryService.requestDisqualification(
       l4._id, { reason: "other" }, rep._id
     );
     ok(r4.lostStatus === "pending", "unassigned lead still advances to pending");
-    const n4 = await AdminNotification.find({ leadId: l4._id }).lean();
-    ok(n4.length === 0, "no AdminNotification for an unassigned lead");
+    const n4rh = await AdminNotification.find({ adminId: revHead._id, leadId: l4._id, type: "lead_disqualify_requested" }).lean();
+    ok(n4rh.length === 1, "Revenue Head notified for an unassigned lead");
 
     // ── Case 5: decideDisqualification APPROVE → original requester notified.
     console.log("Case 5: decideDisqualification approve notifies the requester");
@@ -167,6 +191,7 @@ const makeOpenLead = (suffix, { assignedTo }) =>
       await Enquiry.deleteMany({ _id: { $in: leadIds } });
     }
     if (adminIds.length) await Admin.deleteMany({ _id: { $in: adminIds } });
+    if (createdRhRole) await Role.deleteMany({ _id: createdRhRole._id });
     await SettingsService.set("lost.approvalRequired", approvalSnapshot); // restore
     await mongoose.disconnect();
   }
