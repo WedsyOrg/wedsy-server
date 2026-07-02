@@ -83,6 +83,18 @@ const EVENT_TITLES = {
   qualified: "Qualified ✦",
 };
 
+// Moments rendered from the RAW embedded arrays (lead.callLog[] / lead.followUps[])
+// further down in buildJourney — those rows carry strictly more detail (notes,
+// duration, completedOutcome) and cover pre-event-era history. The mirroring
+// LeadInternalEvents are skipped so one action never renders twice. The COLLECTION
+// follow-up types (followup_created/followup_completed) are NOT here — those
+// follow-ups have no embedded row and only render via their event.
+const RAW_RENDERED_EVENT_TYPES = new Set([
+  "call_logged",
+  "follow_up_scheduled",
+  "follow_up_completed",
+]);
+
 const STEP_STATUS_LABEL = {
   not_started: "Not started",
   in_progress: "In progress",
@@ -212,6 +224,7 @@ const buildJourney = async (enquiryId) => {
   });
 
   for (const e of internalEvents) {
+    if (RAW_RENDERED_EVENT_TYPES.has(e.type)) continue;
     entries.push({
       at: e.createdAt,
       type: e.type,
