@@ -77,6 +77,27 @@ const stampFirstCalledAt = async (_id) => {
   );
 };
 
+// Signal spine (Signal Matrix Slice 4) — any-channel first-response anchor.
+// Same set-once semantics as stampFirstCalledAt: only a never-responded lead
+// matches; later responses keep the original timestamp.
+const stampFirstRespondedAt = async (_id, at) => {
+  return await Enquiry.findOneAndUpdate(
+    { _id, firstRespondedAt: null },
+    { $set: { firstRespondedAt: at || new Date() } },
+    { new: true }
+  );
+};
+
+// Signal spine — monotonic "an employee did something" stamp. $max never moves
+// the clock backwards, so out-of-order writers (backfill, retries) are safe.
+const touchLastActivity = async (_id, at) => {
+  return await Enquiry.findByIdAndUpdate(
+    _id,
+    { $max: { lastActivityAt: at || new Date() } },
+    { new: true }
+  );
+};
+
 module.exports = {
   findById,
   updateStageById,
@@ -86,4 +107,6 @@ module.exports = {
   pushCallLogById,
   pushFollowUpById,
   stampFirstCalledAt,
+  stampFirstRespondedAt,
+  touchLastActivity,
 };

@@ -3,6 +3,7 @@ const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const FollowupRepository = require("../repositories/FollowupRepository");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const LeadChatService = require("./LeadChatService");
 const AdminNotificationService = require("./AdminNotificationService");
@@ -81,6 +82,8 @@ const create = async (leadId, { title, dueAt, ownerId } = {}, createdBy) => {
   // it clears any "no further action" flag (SEQ-3b). Reuses the same fire-safe
   // helper; never blocks the create.
   await require("./CallCockpitService").setNoFurtherAction(leadId, false, createdBy);
+  // Signal spine: scheduling a journey follow-up is employee activity.
+  await EnquiryRepository.touchLastActivity(leadId);
   return (await decorate([f.toObject()]))[0];
 };
 
@@ -95,6 +98,8 @@ const complete = async (followupId, actorId) => {
     leadId: f.leadId, type: "followup_completed", actorId: actorId || null,
     payload: { followupId: String(f._id), title: f.title },
   });
+  // Signal spine: completing a journey follow-up is employee activity.
+  await EnquiryRepository.touchLastActivity(f.leadId);
   return (await decorate([f.toObject()]))[0];
 };
 

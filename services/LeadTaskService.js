@@ -8,6 +8,7 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const AdminNotificationService = require("./AdminNotificationService");
 const LeadChatService = require("./LeadChatService");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
@@ -78,6 +79,10 @@ const createTask = async (
     payload: { taskId: String(task._id) },
   });
 
+  // Signal spine: a task is employee activity (touched) — NEVER a customer
+  // response, so firstRespondedAt is deliberately not stamped here.
+  await EnquiryRepository.touchLastActivity(leadId);
+
   return task;
 };
 
@@ -101,6 +106,8 @@ const completeTask = async (taskId, actorId) => {
     actorId: actorId || null,
     payload: { taskId: String(task._id), title: task.title, kind: task.kind },
   });
+  // Signal spine: completing a task is employee activity.
+  await EnquiryRepository.touchLastActivity(task.leadId);
   return task;
 };
 
@@ -242,6 +249,8 @@ const createStepTask = async (leadId, stepId, { title, assigneeId, dueAt } = {},
       payload: { taskId: String(task._id), stepId: String(stepId) },
     });
   }
+  // Signal spine: step tasks are employee activity too.
+  await EnquiryRepository.touchLastActivity(leadId);
   return (await decorate([task.toObject()]))[0];
 };
 
@@ -292,6 +301,8 @@ const toggleStepTask = async (taskId, actorId) => {
     actorId: actorId || null,
     payload: { taskId: String(task._id), title: task.title, stepId: String(task.stepId) },
   });
+  // Signal spine: toggling a step task is employee activity.
+  await EnquiryRepository.touchLastActivity(task.leadId);
   return (await decorate([task.toObject()]))[0];
 };
 

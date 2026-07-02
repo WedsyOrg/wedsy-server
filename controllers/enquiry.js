@@ -1316,10 +1316,14 @@ const AddConversation = (req, res) => {
     { _id },
     { $push: { "updates.conversations": conversationObj } }
   )
-    .then((result) => {
+    .then(async (result) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // Signal spine: a timestamped conversation note is an any-channel
+        // customer response (per the Signal Matrix decision) + activity.
+        await EnquiryRepository.stampFirstRespondedAt(_id, createdAtDate);
+        await EnquiryRepository.touchLastActivity(_id);
         res.send({ message: "success" });
       }
     })
@@ -1354,10 +1358,13 @@ const UpdateNotes = (req, res) => {
   const { _id } = req.params;
   const { notes } = req.body;
   Enquiry.findByIdAndUpdate({ _id }, { $set: { "updates.notes": notes } })
-    .then((result) => {
+    .then(async (result) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // Signal spine: the notes blob is activity only (no per-note timestamp
+        // → never contributes to firstRespondedAt).
+        await EnquiryRepository.touchLastActivity(_id);
         res.send({ message: "success" });
       }
     })

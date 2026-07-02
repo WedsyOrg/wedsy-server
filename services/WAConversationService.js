@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const WAConversationRepository = require("../repositories/WAConversationRepository");
 const WAAgentMessageRepository = require("../repositories/WAAgentMessageRepository");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 const WAAgentMessage = require("../models/WAAgentMessage");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
@@ -323,6 +324,10 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
       actorId,
       payload: { preview: preview(clean) },
     });
+    // Signal spine: an outbound WA/IG message is an any-channel customer
+    // response and employee activity (firstCalledAt stays call-only).
+    await EnquiryRepository.stampFirstRespondedAt(conversation.enquiryId);
+    await EnquiryRepository.touchLastActivity(conversation.enquiryId);
   }
   return { message: saved, conversation: { ...updated.toObject(), ...windowInfo(updated) } };
 };
@@ -371,6 +376,9 @@ const sendTemplate = async (conversationId, actorId, scopeFilter = {}) => {
       actorId,
       payload: { template: templateName },
     });
+    // Signal spine: a re-engage template is an outbound customer touch too.
+    await EnquiryRepository.stampFirstRespondedAt(conversation.enquiryId);
+    await EnquiryRepository.touchLastActivity(conversation.enquiryId);
   }
   return { message: saved, conversation: { ...updated.toObject(), ...windowInfo(updated) } };
 };
