@@ -251,6 +251,19 @@ const logCall = async (
   // Signal spine: a call is a customer response AND employee activity.
   await EnquiryRepository.stampFirstRespondedAt(enquiryId, startedAtDate);
   await EnquiryRepository.touchLastActivity(enquiryId);
+  // Signal Matrix Slice 7 — the logged call satisfies any DUE "call" next step,
+  // so its mission row stops showing red. Fire-safe: never breaks the log.
+  // (Inside completeFollowUp's call-shaped path the target row is already
+  // completed before this runs, so only OTHER due call rows are swept.)
+  try {
+    await EnquiryRepository.completeDueCallFollowUps(
+      enquiryId,
+      actorId,
+      entry.outcome || (entry.connected ? "connected" : "attempted")
+    );
+  } catch (e) {
+    console.error("[logCall] due-call auto-complete failed:", e.message);
+  }
 
   await LeadInternalEventService.record({
     leadId: enquiryId,
