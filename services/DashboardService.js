@@ -1,6 +1,7 @@
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
+const Followup = require("../models/Followup");
 const LeadLifecycleService = require("./LeadLifecycleService");
 const WAConversationRepository = require("../repositories/WAConversationRepository");
 const { computeLeadHealth } = require("../utils/leadHealth");
@@ -132,6 +133,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     stageCounts,
     orphanedLeads,
     returnedLeadDocs,
+    journeyFuDocs,
   ] = await Promise.all([
     // Open follow-ups due today or overdue.
     Enquiry.find({
@@ -185,27 +187,61 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
         visibility,
       ],
     }).lean(),
+    // Signal Matrix Slice 6 — JOURNEY follow-ups (the Followup collection, the
+    // post-qual store) due today or overdue. Lead-scoped after the fact (below)
+    // with the SAME scope + ACTIVE + visibility narrowing as missionLeads, so
+    // both stores surface in the mission without merging them.
+    Followup.find({
+      dueAt: { $lte: todayEnd },
+      $or: [{ status: "open" }, { status: "snoozed", snoozedUntil: { $lte: now } }],
+    }).lean(),
   ]);
 
   // Today's mission rows: one per due/overdue follow-up, chronological.
-  const todaysMission = missionLeads
-    .flatMap((lead) =>
-      (lead.followUps || [])
-        .filter((f) => !f.completedAt && new Date(f.scheduledAt) <= todayEnd)
-        .map((f) => ({
-          ...leadRow(lead),
-          followUpId: f._id,
-          type: f.type,
-          scheduledAt: f.scheduledAt,
-          promiseNote: f.promiseNote || "",
-          overdue: new Date(f.scheduledAt) < now,
-          meetingToday:
-            ["meet", "visit"].includes(f.type) &&
-            new Date(f.scheduledAt) >= todayStart &&
-            new Date(f.scheduledAt) <= todayEnd,
-        }))
-    )
-    .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+  // Slice 6: BOTH follow-up stores, tagged — "cadence" (embedded pre-qual rows,
+  // completed via PUT /enquiry/:id/follow-up/:fid/complete) and "journey"
+  // (Followup collection, completed via PATCH /enquiry/:id/followups/:fid).
+  const cadenceMission = missionLeads.flatMap((lead) =>
+    (lead.followUps || [])
+      .filter((f) => !f.completedAt && new Date(f.scheduledAt) <= todayEnd)
+      .map((f) => ({
+        ...leadRow(lead),
+        followUpId: f._id,
+        store: "cadence",
+        type: f.type,
+        scheduledAt: f.scheduledAt,
+        promiseNote: f.promiseNote || "",
+        overdue: new Date(f.scheduledAt) < now,
+        meetingToday:
+          ["meet", "visit"].includes(f.type) &&
+          new Date(f.scheduledAt) >= todayStart &&
+          new Date(f.scheduledAt) <= todayEnd,
+      }))
+  );
+  let journeyMission = [];
+  if (journeyFuDocs.length) {
+    const fuLeadIds = [...new Set(journeyFuDocs.map((f) => String(f.leadId)))];
+    const fuLeads = await Enquiry.find({
+      $and: [{ _id: { $in: fuLeadIds } }, scopeFilter, ACTIVE, visibility],
+    }).lean();
+    const leadById = new Map(fuLeads.map((l) => [String(l._id), l]));
+    journeyMission = journeyFuDocs
+      .filter((f) => leadById.has(String(f.leadId)))
+      .map((f) => ({
+        ...leadRow(leadById.get(String(f.leadId))),
+        followUpId: f._id,
+        store: "journey",
+        type: null,
+        title: f.title,
+        scheduledAt: f.dueAt,
+        promiseNote: "",
+        overdue: new Date(f.dueAt) < now,
+        meetingToday: false,
+      }));
+  }
+  const todaysMission = [...cadenceMission, ...journeyMission].sort(
+    (a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt)
+  );
 
   const unresponsiveDecide = unresponsiveLeads.map((lead) => ({
     ...leadRow(lead),
