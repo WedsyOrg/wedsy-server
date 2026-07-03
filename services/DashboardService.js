@@ -201,6 +201,34 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Slice 6: BOTH follow-up stores, tagged — "cadence" (embedded pre-qual rows,
   // completed via PUT /enquiry/:id/follow-up/:fid/complete) and "journey"
   // (Followup collection, completed via PATCH /enquiry/:id/followups/:fid).
+  // Ownership slice: journey leads are resolved FIRST so one batched Admin
+  // lookup (no N+1) can name every owner across both stores.
+  let fuLeadById = new Map();
+  if (journeyFuDocs.length) {
+    const fuLeadIds = [...new Set(journeyFuDocs.map((f) => String(f.leadId)))];
+    const fuLeads = await Enquiry.find({
+      $and: [{ _id: { $in: fuLeadIds } }, scopeFilter, ACTIVE, visibility],
+    }).lean();
+    fuLeadById = new Map(fuLeads.map((l) => [String(l._id), l]));
+  }
+
+  // Ownership decoration (ADDITIVE — no criteria change): owner {_id,name} =
+  // the lead's assignedTo; isYours = it's the requesting admin's lead. Journey
+  // rows also name the follow-up's own ownerId when it differs from the lead
+  // owner. ONE batched Admin query covers every id across both stores.
+  const ownerIds = new Set();
+  for (const l of missionLeads) if (l.assignedTo) ownerIds.add(String(l.assignedTo));
+  for (const l of fuLeadById.values()) if (l.assignedTo) ownerIds.add(String(l.assignedTo));
+  for (const f of journeyFuDocs) {
+    if (f.ownerId && fuLeadById.has(String(f.leadId))) ownerIds.add(String(f.ownerId));
+  }
+  const ownerAdmins = ownerIds.size
+    ? await Admin.find({ _id: { $in: [...ownerIds] } }, { name: 1 }).lean()
+    : [];
+  const ownerNameById = new Map(ownerAdmins.map((a) => [String(a._id), a.name]));
+  const ownerOf = (id) => (id ? { _id: String(id), name: ownerNameById.get(String(id)) || "—" } : null);
+  const isYours = (id) => !!id && String(id) === String(adminId);
+
   const cadenceMission = missionLeads.flatMap((lead) =>
     (lead.followUps || [])
       .filter((f) => !f.completedAt && new Date(f.scheduledAt) <= todayEnd)
@@ -216,19 +244,16 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
           ["meet", "visit"].includes(f.type) &&
           new Date(f.scheduledAt) >= todayStart &&
           new Date(f.scheduledAt) <= todayEnd,
+        owner: ownerOf(lead.assignedTo),
+        isYours: isYours(lead.assignedTo),
       }))
   );
-  let journeyMission = [];
-  if (journeyFuDocs.length) {
-    const fuLeadIds = [...new Set(journeyFuDocs.map((f) => String(f.leadId)))];
-    const fuLeads = await Enquiry.find({
-      $and: [{ _id: { $in: fuLeadIds } }, scopeFilter, ACTIVE, visibility],
-    }).lean();
-    const leadById = new Map(fuLeads.map((l) => [String(l._id), l]));
-    journeyMission = journeyFuDocs
-      .filter((f) => leadById.has(String(f.leadId)))
-      .map((f) => ({
-        ...leadRow(leadById.get(String(f.leadId))),
+  const journeyMission = journeyFuDocs
+    .filter((f) => fuLeadById.has(String(f.leadId)))
+    .map((f) => {
+      const lead = fuLeadById.get(String(f.leadId));
+      return {
+        ...leadRow(lead),
         followUpId: f._id,
         store: "journey",
         type: null,
@@ -237,8 +262,14 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
         promiseNote: "",
         overdue: new Date(f.dueAt) < now,
         meetingToday: false,
-      }));
-  }
+        owner: ownerOf(lead.assignedTo),
+        isYours: isYours(lead.assignedTo),
+        followUpOwner:
+          f.ownerId && String(f.ownerId) !== String(lead.assignedTo || "")
+            ? ownerOf(f.ownerId)
+            : null,
+      };
+    });
   const todaysMission = [...cadenceMission, ...journeyMission].sort(
     (a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt)
   );
