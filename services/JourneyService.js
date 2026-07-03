@@ -246,15 +246,20 @@ const buildJourney = async (enquiryId) => {
   }
 
   for (const c of lead.callLog || []) {
+    // Mid-qualify slice: a typed call names itself; legacy rows (purpose "")
+    // keep the original "Call — …" label.
+    const callWord =
+      c.purpose === "discovery" ? "Discovery call" : c.purpose === "follow_up" ? "Follow-up call" : "Call";
     entries.push({
       at: c.startedAt,
       type: "call",
       actor: actor(c.loggedBy),
-      title: `Call — ${c.outcome || (c.connected ? "connected" : "attempted")}`,
+      title: `${callWord} — ${c.outcome || (c.connected ? "connected" : "attempted")}`,
       detail: {
         durationSeconds: c.durationSeconds || 0,
         connected: !!c.connected,
         outcome: c.outcome || "",
+        purpose: c.purpose || "",
         notes: c.notes || "",
       },
     });

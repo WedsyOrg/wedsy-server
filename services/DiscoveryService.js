@@ -22,6 +22,16 @@ const present = (v) => {
   return String(v).trim().length > 0;
 };
 
+// Has ANYTHING been meaningfully captured in the qualification draft?
+// Booleans count only when true (schema defaults like whatsappSameNumber:false
+// must never read as "captured"); mongoose internals (_id etc.) are skipped.
+const anyCaptured = (qd) =>
+  Object.entries(qd).some(([k, v]) => {
+    if (k.startsWith("_")) return false;
+    if (typeof v === "boolean") return v === true;
+    return present(v);
+  });
+
 // Compute the discovery snapshot for a lead doc (a plain object or a lean doc).
 const computeDiscovery = (lead) => {
   const qd = (lead && lead.qualificationData) || {};
@@ -39,9 +49,16 @@ const computeDiscovery = (lead) => {
   if (!hasServices) missing.push("services");
   const complete = missing.length === 0;
 
+  // Mid-qualify slice — the three-way state (ADDITIVE; complete unchanged):
+  // in_progress = the gate is unmet but SOMETHING happened (any qualification
+  // field captured, or any call logged). Same doc, zero extra queries.
+  const started =
+    anyCaptured(qd) || (Array.isArray(lead && lead.callLog) && lead.callLog.length > 0);
+  const state = complete ? "complete" : started ? "in_progress" : "not_started";
+
   return {
     discoveryComplete: complete,
-    discovery: { complete, missing, hasEventDate, hasServices, hasName },
+    discovery: { complete, missing, hasEventDate, hasServices, hasName, state },
   };
 };
 

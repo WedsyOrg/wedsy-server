@@ -96,6 +96,9 @@ const EnquirySchema = new mongoose.Schema(
           durationSeconds: { type: Number, default: 0 },
           connected: { type: Boolean, default: false },
           outcome: { type: String, default: "" }, // qualified | busy | unknown | disqualified | ""
+          // Mid-qualify slice — what the call was FOR. "" = legacy/unknown (no
+          // migration; old rows keep today's rendering).
+          purpose: { type: String, enum: ["", "discovery", "follow_up"], default: "" },
           notes: { type: String, default: "" },
           loggedBy: { type: ObjectId, ref: "Admin", default: null },
           createdAt: { type: Date, default: Date.now },
