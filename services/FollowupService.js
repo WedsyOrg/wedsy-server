@@ -3,6 +3,7 @@ const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const FollowupRepository = require("../repositories/FollowupRepository");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const LeadChatService = require("./LeadChatService");
 const AdminNotificationService = require("./AdminNotificationService");
@@ -35,8 +36,43 @@ const decorate = async (rows) => {
       status: e.effectiveStatus, snoozedUntil: r.snoozedUntil || null,
       open: e.open, overdue: e.overdue, completedAt: r.completedAt || null,
       createdAt: r.createdAt,
+      // Signal Matrix Slice 6 — store tag + the route that completes THIS row.
+      // Journey rows (this collection) complete via the followups PATCH; the
+      // cadence rows merged in by listForLead complete via the lifecycle PUT.
+      store: "journey",
+      completeVia: `PATCH /enquiry/${String(r.leadId)}/followups/${String(r._id)}`,
     };
   });
+};
+
+// Slice 6 — the EMBEDDED cadence rows (Enquiry.followUps[], the pre-qual
+// next-step store) mapped to the same row shape, tagged store:"cadence". NOT a
+// merge of the stores: each row still lives (and completes) in its own store.
+const CADENCE_TITLE = { call: "Call", meet: "G-Meet", visit: "Visit" };
+const cadenceRows = async (lead) => {
+  const now = new Date();
+  const rows = lead.followUps || [];
+  const ids = [...new Set(rows.map((f) => f.createdBy).filter(Boolean).map(String))];
+  const admins = ids.length ? await Admin.find({ _id: { $in: ids } }, { name: 1 }).lean() : [];
+  const n = new Map(admins.map((a) => [String(a._id), a.name]));
+  return rows.map((f) => ({
+    _id: String(f._id),
+    leadId: String(lead._id),
+    title: `${CADENCE_TITLE[f.type] || f.type}${f.promiseNote ? ` — ${f.promiseNote}` : ""}`,
+    type: f.type,
+    promiseNote: f.promiseNote || "",
+    dueAt: f.scheduledAt,
+    ownerId: f.createdBy ? String(f.createdBy) : null,
+    ownerName: f.createdBy ? n.get(String(f.createdBy)) || "—" : null,
+    status: f.completedAt ? "done" : "open",
+    snoozedUntil: null,
+    open: !f.completedAt,
+    overdue: !f.completedAt && f.scheduledAt && new Date(f.scheduledAt) < now,
+    completedAt: f.completedAt || null,
+    createdAt: f.createdAt,
+    store: "cadence",
+    completeVia: `PUT /enquiry/${String(lead._id)}/follow-up/${String(f._id)}/complete`,
+  }));
 };
 
 const assertOwnerOnRoster = async (leadId, ownerId) => {
@@ -81,6 +117,8 @@ const create = async (leadId, { title, dueAt, ownerId } = {}, createdBy) => {
   // it clears any "no further action" flag (SEQ-3b). Reuses the same fire-safe
   // helper; never blocks the create.
   await require("./CallCockpitService").setNoFurtherAction(leadId, false, createdBy);
+  // Signal spine: scheduling a journey follow-up is employee activity.
+  await EnquiryRepository.touchLastActivity(leadId);
   return (await decorate([f.toObject()]))[0];
 };
 
@@ -95,6 +133,8 @@ const complete = async (followupId, actorId) => {
     leadId: f.leadId, type: "followup_completed", actorId: actorId || null,
     payload: { followupId: String(f._id), title: f.title },
   });
+  // Signal spine: completing a journey follow-up is employee activity.
+  await EnquiryRepository.touchLastActivity(f.leadId);
   return (await decorate([f.toObject()]))[0];
 };
 
@@ -111,9 +151,17 @@ const snooze = async (followupId, { until } = {}, actorId) => {
   return (await decorate([f.toObject()]))[0];
 };
 
+// Slice 6 — BOTH stores in one list, each row tagged (store + completeVia) so
+// the client always hits the right completion route. Sorted by dueAt so the
+// two cadences read as one timeline.
 const listForLead = async (leadId) => {
   if (!isId(leadId)) throw err(400, "Invalid leadId");
-  return decorate(await FollowupRepository.findByLead(leadId));
+  const [journey, lead] = await Promise.all([
+    FollowupRepository.findByLead(leadId),
+    Enquiry.findById(leadId, { followUps: 1 }).lean(),
+  ]);
+  const rows = [...(await decorate(journey)), ...(lead ? await cadenceRows(lead) : [])];
+  return rows.sort((a, b) => new Date(a.dueAt) - new Date(b.dueAt));
 };
 
 const myDue = async (ownerId, { withinDays = 2 } = {}) => {

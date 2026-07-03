@@ -300,6 +300,10 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
     payload: { followUpId: String(followUpId), outcome, nextAction: appliedAction },
   });
 
+  // Signal spine: completing a cadence follow-up is employee activity (the
+  // call-shaped branch above already stamped firstRespondedAt inside logCall).
+  await EnquiryRepository.touchLastActivity(enquiryId);
+
   const fresh = await EnquiryRepository.findById(enquiryId);
   const obj = fresh.toObject();
   if (cadence) obj.cadence = cadence;
@@ -325,7 +329,11 @@ const addNote = async (enquiryId, text, actorId) => {
   });
   const stamp = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
   const legacy = lead.updates?.notes ? `${lead.updates.notes}\n\n[${stamp}] ${clean}` : `[${stamp}] ${clean}`;
-  return await EnquiryRepository.updateFieldsById(enquiryId, { "updates.notes": legacy });
+  const updated = await EnquiryRepository.updateFieldsById(enquiryId, { "updates.notes": legacy });
+  // Signal spine: the notes blob is employee activity (touched) but carries no
+  // per-note timestamp, so it never contributes to firstRespondedAt.
+  await EnquiryRepository.touchLastActivity(enquiryId);
+  return updated;
 };
 
 // ── Tags (Settings Suite, Slice 7a) ─────────────────────────────────────────
@@ -531,6 +539,23 @@ const qualifyLead = async (enquiryId, actorId) => {
       actorId: actorId || null,
       payload: { from: String(lead.assignedTo), to: String(newOwnerId), reason: "qualify_handoff" },
     });
+    // Signal Matrix Slice 3 — roster continuity: the handoff moves assignedTo to
+    // the manager, which would otherwise drop the qualifying rep out of edit
+    // scope on their own lead. Keep them on as a team member (idempotent:
+    // addMember 409s on an existing active membership). Fire-safe — a roster
+    // hiccup (e.g. multi-department person needing an explicit pick) must never
+    // break the qualify hinge.
+    try {
+      await require("./LeadTeamService").addMember(
+        enquiryId,
+        { personId: lead.assignedTo },
+        actorId
+      );
+    } catch (e) {
+      if (e.status !== 409) {
+        console.error("[qualifyLead] roster continuity add failed:", e.message);
+      }
+    }
   }
 
   // Lead-detail cockpit — the formal Event is BORN here from the captured draft

@@ -12,7 +12,10 @@
 //   - touched:   has ANY activity                         (and not qualified/meeting/lost)
 //   - fresh:     zero activity                            (and not qualified/meeting/lost)
 // `stage` is deliberately NOT used to tell fresh from touched (stage is null for
-// many leads). TASK activity is intentionally excluded (separate collection).
+// many leads). Activity = the signal spine's lastActivityAt (Signal Matrix
+// Slice 5): every employee action — calls, both follow-up stores, TASKS, notes,
+// WhatsApp, internal chat — stamps it (write paths in Slice 4, history
+// backfilled). The old five-field $or lived here until then.
 
 const LIFECYCLE_KEYS = ["fresh", "touched", "qualified", "meeting", "lost"];
 
@@ -54,29 +57,14 @@ const NOT_MEETING = { stage: { $ne: "meeting_scheduled" } };
 const NOT_QUALIFIED = { qualified: { $ne: true } };
 
 // ── Activity test (touched) and its exact complement (fresh) ──
-// `firstCalledAt: {$ne:null}` and the array `.0` existence checks treat a missing
-// field as "no activity"; `updates.notes: {$gt:""}` matches a non-empty string
-// only (a missing/empty/null note is NOT activity). Each fresh condition is the
-// precise negation of its touched counterpart, so touched ∪ fresh partitions the
-// (not-lost, not-meeting, not-qualified) space with no overlap and no gap.
-const HAS_ACTIVITY = {
-  $or: [
-    { firstCalledAt: { $ne: null } },
-    { "callLog.0": { $exists: true } },
-    { "followUps.0": { $exists: true } },
-    { "updates.notes": { $gt: "" } },
-    { "updates.conversations.0": { $exists: true } },
-  ],
-};
-const NO_ACTIVITY = {
-  $and: [
-    { firstCalledAt: null },
-    { "callLog.0": { $exists: false } },
-    { "followUps.0": { $exists: false } },
-    { "updates.notes": { $not: { $gt: "" } } },
-    { "updates.conversations.0": { $exists: false } },
-  ],
-};
+// Signal Matrix Slice 5: one spine field. `lastActivityAt: {$ne:null}` treats a
+// missing field as null (no activity), and `lastActivityAt: null` matches both
+// null and missing — the pair stays an exact complement, so touched ∪ fresh
+// still partitions the (not-lost, not-meeting, not-qualified) space with no
+// overlap and no gap. The legacy five-field $or is gone: keeping any legacy
+// term would break the exact-complement invariant.
+const HAS_ACTIVITY = { lastActivityAt: { $ne: null } };
+const NO_ACTIVITY = { lastActivityAt: null };
 
 // Returns the Mongo query fragment selecting EXACTLY the given bucket (encoding
 // the furthest-wins exclusions: LOST [explicit OR valid past event] > meeting >
@@ -113,19 +101,9 @@ const isPastEventLead = (lead, today) => {
   const ed = lead && lead.qualificationData && lead.qualificationData.eventDate;
   return typeof ed === "string" && YMD_RE.test(ed) && ed < today;
 };
-// Mirrors HAS_ACTIVITY's $or (and is the exact negation of NO_ACTIVITY):
-//   firstCalledAt {$ne:null} | callLog.0 | followUps.0 | notes {$gt:""} | conversations.0
-const hasActivity = (lead) => {
-  if (!lead) return false;
-  const u = lead.updates || {};
-  return (
-    lead.firstCalledAt != null ||
-    (Array.isArray(lead.callLog) && lead.callLog.length > 0) ||
-    (Array.isArray(lead.followUps) && lead.followUps.length > 0) ||
-    (typeof u.notes === "string" && u.notes > "") ||
-    (Array.isArray(u.conversations) && u.conversations.length > 0)
-  );
-};
+// Mirrors HAS_ACTIVITY (and is the exact negation of NO_ACTIVITY):
+//   lastActivityAt {$ne:null}
+const hasActivity = (lead) => !!(lead && lead.lastActivityAt != null);
 // Furthest-wins precedence — identical order to lifecycleFragment. The early
 // returns encode the NOT_LOST / NOT_MEETING / NOT_QUALIFIED exclusions.
 function bucketOf(lead, today) {

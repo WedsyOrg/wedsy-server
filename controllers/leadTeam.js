@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const LeadTeamService = require("../services/LeadTeamService");
+const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -8,20 +9,27 @@ const respond = (res, error) => {
 };
 
 // Lead-scope guard (mirrors leadChat): the lead must satisfy the caller's scope
-// filter (built by requirePermission with ownerField assignedTo). all-scope →
-// {} → no narrowing. SOFT visibility: this only narrows by the caller's normal
-// lead scope — it adds NO roster-based 403 gating (v1 is additive, not blocking).
-const assertInScope = async (id, scopeFilter = {}) => {
+// filter (built by requirePermission with ownerField assignedTo), OR the caller
+// must be a CURRENT roster member (Signal Matrix Slice 3 — roster continuity:
+// the qualify handoff moves assignedTo to the manager, which used to lock the
+// qualifying rep out of their own lead's team with a 403). all-scope → {} → no
+// narrowing.
+const assertInScope = async (id, scopeFilter = {}, callerId = null) => {
   if (!mongoose.Types.ObjectId.isValid(id))
     throw Object.assign(new Error("Invalid lead id"), { status: 400 });
   const inScope = await Enquiry.findOne({ $and: [{ _id: id }, scopeFilter || {}] }, { _id: 1 }).lean();
-  if (!inScope) throw Object.assign(new Error("Out of your scope"), { status: 403 });
+  if (inScope) return;
+  if (callerId) {
+    const roster = await LeadTeamMemberRepository.findCurrentByLead(id);
+    if (roster.some((r) => String(r.personId) === String(callerId))) return;
+  }
+  throw Object.assign(new Error("Out of your scope"), { status: 403 });
 };
 
 // GET /enquiry/:_id/team — current roster + full append-only history.
 const Get = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScope(req.params._id, req.scopeFilter, req.auth.user_id);
     res.status(200).json(await LeadTeamService.listRoster(req.params._id));
   } catch (error) {
     respond(res, error);
@@ -31,7 +39,7 @@ const Get = async (req, res) => {
 // GET /enquiry/:_id/team/options — people grouped by department (the add control).
 const Options = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScope(req.params._id, req.scopeFilter, req.auth.user_id);
     res.status(200).json(await LeadTeamService.peopleOptions());
   } catch (error) {
     respond(res, error);
@@ -41,7 +49,7 @@ const Options = async (req, res) => {
 // POST /enquiry/:_id/team — { personId, departmentId? } → add to roster.
 const Add = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScope(req.params._id, req.scopeFilter, req.auth.user_id);
     const member = await LeadTeamService.addMember(
       req.params._id,
       { personId: req.body?.personId, departmentId: req.body?.departmentId },
@@ -56,7 +64,7 @@ const Add = async (req, res) => {
 // DELETE /enquiry/:_id/team/:memberId — close the active membership (kept in history).
 const Remove = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScope(req.params._id, req.scopeFilter, req.auth.user_id);
     const member = await LeadTeamService.removeMember(req.params._id, req.params.memberId, req.auth.user_id);
     res.status(200).json(member);
   } catch (error) {

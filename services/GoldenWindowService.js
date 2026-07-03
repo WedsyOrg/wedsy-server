@@ -82,27 +82,18 @@ const clockFor = (lead, handoffAt, t, now) => {
 // base clock and merged into leadClock()'s return as NEW keys. respond-now and
 // metrics never call this, so their outputs are byte-identical.
 //
-// respondedAt is the earliest of: firstCalledAt and the first
-// updates.conversations[].createdAt (the timestamped note signal). NOTE: tasks
-// live in a SEPARATE collection (LeadTask, keyed by leadId) and are NOT loaded
-// here, so they are intentionally excluded from respondedAt — call+note only, as
-// specced. The updates.notes blob is a single timestampless String, so it cannot
-// contribute a timestamp to respondedAt (it still counts toward hasActivity).
+// respondedAt = the signal spine's firstRespondedAt (Signal Matrix Slice 5) —
+// the set-once any-channel response stamp written by every response path (call,
+// WhatsApp send/press, timestamped note; write paths in Slice 4, history
+// backfilled). The banner and the respond-now queue now read the SAME field, so
+// they can never disagree. Tasks/chat never stamp it (internal ≠ response); the
+// timestampless updates.notes blob still only counts toward hasActivity.
 const bannerFields = (lead, clock, now) => {
   try {
     const nowMs = +now;
     const deadlineMs = clock && clock.deadlineAt ? +new Date(clock.deadlineAt) : null;
 
-    const callMs = lead.firstCalledAt ? +new Date(lead.firstCalledAt) : null;
-    const convos = lead.updates && Array.isArray(lead.updates.conversations) ? lead.updates.conversations : [];
-    let firstNoteMs = null;
-    for (const c of convos) {
-      if (!c || !c.createdAt) continue;
-      const ms = +new Date(c.createdAt);
-      if (!Number.isNaN(ms) && (firstNoteMs == null || ms < firstNoteMs)) firstNoteMs = ms;
-    }
-    const respondMs = [callMs, firstNoteMs].filter((v) => v != null && !Number.isNaN(v));
-    const respondedAtMs = respondMs.length ? Math.min(...respondMs) : null;
+    const respondedAtMs = lead.firstRespondedAt ? +new Date(lead.firstRespondedAt) : null;
     const responded = respondedAtMs != null;
     const respondedWithinWindow = responded && deadlineMs != null && respondedAtMs <= deadlineMs;
 
@@ -121,9 +112,9 @@ const bannerFields = (lead, clock, now) => {
     }
     const nextAction = next;
 
-    const notesBlobSet = !!(lead.updates && lead.updates.notes && String(lead.updates.notes).trim() !== "");
-    const hasCallLog = Array.isArray(lead.callLog) && lead.callLog.length > 0;
-    const hasActivity = callMs != null || convos.length > 0 || notesBlobSet || followUps.length > 0 || hasCallLog;
+    // Activity = the spine's lastActivityAt (calls, both follow-up stores,
+    // tasks, notes, WhatsApp, chat) — same field the lifecycle buckets read.
+    const hasActivity = lead.lastActivityAt != null;
 
     // Precedence: next_action_due > responded > no_activity. Separate from `state`.
     let bannerState;
@@ -148,12 +139,12 @@ const bannerFields = (lead, clock, now) => {
 // Single-lead clock (the pre-qual hero).
 const leadClock = async (leadId) => {
   if (!isId(leadId)) throw err(400, "Invalid leadId");
-  // Projection EXTENDED additively (updates/followUps/callLog) to feed the new
+  // Projection EXTENDED additively (spine fields + followUps) to feed the
   // banner fields. The existing clock fields are computed from the same base
   // fields and are unchanged.
   const lead = await Enquiry.findById(leadId, {
-    createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1,
-    updates: 1, followUps: 1, callLog: 1,
+    createdAt: 1, firstCalledAt: 1, firstRespondedAt: 1, lastActivityAt: 1,
+    qualified: 1, isLost: 1, recycled: 1, followUps: 1,
   }).lean();
   if (!lead) throw err(404, "Lead not found");
   const [t, hm] = await Promise.all([thresholds(), handoffMap([lead._id])]);
@@ -163,8 +154,12 @@ const leadClock = async (leadId) => {
   return { ...clock, ...bannerFields(lead, clock, now) };
 };
 
-// SLICE 2 — the caller's "Respond now" queue: their UNCONTACTED, active (in-window
+// SLICE 2 — the caller's "Respond now" queue: their UNRESPONDED, active (in-window
 // or breached) leads, urgency-sorted (breached first, then least time left).
+// Signal Matrix Slice 5: the exit signal is the ANY-CHANNEL firstRespondedAt
+// (call, WhatsApp send/press, timestamped note) — a lead answered on WhatsApp
+// leaves the queue even though a call is still owed (the cadence engine keeps
+// nagging for it). firstCalledAt stays the clock's call-only TAT anchor.
 const respondNow = async (adminId, now = new Date()) => {
   if (!isId(adminId)) throw err(400, "Invalid adminId");
   // Bound to recent leads — speed-to-lead is a fresh-lead concern (a window from
@@ -173,14 +168,14 @@ const respondNow = async (adminId, now = new Date()) => {
   const leads = await Enquiry.find(
     {
       assignedTo: adminId,
-      firstCalledAt: null,
+      firstRespondedAt: null,
       qualified: { $ne: true },
       isLost: { $ne: true },
       "recycled.isRecycled": { $ne: true },
       archivedAt: null,
       createdAt: { $gte: new Date(+now - RESPOND_HORIZON_MS) },
     },
-    { name: 1, phone: 1, source: 1, marketingSource: 1, createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1 }
+    { name: 1, phone: 1, source: 1, marketingSource: 1, createdAt: 1, firstCalledAt: 1, firstRespondedAt: 1, qualified: 1, isLost: 1, recycled: 1 }
   ).lean();
   const t = await thresholds();
   const hm = await handoffMap(leads.map((l) => l._id));

@@ -4,6 +4,7 @@ const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const AdminNotificationService = require("./AdminNotificationService");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
@@ -107,6 +108,11 @@ const postMessage = async (leadId, authorId, { body, attachments, mentions } = {
       payload: { messageId: String(msg._id) },
     });
   }
+
+  // Signal spine: a HUMAN chat message is employee activity (touched only —
+  // internal chatter is never a customer response). System messages don't
+  // touch: they narrate actions whose services already stamped the spine.
+  await EnquiryRepository.touchLastActivity(leadId);
 
   const [enriched] = await withAuthors([msg.toObject()]);
   return enriched;

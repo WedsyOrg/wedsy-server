@@ -248,6 +248,22 @@ const logCall = async (
 
   // First call on this lead → stamp the TAT anchor (no-op for later calls).
   const stamped = await EnquiryRepository.stampFirstCalledAt(enquiryId);
+  // Signal spine: a call is a customer response AND employee activity.
+  await EnquiryRepository.stampFirstRespondedAt(enquiryId, startedAtDate);
+  await EnquiryRepository.touchLastActivity(enquiryId);
+  // Signal Matrix Slice 7 — the logged call satisfies any DUE "call" next step,
+  // so its mission row stops showing red. Fire-safe: never breaks the log.
+  // (Inside completeFollowUp's call-shaped path the target row is already
+  // completed before this runs, so only OTHER due call rows are swept.)
+  try {
+    await EnquiryRepository.completeDueCallFollowUps(
+      enquiryId,
+      actorId,
+      entry.outcome || (entry.connected ? "connected" : "attempted")
+    );
+  } catch (e) {
+    console.error("[logCall] due-call auto-complete failed:", e.message);
+  }
 
   await LeadInternalEventService.record({
     leadId: enquiryId,
@@ -346,6 +362,9 @@ const addFollowUp = async (
   // step, AND the G-Meet finale, which books through this same path) clears any
   // "no further action" flag set by an earlier no-next-step save.
   await setNoFurtherAction(enquiryId, false, actorId);
+
+  // Signal spine: booking a next step is employee activity (not a response).
+  await EnquiryRepository.touchLastActivity(enquiryId);
 
   return updated;
 };
@@ -564,7 +583,10 @@ const meetRefused = async (enquiryId, actorId) => {
 // (a wa.me deep link that otherwise hits no server) as EMPLOYEE activity so it
 // shows in the timeline and clears the "contacted but silent" dashboard flag.
 // Deliberately does NOT stamp firstCalledAt or push to callLog: a call is still
-// owed, so this must NOT satisfy the golden-window / "call owed" signal.
+// owed, and all TAT/funnel metrics stay call-only. It DOES stamp the signal
+// spine (firstRespondedAt/lastActivityAt): per the Signal Matrix decision, an
+// any-channel response satisfies the respond-now queue (the cadence engine
+// keeps nagging for the actual call).
 const logWhatsappActivity = async (enquiryId, { message } = {}, actorId) => {
   assertValidId(enquiryId);
   const lead = await EnquiryRepository.findById(enquiryId);
@@ -582,6 +604,11 @@ const logWhatsappActivity = async (enquiryId, { message } = {}, actorId) => {
     actorId: actorId || null,
     payload: note ? { message: note } : {},
   });
+  // Signal spine: a WhatsApp press IS an any-channel customer response (clears
+  // the respond-now queue once Slice 5 repoints it) and employee activity —
+  // while firstCalledAt/callLog stay untouched: the call is still owed.
+  await EnquiryRepository.stampFirstRespondedAt(enquiryId);
+  await EnquiryRepository.touchLastActivity(enquiryId);
   return event || { ok: true };
 };
 

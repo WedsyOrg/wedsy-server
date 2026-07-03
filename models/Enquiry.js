@@ -77,6 +77,15 @@ const EnquirySchema = new mongoose.Schema(
     stageBeforeLost: { type: String, default: "" },
     // First-call TAT anchor: timestamp of the first time this lead was called (set-once).
     firstCalledAt: { type: Date, default: null },
+    // Signal spine (Signal Matrix Slice 4) — denormalized cross-collection stamps.
+    // firstRespondedAt: set-once, the first CUSTOMER-FACING response on ANY channel
+    // (call, WhatsApp send/press, timestamped note). Never task/chat — internal
+    // action is not a response. firstCalledAt and all TAT/funnel metrics stay
+    // call-only; this field exists so queue/banner "responded" reads agree.
+    firstRespondedAt: { type: Date, default: null },
+    // lastActivityAt: monotonic ($max) stamp of ANY employee action on the lead
+    // (call, either follow-up store, task, note, WhatsApp, internal chat).
+    lastActivityAt: { type: Date, default: null, index: true },
     // First-call cockpit (Phase 1A — additive only).
     // Append-only call history: entries are pushed by POST /enquiry/:_id/call-log and
     // intentionally have NO edit/delete route.
