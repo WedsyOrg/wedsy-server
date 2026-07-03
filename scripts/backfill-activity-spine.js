@@ -109,7 +109,14 @@ const groupedStamp = async (Model, leadIds, { match = {}, field, op }) => {
         const convoStamps = (lead.updates?.conversations || []).map((c) => ts(c.createdAt));
         const callStamps = (lead.callLog || []).map((c) => ts(c.startedAt) ?? ts(c.createdAt));
         const fuStamps = (lead.followUps || []).flatMap((f) => [ts(f.createdAt), ts(f.completedAt)]);
-        const notesBlobSet = !!(lead.updates?.notes && String(lead.updates.notes).trim());
+        // The notes blob has no per-note timestamp, so doc updatedAt is the only
+        // available proxy — but ONLY for a never-stamped lead. Once lastActivityAt
+        // exists, the blob is already accounted for and live edits bump the spine
+        // through the normal write path; keeping the proxy live would chase every
+        // later updatedAt bump and re-raise forever (the treadmill this fixes).
+        const notesBlobSet =
+          !!(lead.updates?.notes && String(lead.updates.notes).trim()) &&
+          lead.lastActivityAt == null;
 
         const firstResponded = minOf([ts(lead.firstCalledAt), minOf(convoStamps), evMin.get(key)]);
         const lastActivity = maxOf([
@@ -124,7 +131,15 @@ const groupedStamp = async (Model, leadIds, { match = {}, field, op }) => {
           chatMax.get(key),
         ]);
 
-        if (firstResponded == null && lastActivity == null) totals.noSignalsAtAll += 1;
+        // "No signals" = nothing computed AND nothing already stored — an
+        // already-stamped notes-only lead (whose proxy is now retired) is NOT
+        // signal-less; its stamp persists.
+        if (
+          firstResponded == null && lastActivity == null &&
+          lead.firstRespondedAt == null && lead.lastActivityAt == null
+        ) {
+          totals.noSignalsAtAll += 1;
+        }
 
         const set = {};
         if (firstResponded != null) {
@@ -159,7 +174,10 @@ const groupedStamp = async (Model, leadIds, { match = {}, field, op }) => {
           }
         }
       }
-      if (ops.length) await Enquiry.bulkWrite(ops, { ordered: false });
+      // timestamps:false — a backfill is bookkeeping, not a doc edit. Bumping
+      // updatedAt here polluted every notes-blob lead's activity proxy (see
+      // above) AND reordered any updatedAt-sorted list on every run.
+      if (ops.length) await Enquiry.bulkWrite(ops, { ordered: false, timestamps: false });
       if (totals.scanned % 5000 < BATCH) console.log(`  …${totals.scanned} scanned`);
       batch = [];
     };
@@ -170,10 +188,14 @@ const groupedStamp = async (Model, leadIds, { match = {}, field, op }) => {
     }
     await flush();
 
+    // Real mode reports what HAPPENED ("set/raised"); only a dry-run may say
+    // "would" — the conditional wording has misled real-run readers before.
+    const did = DRY_RUN ? "would set" : "set";
+    const raised = DRY_RUN ? "would raise" : "raised";
     console.log(`\n${DRY_RUN ? "DRY-RUN (no writes)" : "DONE"} — spine backfill`);
-    console.log(`  scanned:                   ${totals.scanned}`);
-    console.log(`  would set firstRespondedAt: ${totals.wouldSetFirstResponded} (already set: ${totals.firstAlreadySet})`);
-    console.log(`  would raise lastActivityAt: ${totals.wouldRaiseLastActivity} (already current: ${totals.lastAlreadyCurrent})`);
+    console.log(`  scanned:                    ${totals.scanned}`);
+    console.log(`  ${did} firstRespondedAt:  ${totals.wouldSetFirstResponded} (already set: ${totals.firstAlreadySet})`);
+    console.log(`  ${raised} lastActivityAt:  ${totals.wouldRaiseLastActivity} (already current: ${totals.lastAlreadyCurrent})`);
     console.log(`  leads with no signals:      ${totals.noSignalsAtAll} (stay null — genuinely untouched)`);
   } finally {
     await mongoose.disconnect();
