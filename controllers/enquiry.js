@@ -32,6 +32,7 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
 const { computeDiscovery } = require("../services/DiscoveryService");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+const { SOURCE_PATTERNS, sourceChannelOf } = require("../utils/leadSource");
 
 // Signal Matrix Slice 3 — opt-in roster widening. ?includeTeam=1 ORs the leads
 // the caller is CURRENTLY rostered on (LeadTeamMember, activeTo null) into
@@ -317,16 +318,10 @@ const buildBaseQuery = (req) => {
   const query = {};
   // MB9c — soft-deleted (archived) leads are excluded from the default list.
   query.archivedAt = null;
-  // MB9c-fix — SOURCE filter, normalized (messy stored strings → canonical keys).
+  // MB9c-fix — SOURCE filter, normalized (messy stored strings → canonical
+  // keys). Patterns now live in utils/leadSource (shared verbatim with the
+  // read-time sourceChannel decoration — one matcher, never two).
   if (source) {
-    const SOURCE_PATTERNS = {
-      whatsapp: "whatsapp",
-      kiara: "kiara",
-      instagram: "instagram|(^|[^a-z])ig([^a-z]|$)",
-      facebook: "facebook|(^|[^a-z])fb([^a-z]|$)|meta",
-      website: "web|site|default|form|landing|direct",
-      repeated: "repeat",
-    };
     const keys = String(source).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
     const patterns = keys.map((k) => SOURCE_PATTERNS[k]).filter(Boolean);
     if (patterns.length) {
@@ -678,6 +673,7 @@ const GetAll = async (req, res) => {
                   o.qualificationData.eventDays.some((d) => d && d.dateUnknown);
                 o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
                   o.qualificationData.eventDays.some((d) => d && d.tentative);
+                o.sourceChannel = sourceChannelOf(o.source, o.marketingSource);
                 return o;
               });
               // MB9c-fix — include `total` so the list footer can show "X of Y".
@@ -806,6 +802,7 @@ const GetAll = async (req, res) => {
                   o.qualificationData.eventDays.some((d) => d && d.dateUnknown);
                 o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
                   o.qualificationData.eventDays.some((d) => d && d.tentative);
+                o.sourceChannel = sourceChannelOf(o.source, o.marketingSource);
                 return o;
               });
               res.send({ list, totalPages, page, limit });
@@ -1044,10 +1041,14 @@ const Get = (req, res) => {
             finalResultObj.qualificationData.eventDays.some((d) => d && d.dateUnknown);
           finalResultObj.datesTentative = Array.isArray(finalResultObj.qualificationData?.eventDays) &&
             finalResultObj.qualificationData.eventDays.some((d) => d && d.tentative);
+          // Mid-qualify slice — canonical channel from the messy stored source
+          // (derive-on-read; stored text never rewritten).
+          finalResultObj.sourceChannel = sourceChannelOf(finalResultObj.source, finalResultObj.marketingSource);
 
           // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
-          // (discoveryComplete + discovery.missing). Computed, never stored.
-          // qualifierNotes is a plain stored field and already rides toObject().
+          // (discoveryComplete + discovery.missing + discovery.state). Computed,
+          // never stored. qualifierNotes is a plain stored field and already
+          // rides toObject().
           finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
 
           // ── State-1 (ADDITIVE, read-only) — surface the lead OWNER'S MANAGER

@@ -263,6 +263,9 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
         durationSeconds: Number(durationSeconds) || 0,
         connected: outcome === "connected" || outcome === "done",
         outcome: callLogOutcome,
+        // Mid-qualify slice: a call completed THROUGH a follow-up is by
+        // definition a follow-up call.
+        purpose: "follow_up",
         notes: notes || "",
       },
       actorId

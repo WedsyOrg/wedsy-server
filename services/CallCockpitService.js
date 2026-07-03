@@ -4,6 +4,7 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const { computeDiscovery } = require("./DiscoveryService");
 
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
+const CALL_PURPOSES = ["", "discovery", "follow_up"];
 const FOLLOW_UP_TYPES = ["meet", "call", "visit"];
 // Attempt cadence (Lifecycle Slice C): day offsets from the FIRST unanswered
 // attempt. Runtime values come from SettingsService (cadence.*) which defaults
@@ -211,7 +212,7 @@ const flagUnresponsiveIfNeeded = async (enquiryId, callLog, actorId, alreadyFlag
 // outcome is "qualified".
 const logCall = async (
   enquiryId,
-  { startedAt, durationSeconds, connected, outcome, notes } = {},
+  { startedAt, durationSeconds, connected, outcome, notes, purpose } = {},
   actorId
 ) => {
   assertValidId(enquiryId);
@@ -222,6 +223,9 @@ const logCall = async (
   }
   if (outcome !== undefined && !CALL_OUTCOMES.includes(outcome)) {
     throw httpError(400, `Invalid outcome (expected one of: ${CALL_OUTCOMES.filter(Boolean).join(", ")})`);
+  }
+  if (purpose !== undefined && !CALL_PURPOSES.includes(purpose)) {
+    throw httpError(400, `Invalid purpose (expected one of: ${CALL_PURPOSES.filter(Boolean).join(", ")})`);
   }
   if (notes !== undefined && typeof notes !== "string") {
     throw httpError(400, "Invalid notes");
@@ -237,6 +241,7 @@ const logCall = async (
     durationSeconds: duration,
     connected: connected === true,
     outcome: outcome || "",
+    purpose: purpose || "",
     notes: notes || "",
     loggedBy: actorId || null,
   };
