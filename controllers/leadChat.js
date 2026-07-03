@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const LeadChatService = require("../services/LeadChatService");
+const { assertInScopeOrRoster } = require("../utils/leadScope");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -16,9 +17,10 @@ const assertInScope = async (id, scopeFilter = {}) => {
 };
 
 // GET /enquiry/:_id/chat — paginated thread; marks read for the caller.
+// READ: roster members allowed (Slice B1) — they're chat members post-qual.
 const List = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
     const result = await LeadChatService.listMessages(req.params._id, req.auth.user_id, {
       limit: req.query.limit,
       before: req.query.before,
@@ -62,9 +64,10 @@ const Remove = async (req, res) => {
 
 // GET /enquiry/:_id/chat/members — PHASE-GATED chat participants (MB9a Slice 2):
 // pre-qual → assignee + their reporting manager; post-qual → the roster.
+// READ: roster members allowed (Slice B1).
 const Members = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
     res.status(200).json({ list: await LeadChatService.chatMembers(req.params._id) });
   } catch (error) {
     respond(res, error);

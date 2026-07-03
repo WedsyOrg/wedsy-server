@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const AccountabilityService = require("../services/AccountabilityService");
+const { assertInScopeOrRoster } = require("../utils/leadScope");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -18,7 +19,7 @@ const assertInScope = async (id, scopeFilter = {}) => {
 // Per-viewer framing is decided client-side from mostUrgent.responsibleId vs me.
 const Assess = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id); // READ (Slice B1)
     res.status(200).json(await AccountabilityService.assessLead(req.params._id));
   } catch (error) {
     respond(res, error);

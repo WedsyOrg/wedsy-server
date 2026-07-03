@@ -551,13 +551,29 @@ const qualifyLead = async (enquiryId, actorId) => {
     try {
       await require("./LeadTeamService").addMember(
         enquiryId,
-        { personId: lead.assignedTo },
+        { personId: lead.assignedTo, role: "qualifier" },
         actorId
       );
     } catch (e) {
       if (e.status !== 409) {
         console.error("[qualifyLead] roster continuity add failed:", e.message);
       }
+    }
+    // Slice B1 — tell the NEW owner they just received a qualified lead (the
+    // handoff was silent). Actor excluded (self-qualify onto yourself happens
+    // when the owner has no manager — handedOff is false then anyway).
+    // AdminNotificationService.notify is itself fire-safe.
+    if (String(newOwnerId) !== String(actorId || "")) {
+      const q = lead.qualificationData || {};
+      const couple =
+        q.groomName && q.brideName ? `${q.groomName} & ${q.brideName}` : lead.name || "a lead";
+      await AdminNotificationService.notify(newOwnerId, {
+        type: "lead_qualified_handoff",
+        title: `New qualified lead: ${couple}`,
+        message: "Qualified and handed to you — the journey and roster are live.",
+        leadId: enquiryId,
+        payload: { qualifiedBy: actorId ? String(actorId) : null },
+      });
     }
   }
 

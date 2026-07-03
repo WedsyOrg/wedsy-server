@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const LeadTask = require("../models/LeadTask");
 const LeadTaskService = require("../services/LeadTaskService");
+const { assertInScopeOrRoster } = require("../utils/leadScope");
 const NurtureService = require("../services/NurtureService");
 
 const respond = (res, error) => {
@@ -28,10 +29,12 @@ const Create = async (req, res) => {
 };
 
 // GET /lead-tasks?leadId=... — tasks for one lead
+// READ: roster members allowed (Slice B1); task create/complete keep the
+// strict scope.
 const ListForLead = async (req, res) => {
   try {
     const leadId = req.query.leadId;
-    await assertLeadInScope(leadId, req.scopeFilter);
+    await assertInScopeOrRoster(leadId, req.scopeFilter, req.auth.user_id);
     const list = await LeadTaskService.listForLead(leadId, { includeDone: req.query.includeDone !== "false" });
     res.status(200).json({ list });
   } catch (error) {

@@ -33,6 +33,7 @@ const LeadIntakeService = require("../services/LeadIntakeService");
 const { computeDiscovery } = require("../services/DiscoveryService");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 const { SOURCE_PATTERNS, sourceChannelOf } = require("../utils/leadSource");
+const { isCurrentRosterMember } = require("../utils/leadScope");
 
 // Signal Matrix Slice 3 — opt-in roster widening. ?includeTeam=1 ORs the leads
 // the caller is CURRENTLY rostered on (LeadTeamMember, activeTo null) into
@@ -984,8 +985,14 @@ const Get = (req, res) => {
   const { _id } = req.params;
   // RBAC scope: the doc must also satisfy req.scopeFilter. An out-of-scope id simply
   // yields no match -> the same 404 as a missing enquiry (does not reveal it exists).
+  // Slice B1 (qualify continuity): a CURRENT roster member may READ the lead even
+  // after the handoff moved assignedTo out of their scope — read-only widening;
+  // every write route keeps its owner/manager gate.
   Enquiry.findOne({ $and: [{ _id }, req.scopeFilter || {}] })
-    .then((result) => {
+    .then(async (result) => {
+      if (!result && (await isCurrentRosterMember(_id, req.auth.user_id))) {
+        result = await Enquiry.findById(_id);
+      }
       if (!result) {
         res.status(404).send();
       } else {

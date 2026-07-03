@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const FollowupService = require("../services/FollowupService");
+const { assertInScopeOrRoster } = require("../utils/leadScope");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -15,9 +16,10 @@ const assertInScope = async (id, scopeFilter = {}) => {
 };
 
 // GET /enquiry/:_id/followups — list (also sweeps the once-only "due" cards).
+// READ: roster members allowed (Slice B1); writes below keep the strict scope.
 const ListForLead = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
     await FollowupService.sweepDueCards(req.params._id);
     res.status(200).json({ list: await FollowupService.listForLead(req.params._id) });
   } catch (error) {
