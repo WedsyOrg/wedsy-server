@@ -66,6 +66,23 @@ const Qualify = async (req, res) => {
   }
 };
 
+// POST /enquiry/:_id/proposal-sent — { amount? }. Slice B2: set-once proposal
+// marker (409 if already set). Route gates LEADS_EDIT_SCOPED (owner/manager
+// scope + per-doc enforceLeadScope) — deliberately NO roster fallback: reads
+// widened in B1, writes stay owner-gated.
+const ProposalSent = async (req, res) => {
+  try {
+    const result = await LeadLifecycleService.markProposalSent(
+      req.params._id,
+      { amount: req.body?.amount },
+      req.auth.user_id
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
 // POST /enquiry/:_id/unqualify — reverse a qualification. No requirePermission on
 // the route: eligibility is computed here EXACTLY like disqualify-decision, so only
 // a leads:approve holder (Sales Lead / Revenue Head) OR the assignee's manager may
@@ -200,4 +217,4 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent };

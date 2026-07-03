@@ -81,6 +81,8 @@ const EVENT_TITLES = {
   followup_completed: "Follow-up done ✓",
   // MB9a — the qualify hinge.
   qualified: "Qualified ✦",
+  // Slice B2 — the deal spine's proposal marker.
+  proposal_sent: "Proposal sent",
 };
 
 // Moments rendered from the RAW embedded arrays (lead.callLog[] / lead.followUps[])

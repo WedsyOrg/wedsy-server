@@ -314,6 +314,40 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
   return obj;
 };
 
+// ── Slice B2 — the deal spine's "proposal sent" signal ───────────────────────
+// SET-ONCE (atomic: the filter re-checks null, so a concurrent second press
+// loses and 409s). Amount optional (rupees). Stamps the activity spine and
+// logs a proposal_sent journey event. The spine station derives on read.
+const markProposalSent = async (enquiryId, { amount } = {}, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  if (lead.proposalSentAt) throw httpError(409, "Proposal is already marked sent on this lead");
+
+  let amt = null;
+  if (amount !== undefined && amount !== null && amount !== "") {
+    amt = Number(amount);
+    if (!Number.isFinite(amt) || amt < 0) throw httpError(400, "Invalid amount");
+  }
+  const fields = { proposalSentAt: new Date() };
+  if (amt != null) fields.proposalAmount = amt;
+  const updated = await Enquiry.findOneAndUpdate(
+    { _id: enquiryId, proposalSentAt: null },
+    { $set: fields },
+    { new: true }
+  );
+  if (!updated) throw httpError(409, "Proposal is already marked sent on this lead");
+
+  await EnquiryRepository.touchLastActivity(enquiryId);
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "proposal_sent",
+    actorId: actorId || null,
+    payload: amt != null ? { amount: amt } : {},
+  });
+  return updated;
+};
+
 // ── Quick notes (Redesign) ───────────────────────────────────────────────────
 // One note = one "commented" internal event (shows in the journey) + an append
 // to the legacy updates.notes blob so the old surfaces keep seeing it.
@@ -668,6 +702,7 @@ module.exports = {
   addNote,
   qualifyLead,
   unqualifyLead,
+  markProposalSent,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };

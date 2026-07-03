@@ -474,6 +474,14 @@ router.post(
   CheckAdminLogin,
   lifecycle.Unqualify
 );
+// Slice B2 — set-once "proposal sent" marker (deal spine). Owner/manager
+// WRITE gate (per-doc scope enforced); no roster fallback on writes.
+router.post(
+  "/:_id/proposal-sent",
+  CheckAdminLogin,
+  ...LEADS_EDIT_SCOPED,
+  lifecycle.ProposalSent
+);
 // ── MB9a-2 — per-lead golden-window clock + rescue actions. Claim/reassign/
 // dismiss gate leads:edit + ownerField, so only a manager/RevHead whose scope
 // covers the breached lead can rescue it (an own-scope IC is out of scope).
