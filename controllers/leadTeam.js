@@ -1,29 +1,13 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const LeadTeamService = require("../services/LeadTeamService");
-const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+// Scope-or-roster guard — Slice 3 introduced it here; Slice B1 factored it into
+// utils/leadScope so every lead-page READ route shares the one implementation.
+const { assertInScopeOrRoster: assertInScope } = require("../utils/leadScope");
 
 const respond = (res, error) => {
   const status = error.status || 500;
   res.status(status).json({ message: status === 500 ? "Server error" : error.message });
-};
-
-// Lead-scope guard (mirrors leadChat): the lead must satisfy the caller's scope
-// filter (built by requirePermission with ownerField assignedTo), OR the caller
-// must be a CURRENT roster member (Signal Matrix Slice 3 — roster continuity:
-// the qualify handoff moves assignedTo to the manager, which used to lock the
-// qualifying rep out of their own lead's team with a 403). all-scope → {} → no
-// narrowing.
-const assertInScope = async (id, scopeFilter = {}, callerId = null) => {
-  if (!mongoose.Types.ObjectId.isValid(id))
-    throw Object.assign(new Error("Invalid lead id"), { status: 400 });
-  const inScope = await Enquiry.findOne({ $and: [{ _id: id }, scopeFilter || {}] }, { _id: 1 }).lean();
-  if (inScope) return;
-  if (callerId) {
-    const roster = await LeadTeamMemberRepository.findCurrentByLead(id);
-    if (roster.some((r) => String(r.personId) === String(callerId))) return;
-  }
-  throw Object.assign(new Error("Out of your scope"), { status: 403 });
 };
 
 // GET /enquiry/:_id/team — current roster + full append-only history.

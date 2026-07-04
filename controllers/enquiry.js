@@ -33,6 +33,8 @@ const LeadIntakeService = require("../services/LeadIntakeService");
 const { computeDiscovery } = require("../services/DiscoveryService");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 const { SOURCE_PATTERNS, sourceChannelOf } = require("../utils/leadSource");
+const { isCurrentRosterMember } = require("../utils/leadScope");
+const DealSpineService = require("../services/DealSpineService");
 
 // Signal Matrix Slice 3 — opt-in roster widening. ?includeTeam=1 ORs the leads
 // the caller is CURRENTLY rostered on (LeadTeamMember, activeTo null) into
@@ -984,8 +986,14 @@ const Get = (req, res) => {
   const { _id } = req.params;
   // RBAC scope: the doc must also satisfy req.scopeFilter. An out-of-scope id simply
   // yields no match -> the same 404 as a missing enquiry (does not reveal it exists).
+  // Slice B1 (qualify continuity): a CURRENT roster member may READ the lead even
+  // after the handoff moved assignedTo out of their scope — read-only widening;
+  // every write route keeps its owner/manager gate.
   Enquiry.findOne({ $and: [{ _id }, req.scopeFilter || {}] })
-    .then((result) => {
+    .then(async (result) => {
+      if (!result && (await isCurrentRosterMember(_id, req.auth.user_id))) {
+        result = await Enquiry.findById(_id);
+      }
       if (!result) {
         res.status(404).send();
       } else {
@@ -1019,7 +1027,7 @@ const Get = (req, res) => {
           });
         }
 
-        const proceedWith = (finalResultObj) => {
+        const proceedWith = async (finalResultObj) => {
           // Additive: decorate the single-lead response COPY (in-memory object —
           // never a DB write) with its `lifecycle` bucket + event-date
           // `temperature`, mirroring GetAll's list rows verbatim. Placed in this
@@ -1050,6 +1058,17 @@ const Get = (req, res) => {
           // never stored. qualifierNotes is a plain stored field and already
           // rides toObject().
           finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
+
+          // Slice B2 — the deal spine: derive-on-read station strip (qualified →
+          // meeting set → held → proposal → agreement → onboarded). Inputs are
+          // batched (one query per collection, Promise.all — no N+1); any
+          // failure leaves the payload without dealSpine, never a 500.
+          try {
+            const spineInputs = await DealSpineService.spineInputs(finalResultObj._id);
+            finalResultObj.dealSpine = DealSpineService.computeDealSpine(finalResultObj, spineInputs);
+          } catch (e) {
+            console.error("[enquiry.Get] dealSpine failed:", e.message);
+          }
 
           // ── State-1 (ADDITIVE, read-only) — surface the lead OWNER'S MANAGER
           // first name: lead.assignedTo → Admin → reportingManagerId → that

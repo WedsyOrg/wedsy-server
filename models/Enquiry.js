@@ -86,6 +86,11 @@ const EnquirySchema = new mongoose.Schema(
     // lastActivityAt: monotonic ($max) stamp of ANY employee action on the lead
     // (call, either follow-up store, task, note, WhatsApp, internal chat).
     lastActivityAt: { type: Date, default: null, index: true },
+    // Slice B2 — the deal spine's "proposal" station. Set-once via
+    // POST /enquiry/:_id/proposal-sent (409 on a second attempt); amount
+    // optional (rupees). The station itself is derived on read.
+    proposalSentAt: { type: Date, default: null },
+    proposalAmount: { type: Number, default: null },
     // First-call cockpit (Phase 1A — additive only).
     // Append-only call history: entries are pushed by POST /enquiry/:_id/call-log and
     // intentionally have NO edit/delete route.

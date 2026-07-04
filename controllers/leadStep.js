@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const LeadStepService = require("../services/LeadStepService");
+const { assertInScopeOrRoster } = require("../utils/leadScope");
 const LeadTaskService = require("../services/LeadTaskService");
 
 const respond = (res, error) => {
@@ -19,9 +20,10 @@ const assertInScope = async (id, scopeFilter = {}) => {
 };
 
 // GET /enquiry/:_id/steps — all steps (with owners, notes, blocked hints).
+// READ: roster members allowed (Slice B1); mutations keep the strict scope.
 const List = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
     res.status(200).json({ list: await LeadStepService.listForLead(req.params._id) });
   } catch (error) {
     respond(res, error);
@@ -66,9 +68,10 @@ const AddNote = async (req, res) => {
 
 // ── MB8c-2a-i — per-step tasks ───────────────────────────────────────────────
 // GET /enquiry/:_id/steps/:stepId/tasks
+// READ: roster members allowed (Slice B1).
 const ListTasks = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
     res.status(200).json({ list: await LeadTaskService.listForStep(req.params.stepId) });
   } catch (error) {
     respond(res, error);

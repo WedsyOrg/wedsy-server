@@ -86,6 +86,7 @@ const decorate = async (rows) => {
     personName: name(r.personId),
     departmentId: r.departmentId ? String(r.departmentId) : null,
     departmentName: r.departmentName || "",
+    role: r.role || "",
     addedBy: r.addedBy ? String(r.addedBy) : null,
     addedByName: name(r.addedBy),
     addedAt: r.addedAt,
@@ -112,10 +113,12 @@ const listRoster = async (leadId) => {
 
 // Add a member to the roster. Writes an append-only row, a named journey event,
 // and notifies the new member (full-context: they get the WHOLE lead, Slice 4).
-const addMember = async (leadId, { personId, departmentId }, actorId) => {
+const addMember = async (leadId, { personId, departmentId, role }, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(leadId)) throw err(400, "Invalid lead id");
   if (!personId || !mongoose.Types.ObjectId.isValid(String(personId)))
     throw err(400, "personId is required");
+  if (role !== undefined && !["", "qualifier"].includes(role))
+    throw err(400, 'role must be "" or "qualifier"');
 
   const person = await Admin.findById(personId, { name: 1, departmentId: 1, roleId: 1, roleIds: 1 }).lean();
   if (!person) throw err(404, "Person not found");
@@ -155,6 +158,7 @@ const addMember = async (leadId, { personId, departmentId }, actorId) => {
     personId,
     departmentId: depId,
     departmentName,
+    role: role || "",
     addedBy: actorId || null,
     addedAt: new Date(),
     activeFrom: new Date(),

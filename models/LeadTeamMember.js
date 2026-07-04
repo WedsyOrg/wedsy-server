@@ -26,6 +26,10 @@ const LeadTeamMemberSchema = new mongoose.Schema(
     // here. Name is denormalized at write time so history reads survive renames.
     departmentId: { type: ObjectId, ref: "Department", default: null },
     departmentName: { type: String, default: "" },
+    // Slice B1 — how this member relates to the lead. "qualifier" = the
+    // pre-handoff owner auto-kept at the qualify hinge (the FE badges them as
+    // the secondary owner). "" = a normal department member.
+    role: { type: String, enum: ["", "qualifier"], default: "" },
     addedBy: { type: ObjectId, ref: "Admin", default: null },
     addedAt: { type: Date, default: Date.now },
     activeFrom: { type: Date, default: Date.now },
