@@ -1,4 +1,5 @@
 const { sendWhatsAppText } = require('../utils/whatsapp');
+const { storeWhatsAppMedia } = require('./WhatsAppMediaService');
 const WAAgentMessageRepository = require('../repositories/WAAgentMessageRepository');
 const WAConversationRepository = require('../repositories/WAConversationRepository');
 const WAConversationService = require('./WAConversationService');
@@ -7,12 +8,14 @@ const SettingsService = require('./SettingsService');
 const { KIARA_DEFAULT_SYSTEM_PROMPT } = require('./kiaraDefaultPrompt');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 const QualifiedLead = require('../models/QualifiedLead');
-const axios = require('axios');
 const { google } = require('googleapis');
-
-// Test seam: e2e suites point this at a local mock so no test ever touches
-// the live API. Unset (production) ⇒ the real endpoint, unchanged.
-const ANTHROPIC_API_URL = process.env.ANTHROPIC_API_URL || 'https://api.anthropic.com/v1/messages';
+// MB6 Slice 11: every Anthropic call rides the shared in-process queue
+// (serialized, exponential backoff on 429) — shared with the Instagram agent.
+// The queue owns the ANTHROPIC_API_URL test seam now.
+const { callAnthropic } = require('../utils/anthropicQueue');
+// Fence-tolerant parse for extractor output — models intermittently wrap the
+// JSON in a ```json fence or add prose, which broke the raw JSON.parse.
+const parseModelJson = require('../utils/parseModelJson');
 
 // Kiara's persona now lives in Settings (kiara.systemPrompt, founder-gated,
 // 60s cache) and defaults to the verbatim former hardcoded text — an empty
@@ -50,22 +53,13 @@ const sendToClaude = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 500,
-          system: systemPrompt,
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      // MB6 Slice 11: through the shared in-process queue (429 backoff inside).
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: history
+      });
       const text = firstTextBlock(response);
       if (text === null) throw new Error('Anthropic response had no text block');
       return text;
@@ -92,30 +86,23 @@ const checkQualified = async (history) => {
 
   while (attempt <= MAX_RETRIES) {
     try {
-      const response = await axios.post(
-        ANTHROPIC_API_URL,
-        {
-          model: 'claude-sonnet-4-5',
-          max_tokens: 400,
-          system: EXTRACTOR_SYSTEM_PROMPT,
-          messages: history
-        },
-        {
-          headers: {
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'Content-Type': 'application/json'
-          }
-        }
-      );
+      // MB6 Slice 11: through the shared in-process queue (429 backoff inside).
+      const response = await callAnthropic({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 400,
+        system: EXTRACTOR_SYSTEM_PROMPT,
+        messages: history
+      });
       const text = firstTextBlock(response);
       if (text === null) throw new Error('Anthropic response had no text block');
-      try {
-        return JSON.parse(text);
-      } catch {
-        // JSON parse failure keeps the pre-Kiara fallback: not qualified, no routing.
-        return { qualified: false };
-      }
+      // Fence-tolerant: strip a ```json fence / surrounding prose before parsing.
+      const parsed = parseModelJson(text);
+      if (parsed !== null) return parsed;
+      // JSON parse failure keeps the pre-Kiara fallback: not qualified, no routing.
+      // Log a truncated raw snippet so we can see what the model actually sent.
+      const snippet = String(text).replace(/\s+/g, ' ').slice(0, 300);
+      console.error('[WhatsAppAgent] extractor JSON parse failed:', `raw="${snippet}"`);
+      return { qualified: false };
     } catch (error) {
       attempt++;
       if (attempt > MAX_RETRIES) {
@@ -280,6 +267,13 @@ const receiveMessage = async (phone, message, meta = {}) => {
       firstMessage: message
     });
 
+    // MB7b Slice 4: a couple inbound counts as a nurture touch — reset the
+    // cadence clock so we never nag an active group. Fire-safe; no-op unless
+    // nurture is active on the linked lead.
+    if (conversation.enquiryId) {
+      await require('./NurtureService').registerInboundTouch(conversation.enquiryId);
+    }
+
     // Human-owned or closed conversation: the message is stored for the team,
     // Kiara stays silent — zero Anthropic spend, no auto-reply.
     if (conversation.mode !== 'ai' || conversation.status === 'closed') return;
@@ -291,6 +285,13 @@ const receiveMessage = async (phone, message, meta = {}) => {
     await WAConversationRepository.touchOutbound(conversation._id, reply.slice(0, 120));
     await sendWhatsAppText(phone, reply, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
     const updatedHistory = await WAAgentMessageRepository.getHistory(phone);
+
+    // MB6 Slice 11: skip the qualification-check call entirely while the
+    // conversation has fewer than 3 user messages — nobody qualifies (or needs
+    // routing) two messages in, and this halves early call volume.
+    const userMessages = updatedHistory.filter((m) => m.role === 'user').length;
+    if (userMessages < 3) return;
+
     const qualification = await checkQualified(updatedHistory);
 
     // HOOK 2: escalation + classification routing (vendor/birthday/corporate
@@ -305,17 +306,42 @@ const receiveMessage = async (phone, message, meta = {}) => {
   }
 };
 
-// Non-text inbound (image/audio/video/sticker/…): stored as a placeholder so
-// humans see it in the thread, conversation freshness/unread bumped, lead
-// ensured — but NO Claude call and NO auto-reply.
+// Non-text inbound (image/document/video/audio/sticker): the bytes are now
+// downloaded from Meta and stored on our S3, and the row carries the media*
+// fields so the CRM can render the couple's attachment. Conversation
+// freshness/unread is bumped and the lead ensured — but still NO Claude call
+// and NO auto-reply (unchanged). A media-store failure never blocks ingest:
+// the row records with mediaUrl null (flag-don't-fake).
 const receiveMedia = async (phone, type, meta = {}) => {
   try {
-    const placeholder = `[media: ${type || 'unknown'}]`;
-    await WAAgentMessageRepository.saveMessage(phone, 'user', placeholder);
-    const conversation = await WAConversationService.recordInbound(phone, placeholder);
+    // Download + store first (isolated, returns null on any failure).
+    let stored = null;
+    if (meta.mediaId) {
+      stored = await storeWhatsAppMedia(meta.mediaId, {
+        mimeType: meta.mimeType,
+        filename: meta.filename,
+      });
+    }
+
+    const caption = meta.caption || '';
+    // Keep the message body non-empty: real caption when present, else the
+    // existing `[media: type]` placeholder — `message` is required and also
+    // feeds Claude history on the next text turn, so '' is unsafe here.
+    const message = caption || `[media: ${type || 'unknown'}]`;
+
+    await WAAgentMessageRepository.saveMessage(phone, 'user', message, {
+      mediaType: type || null,
+      mediaUrl: stored ? stored.mediaUrl : null,
+      mediaMimeType: stored ? stored.mediaMimeType : (meta.mimeType || null),
+      mediaFilename: meta.filename || null,
+      mediaCaption: caption || null,
+      mediaSize: stored ? stored.mediaSize : null,
+    });
+
+    const conversation = await WAConversationService.recordInbound(phone, message);
     await WAConversationService.ensureLeadLinked(conversation, {
       profileName: meta.profileName,
-      firstMessage: placeholder
+      firstMessage: message
     });
   } catch (error) {
     console.error('[WhatsAppAgent] receiveMedia error:', error.message);

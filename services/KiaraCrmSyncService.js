@@ -58,6 +58,10 @@ const closeLeadAsSystem = async (enquiryId, reason) => {
 };
 
 // ── Escalation ────────────────────────────────────────────────────────────────
+// Journey event types are channel-prefixed (wa_* / ig_* — MB6 Slice 7).
+const evType = (conversation, suffix) =>
+  `${conversation && conversation.channel === "instagram" ? "ig" : "wa"}_${suffix}`;
+
 const escalate = async (conversation, reason) => {
   const updated = await WAConversationRepository.updateFieldsById(conversation._id, {
     needsHuman: true,
@@ -67,10 +71,19 @@ const escalate = async (conversation, reason) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_escalated",
+      type: evType(conversation, "escalated"),
       actorId: null,
       payload: { reason: reason || "" },
     });
+    // ⚠️ REVIEW-REQUIRED (Phase 2 flagged): one-time transcript→facts extraction
+    // at HANDOFF (escalation is when a human takes over and the transcript is
+    // richest). Haiku, guarded once-per-lead by additionalInfo.factsExtractedAt.
+    // A NEW AI call on real conversations — parked for human review (prompt +
+    // trigger + cost shape in services/KiaraFactExtractionService.js).
+    await require("./KiaraFactExtractionService").extractFactsForLead(
+      conversation.enquiryId,
+      conversation.phone
+    );
   }
   return updated;
 };
@@ -107,7 +120,7 @@ const applyExtraction = async (conversation, extraction) => {
           name: (extraction.data && extraction.data.name) || "",
           offering: (extraction.data && extraction.data.servicesRequired) || "",
           firstMessage: firstMsg ? firstMsg.message : "",
-          source: "whatsapp",
+          source: conversation.channel === "instagram" ? "instagram" : "whatsapp",
           conversationId: conversation._id,
         });
       }
@@ -122,7 +135,7 @@ const applyExtraction = async (conversation, extraction) => {
         await closeLeadAsSystem(conversation.enquiryId, reason);
         await LeadInternalEventService.record({
           leadId: conversation.enquiryId,
-          type: "wa_classified",
+          type: evType(conversation, "classified"),
           actorId: null,
           payload: { classification, action: "conversation_closed_lead_lost", reason },
         });
@@ -174,6 +187,63 @@ const normalizeVenueStatus = (raw) => {
   if (/(not|n't|no |looking|search|need|help)/.test(s)) return "looking";
   if (/book|confirm|final|done|yes/.test(s)) return "booked";
   return "";
+};
+
+// Budget normalizer (CRM-scoped). Kiara / FB-form budget answers arrive as free
+// text — single values ("15k", "1.5 lakh", "50000") or RANGES ("10-15k",
+// "10 – 15k", "10 to 15 lakh"). The cockpit needs ONE scalar (budgetAmount); the
+// original phrasing is always kept in budgetNote so a span is never lost.
+//
+// Range handling is the whole point of this helper: the old digit-strip
+// (raw.replace(/[^\d.]/g,"")) deleted the hyphen, concatenating "10-15k" into
+// "1015" → ×1000 → ₹10.15L. We instead detect a range, parse BOTH bounds, apply
+// the unit suffix to EACH, and store the LOWER bound — a conservative floor that
+// never inflates a lead into a higher budget tier.
+//
+// Units (case-insensitive, applied to the parsed number, not a stripped concat):
+//   k        → ×1e3      l / lakh / lac → ×1e5      cr / crore → ×1e7
+// Absurd / unparseable output (NaN, ≤0, or > ₹100 crore) yields amount=null so a
+// garbage scalar is never stored — only the raw note survives.
+const BUDGET_MAX = 1e9; // ₹100 crore — anything above is implausible for a lead
+
+// Unit may be attached to a digit ("2cr", "15k") or spaced ("2 lakh"). We match a
+// trailing word boundary and use a (?<![a-z]) lookbehind so the token isn't part of
+// a longer word (won't fire on "micro", "while", etc.) yet still fires after a digit.
+const budgetUnitFactor = (s) => {
+  const lower = String(s).toLowerCase();
+  if (/crore\b|(?<![a-z])cr\b/.test(lower)) return 1e7;
+  if (/lakh\b|lac\b|(?<![a-z])l\b/.test(lower)) return 1e5;
+  if (/(?<![a-z])k\b/.test(lower)) return 1e3; // "15k", "10-15k", "2k"
+  return 1;
+};
+
+const normalizeBudget = (raw) => {
+  const note = String(raw == null ? "" : raw).slice(0, 500);
+  const str = String(raw == null ? "" : raw).trim();
+  if (!str) return { amount: null, note };
+
+  const factor = budgetUnitFactor(str);
+
+  // Range first: two numbers separated by hyphen / en-dash / em-dash / "to".
+  const range = str.match(/(\d+(?:\.\d+)?)\s*(?:-|–|—|to)\s*(\d+(?:\.\d+)?)/i);
+  let amount;
+  if (range) {
+    const a = parseFloat(range[1]);
+    const b = parseFloat(range[2]);
+    // Store the LOWER bound (conservative floor), unit applied to the parsed number.
+    amount = Math.min(a, b) * factor;
+  } else {
+    // Single value: digit-strip is safe here (keeps thousands separators, e.g.
+    // "50,000" → 50000) — the range case has already been handled above.
+    const cleaned = str.replace(/[^\d.]/g, "");
+    amount = cleaned ? parseFloat(cleaned) * factor : NaN;
+  }
+
+  // Guard absurd / unparseable output → null + keep the raw note.
+  if (!Number.isFinite(amount) || amount <= 0 || amount > BUDGET_MAX) {
+    return { amount: null, note };
+  }
+  return { amount, note };
 };
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -247,14 +317,56 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
   const fillQd = (field, value) => {
     if (value && !qd[field]) set[`qualificationData.${field}`] = String(value);
   };
-  // Single extractor "name": surfaced as the couple fact only when neither
-  // name is on file (no gender guess to make — it's just "the name we have").
-  if (data.name && !qd.groomName && !qd.brideName) {
-    set["qualificationData.groomName"] = String(data.name);
-  }
+  // Bug #5: the extractor "name" is the WhatsApp contact's name — it belongs in
+  // the top-level `name` field, NOT the couple's groom/bride names. Copying it
+  // into qualificationData.groomName made the lead's display name (groom & bride)
+  // show the contact name instead of the captured FB-form name. The contact name
+  // is preserved on top-level `name` (and still upgrades placeholder names below).
   fillQd("venueStatus", normalizeVenueStatus(data.venueStatus));
   fillQd("venueName", data.venueName);
   fillQd("weddingStyle", data.weddingStyle);
+
+  // MB6 Slice 6 (closes MB4 judgment-call #2): best-effort map Kiara's
+  // servicesRequired/budget answers onto the cockpit-v2 fields — fill-only-
+  // empty like everything above; the raw answers stay in kiaraAnswers.
+  if (data.servicesRequired && !(qd.servicesRequired || []).length) {
+    let available = [];
+    try {
+      available = await require("./SettingsService").get("services.available");
+    } catch (_) { /* master list is advisory for matching */ }
+    const rawParts = Array.isArray(data.servicesRequired)
+      ? data.servicesRequired
+      : String(data.servicesRequired).split(/[,/&+]|\band\b/i);
+    const matched = [
+      ...new Set(
+        rawParts
+          .map((s) => {
+            const t = String(s).trim().toLowerCase();
+            if (!t) return null;
+            const hit = (available || []).find(
+              (a) => t.includes(a.toLowerCase()) || a.toLowerCase().includes(t)
+            );
+            return hit || null;
+          })
+          .filter(Boolean)
+      ),
+    ];
+    if (matched.length) set["qualificationData.servicesRequired"] = matched;
+  }
+  if (data.budget && qd.budgetAmount == null && !qd.budgetNote) {
+    // OVERALL wedding budget → the headline scalar. Range-aware normalizer: parses
+    // single values AND ranges (lower bound stored), preserves the raw phrasing in
+    // budgetNote, nulls absurd output. See normalizeBudget.
+    const { amount, note } = normalizeBudget(data.budget);
+    if (amount != null) set["qualificationData.budgetAmount"] = amount;
+    set["qualificationData.budgetNote"] = note;
+  }
+  // PER-SERVICE budget (e.g. "catering ~3L") is NOT the whole-wedding figure — store
+  // the raw labeled string verbatim and NEVER run it through normalizeBudget into the
+  // headline budgetAmount. Fill-only-empty, mirroring the overall-budget guard above.
+  if (data.budgetPerService && !qd.budgetPerService) {
+    set["qualificationData.budgetPerService"] = String(data.budgetPerService).slice(0, 500);
+  }
 
   // Placeholder lead names ("WhatsApp 1234") upgrade to the real one.
   if (data.name && /^WhatsApp \d{4}$/.test(lead.name || "")) {
@@ -276,7 +388,7 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
 
   await LeadInternalEventService.record({
     leadId: enquiryId,
-    type: "wa_qualified_by_kiara",
+    type: evType(conversation, "qualified_by_kiara"),
     actorId: null,
     payload: {
       answers: ANSWER_KEYS.reduce((acc, k) => {
@@ -286,6 +398,10 @@ const syncQualifiedToCrm = async (phone, data = {}, conversation = null) => {
       eventCreated,
     },
   });
+
+  // MB7b Slice 3: WhatsApp qualification also triggers the (Haiku) Kiara
+  // summary — once, fire-safe.
+  await require("./KiaraSummaryService").generateForQualified(enquiryId);
 
   return true;
 };
@@ -298,4 +414,5 @@ module.exports = {
   parseEventDate,
   parseCount,
   normalizeVenueStatus,
+  normalizeBudget,
 };

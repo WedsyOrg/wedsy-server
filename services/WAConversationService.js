@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const WAConversationRepository = require("../repositories/WAConversationRepository");
 const WAAgentMessageRepository = require("../repositories/WAAgentMessageRepository");
+const EnquiryRepository = require("../repositories/EnquiryRepository");
 const WAAgentMessage = require("../models/WAAgentMessage");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
@@ -41,11 +42,16 @@ const windowInfo = (conversation, now = new Date()) => {
 // ── Hook 1 support: inbound touch + CRM lead linkage ─────────────────────────
 
 // Upsert the conversation row for an inbound message (creates it on first
-// contact) and bump freshness/unread.
-const recordInbound = async (phone, text) => {
-  const normalized = LeadIntakeService.normalizePhone(phone);
-  return await WAConversationRepository.upsertOnInbound(phone, normalized, preview(text));
+// contact) and bump freshness/unread. channel: 'whatsapp' (phone-keyed) or
+// 'instagram' (IG-user-id-keyed — no meaningful normalized phone).
+const recordInbound = async (phone, text, channel = "whatsapp") => {
+  const normalized = channel === "whatsapp" ? LeadIntakeService.normalizePhone(phone) : "";
+  return await WAConversationRepository.upsertOnInbound(phone, normalized, preview(text), new Date(), channel);
 };
+
+// Journey event types are channel-prefixed (wa_* / ig_*).
+const evType = (conversation, suffix) =>
+  `${conversation && conversation.channel === "instagram" ? "ig" : "wa"}_${suffix}`;
 
 // Ensure the conversation is linked to a CRM lead — full intake semantics:
 // normalized-phone dedup, re-enquiry on terminal leads, round-robin auto-assign.
@@ -67,16 +73,17 @@ const ensureLeadLinked = async (conversation, { profileName, firstMessage } = {}
   } else {
     const name = (profileName || "").trim() || `WhatsApp ${String(conversation.phone).slice(-4)}`;
     try {
-      const created = await new Enquiry({
+      // Bug A fix (MB5 Slice 1): the shared intake create path — pins stage
+      // and the create-path defaults so the lead is indistinguishable from a
+      // manual create (round-robin auto-assign included).
+      const created = await LeadIntakeService.createLead({
         name,
         phone: conversation.phone,
         verified: false,
         source: "whatsapp",
         additionalInfo: {},
-      }).save();
+      });
       enquiryId = created._id;
-      // Round-robin auto-assign (never throws).
-      await LeadIntakeService.afterCreate(created._id);
     } catch (e) {
       // Unique-phone race (duplicate webhook delivery): fall back to the winner.
       const winner = await LeadIntakeService.findExistingByNormalizedPhone(conversation.phone);
@@ -107,16 +114,36 @@ const listInbox = async ({ mode, needsHuman, status, enquiryId, page = 1, limit 
   if (mode === "ai" || mode === "human") filter.mode = mode;
   if (needsHuman === "true" || needsHuman === true) filter.needsHuman = true;
   if (status === "active" || status === "closed") filter.status = status;
-  if (enquiryId && mongoose.Types.ObjectId.isValid(enquiryId)) filter.enquiryId = enquiryId;
 
-  const unscoped = Object.keys(scopeFilter).length === 0;
-  if (!unscoped) {
-    const inScope = await Enquiry.find(scopeFilter, { _id: 1 }).lean();
-    filter.enquiryId = { $in: inScope.map((l) => l._id) };
-  }
+  const requestedEnquiryId =
+    enquiryId && mongoose.Types.ObjectId.isValid(enquiryId) ? enquiryId : null;
 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const lim = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+
+  // Resolve the enquiryId filter as an INTERSECTION of (a) the specific lead the
+  // caller asked for and (b) the caller's scope. Never let one bypass the other:
+  // a scoped admin must not see an out-of-scope conversation just by passing its
+  // enquiryId, and a requested enquiryId must not be widened back to "all in scope".
+  const unscoped = Object.keys(scopeFilter).length === 0;
+  if (unscoped) {
+    // Super-admin: honour the requested lead if any, otherwise no enquiry filter.
+    if (requestedEnquiryId) filter.enquiryId = requestedEnquiryId;
+  } else {
+    const inScope = await Enquiry.find(scopeFilter, { _id: 1 }).lean();
+    const inScopeIds = inScope.map((l) => l._id);
+    if (requestedEnquiryId) {
+      // Enforce scope: the requested lead must be one of the caller's in-scope
+      // ids, else return empty — do NOT leak an out-of-scope conversation.
+      const inScopeStr = new Set(inScopeIds.map(String));
+      if (!inScopeStr.has(String(requestedEnquiryId))) {
+        return { list: [], total: 0, page: pageNum, totalPages: 1 };
+      }
+      filter.enquiryId = requestedEnquiryId;
+    } else {
+      filter.enquiryId = { $in: inScopeIds };
+    }
+  }
   const [rows, total] = await Promise.all([
     WAConversationRepository.list(filter, { skip: (pageNum - 1) * lim, limit: lim }),
     WAConversationRepository.count(filter),
@@ -224,7 +251,7 @@ const takeover = async (conversationId, actorId, scopeFilter = {}) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_human_takeover",
+      type: evType(conversation, "human_takeover"),
       actorId,
       payload: {},
     });
@@ -243,7 +270,7 @@ const handback = async (conversationId, actorId, scopeFilter = {}) => {
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_handed_back",
+      type: evType(conversation, "handed_back"),
       actorId,
       payload: {},
     });
@@ -269,12 +296,15 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
     );
   }
   const clean = text.trim();
-  const sent = await sendWhatsAppText(
-    conversation.phone,
-    clean,
-    process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID
-  );
-  if (!sent) throw httpError(502, "WhatsApp send failed — try again");
+  // MB6 Slice 7: channel-aware delivery — IG threads send a DM, not WhatsApp.
+  let sent;
+  if (conversation.channel === "instagram") {
+    const { sendInstagramDM } = require("../utils/instagram");
+    sent = await sendInstagramDM(conversation.phone, clean);
+  } else {
+    sent = await sendWhatsAppText(conversation.phone, clean, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
+  }
+  if (!sent) throw httpError(502, `${conversation.channel === "instagram" ? "Instagram" : "WhatsApp"} send failed — try again`);
 
   const saved = await new WAAgentMessage({
     phone: conversation.phone,
@@ -282,14 +312,22 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
     message: clean,
     sentBy: actorId || null,
   }).save();
+  // Bug B fix (MB5 Slice 1): the response message must have the SAME shape as
+  // getMessages (sentBy populated to {_id,name}) — the chat panel appends it
+  // optimistically and renders sentBy.name.
+  await saved.populate("sentBy", "name");
   const updated = await WAConversationRepository.touchOutbound(conversation._id, preview(clean));
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
       leadId: conversation.enquiryId,
-      type: "wa_admin_message_sent",
+      type: evType(conversation, "admin_message_sent"),
       actorId,
       payload: { preview: preview(clean) },
     });
+    // Signal spine: an outbound WA/IG message is an any-channel customer
+    // response and employee activity (firstCalledAt stays call-only).
+    await EnquiryRepository.stampFirstRespondedAt(conversation.enquiryId);
+    await EnquiryRepository.touchLastActivity(conversation.enquiryId);
   }
   return { message: saved, conversation: { ...updated.toObject(), ...windowInfo(updated) } };
 };
@@ -297,6 +335,9 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
 // Template send (re-engage): allowed with the window closed, still human-mode-only.
 const sendTemplate = async (conversationId, actorId, scopeFilter = {}) => {
   const conversation = await getScoped(conversationId, scopeFilter);
+  if (conversation.channel === "instagram") {
+    throw httpError(422, "Templates are a WhatsApp feature — Instagram chats can't be re-engaged this way");
+  }
   if (conversation.mode !== "human") {
     throw httpError(409, "Kiara is handling this conversation — take over before sending");
   }
@@ -325,6 +366,8 @@ const sendTemplate = async (conversationId, actorId, scopeFilter = {}) => {
     message: body,
     sentBy: actorId || null,
   }).save();
+  // Bug B fix: same shape as getMessages (sentBy populated) — see sendText.
+  await saved.populate("sentBy", "name");
   const updated = await WAConversationRepository.touchOutbound(conversation._id, body);
   if (conversation.enquiryId) {
     await LeadInternalEventService.record({
@@ -333,6 +376,9 @@ const sendTemplate = async (conversationId, actorId, scopeFilter = {}) => {
       actorId,
       payload: { template: templateName },
     });
+    // Signal spine: a re-engage template is an outbound customer touch too.
+    await EnquiryRepository.stampFirstRespondedAt(conversation.enquiryId);
+    await EnquiryRepository.touchLastActivity(conversation.enquiryId);
   }
   return { message: saved, conversation: { ...updated.toObject(), ...windowInfo(updated) } };
 };

@@ -12,6 +12,25 @@ const parsePermission = (str) => {
   return { resource, action, scope };
 };
 
+// ── RBAC v2 (MB7a) — multi-role permission UNION ─────────────────────────────
+// An admin's effective roles = roleIds[] when set, else the single roleId
+// (backward-compatible). permissionsForAdmin returns the UNION of every role's
+// permissions — the single source of truth used by the gate and every reader.
+const roleIdsOf = (admin) => {
+  if (admin && Array.isArray(admin.roleIds) && admin.roleIds.length) return admin.roleIds;
+  if (admin && admin.roleId) return [admin.roleId];
+  return [];
+};
+
+const permissionsForAdmin = async (admin) => {
+  const ids = roleIdsOf(admin);
+  if (!ids.length) return [];
+  const roles = await RoleRepository.findByIds(ids);
+  const set = new Set();
+  for (const r of roles) for (const p of (r && r.permissions) || []) set.add(p);
+  return [...set];
+};
+
 // Do the granted permission strings satisfy the required one?
 // Wildcards (*) allowed on resource and action. Scope expands: all >= department >= team >= own.
 // effectiveScope = broadest granted scope for the matched resource:action (used to build the filter).
@@ -91,12 +110,13 @@ const requirePermission = (requiredStr, options = {}) => {
       if (!adminId) return res.status(403).json({ message: "Forbidden" });
 
       const admin = await AdminRepository.findById(adminId);
-      if (!admin || !admin.roleId) return res.status(403).json({ message: "Forbidden" });
+      if (!admin || roleIdsOf(admin).length === 0) return res.status(403).json({ message: "Forbidden" });
 
-      const role = await RoleRepository.findById(admin.roleId);
-      if (!role || !Array.isArray(role.permissions)) return res.status(403).json({ message: "Forbidden" });
+      // RBAC v2: union of permissions across all of the admin's roles.
+      const perms = await permissionsForAdmin(admin);
+      if (!perms.length) return res.status(403).json({ message: "Forbidden" });
 
-      const { allowed, effectiveScope } = permissionSatisfies(role.permissions, requiredStr);
+      const { allowed, effectiveScope } = permissionSatisfies(perms, requiredStr);
       if (!allowed) return res.status(403).json({ message: "Forbidden", required: requiredStr });
 
       req.scope = effectiveScope;
@@ -112,6 +132,8 @@ module.exports = {
   requirePermission,
   parsePermission,
   permissionSatisfies,
+  permissionsForAdmin,
+  roleIdsOf,
   buildScopeFilter,
   getSubordinateIds,
   getDepartmentMemberIds,

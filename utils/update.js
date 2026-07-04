@@ -11,7 +11,12 @@ const SendUpdate = ({ channels, message, parameters }) => {
       `${process.env.USER_APP_ORIGIN || "https://www.wedsy.in"}/event/`;
     send("event_link", { phone, name, variables: [link] });
   } else if (message === "New Lead") {
-    send("new_lead", { phone, name, variables: [name] });
+    // DISABLED: the external new_lead ping (Fast2SMS DLT template 163269 +
+    // AiSensy "user_lead" campaign) is misconfigured against the providers and
+    // 400s on every lead (the WhatsApp leg via AiSensy especially). New-lead
+    // alerting now happens INTERNALLY via AdminNotificationService from
+    // LeadIntakeService.afterCreate. Call sites are intentionally left intact;
+    // this branch is a no-op so no other trigger is touched.
   } else if (message === "New User") {
     send("user_signup_greet", { phone, name, variables: [name] });
   } else if (message === "Event Approved") {

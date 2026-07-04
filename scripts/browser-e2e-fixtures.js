@@ -1,0 +1,192 @@
+/* Browser-suite fixtures (wedsy-os Playwright e2e drives a real backend).
+ *
+ * setup    → creates a founder admin (all perms), a WhatsApp lead + live
+ *            ai-mode conversation with an open 24h window and two messages,
+ *            then prints ONE LINE of JSON: { token, leadId, conversationId }.
+ * teardown → removes everything the marker identifies. Idempotent.
+ *
+ * Usage: node scripts/browser-e2e-fixtures.js setup|teardown
+ */
+require("dotenv").config();
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
+
+const MARKER = "BROWSER-E2E";
+const LEAD_PHONE = "919180000001";
+const ADMIN_PHONE = "919180000002";
+// MB8c-2a-i — a dedicated QUALIFIED lead (with roster + journey steps + brief
+// facts) so the command-center e2e never has to mutate the pristine LEAD_PHONE.
+const QUALIFIED_LEAD_PHONE = "919180000004";
+// MB9a — a dedicated PRE-QUAL intake lead the lifecycle e2e can qualify without
+// touching the shared LEAD_PHONE fixture.
+const INTAKE_LEAD_PHONE = "919180000005";
+// MB11c — a lead qualified THROUGH the hinge, carrying pre-qual history (call
+// logs with notes + a note event) so the continuity e2e can prove the command
+// center surfaces the qualifier's record, "qualified by X", and the timeline.
+const CONTINUITY_LEAD_PHONE = "919180000006";
+
+(async () => {
+  const cmd = process.argv[2];
+  if (!["setup", "teardown"].includes(cmd)) {
+    console.error("usage: node scripts/browser-e2e-fixtures.js setup|teardown");
+    process.exit(1);
+  }
+  await mongoose.connect(process.env.DATABASE_URL);
+  const Enquiry = require("../models/Enquiry");
+  const WAConversation = require("../models/WAConversation");
+  const WAAgentMessage = require("../models/WAAgentMessage");
+  const LeadInternalEvent = require("../models/LeadInternalEvent");
+  const Admin = require("../models/Admin");
+  const Role = require("../models/Role");
+  const Department = require("../models/Department");
+  // MB8a/MB8b/MB8c-1 — clean the journey artifacts the browser suite creates on
+  // the fixture lead so they don't orphan across runs.
+  const LeadStep = require("../models/LeadStep");
+  const LeadTeamMember = require("../models/LeadTeamMember");
+  const LeadChatMessage = require("../models/LeadChatMessage");
+
+  const LeadTask = require("../models/LeadTask");
+  const cleanLeadArtifacts = async (phone) => {
+    const l = await Enquiry.findOne({ phone }).lean();
+    if (!l) return;
+    await LeadInternalEvent.deleteMany({ leadId: l._id });
+    await LeadStep.deleteMany({ leadId: l._id });
+    await LeadTeamMember.deleteMany({ leadId: l._id });
+    await LeadChatMessage.deleteMany({ leadId: l._id });
+    await LeadTask.deleteMany({ leadId: l._id });
+  };
+
+  const teardown = async () => {
+    await cleanLeadArtifacts(LEAD_PHONE);
+    await cleanLeadArtifacts(QUALIFIED_LEAD_PHONE);
+    await cleanLeadArtifacts(INTAKE_LEAD_PHONE);
+    await cleanLeadArtifacts(CONTINUITY_LEAD_PHONE);
+    await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE, INTAKE_LEAD_PHONE, CONTINUITY_LEAD_PHONE] } });
+    await WAConversation.deleteMany({ phone: LEAD_PHONE });
+    await WAAgentMessage.deleteMany({ phone: LEAD_PHONE });
+    await Admin.deleteMany({ phone: ADMIN_PHONE });
+    await Role.deleteMany({ name: `${MARKER} Founder` });
+    await Department.deleteMany({ name: `${MARKER} Dept` });
+  };
+
+  if (cmd === "teardown") {
+    await teardown();
+    await mongoose.disconnect();
+    console.log(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  await teardown(); // clean slate even after a crashed previous run
+
+  const dept = await Department.create({ name: `${MARKER} Dept` });
+  const role = await Role.create({
+    name: `${MARKER} Founder`,
+    departmentId: dept._id,
+    permissions: ["*:*:all"],
+  });
+  const admin = await Admin.create({
+    name: "Browser Founder",
+    email: `browser-e2e-${Date.now()}@test.local`,
+    phone: ADMIN_PHONE,
+    password: "browser-e2e-not-a-real-password",
+    roles: ["crm"],
+    roleId: role._id,
+    departmentId: dept._id,
+    status: "active",
+  });
+  const token = jwt.sign({ _id: String(admin._id), isAdmin: true }, process.env.JWT_SECRET);
+
+  const lead = await Enquiry.create({
+    name: "Browser E2E Lead",
+    phone: LEAD_PHONE,
+    verified: false,
+    source: "whatsapp",
+    additionalInfo: {},
+    stage: "new",
+    assignedTo: admin._id,
+  });
+  const now = new Date();
+  const conversation = await WAConversation.create({
+    phone: LEAD_PHONE,
+    normalizedPhone: LEAD_PHONE.slice(-10),
+    enquiryId: lead._id,
+    mode: "ai",
+    status: "active",
+    lastInboundAt: now, // 24h window OPEN — the send flow must work
+    lastMessageAt: now,
+    lastMessagePreview: "Hi! Planning my wedding",
+    unreadCount: 1,
+  });
+  await WAAgentMessage.create([
+    { phone: LEAD_PHONE, role: "user", message: "Hi! Planning my wedding" },
+    { phone: LEAD_PHONE, role: "assistant", message: "How lovely! Tell me more ✦" },
+  ]);
+
+  // ── MB8c-2a-i — a QUALIFIED lead for the command-center e2e ──────────────────
+  // (LeadTeamMember is already required above for teardown.)
+  const StepDefinitionService = require("../services/StepDefinitionService");
+  const LeadStepService = require("../services/LeadStepService");
+  const qLead = await Enquiry.create({
+    name: "Aarav Mehta",
+    phone: QUALIFIED_LEAD_PHONE,
+    verified: true,
+    source: "whatsapp",
+    stage: "qualified",
+    qualified: true,
+    assignedTo: admin._id,
+    qualificationData: { groomName: "Aarav", brideName: "Diya", weddingStyle: "Boho", venueArea: "Goa", venueStatus: "looking", servicesRequired: ["Decor", "Makeup"], budgetAmount: 1500000 },
+    additionalInfo: { adFormAnswers: { city: "Goa", weddingDate: "2026-12-12", guests: "300" } },
+  });
+  // The founder is on the roster (so they can own steps/tasks); seed defs + steps.
+  await LeadTeamMember.create({ leadId: qLead._id, personId: admin._id, departmentName: `${MARKER} Dept`, addedBy: admin._id });
+  await StepDefinitionService.seed();
+  await LeadStepService.instantiateForLead(qLead._id, admin._id);
+
+  // ── MB9a — a PRE-QUAL intake lead (assigned to the founder, no journey/roster)
+  // the lifecycle e2e can qualify.
+  const intakeLead = await Enquiry.create({
+    name: "Ishaan Rao",
+    phone: INTAKE_LEAD_PHONE,
+    verified: false,
+    source: "Website",
+    stage: "new",
+    assignedTo: admin._id,
+    additionalInfo: {},
+  });
+
+  // ── MB11c — a lead with PRE-QUAL history, qualified through the real hinge ──
+  // Pre-qual call logs (with notes) + Kiara facts live on the doc; a note event
+  // + the qualifyLead transition give the command center a full timeline and the
+  // "qualified by X · date" credit. qualifyLead sets qualifiedBy/qualifiedAt.
+  const LeadInternalEventService = require("../services/LeadInternalEventService");
+  const LeadLifecycleService = require("../services/LeadLifecycleService");
+  const contLead = await Enquiry.create({
+    name: "Veer & Tara",
+    phone: CONTINUITY_LEAD_PHONE,
+    verified: true,
+    source: "Website",
+    stage: "contacted",
+    assignedTo: admin._id,
+    qualificationData: { groomName: "Veer", brideName: "Tara", weddingStyle: "Classic", venueArea: "Jaipur", servicesRequired: ["Decor"] },
+    additionalInfo: { kiaraAnswers: { city: "Jaipur", budget: "20L" } },
+    callLog: [
+      { startedAt: new Date(Date.now() - 3600000), durationSeconds: 0, connected: false, outcome: "", notes: "No answer — left a voicemail.", loggedBy: admin._id },
+      { startedAt: new Date(Date.now() - 1800000), durationSeconds: 240, connected: true, outcome: "qualified", notes: "Discovery call: 20L budget, Jaipur, Dec wedding.", loggedBy: admin._id },
+    ],
+    updates: { notes: "Keen couple — send the deck before the next call." },
+  });
+  await LeadInternalEventService.record({
+    leadId: contLead._id,
+    type: "commented",
+    actorId: admin._id,
+    payload: { text: "Keen couple — send the deck before the next call." },
+  });
+  // The real hinge: sets qualified + qualifiedBy + qualifiedAt, records the
+  // "qualified" event, instantiates the journey (idempotent).
+  await LeadLifecycleService.qualifyLead(contLead._id, admin._id);
+
+  await mongoose.disconnect();
+  console.log(
+    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id), intakeLeadId: String(intakeLead._id), continuityLeadId: String(contLead._id) })
+  );
+})();
