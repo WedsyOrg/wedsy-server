@@ -83,6 +83,25 @@ const ProposalSent = async (req, res) => {
   }
 };
 
+// PATCH /enquiry/:_id/deal-total — { amount } (owner/manager write gate).
+const DealTotal = async (req, res) => {
+  try {
+    res.status(200).json(await LeadLifecycleService.setDealTotal(req.params._id, req.body?.amount, req.auth.user_id));
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// POST /enquiry/:_id/onboard — { feeAmount, dealTotal?, mode?, note? }. The win
+// hinge (Slice B5a) — onboard from ANY live stage; dup → 409.
+const Onboard = async (req, res) => {
+  try {
+    res.status(200).json(await LeadLifecycleService.onboardClient(req.params._id, req.body || {}, req.auth.user_id));
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
 // POST /enquiry/:_id/unqualify — reverse a qualification. No requirePermission on
 // the route: eligibility is computed here EXACTLY like disqualify-decision, so only
 // a leads:approve holder (Sales Lead / Revenue Head) OR the assignee's manager may
@@ -217,4 +236,4 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent, DealTotal, Onboard };

@@ -85,6 +85,9 @@ const EVENT_TITLES = {
   proposal_sent: "Proposal sent",
   // Slice B3 — the lane engine.
   team_assembled: "Team assembled 🤝",
+  // Slice B5a — the onboard hinge + money ledger.
+  deal_total_changed: "Deal total updated",
+  client_onboarded: "Client onboarded 🏆",
 };
 
 // Moments rendered from the RAW embedded arrays (lead.callLog[] / lead.followUps[])

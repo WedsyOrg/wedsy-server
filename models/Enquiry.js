@@ -91,6 +91,9 @@ const EnquirySchema = new mongoose.Schema(
     // optional (rupees). The station itself is derived on read.
     proposalSentAt: { type: Date, default: null },
     proposalAmount: { type: Number, default: null },
+    // Slice B5a — the deal's total value (rupees). The payments ledger computes
+    // balance against this; edits audit via a deal_total_changed event.
+    dealTotal: { type: Number, default: null },
     // First-call cockpit (Phase 1A — additive only).
     // Append-only call history: entries are pushed by POST /enquiry/:_id/call-log and
     // intentionally have NO edit/delete route.

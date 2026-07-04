@@ -111,6 +111,8 @@ const DEFAULTS = {
   "dealclock.meetingHeldToProposalDays": 2,
   "dealclock.proposalToAgreementDays": 4,
   "dealclock.agreementToOnboardedDays": 3,
+  // Slice B5a — who hears the win bell. "all" = every active admin.
+  "broadcast.winAudience": "all",
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -159,6 +161,7 @@ const KEY_CATEGORY = {
   "dealclock.meetingHeldToProposalDays": "settings_sla",
   "dealclock.proposalToAgreementDays": "settings_sla",
   "dealclock.agreementToOnboardedDays": "settings_sla",
+  "broadcast.winAudience": "settings_billing",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -219,6 +222,11 @@ const validateValue = (key, value) => {
       return value;
     case "sla.rescueTier2Minutes":
       if (!isIntInRange(value, 1, 30)) throw err(400, "sla.rescueTier2Minutes must be an integer 1–30");
+      return value;
+    case "broadcast.winAudience":
+      if (!["all", "sales_cs_leadership"].includes(value)) {
+        throw err(400, "broadcast.winAudience must be 'all' or 'sales_cs_leadership'");
+      }
       return value;
     case "dealclock.qualifiedToMeetingDays":
     case "dealclock.meetingHeldToProposalDays":

@@ -127,6 +127,7 @@ router.post(
 // ownerField narrowing (the roster IS the soft grant), no 403 gating added.
 const leadTeam = require("../controllers/leadTeam");
 const leadLane = require("../controllers/leadLane");
+const leadPayment = require("../controllers/leadPayment");
 router.get(
   "/team/mine",
   CheckAdminLogin,
@@ -482,6 +483,38 @@ router.post(
   CheckAdminLogin,
   ...LEADS_EDIT_SCOPED,
   lifecycle.ProposalSent
+);
+
+// ── Slice B5a — deal total, money ledger, the onboard hinge ──────────────────
+router.patch(
+  "/:_id/deal-total",
+  CheckAdminLogin,
+  ...LEADS_EDIT_SCOPED,
+  lifecycle.DealTotal
+);
+router.post(
+  "/:_id/onboard",
+  CheckAdminLogin,
+  ...LEADS_EDIT_SCOPED,
+  lifecycle.Onboard
+);
+router.get(
+  "/:_id/payments",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadPayment.List
+);
+router.post(
+  "/:_id/payments",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadPayment.Create
+);
+router.delete(
+  "/:_id/payments/:paymentId",
+  CheckAdminLogin,
+  requirePermission("leads:delete:all", { ownerField: "assignedTo" }),
+  leadPayment.Remove
 );
 
 // ── Slice B3 — WORKSTREAM LANES. Reads: view scope + roster fallback (the
