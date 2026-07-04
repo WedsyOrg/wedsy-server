@@ -234,12 +234,12 @@ const acknowledgeContract = async (req, res) => {
 // GET /venues/:slug/contracts/:contractId/pdf — open read.
 const contractPdf = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id name address formattedAddress contact phone email");
+    const venue = await resolveOwnedVenue(req, res, "_id name address formattedAddress contact phone email logo");
     if (!venue) return;
     const contract = await VenueContract.findOne({ _id: req.params.contractId, venue: venue._id }).lean();
     if (!contract) return res.status(404).json({ message: "Contract not found" });
     const { streamContractPdf } = require("../utils/venuePdf");
-    streamContractPdf(res, { venue, contract });
+    await streamContractPdf(res, { venue, contract });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

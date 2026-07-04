@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
 const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
@@ -16,6 +16,7 @@ const { createQuote, listQuotes, getQuote, updateQuote, quotePdf } = require("..
 const { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
+const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
@@ -64,6 +65,8 @@ router.post("/:slug/enquiries/manual", venueOwnerAuth, requireCapability("leads"
 // CSV/Excel bulk import (write=leads) + import history (open read).
 router.post("/:slug/enquiries/import", venueOwnerAuth, requireCapability("leads"), importLeads);
 router.get("/:slug/enquiries/imports", venueOwnerAuth, getImports);
+// Duplicate-phone soft-warn lookup for the add-lead modal (open read).
+router.get("/:slug/enquiries/exists", venueOwnerAuth, checkEnquiryExists);
 // Bulk actions over selected leads (literal "bulk" segments — before /:enquiryId).
 router.post("/:slug/enquiries/bulk", venueOwnerAuth, requireCapability("leads"), bulkAction);
 router.post("/:slug/enquiries/bulk-whatsapp", venueOwnerAuth, requireCapability("leads"), bulkWhatsApp);
@@ -127,6 +130,8 @@ router.post("/:slug/contracts/:contractId/send", venueOwnerAuth, requireCapabili
 router.get("/:slug/contracts/:contractId/pdf", venueOwnerAuth, contractPdf);
 
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
+// Phase 4.3 competitor insights — venue vs anonymized zone-cohort (24h cache).
+router.get("/:slug/competitive", venueOwnerAuth, getCompetitive);
 
 // ── Phase 4.2 reviews: owner-facing display/monitor (24h venue-doc cache);
 //    manual refresh is rate-limited to protect the Places quota ──

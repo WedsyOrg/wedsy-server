@@ -252,6 +252,42 @@ async function run() {
     console.log(`[seed] ${teamSpecs.length} team members (all 5 roles) + multi-identity 8888888888`);
   }
 
+  // 6b. Multi-property owner: phone 7777777777 OWNS three venues (portfolio-*),
+  //     plus a DEACTIVATED membership on test-palace that my-venues must exclude.
+  if (VenueTeamMember) {
+    const PORTFOLIO_PHONE = "7777777777";
+    const portfolioSpecs = [
+      { slug: "portfolio-alpha", name: "Portfolio Alpha" },
+      { slug: "portfolio-beta", name: "Portfolio Beta" },
+      { slug: "portfolio-gamma", name: "Portfolio Gamma" },
+    ];
+    for (const spec of portfolioSpecs) {
+      let pv = await Venue.findOne({ slug: spec.slug });
+      const pvDefaults = { name: spec.name, slug: spec.slug, status: "published", city: "Bangalore", venueType: "banquet_hall" };
+      if (!pv) pv = await Venue.create(pvDefaults);
+      else { Object.assign(pv, pvDefaults); await pv.save(); }
+
+      let po = await VenueOwner.findOne({ phone: PORTFOLIO_PHONE, venueId: pv._id });
+      const poDefaults = { name: "Portfolio Owner", phone: PORTFOLIO_PHONE, role: "owner", venueId: pv._id, verificationStatus: "phone_verified", isActive: true };
+      if (!po) po = await VenueOwner.create(poDefaults);
+      else { Object.assign(po, poDefaults); await po.save(); }
+
+      // Deterministic non-zero KPIs: 2 recent leads (one due today), 1 upcoming booking.
+      await VenueEnquiry.deleteMany({ venueId: pv._id });
+      await VenueEnquiry.create({ venueId: pv._id, coupleName: `${spec.name} Lead A`, couplePhone: "9730000001", stage: "new", source: "wedsy", followUpDate: todayAt(11), createdAt: now });
+      await VenueEnquiry.create({ venueId: pv._id, coupleName: `${spec.name} Lead B`, couplePhone: "9730000002", stage: "contacted", source: "google", createdAt: now });
+      if (VenueBooking) {
+        await VenueBooking.deleteMany({ venue: pv._id });
+        await VenueBooking.create({ venue: pv._id, coupleName: `${spec.name} Booking`, couplePhone: "9730000003", status: "confirmed", totalValue: 300000, days: [{ date: daysFromNow(20), eventType: "Wedding", guestCount: 200 }] });
+      }
+    }
+    // Deactivated membership on test-palace for the portfolio phone (must be
+    // excluded from my-venues / portfolio).
+    await VenueTeamMember.deleteMany({ phone: PORTFOLIO_PHONE });
+    await VenueTeamMember.create({ venueId: venue._id, ownerId: owner._id, name: "Portfolio Owner (inactive member)", phone: PORTFOLIO_PHONE, role: "sales", isActive: false });
+    console.log(`[seed] multi-property owner 7777777777 (3 venues) + 1 deactivated membership`);
+  }
+
   // 7. Rich Phase-3 demo data on Test Palace Two (kept OFF test-palace so the e2e
   //    money math on test-palace stays deterministic): bookings in all 4 statuses,
   //    quotes in 2 versions, invoices paid / partially_paid / unpaid.

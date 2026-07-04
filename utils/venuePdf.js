@@ -157,11 +157,12 @@ async function streamInvoicePdf(res, { venue, booking, invoice }) {
 }
 
 // Contract PDF (Phase 3.5) — numbered clause sections + booking specifics +
-// digital-acknowledgment block. NOTE: once the venue-logo support from
-// claude/venue-quality-sweep lands, wire loadLogoBuffer here too (punch list).
-function streamContractPdf(res, { venue, contract }) {
+// digital-acknowledgment block. Renders the venue logo top-left when set
+// (same graceful-absence path as quotes/invoices).
+async function streamContractPdf(res, { venue, contract }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
   const doc = startDoc(res, `contract-v${contract.version || 1}.pdf`);
-  venueHeader(doc, venue, `Venue Contract  ·  v${contract.version || 1}`);
+  venueHeader(doc, venue, `Venue Contract  ·  v${contract.version || 1}`, logoBuffer);
 
   const parties = contract.parties || {};
   const specifics = contract.specifics || {};

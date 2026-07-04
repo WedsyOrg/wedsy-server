@@ -124,6 +124,20 @@ async function run() {
     check("manual lead create", ok, `status ${status}`);
   }
 
+  // --- Check: duplicate-phone soft-warn exists endpoint ---
+  {
+    // The lead just created has phone 9871230001; a +91/spaced variant must
+    // still match on the last-10 canonical digits.
+    const hit = await api("GET", `/venues/${SLUG}/enquiries/exists?phone=${encodeURIComponent("+91 98712 30001")}`, { token });
+    check("dup-warn: existing phone (last-10 canonical) -> exists:true + lead",
+      hit.status === 200 && hit.json.exists === true && hit.json.lead && hit.json.lead._id,
+      `status ${hit.status} exists=${hit.json && hit.json.exists}`);
+    const miss = await api("GET", `/venues/${SLUG}/enquiries/exists?phone=9000000123`, { token });
+    check("dup-warn: unknown phone -> exists:false", miss.status === 200 && miss.json.exists === false, `exists=${miss.json && miss.json.exists}`);
+    const short = await api("GET", `/venues/${SLUG}/enquiries/exists?phone=123`, { token });
+    check("dup-warn: <10 digits -> exists:false (no false match)", short.status === 200 && short.json.exists === false, `exists=${short.json && short.json.exists}`);
+  }
+
   // --- Check: import endpoint with one duplicate ---
   {
     // 9810000001 is a seeded lead (duplicate -> skipped); the other is new.
@@ -506,7 +520,7 @@ async function run() {
   if (process.env.E2E_CONTRACTS === "1") {
     // Seed structured policies so generation has known content.
     await api("PUT", `/venues/${SLUG}`, { token, body: { policyDoc: { policies: ["No outside DJ after 11pm"], terms: ["50% advance to confirm"], refund: ["No refund within 7 days"] } } });
-    const couplePhone = `95${Date.now() % 1e8}`;
+    const couplePhone = `95${String(Date.now() % 1e8).padStart(8, "0")}`;
     const bk = await api("POST", `/venues/${SLUG}/bookings`, {
       token,
       body: { coupleName: "Contract Couple", couplePhone, totalValue: 400000, days: [{ date: new Date(Date.now() + 30 * 86400000).toISOString(), eventType: "Wedding", guestCount: 250 }], paymentSchedule: [{ label: "Advance", amount: 100000 }] },
@@ -558,9 +572,22 @@ async function run() {
     const ackAgain = await api("POST", `/venues/contract-ack/${ackToken}`, { body: { name: "Again", phone: couplePhone } });
     check("contracts: double-acknowledge -> 409", ackAgain.status === 409, `status ${ackAgain.status}`);
 
-    // pdf bytes
+    // pdf bytes — clean (no logo set) renders without an image object
     const pdf = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
     check("contracts: PDF returns bytes", pdf.status === 200 && pdf.head.startsWith("%PDF") && pdf.bytes > 800, `bytes=${pdf.bytes}`);
+    check("contracts: PDF without logo has no image object", pdf.status === 200 && !pdf.body.includes("/XObject"), `hasImage=${pdf.body.includes("/XObject")}`);
+
+    // logo set -> contract PDF embeds the image object (graceful when cleared)
+    const sharpLib = require("sharp");
+    const logoJpeg = await sharpLib({ create: { width: 24, height: 24, channels: 3, background: { r: 107, g: 30, b: 46 } } }).jpeg().toBuffer();
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: `data:image/jpeg;base64,${logoJpeg.toString("base64")}` } });
+    const pdfLogo = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
+    check("contracts: PDF embeds image object when logo set",
+      pdfLogo.status === 200 && pdfLogo.head.startsWith("%PDF") && pdfLogo.body.includes("/XObject"),
+      `bytes=${pdfLogo.bytes} hasImage=${pdfLogo.body.includes("/XObject")}`);
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
+    const pdfClean = await apiBinary(`/venues/${SLUG}/contracts/${c1._id}/pdf`, { token });
+    check("contracts: PDF clean again after logo cleared", pdfClean.status === 200 && !pdfClean.body.includes("/XObject"), `hasImage=${pdfClean.body.includes("/XObject")}`);
 
     // new version supersedes (voids) prior non-acknowledged; acknowledged stays
     const g2 = await api("POST", `/venues/${SLUG}/bookings/${bkId}/contracts`, { token });
@@ -578,23 +605,6 @@ async function run() {
     check("contracts: editing acknowledged contract -> 409", edAck.status === 409, `status ${edAck.status}`);
   }
 
-
-  // ================= Public-route rate limiting (callback + generate-location) =================
-  // Run on a freshly-started server (publicReadLimiter counters reset on restart).
-  if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
-    // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
-    const burst = await Promise.all(Array.from({ length: 75 }, () =>
-      api("GET", `/venues/${SLUG}/integrations/google-sheets/callback`, {})));
-    const statuses = [...new Set(burst.map((r) => r.status))];
-    check("public-ratelimit: sheets callback burst -> 429 present", burst.some((r) => r.status === 429), `statuses ${statuses.join(",")}`);
-    // The per-IP bucket (shared across publicReadLimiter routes) is now exhausted,
-    // so generate-location-description 429s at the limiter — BEFORE invoking Anthropic.
-    const gen = await api("POST", `/venues/${SLUG}/generate-location-description`, {});
-    check("public-ratelimit: generate-location-description over-limit -> 429 (no Anthropic call)", gen.status === 429, `status ${gen.status}`);
-    // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
-    const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
-    check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
-  }
 
   // ================= Venue logo on quote/invoice PDFs =================
   if (process.env.E2E_PDF_LOGO === "1") {
@@ -774,6 +784,13 @@ async function run() {
     check("reviews: refresh with blank creds -> 200 skipped (cache intact)",
       rf.status === 200 && rf.json.skipped && rf.json.rating === 4.6, `status ${rf.status} skipped=${rf.json.skipped}`);
 
+    // Couple-side enrichment route (public) now shares utils/venueGoogleReviews:
+    // a fresh 7-day cache serves cached with the legacy { reviews, rating, total } shape.
+    const couple = await api("POST", `/venues/${SLUG}/reviews`, {});
+    check("reviews: couple-side route serves cached via shared util (legacy shape)",
+      couple.status === 200 && couple.json.cached === true && couple.json.rating === 4.6 && couple.json.total === 132 && Array.isArray(couple.json.reviews),
+      `status ${couple.status} rating=${couple.json.rating} total=${couple.json.total} cached=${couple.json.cached}`);
+
     // Refresh rate limit: burst past the limiter -> 429 present.
     const burst = await Promise.all(Array.from({ length: 6 }, () => api("POST", `/venues/${SLUG}/reviews/refresh`, { token })));
     check("reviews: refresh burst -> 429 rate limit", burst.some((r) => r.status === 429), `statuses ${[...new Set(burst.map((r) => r.status))].join(",")}`);
@@ -790,6 +807,97 @@ async function run() {
     const items = list.json.venues || list.json || [];
     check("reviews: public list never includes review texts",
       list.status === 200 && items.length > 0 && items.every((x) => x.googleReviews === undefined), `n=${items.length}`);
+  }
+
+  // ================= Phase 4.3: competitor insights (live endpoint shape + cache) =================
+  // (Cohort math + suppression are exercised deterministically by
+  // scripts/e2e-competitive.js; here we confirm the live route + caching + auth.)
+  if (process.env.E2E_COMPETITIVE === "1") {
+    const c1 = await api("GET", `/venues/${SLUG}/competitive`, { token });
+    const validShape = c1.status === 200 && c1.json && typeof c1.json.cohortSize === "number"
+      && (c1.json.suppressedAll === true || (c1.json.metrics && c1.json.metrics.enquiries));
+    check("competitive: GET returns a valid shape", validShape, `status ${c1.status} size=${c1.json && c1.json.cohortSize}`);
+    // Never leaks competitor identifiers regardless of cohort.
+    const blob = JSON.stringify(c1.json || {});
+    check("competitive: payload carries no other venue slugs/ids",
+      !/test-palace-two/.test(blob) && !/"slug"/.test(blob), "no per-competitor fields");
+    // Second call is served from the 24h cache.
+    const c2 = await api("GET", `/venues/${SLUG}/competitive`, { token });
+    check("competitive: second call is cached", c2.status === 200 && c2.json.cached === true, `cached=${c2.json && c2.json.cached}`);
+  }
+
+  // ================= Multi-property: my-venues / switch-venue / portfolio =================
+  if (process.env.E2E_MULTIPROP === "1") {
+    const PORT_PHONE = "7777777777";
+    // Owns 3 venues -> login returns a picker. Select one to get a session token.
+    const login3 = await api("POST", "/venue-owner/auth", { body: { phone: PORT_PHONE, otp: "000000", referenceId: "dev" } });
+    check("multiprop: 3-venue owner login -> picker with 3 owner identities",
+      login3.status === 200 && login3.json.multiple === true && (login3.json.identities || []).length === 3 && login3.json.identities.every((i) => i.kind === "owner"),
+      `n=${login3.json.identities && login3.json.identities.length}`);
+    const firstId = login3.json.identities[0];
+    const sel = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: login3.json.selectionToken, kind: "owner", id: firstId.id } });
+    const ptoken = sel.json && sel.json.token;
+    check("multiprop: select-identity mints a session token", sel.status === 200 && Boolean(ptoken), `status ${sel.status}`);
+
+    // my-venues: exactly the 3 owned venues; the deactivated test-palace membership is excluded.
+    const mv = await api("GET", "/venue-owner/my-venues", { token: ptoken });
+    const slugs = (mv.json.venues || []).map((v) => v.slug).sort();
+    check("multiprop: my-venues lists the 3 owned venues, deactivated membership excluded",
+      mv.status === 200 && mv.json.count === 3 && slugs.join(",") === "portfolio-alpha,portfolio-beta,portfolio-gamma" && mv.json.venues.every((v) => v.role === "owner"),
+      `slugs=${slugs.join(",")}`);
+    check("multiprop: my-venues flags exactly one current venue", (mv.json.venues || []).filter((v) => v.current).length === 1);
+
+    // switch-venue to another owned venue -> token works on that venue's dashboard.
+    const target = mv.json.venues.find((v) => !v.current);
+    const sw = await api("POST", "/venue-owner/switch-venue", { token: ptoken, body: { venueId: target.venueId } });
+    check("multiprop: switch-venue mints a token for the chosen venue", sw.status === 200 && sw.json.token, `status ${sw.status}`);
+    const swOv = await api("GET", "/venues/dashboard/overview", { token: sw.json.token });
+    check("multiprop: switched token authorizes that venue's dashboard", swOv.status === 200, `status ${swOv.status}`);
+    const swMv = await api("GET", "/venue-owner/my-venues", { token: sw.json.token });
+    const nowCurrent = (swMv.json.venues || []).find((v) => v.current);
+    check("multiprop: switched token's current venue is the target", nowCurrent && nowCurrent.venueId === target.venueId, `current=${nowCurrent && nowCurrent.slug}`);
+
+    // switch to a venue this phone does NOT own -> 403 (re-verified from DB).
+    const tp = await api("GET", `/venues/${SLUG}`, {});
+    const notOwned = tp.json.venue && tp.json.venue._id;
+    const swBad = await api("POST", "/venue-owner/switch-venue", { token: ptoken, body: { venueId: notOwned } });
+    check("multiprop: switch to a non-owned venue -> 403", swBad.status === 403, `status ${swBad.status}`);
+
+    // portfolio overview: 3 rows + totals = sum of rows.
+    const pf = await api("GET", "/venue-owner/portfolio/overview", { token: ptoken });
+    const rows = pf.json.venues || [];
+    const sumLeads = rows.reduce((s, r) => s + r.newLeads7d, 0);
+    const sumPending = rows.reduce((s, r) => s + r.revenuePending, 0);
+    check("multiprop: portfolio overview returns 3 owned venues with KPIs",
+      pf.status === 200 && pf.json.count === 3 && rows.every((r) => typeof r.newLeads7d === "number" && typeof r.revenuePending === "number" && typeof r.bookingsUpcoming === "number"),
+      `count=${pf.json.count}`);
+    check("multiprop: portfolio totals == sum of per-venue rows",
+      pf.json.totals && pf.json.totals.newLeads7d === sumLeads && pf.json.totals.revenuePending === sumPending,
+      `totals=${JSON.stringify(pf.json.totals)}`);
+    // Each portfolio venue seeded with 2 recent leads + 1 upcoming booking.
+    check("multiprop: seeded KPIs are non-zero (2 leads, 1 upcoming booking per venue)",
+      rows.every((r) => r.newLeads7d === 2 && r.bookingsUpcoming === 1 && r.followUpsDue >= 1),
+      JSON.stringify(rows.map((r) => ({ s: r.slug, l: r.newLeads7d, b: r.bookingsUpcoming, f: r.followUpsDue }))));
+  }
+
+  // The public-ratelimit drain MUST run last: it exhausts the shared per-IP
+  // publicReadLimiter bucket that other public routes (couple reviews, onboarding,
+  // availability) also use.
+  // ================= Public-route rate limiting (callback + generate-location) =================
+  // Run on a freshly-started server (publicReadLimiter counters reset on restart).
+  if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
+    // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
+    const burst = await Promise.all(Array.from({ length: 75 }, () =>
+      api("GET", `/venues/${SLUG}/integrations/google-sheets/callback`, {})));
+    const statuses = [...new Set(burst.map((r) => r.status))];
+    check("public-ratelimit: sheets callback burst -> 429 present", burst.some((r) => r.status === 429), `statuses ${statuses.join(",")}`);
+    // The per-IP bucket (shared across publicReadLimiter routes) is now exhausted,
+    // so generate-location-description 429s at the limiter — BEFORE invoking Anthropic.
+    const gen = await api("POST", `/venues/${SLUG}/generate-location-description`, {});
+    check("public-ratelimit: generate-location-description over-limit -> 429 (no Anthropic call)", gen.status === 429, `status ${gen.status}`);
+    // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
+    const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
+    check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
   }
 
   finish();

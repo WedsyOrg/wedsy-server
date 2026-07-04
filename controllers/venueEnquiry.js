@@ -162,6 +162,42 @@ const getVenueEnquiries = async (req, res) => {
   }
 };
 
+// GET /venues/:slug/enquiries/exists?phone= — lightweight soft-warn lookup for
+// the add-lead modal (venueOwnerAuth, open read). Matches on the last-10
+// canonical digits so +91 / spacing variants of the same number collide.
+// Returns the most recent matching lead's id + name, or { exists:false }.
+const last10 = (v) => digitsOnly(v).slice(-10);
+const checkEnquiryExists = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const key = last10(req.query.phone);
+    if (key.length < 10) return res.status(200).json({ exists: false });
+    // Anchor the regex to the last 10 digits; the stored value may carry a
+    // country code or formatting, so match the canonical suffix.
+    const candidates = await VenueEnquiry.find({ venueId: venue._id })
+      .select("coupleName name couplePhone stage createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
+    const match = candidates.find((e) => last10(e.couplePhone) === key);
+    if (!match) return res.status(200).json({ exists: false });
+    return res.status(200).json({
+      exists: true,
+      lead: {
+        _id: match._id,
+        name: match.coupleName || match.name || "Lead",
+        stage: match.stage,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 const updateEnquiry = async (req, res) => {
   try {
     const { slug, enquiryId } = req.params;
@@ -440,4 +476,4 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, updateEnquiry, importLeads, getImports, importLeadRows };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, checkEnquiryExists, updateEnquiry, importLeads, getImports, importLeadRows };

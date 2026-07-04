@@ -195,6 +195,13 @@ const VenueSchema = new mongoose.Schema({
     profilePhotoUrl: { type: String },
   }],
   googleReviewsRefreshedAt: { type: Date },
+  // Phase 4.3 — cached competitor-insights payload (24h TTL). Anonymized
+  // zone-cohort aggregates only; never any per-competitor data. Recomputed on
+  // read when stale (see controllers/venueCompetitive.js).
+  competitiveCache: {
+    computedAt: { type: Date },
+    payload: { type: mongoose.Schema.Types.Mixed },
+  },
 }, { timestamps: true });
 
 VenueSchema.index({ location: "2dsphere" }, { sparse: true });
