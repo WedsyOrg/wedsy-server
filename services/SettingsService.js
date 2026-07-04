@@ -104,6 +104,13 @@ const DEFAULTS = {
   "sla.goldenWindowMinutes": 30,
   "sla.rescueTier1Minutes": 5,
   "sla.rescueTier2Minutes": 1,
+  // Slice B4 — deal-clock SLAs (days a lead may sit in a spine station before
+  // the escalation ladder starts). meeting-past-unclosed fires immediately and
+  // has no setting.
+  "dealclock.qualifiedToMeetingDays": 3,
+  "dealclock.meetingHeldToProposalDays": 2,
+  "dealclock.proposalToAgreementDays": 4,
+  "dealclock.agreementToOnboardedDays": 3,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -148,6 +155,10 @@ const KEY_CATEGORY = {
   "sla.goldenWindowMinutes": "settings_sla",
   "sla.rescueTier1Minutes": "settings_sla",
   "sla.rescueTier2Minutes": "settings_sla",
+  "dealclock.qualifiedToMeetingDays": "settings_sla",
+  "dealclock.meetingHeldToProposalDays": "settings_sla",
+  "dealclock.proposalToAgreementDays": "settings_sla",
+  "dealclock.agreementToOnboardedDays": "settings_sla",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -208,6 +219,12 @@ const validateValue = (key, value) => {
       return value;
     case "sla.rescueTier2Minutes":
       if (!isIntInRange(value, 1, 30)) throw err(400, "sla.rescueTier2Minutes must be an integer 1–30");
+      return value;
+    case "dealclock.qualifiedToMeetingDays":
+    case "dealclock.meetingHeldToProposalDays":
+    case "dealclock.proposalToAgreementDays":
+    case "dealclock.agreementToOnboardedDays":
+      if (!isIntInRange(value, 1, 60)) throw err(400, `${key} must be an integer 1–60`);
       return value;
     case "assignment.autoAssignEnabled":
     case "lost.approvalRequired":

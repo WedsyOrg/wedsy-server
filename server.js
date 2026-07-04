@@ -180,4 +180,15 @@ httpServer.listen(port, function () {
   // Google Sheets one-way sync (sheet → leads) for every connected venue — every 15 min.
   // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).
   cron.schedule("*/15 * * * *", () => { runScheduledSheetSync(); }, IST);
+
+  // Slice B4 — the daily escalation sweep (lane silence ladder + deal clock +
+  // lane wake pass) — 8am IST, env-gated so staging/dev don't double-notify.
+  if (process.env.ESCALATION_SWEEP === "1") {
+    cron.schedule("0 8 * * *", () => {
+      require("./services/EscalationSweepService")
+        .runSweep()
+        .then((r) => console.log("[EscalationSweep]", r))
+        .catch((e) => console.error("[EscalationSweep] failed:", e.message));
+    }, IST);
+  }
 });
