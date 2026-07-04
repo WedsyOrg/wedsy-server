@@ -3,6 +3,7 @@ const Order = require("../models/Order");
 const Payment = require("../models/Payment");
 const ChatContent = require("../models/ChatContent");
 const { createInvoice } = require("../utils/invoice");
+const OnboardingService = require("../services/OnboardingService");
 const {
   CreatePayment,
   GetPaymentStatus,
@@ -17,9 +18,24 @@ function logCreateNewPaymentFailure(label, error, meta = {}) {
   });
 }
 
-const CreateNewPayment = (req, res) => {
+const CreateNewPayment = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   const { event, paymentFor, paymentMethod, amount, user, order } = req.body;
+  // MB7a Slice 1 — two-key gate: an event's payment flow unlocks only after the
+  // client finalised (status.finalized) AND Wedsy approved (status.approved).
+  if (paymentFor === "event" && event) {
+    try {
+      const ev = await Event.findById(event, { status: 1 }).lean();
+      if (!ev) return res.status(404).send({ message: "Event not found" });
+      if (!OnboardingService.paymentUnlocked(ev)) {
+        return res.status(422).send({
+          message: "Payment locked — the event must be client-finalised and Wedsy-approved first.",
+        });
+      }
+    } catch (error) {
+      return res.status(400).send({ message: "error", error });
+    }
+  }
   if (paymentFor === "event" && event && paymentMethod === "razporpay") {
     new Payment({
       user: user_id,

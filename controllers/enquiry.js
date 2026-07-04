@@ -1,6 +1,7 @@
 // Core models and utilities used throughout the Enquiry controller
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
+const Admin = require("../models/Admin");
 const { VerifyOTP } = require("../utils/otp");
 const jwt = require("jsonwebtoken");
 const jwtConfig = require("../config/jwt");
@@ -14,8 +15,40 @@ const { GetPaymentTransactions } = require("../utils/payment");
 const { computeLeadHealth } = require("../utils/leadHealth");
 const { buildFilterConditions } = require("../utils/leadFilterBuilder");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
+const {
+  LIFECYCLE_KEYS,
+  lifecycleFragment,
+  bucketOf,
+  TEMPERATURE_KEYS,
+  temperatureCutoffs,
+  temperatureOf,
+  temperatureLabelOf,
+  temperatureFilter,
+  DATE_STATUS_KEYS,
+  dateStatusFragment,
+  parseDateStatus,
+} = require("../utils/leadLifecycle");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadIntakeService = require("../services/LeadIntakeService");
+const { computeDiscovery } = require("../services/DiscoveryService");
+const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
+const { SOURCE_PATTERNS, sourceChannelOf } = require("../utils/leadSource");
+const { isCurrentRosterMember } = require("../utils/leadScope");
+const DealSpineService = require("../services/DealSpineService");
+
+// Signal Matrix Slice 3 — opt-in roster widening. ?includeTeam=1 ORs the leads
+// the caller is CURRENTLY rostered on (LeadTeamMember, activeTo null) into
+// their ownership scope, so a team member can see roster leads in the normal
+// list without a separate surface. OFF by default: no view widens silently.
+// "all" scope ({}) needs no widening and stays {}.
+const effectiveScopeFilter = async (req) => {
+  const scope = req.scopeFilter || {};
+  const wanted = req.query.includeTeam === "1" || req.query.includeTeam === "true";
+  if (!wanted || !Object.keys(scope).length) return scope;
+  const ids = await LeadTeamMemberRepository.findActiveLeadIdsByPerson(req.auth.user_id);
+  if (!ids.length) return scope;
+  return { $or: [scope, { _id: { $in: ids } }] };
+};
 
 const CreateNew = (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
@@ -262,6 +295,128 @@ const CreateNew = (req, res) => {
   }
 };
 
+const escapeRegExp = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// Builds the BASE (non-bucket) listing query from the request params — the part
+// shared by the list (GetAll) and the lifecycle-counts endpoint, so both narrow
+// identically. Excludes `view`, `lifecycle`, `temperature`, sort, RBAC scope,
+// visibility and the whitelisted filter-builder (those are applied by callers).
+// Order of assignments preserved from the original GetAll for behavioural parity.
+const buildBaseQuery = (req) => {
+  const {
+    source,
+    date,
+    search,
+    status,
+    service,
+    eventCreated,
+    eventMonth,
+    bidRequest,
+    storeAccess,
+    assignedTo,
+    dateFrom,
+    dateTo,
+  } = req.query;
+  const query = {};
+  // MB9c — soft-deleted (archived) leads are excluded from the default list.
+  query.archivedAt = null;
+  // MB9c-fix — SOURCE filter, normalized (messy stored strings → canonical
+  // keys). Patterns now live in utils/leadSource (shared verbatim with the
+  // read-time sourceChannel decoration — one matcher, never two).
+  if (source) {
+    const keys = String(source).split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const patterns = keys.map((k) => SOURCE_PATTERNS[k]).filter(Boolean);
+    if (patterns.length) {
+      query.source = { $regex: patterns.map((p) => `(${p})`).join("|"), $options: "i" };
+    } else {
+      query.source = source;
+    }
+  }
+  if (assignedTo) {
+    query.assignedTo = assignedTo === "unassigned" ? null : assignedTo;
+  }
+  if (date) {
+    const startDate = new Date(date);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(date);
+    endDate.setHours(23, 59, 59, 999);
+    query.createdAt = { $gte: startDate, $lt: endDate };
+  }
+  if (!date && (dateFrom || dateTo)) {
+    const range = {};
+    if (dateFrom) {
+      const start = new Date(dateFrom);
+      if (!isNaN(start.getTime())) {
+        start.setHours(0, 0, 0, 0);
+        range.$gte = start;
+      }
+    }
+    if (dateTo) {
+      const end = new Date(dateTo);
+      if (!isNaN(end.getTime())) {
+        end.setHours(23, 59, 59, 999);
+        range.$lte = end;
+      }
+    }
+    if (Object.keys(range).length > 0) query.createdAt = range;
+  }
+  if (search) {
+    const safeSearch = escapeRegExp(search);
+    query.$or = [
+      { name: { $regex: new RegExp(safeSearch, "i") } },
+      { email: { $regex: new RegExp(safeSearch, "i") } },
+      { phone: { $regex: new RegExp(safeSearch, "i") } },
+    ];
+  }
+  if (service) {
+    const serviceRegex = new RegExp(`^${escapeRegExp(service)}$`, "i");
+    query.$and = query.$and || [];
+    query.$and.push({
+      $or: [
+        { "additionalInfo.service": serviceRegex },
+        { "additionalInfo.interestedService": serviceRegex },
+      ],
+    });
+  }
+  if (eventCreated === "Yes") {
+    query["additionalInfo.eventCreated"] = true;
+  } else if (eventCreated === "No") {
+    query["additionalInfo.eventCreated"] = { $ne: true };
+  }
+  if (eventMonth && eventMonth !== "All months") {
+    query["additionalInfo.eventMonth"] = eventMonth;
+  }
+  if (bidRequest === "Yes") {
+    query["additionalInfo.bidRequest"] = true;
+  } else if (bidRequest === "No") {
+    query["additionalInfo.bidRequest"] = { $ne: true };
+  }
+  if (storeAccess === "Yes") {
+    query["additionalInfo.storeAccess"] = true;
+  } else if (storeAccess === "No") {
+    query["additionalInfo.storeAccess"] = { $ne: true };
+  }
+  if (status) {
+    // Fresh, New, Lost, Interested, Verified, Not Verified (Hot/Potential/Cold
+    // are the legacy events-based path handled separately in GetAll).
+    if (status === "Interested") {
+      query.isInterested = true;
+    } else if (status === "Lost") {
+      query.isLost = true;
+    } else if (status === "Verified") {
+      query.verified = true;
+    } else if (status === "NotVerified") {
+      query.verified = false;
+    } else if (status === "Fresh" || status === "New") {
+      let tempDate = new Date();
+      tempDate.setHours(0, 0, 0, 0);
+      tempDate.setDate(tempDate.getDate() - (status === "Fresh" ? 1 : 7));
+      query.createdAt = { $gte: tempDate };
+    }
+  }
+  return query;
+};
+
 const GetAll = async (req, res) => {
   if (req.query.stats === "true") {
     let stats = {
@@ -293,42 +448,36 @@ const GetAll = async (req, res) => {
     });
     res.send({ stats });
   } else {
-    const escapeRegExp = (str) =>
-      String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-    const {
-      source,
-      date,
-      search,
-      sort,
-      status,
-      service,
-      eventCreated,
-      eventMonth,
-      bidRequest,
-      storeAccess,
-      assignedTo,
-      dateFrom,
-      dateTo,
-    } = req.query;
-    const query = {};
+    const { sort, status } = req.query;
+    // Base (non-bucket) narrowers — shared with the lifecycle-counts endpoint.
+    const query = buildBaseQuery(req);
     const sortQuery = {};
-    if (source) {
-      query.source = source;
-    }
-    if (assignedTo) {
-      if (assignedTo === "unassigned") {
-        query.assignedTo = null;
-      } else {
-        query.assignedTo = assignedTo;
-      }
-    }
-    // Lifecycle (Slice I, additive): lead-list view chips. Absent → behavior unchanged.
-    if (req.query.view) {
+
+    // Lifecycle bucket (additive, server-side). When a valid `lifecycle` is sent
+    // it is the single source of truth for the bucket and WINS over `view` (the
+    // view's bucket mapping is skipped). Absent → the existing saved-view
+    // behaviour is unchanged.
+    const lifecycleKey = req.query.lifecycle;
+    const hasLifecycle = LIFECYCLE_KEYS.includes(lifecycleKey);
+    if (!hasLifecycle && req.query.view) {
       const view = req.query.view;
       if (view === "active") {
-        query.stage = { $nin: ["won", "lost"] };
+        // Active = in-pipeline: not won, not lost — INCLUDING leads whose stage
+        // is unset (null / missing). A bare `$nin` drops null docs in Mongo, so
+        // the ~329 stage:null leads would vanish from the default list; the $or
+        // brings them back. $and-merge so we don't clobber any pre-existing $or.
+        query.$and = [
+          ...(query.$and || []),
+          {
+            $or: [
+              { stage: { $nin: ["won", "lost"] } },
+              { stage: null },
+              { stage: { $exists: false } },
+            ],
+          },
+        ];
         query["recycled.isRecycled"] = { $ne: true };
       } else if (view === "won") {
         query.stage = "won";
@@ -338,122 +487,69 @@ const GetAll = async (req, res) => {
         query.stage = "meeting_scheduled";
       } else if (view === "recycled") {
         query["recycled.isRecycled"] = true;
+      } else if (view === "triage") {
+        // MB5 Slice 4: the triage queue as a leads filter.
+        query.triagePending = true;
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "qualified") {
+        // MB9c — the Qualified saved-view segment.
+        query.qualified = true;
+        query["recycled.isRecycled"] = { $ne: true };
+      } else if (view === "golden") {
+        // MB9c — the Golden-window segment: uncontacted, active leads (the same
+        // set Respond-now works from — reconciles).
+        query.firstCalledAt = null;
+        query.qualified = { $ne: true };
+        query.isLost = { $ne: true };
+        query["recycled.isRecycled"] = { $ne: true };
       }
     }
-    if (date) {
-      const startDate = new Date(date);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
-      query.createdAt = {
-        $gte: startDate,
-        $lt: endDate,
-      };
-    }
-    if (!date && (dateFrom || dateTo)) {
-      const range = {};
-      if (dateFrom) {
-        const start = new Date(dateFrom);
-        if (!isNaN(start.getTime())) {
-          start.setHours(0, 0, 0, 0);
-          range.$gte = start;
-        }
-      }
-      if (dateTo) {
-        const end = new Date(dateTo);
-        if (!isNaN(end.getTime())) {
-          end.setHours(23, 59, 59, 999);
-          range.$lte = end;
-        }
-      }
-      if (Object.keys(range).length > 0) {
-        query.createdAt = range;
-      }
-    }
-    if (search) {
-      const safeSearch = escapeRegExp(search);
-      query.$or = [
-        { name: { $regex: new RegExp(safeSearch, "i") } },
-        { email: { $regex: new RegExp(safeSearch, "i") } },
-        { phone: { $regex: new RegExp(safeSearch, "i") } },
-      ];
-    }
-    if (sort) {
-      if (sort === "Date: Oldest") {
-        sortQuery.createdAt = 1;
-      } else if (sort === "Date: Newest") {
-        sortQuery.createdAt = -1;
-      }
-    } else {
+
+    // MB9c-fix — SERVER-SIDE sort over the FULL set (not the loaded page).
+    //   sort = createdAt | activity (updatedAt) | name  (+ dir = asc|desc)
+    // Legacy "Date: Oldest/Newest" kept for back-compat. Default = newest
+    // created first. `_id` is always appended as the stable paging tiebreaker.
+    const dir = req.query.dir; // optional "asc" | "desc"
+    const D = (def) => (dir === "asc" ? 1 : dir === "desc" ? -1 : def);
+    if (sort === "Date: Oldest") {
+      sortQuery.createdAt = 1;
+    } else if (sort === "Date: Newest") {
       sortQuery.createdAt = -1;
+    } else if (sort === "name") {
+      sortQuery.name = D(1); // A→Z by default
+    } else if (sort === "activity") {
+      sortQuery.updatedAt = D(-1); // most-recently-touched by default
+    } else if (sort === "createdAt") {
+      sortQuery.createdAt = D(-1);
+    } else {
+      sortQuery.createdAt = -1; // default: newest created on top
     }
+    sortQuery._id = -1;
 
-    // NEW: Filter by interested service stored in additionalInfo
-    // This aligns with the "Interested Service" / ALL-DECOR-MAKEUP filters in the admin UI.
-    if (service) {
-      const serviceRegex = new RegExp(`^${escapeRegExp(service)}$`, "i");
-      // Match either additionalInfo.service or additionalInfo.interestedService
-      query.$and = query.$and || [];
-      query.$and.push({
-        $or: [
-          { "additionalInfo.service": serviceRegex },
-          { "additionalInfo.interestedService": serviceRegex },
-        ],
-      });
+    // Additive bucket / temperature fragments AND-ed into the scoped filter below.
+    const cutoffs = temperatureCutoffs();
+    const bucketFragments = [];
+    if (hasLifecycle) {
+      const frag = lifecycleFragment(lifecycleKey, cutoffs.today);
+      if (frag) bucketFragments.push(frag);
     }
+    // Event-date family (temperature bucket + per-day date-status flags) — the
+    // members OR together (a lead matches if it fits ANY selected event-date
+    // option), then the group is AND-ed into the scoped filter as one narrower.
+    // Lifecycle stays a separate mandatory AND (pushed above), NOT in this OR.
+    const eventDateFrags = [];
+    const temperatureKey = req.query.temperature;
+    if (TEMPERATURE_KEYS.includes(temperatureKey)) {
+      const tFrag = temperatureFilter(temperatureKey, cutoffs);
+      if (tFrag) eventDateFrags.push(tFrag);
+    }
+    for (const k of parseDateStatus(req.query.dateStatus)) {
+      const f = dateStatusFragment(k);
+      if (f) eventDateFrags.push(f);
+    }
+    if (eventDateFrags.length === 1) bucketFragments.push(eventDateFrags[0]);
+    else if (eventDateFrags.length > 1) bucketFragments.push({ $or: eventDateFrags });
 
-    // NEW: Event created filter.
-    // Backed by a boolean flag in additionalInfo.eventCreated (to be populated alongside event creation flows).
-    if (eventCreated === "Yes") {
-      query["additionalInfo.eventCreated"] = true;
-    } else if (eventCreated === "No") {
-      query["additionalInfo.eventCreated"] = { $ne: true };
-    }
-
-    // NEW: Event month filter.
-    // Backed by a string field in additionalInfo.eventMonth like "January", "February", etc.
-    if (eventMonth && eventMonth !== "All months") {
-      query["additionalInfo.eventMonth"] = eventMonth;
-    }
-
-    // NEW: Bid request filter.
-    // Backed by a boolean flag in additionalInfo.bidRequest (true => has bid request).
-    if (bidRequest === "Yes") {
-      query["additionalInfo.bidRequest"] = true;
-    } else if (bidRequest === "No") {
-      query["additionalInfo.bidRequest"] = { $ne: true };
-    }
-
-    // NEW: Store access filter.
-    // Backed by a boolean flag in additionalInfo.storeAccess (true => has store access).
-    if (storeAccess === "Yes") {
-      query["additionalInfo.storeAccess"] = true;
-    } else if (storeAccess === "No") {
-      query["additionalInfo.storeAccess"] = { $ne: true };
-    }
-    if (status) {
-      // Fresh, New, Hot, Potential, Cold, Lost, Interested, Verified, Not Verified
-      if (status === "Interested") {
-        query.isInterested = true;
-      } else if (status === "Lost") {
-        query.isLost = true;
-      } else if (status === "Verified") {
-        query.verified = true;
-      } else if (status === "NotVerified") {
-        query.verified = false;
-      } else if (status === "Fresh" || status === "New") {
-        let tempDate = new Date();
-        tempDate.setHours(0, 0, 0, 0);
-        if (status === "Fresh") {
-          tempDate.setDate(tempDate.getDate() - 1);
-        } else if (status === "New") {
-          tempDate.setDate(tempDate.getDate() - 7);
-        }
-        query.createdAt = {
-          $gte: tempDate,
-        };
-      }
-    }
     // Filter builder (Settings Suite): strict-whitelisted {field,op,value} filters.
     // Unknown field/op → 400. ALWAYS combined under the same mandatory $and below.
     let filterConditions = [];
@@ -467,7 +563,9 @@ const GetAll = async (req, res) => {
     // RBAC scope: combine req.scopeFilter (built by requirePermission with ownerField
     // "assignedTo") as a MANDATORY $and constraint, so caller params can only narrow
     // within scope, never widen it. For "all" scope req.scopeFilter is {} -> unchanged.
-    const scopedFilter = { $and: [query, req.scopeFilter || {}, visibility, ...filterConditions] };
+    // ?includeTeam=1 (opt-in) ORs the caller's roster leads into that scope.
+    const callerScope = await effectiveScopeFilter(req);
+    const scopedFilter = { $and: [query, callerScope, visibility, ...filterConditions, ...bucketFragments] };
     if (!(status && ["Hot", "Potential", "Cold"].includes(status))) {
       Enquiry.countDocuments(scopedFilter)
         .then((total) => {
@@ -557,8 +655,31 @@ const GetAll = async (req, res) => {
             .limit(limit)
             .exec()
             .then((result) => {
-              // res.send({ list: result[0].result, totalPages, page, limit });
-              res.send({ list: result, totalPages, page, limit });
+              // Additive: decorate each row (on the toObject COPY — never a DB
+              // write) with its `lifecycle` bucket + event-date `temperature`.
+              // `lifecycle` uses the same per-request `today` as temperature, and
+              // bucketOf mirrors lifecycleFragment so a row returned under
+              // ?lifecycle=<k> always has row.lifecycle === <k>.
+              const list = result.map((doc) => {
+                const o = typeof doc.toObject === "function" ? doc.toObject() : doc;
+                o.lifecycle = bucketOf(o, cutoffs.today);
+                o.temperature = temperatureOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                o.temperatureLabel = temperatureLabelOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                o.dateNotDecided = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.dateUnknown);
+                o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.tentative);
+                o.sourceChannel = sourceChannelOf(o.source, o.marketingSource);
+                return o;
+              });
+              // MB9c-fix — include `total` so the list footer can show "X of Y".
+              res.send({ list, total, totalPages, page, limit });
             })
             .catch((error) => {
               res.status(400).send({
@@ -646,7 +767,7 @@ const GetAll = async (req, res) => {
                       },
                     },
                   ]),
-              req.scopeFilter || {},
+              callerScope,
               visibility,
               ...filterConditions,
             ],
@@ -668,7 +789,25 @@ const GetAll = async (req, res) => {
             { $sort: sortQuery },
           ])
             .then((result) => {
-              res.send({ list: result, totalPages, page, limit });
+              const list = result.map((doc) => {
+                const o = typeof doc.toObject === "function" ? doc.toObject() : doc;
+                o.lifecycle = bucketOf(o, cutoffs.today);
+                o.temperature = temperatureOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                o.temperatureLabel = temperatureLabelOf(
+                  o.qualificationData && o.qualificationData.eventDate,
+                  cutoffs
+                );
+                o.dateNotDecided = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.dateUnknown);
+                o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
+                  o.qualificationData.eventDays.some((d) => d && d.tentative);
+                o.sourceChannel = sourceChannelOf(o.source, o.marketingSource);
+                return o;
+              });
+              res.send({ list, totalPages, page, limit });
             })
             .catch((error) => {
               res.status(400).send({
@@ -727,13 +866,19 @@ const Update = (req, res) => {
 // which is used by the admin lead-details page for things like Store Access and Client Budget.
 const UpdateLead = async (req, res) => {
   const { _id } = req.params;
-  const { name, phone, email, marketingSource, additionalInfoUpdates } =
+  const { name, phone, email, marketingSource, additionalInfoUpdates, qualifierNotes } =
     req.body;
 
   const updateFields = {};
 
   if (name) {
     updateFields.name = name;
+  }
+
+  // SEQ-1 — the qualifier's discovery notes (writable anytime pre-qual via this
+  // scoped route). Empty string is allowed (lets the intern clear them).
+  if (typeof qualifierNotes === "string") {
+    updateFields.qualifierNotes = qualifierNotes;
   }
 
   if (typeof phone === "string" && phone.trim().length > 0) {
@@ -841,8 +986,14 @@ const Get = (req, res) => {
   const { _id } = req.params;
   // RBAC scope: the doc must also satisfy req.scopeFilter. An out-of-scope id simply
   // yields no match -> the same 404 as a missing enquiry (does not reveal it exists).
+  // Slice B1 (qualify continuity): a CURRENT roster member may READ the lead even
+  // after the handoff moved assignedTo out of their scope — read-only widening;
+  // every write route keeps its owner/manager gate.
   Enquiry.findOne({ $and: [{ _id }, req.scopeFilter || {}] })
-    .then((result) => {
+    .then(async (result) => {
+      if (!result && (await isCurrentRosterMember(_id, req.auth.user_id))) {
+        result = await Enquiry.findById(_id);
+      }
       if (!result) {
         res.status(404).send();
       } else {
@@ -850,6 +1001,10 @@ const Get = (req, res) => {
         // Important: if we migrate, we re-read the updated doc so subdocuments get real _id values immediately
         // (required for editing/updating a specific note from the admin UI).
         let resultObj = result.toObject();
+        // Per-request cutoffs, computed ONCE and in scope for proceedWith below,
+        // where the lifecycle/temperature decoration is applied to the response
+        // copy (see proceedWith) so BOTH the common and migration exit paths carry it.
+        const cutoffs = temperatureCutoffs();
         let needsConversationMigration = false;
         if (
           resultObj.updates?.conversations &&
@@ -872,7 +1027,79 @@ const Get = (req, res) => {
           });
         }
 
-        const proceedWith = (finalResultObj) => {
+        const proceedWith = async (finalResultObj) => {
+          // Additive: decorate the single-lead response COPY (in-memory object —
+          // never a DB write) with its `lifecycle` bucket + event-date
+          // `temperature`, mirroring GetAll's list rows verbatim. Placed in this
+          // SHARED exit so it runs exactly once for EVERY return path — including
+          // the legacy conversation-migration branch, which passes its own
+          // migrated.toObject() copy through here. bucketOf mirrors
+          // lifecycleFragment, so the lead-detail header shows the SAME values
+          // the list shows for this lead. Later spreads preserve these keys.
+          finalResultObj.lifecycle = bucketOf(finalResultObj, cutoffs.today);
+          finalResultObj.temperature = temperatureOf(
+            finalResultObj.qualificationData && finalResultObj.qualificationData.eventDate,
+            cutoffs
+          );
+          finalResultObj.temperatureLabel = temperatureLabelOf(
+            finalResultObj.qualificationData && finalResultObj.qualificationData.eventDate,
+            cutoffs
+          );
+          finalResultObj.dateNotDecided = Array.isArray(finalResultObj.qualificationData?.eventDays) &&
+            finalResultObj.qualificationData.eventDays.some((d) => d && d.dateUnknown);
+          finalResultObj.datesTentative = Array.isArray(finalResultObj.qualificationData?.eventDays) &&
+            finalResultObj.qualificationData.eventDays.some((d) => d && d.tentative);
+          // Mid-qualify slice — canonical channel from the messy stored source
+          // (derive-on-read; stored text never rewritten).
+          finalResultObj.sourceChannel = sourceChannelOf(finalResultObj.source, finalResultObj.marketingSource);
+
+          // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
+          // (discoveryComplete + discovery.missing + discovery.state). Computed,
+          // never stored. qualifierNotes is a plain stored field and already
+          // rides toObject().
+          finalResultObj = { ...finalResultObj, ...computeDiscovery(finalResultObj) };
+
+          // Slice B2 — the deal spine: derive-on-read station strip (qualified →
+          // meeting set → held → proposal → agreement → onboarded). Inputs are
+          // batched (one query per collection, Promise.all — no N+1); any
+          // failure leaves the payload without dealSpine, never a 500.
+          try {
+            const spineInputs = await DealSpineService.spineInputs(finalResultObj._id);
+            finalResultObj.dealSpine = DealSpineService.computeDealSpine(finalResultObj, spineInputs);
+          } catch (e) {
+            console.error("[enquiry.Get] dealSpine failed:", e.message);
+          }
+
+          // ── State-1 (ADDITIVE, read-only) — surface the lead OWNER'S MANAGER
+          // first name: lead.assignedTo → Admin → reportingManagerId → that
+          // Admin's first name (assignedToManagerName). Best-effort: any failure
+          // leaves the payload UNCHANGED. assignedTo's own shape is untouched.
+          const ownerId = finalResultObj.assignedTo;
+          if (ownerId) {
+            Admin.findById(ownerId, { reportingManagerId: 1 })
+              .lean()
+              .then((owner) => {
+                if (owner && owner.reportingManagerId) {
+                  return Admin.findById(owner.reportingManagerId, { name: 1 }).lean();
+                }
+                return null;
+              })
+              .then((manager) => {
+                if (manager && manager.name) {
+                  const firstName = String(manager.name).trim().split(/\s+/)[0] || "";
+                  finalResultObj = { ...finalResultObj, assignedToManagerName: firstName };
+                }
+                continueWithUser(finalResultObj);
+              })
+              .catch(() => continueWithUser(finalResultObj));
+          } else {
+            continueWithUser(finalResultObj);
+          }
+        };
+
+        // Existing user-resolution + summary chain, factored out unchanged so the
+        // manager lookup above can run first without altering any response shape.
+        const continueWithUser = (finalResultObj) => {
           User.findOne({ phone: result.phone })
             .then((user) => {
               if (!user) {
@@ -1109,10 +1336,14 @@ const AddConversation = (req, res) => {
     { _id },
     { $push: { "updates.conversations": conversationObj } }
   )
-    .then((result) => {
+    .then(async (result) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // Signal spine: a timestamped conversation note is an any-channel
+        // customer response (per the Signal Matrix decision) + activity.
+        await EnquiryRepository.stampFirstRespondedAt(_id, createdAtDate);
+        await EnquiryRepository.touchLastActivity(_id);
         res.send({ message: "success" });
       }
     })
@@ -1147,10 +1378,13 @@ const UpdateNotes = (req, res) => {
   const { _id } = req.params;
   const { notes } = req.body;
   Enquiry.findByIdAndUpdate({ _id }, { $set: { "updates.notes": notes } })
-    .then((result) => {
+    .then(async (result) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // Signal spine: the notes blob is activity only (no per-note timestamp
+        // → never contributes to firstRespondedAt).
+        await EnquiryRepository.touchLastActivity(_id);
         res.send({ message: "success" });
       }
     })
@@ -1200,9 +1434,72 @@ const SetFirstCall = async (req, res) => {
   }
 };
 
+// GET /enquiry/lifecycle-counts — real DB counts per lifecycle bucket, computed
+// via a single $facet aggregation (no docs loaded, NO cap). Honours the SAME
+// base narrowers as the list (search / filters / source / date / temperature)
+// AND the SAME RBAC scope (req.scopeFilter) + visibility, so the chip badges
+// match exactly what the caller is allowed to see. Buckets come from the shared
+// lifecycleFragment, so counts and the list can never disagree.
+const LifecycleCounts = async (req, res) => {
+  try {
+    const base = buildBaseQuery(req);
+    let filterConditions = [];
+    try {
+      filterConditions = await buildFilterConditions(req.query.filters);
+    } catch (fbError) {
+      return res.status(fbError.status || 400).send({ message: fbError.message });
+    }
+    const visibility = await currentVisibilityFilter();
+    // One cutoff set per request → the SAME today-boundary feeds both the
+    // lifecycle "past event" fold and the temperature filter (single source).
+    const cutoffs = temperatureCutoffs();
+    const bucketFragments = [];
+    // Same event-date OR group the list uses (temperature bucket + per-day
+    // date-status flags), so counts stay in lock-step with the filtered list.
+    const eventDateFrags = [];
+    const temperatureKey = req.query.temperature;
+    if (TEMPERATURE_KEYS.includes(temperatureKey)) {
+      const tFrag = temperatureFilter(temperatureKey, cutoffs);
+      if (tFrag) eventDateFrags.push(tFrag);
+    }
+    for (const k of parseDateStatus(req.query.dateStatus)) {
+      const f = dateStatusFragment(k);
+      if (f) eventDateFrags.push(f);
+    }
+    if (eventDateFrags.length === 1) bucketFragments.push(eventDateFrags[0]);
+    else if (eventDateFrags.length > 1) bucketFragments.push({ $or: eventDateFrags });
+    // Same mandatory $and shape the list uses (scope can only narrow, never
+    // widen) — including the same opt-in ?includeTeam=1 roster widening, so the
+    // chip badges always match the list.
+    const baseMatch = {
+      $and: [base, await effectiveScopeFilter(req), visibility, ...filterConditions, ...bucketFragments],
+    };
+    const facet = {};
+    for (const key of LIFECYCLE_KEYS) {
+      facet[key] = [{ $match: lifecycleFragment(key, cutoffs.today) }, { $count: "n" }];
+    }
+    facet.all = [{ $count: "n" }];
+    const agg = await Enquiry.aggregate([{ $match: baseMatch }, { $facet: facet }]);
+    const f = agg[0] || {};
+    const num = (k) => (f[k] && f[k][0] ? f[k][0].n : 0);
+    res.send({
+      fresh: num("fresh"),
+      touched: num("touched"),
+      qualified: num("qualified"),
+      meeting: num("meeting"),
+      lost: num("lost"),
+      all: num("all"),
+    });
+  } catch (error) {
+    console.error("[lifecycle-counts]", error);
+    res.status(500).send({ message: "error", error: error.message });
+  }
+};
+
 module.exports = {
   CreateNew,
   GetAll,
+  LifecycleCounts,
   Get,
   Update,
   UpdateLead,
@@ -1214,4 +1511,5 @@ module.exports = {
   UpdateNotes,
   UpdateCallSchedule,
   SetFirstCall,
+  effectiveScopeFilter,
 };

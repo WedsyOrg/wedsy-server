@@ -16,8 +16,12 @@ const isFounderRole = (role) =>
 const callerContext = async (callerId) => {
   if (!callerId) return { admin: null, role: null, isFounder: false };
   const admin = await Admin.findById(callerId).lean();
-  const role = admin && admin.roleId ? await Role.findById(admin.roleId).lean() : null;
-  return { admin, role, isFounder: isFounderRole(role) };
+  // RBAC v2: founder if ANY of the caller's roles is the founder role.
+  const { roleIdsOf } = require("../middlewares/requirePermission");
+  const ids = roleIdsOf(admin);
+  const roles = ids.length ? await Role.find({ _id: { $in: ids } }).lean() : [];
+  const founderRole = roles.find(isFounderRole) || null;
+  return { admin, role: founderRole || roles[0] || null, isFounder: roles.some(isFounderRole) };
 };
 
 // Roles list: the founder role (and therefore its matrix row) is INVISIBLE to any
@@ -51,8 +55,9 @@ const updatePermissions = async (_id, { permissions, description } = {}, callerI
     throw err(403, "This role is protected and cannot be edited.");
   }
   const { admin, isFounder } = await callerContext(callerId);
-  if (admin && admin.roleId && String(admin.roleId) === String(_id)) {
-    throw err(403, "You cannot edit the role you yourself hold.");
+  const { roleIdsOf } = require("../middlewares/requirePermission");
+  if (admin && roleIdsOf(admin).map(String).includes(String(_id))) {
+    throw err(403, "You cannot edit a role you yourself hold.");
   }
   const { valid, errors } = validatePermissions(permissions);
   if (!valid) {
@@ -115,7 +120,7 @@ const deleteRole = async (_id, callerId) => {
   if (!role || role.deletedAt) throw err(404, "Role not found.");
   if (isFounderRole(role)) throw err(422, "Founder role is immutable");
   if (role.protected === true) throw err(403, "This role is protected and cannot be deleted.");
-  const holders = await Admin.find({ roleId: _id }, { name: 1 }).lean();
+  const holders = await Admin.find({ $or: [{ roleId: _id }, { roleIds: _id }] }, { name: 1 }).lean();
   if (holders.length > 0) {
     throw err(
       422,

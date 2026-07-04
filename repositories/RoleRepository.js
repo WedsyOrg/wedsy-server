@@ -8,6 +8,12 @@ const findById = async (_id) => {
   return await Role.findById(_id).lean();
 };
 
+// RBAC v2 — fetch many roles at once (the permission-union read path).
+const findByIds = async (ids) => {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
+  return await Role.find({ _id: { $in: ids } }).lean();
+};
+
 const updateById = async (_id, fields) => {
   return await Role.findByIdAndUpdate(
     _id,
@@ -19,5 +25,6 @@ const updateById = async (_id, fields) => {
 module.exports = {
   findAllActive,
   findById,
+  findByIds,
   updateById,
 };
