@@ -19,6 +19,9 @@ const { getAnalytics } = require("../controllers/venueAnalytics");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
+const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
+const { createAllotments, listAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
+const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
 const { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter } = require("../utils/venueEnquiryRateLimit");
@@ -90,6 +93,25 @@ router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapabi
 
 // ── Phase 3.4: payments summary + Phase 4.1: analytics — open reads ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
+
+// ── Phase 5 (PMS): rooms inventory (listing), allotments + runsheet (leads),
+//    occupancy (open read) ──
+router.get("/:slug/rooms", venueOwnerAuth, listRooms);
+router.post("/:slug/rooms", venueOwnerAuth, requireCapability("listing"), addRoom);
+router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), updateRoom);
+router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
+
+router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
+router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
+router.patch("/:slug/allotments/:allotmentId", venueOwnerAuth, requireCapability("leads"), updateAllotment);
+router.get("/:slug/occupancy", venueOwnerAuth, occupancy);
+
+router.get("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, listRunsheet);
+router.post("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, requireCapability("leads"), createRunsheetItem);
+router.post("/:slug/bookings/:bookingId/runsheet/reorder", venueOwnerAuth, requireCapability("leads"), reorderRunsheet);
+router.patch("/:slug/runsheet/:itemId", venueOwnerAuth, requireCapability("leads"), updateRunsheetItem);
+router.delete("/:slug/runsheet/:itemId", venueOwnerAuth, requireCapability("leads"), deleteRunsheetItem);
+
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
 
 // Google Sheets integration — ALL routes require the "leads" capability (ruling),

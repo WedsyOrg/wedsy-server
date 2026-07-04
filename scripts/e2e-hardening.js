@@ -305,6 +305,44 @@ async function run() {
     ok("7 gated route without token -> 401", noTok.status === 401, `status ${noTok.status}`);
   }
 
+  // ═══════════ 9. PMS WRITE SURFACES (rooms / allotments / runsheet) ═══════════
+  console.log("\n— 9. PMS hostile input —");
+  {
+    // XSS room name stored verbatim (inert), giant name rejected
+    const xssName = '<img src=x onerror=alert(1)>Suite';
+    const rx = await api("POST", `/venues/${A}/rooms`, { token: tokenA, body: { name: xssName, type: "suite" } });
+    ok("9 XSS room name stored verbatim (inert)", rx.status === 201 && rx.json.room.name === xssName, `status ${rx.status}`);
+    const rGiant = await api("POST", `/venues/${A}/rooms`, { token: tokenA, body: { name: "R".repeat(10000) } });
+    ok("9 10k-char room name -> 400", rGiant.status === 400, `status ${rGiant.status}`);
+    const rNegCap = await api("POST", `/venues/${A}/rooms`, { token: tokenA, body: { name: "Neg", capacity: -3 } });
+    ok("9 negative capacity -> 400", rNegCap.status === 400, `status ${rNegCap.status}`);
+
+    // a booking to hang allotments off
+    const bkr = await api("POST", `/venues/${A}/bookings`, { token: tokenA, body: { coupleName: "PMS Torture", days: [{ date: new Date(Date.now() + 30 * 86400000).toISOString() }] } });
+    const bId = bkr.json.booking && bkr.json.booking._id;
+    const roomId = rx.json.room._id;
+
+    const aAbsurd = await api("POST", `/venues/${A}/bookings/${bId}/allotments`, { token: tokenA, body: { room: roomId, guestName: "X", checkInAt: "9999-01-01", checkOutAt: "9999-01-02" } });
+    ok("9 absurd-year allotment dates -> 400", aAbsurd.status === 400, `status ${aAbsurd.status}`);
+    const aJunkRoom = await api("POST", `/venues/${A}/bookings/${bId}/allotments`, { token: tokenA, body: { room: "not-an-objectid", guestName: "X", checkInAt: new Date(Date.now() + 86400000).toISOString(), checkOutAt: new Date(Date.now() + 2 * 86400000).toISOString() } });
+    ok("9 junk room id -> 4xx, not 500", aJunkRoom.status >= 400 && aJunkRoom.status < 500, `status ${aJunkRoom.status}`);
+    const aHuge = await api("POST", `/venues/${A}/bookings/${bId}/allotments`, { token: tokenA, body: { allotments: Array.from({ length: 51 }, () => ({ room: roomId, guestName: "X", checkInAt: new Date().toISOString(), checkOutAt: new Date(Date.now() + 86400000).toISOString() })) } });
+    ok("9 51-item bulk allotment -> 400", aHuge.status === 400, `status ${aHuge.status}`);
+
+    const rsGiant = await api("POST", `/venues/${A}/bookings/${bId}/runsheet`, { token: tokenA, body: { day: new Date(Date.now() + 30 * 86400000).toISOString(), title: "T".repeat(10000) } });
+    ok("9 10k-char runsheet title -> 400", rsGiant.status === 400, `status ${rsGiant.status}`);
+    const rsBadStatus = await api("POST", `/venues/${A}/bookings/${bId}/runsheet`, { token: tokenA, body: { day: new Date(Date.now() + 30 * 86400000).toISOString(), title: "ok", status: "exploded" } });
+    ok("9 bad runsheet status enum -> 400", rsBadStatus.status === 400, `status ${rsBadStatus.status}`);
+    const reorderForeign = await api("POST", `/venues/${A}/bookings/${bId}/runsheet/reorder`, { token: tokenA, body: { day: new Date(Date.now() + 30 * 86400000).toISOString(), ids: [leadId] } });
+    ok("9 reorder with foreign ids -> 400", reorderForeign.status === 400, `status ${reorderForeign.status}`);
+
+    // tenancy: venue B's owner cannot touch venue A's PMS surfaces
+    const idor = await api("POST", `/venues/${A}/rooms`, { token: tokenB, body: { name: "Intruder" } });
+    ok("9 cross-venue room write -> 403", idor.status === 403, `status ${idor.status}`);
+    const idorOcc = await api("GET", `/venues/${A}/occupancy`, { token: tokenB });
+    ok("9 cross-venue occupancy read -> 403", idorOcc.status === 403, `status ${idorOcc.status}`);
+  }
+
   finish();
 }
 
