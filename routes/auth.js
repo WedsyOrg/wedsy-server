@@ -7,7 +7,18 @@ const auth = require("../controllers/auth");
 const authInternational = require("../controllers/auth.international");
 
 // Admin Auth
-router.post("/admin", auth.AdminLogin);
+// Login keeps a strict budget (20/15min/IP) so raising the general limiter
+// for chat polling doesn't loosen brute-force protection. Same localhost
+// skip as the general limiter so local e2e runs aren't throttled.
+const adminLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: "Too many requests, please try again later." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.ip),
+});
+router.post("/admin", adminLoginLimiter, auth.AdminLogin);
 router.get("/admin", CheckLogin, auth.GetAdmin);
 // Settings Suite: resolved permissions for the caller (drives Settings UI visibility).
 router.get("/admin/permissions", CheckAdminLogin, auth.GetPermissions);
@@ -23,6 +34,8 @@ router.post("/admin/forgot", forgotLimiter, auth.ForgotPassword);
 router.post("/admin/reset", auth.ResetPassword);
 // Forced first-login password change (Settings Suite Slice 9).
 router.post("/admin/first-reset", CheckAdminLogin, auth.FirstResetPassword);
+// Self password change — any logged-in admin, own password only (password-mgmt Slice 1).
+router.post("/admin/change-password", CheckAdminLogin, auth.ChangeOwnPassword);
 
 // Vendor Auth
 router.post("/vendor", auth.VendorLogin);

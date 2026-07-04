@@ -1,7 +1,7 @@
 const SettingsService = require("../services/SettingsService");
 const AdminRepository = require("../repositories/AdminRepository");
 const RoleRepository = require("../repositories/RoleRepository");
-const { permissionSatisfies } = require("../middlewares/requirePermission");
+const { permissionSatisfies, permissionsForAdmin } = require("../middlewares/requirePermission");
 
 const respond = (res, error) => {
   const status = error.status || 500;
@@ -9,12 +9,10 @@ const respond = (res, error) => {
   res.status(status).json({ message: status === 500 ? "Server error" : error.message });
 };
 
-// Caller's resolved permission strings (empty array when role-less).
+// Caller's resolved permission strings — RBAC v2 union across all roles.
 const callerPermissions = async (adminId) => {
   const admin = await AdminRepository.findById(adminId);
-  if (!admin || !admin.roleId) return [];
-  const role = await RoleRepository.findById(admin.roleId);
-  return role && Array.isArray(role.permissions) ? role.permissions : [];
+  return permissionsForAdmin(admin);
 };
 
 const canEditCategory = (perms, category) =>
@@ -31,6 +29,44 @@ const GetCategory = async (req, res) => {
     }
     const values = await SettingsService.getCategory(category);
     res.status(200).json({ category, values, defaults: SettingsService.DEFAULTS });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// ── Slice B5b — Agreement & Billing (one whole-category surface) ─────────────
+const BILLING = "settings_billing";
+
+// GET /settings/billing — every billing.* + broadcast.* key with effective values.
+const GetBilling = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, BILLING)) {
+      return res.status(403).json({ message: "Forbidden", required: `${BILLING}:edit:all` });
+    }
+    res.status(200).json({ values: await SettingsService.getCategory(BILLING) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// PUT /settings/billing { "<key>": <value>, … } — billing-category keys only.
+const PutBilling = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, BILLING)) {
+      return res.status(403).json({ message: "Forbidden", required: `${BILLING}:edit:all` });
+    }
+    const body = req.body || {};
+    const keys = Object.keys(body);
+    if (!keys.length) return res.status(400).json({ message: "No settings in body" });
+    for (const key of keys) {
+      if (SettingsService.categoryForKey(key) !== BILLING) {
+        return res.status(400).json({ message: `${key} is not a billing setting` });
+      }
+    }
+    for (const key of keys) await SettingsService.set(key, body[key], req.auth.user_id);
+    res.status(200).json({ values: await SettingsService.getCategory(BILLING) });
   } catch (error) {
     respond(res, error);
   }
@@ -62,8 +98,19 @@ const GetPublic = async (req, res) => {
       "whatsapp.templates",
       "tags.available",
       "golden.windowMinutes",
+      // MB9c — the speed-to-lead SLA duration drives the in-row golden-window clock.
+      "sla.goldenWindowMinutes",
       "golden.workStartHour",
       "golden.workEndHour",
+      // MB6 Slice 6: the cockpit reads these without settings permissions.
+      "services.available",
+      "cockpit.briefScript",
+      "cockpit.servicesScript",
+      "cockpit.budgetScript",
+      "cockpit.qualificationIntro",
+      // MB7a Slice 3: the onboard flow (and wedsy-user) read the agreement text.
+      "agreement.terms",
+      "agreement.version",
     ]);
     res.status(200).json(values);
   } catch (error) {
@@ -71,4 +118,4 @@ const GetPublic = async (req, res) => {
   }
 };
 
-module.exports = { GetCategory, Put, GetPublic, callerPermissions };
+module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling };

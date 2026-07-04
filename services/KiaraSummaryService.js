@@ -1,0 +1,158 @@
+const Enquiry = require("../models/Enquiry");
+const { callAnthropic } = require("../utils/anthropicQueue");
+const JourneyService = require("./JourneyService");
+
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+
+const SYSTEM_PROMPT =
+  "You are Kiara, the founder's right hand at Wedsy, a Bengaluru wedding company. " +
+  "Write a SHORT internal briefing on a lead for the sales rep about to work it. " +
+  "Founder voice: warm, direct, confident, no fluff. 2–4 sentences, max ~70 words. " +
+  "Use ONLY the facts provided — never invent names, dates, budgets, or preferences. " +
+  "If a key fact is missing, say what's still unknown rather than guessing. " +
+  "Lead with who they are and the event, then what they want, then the single most " +
+  "useful next move. Plain prose, no bullet points, no markdown, no preamble.";
+
+// Compose the captured facts into a compact, model-friendly brief. Returns
+// { facts, hasData } — hasData is false when there's nothing meaningful yet.
+const composeFacts = (lead, journeyEntries = []) => {
+  const q = lead.qualificationData || {};
+  const ka = (lead.additionalInfo && lead.additionalInfo.kiaraAnswers) || {};
+  const lines = [];
+  // Every lead has name/source/stage — those alone don't count as "data".
+  // `substantive` counts facts that actually tell the rep something.
+  // "Qualified" is a status flag, not a captured fact about the couple — it
+  // must not, on its own, make an otherwise-empty lead look like it has data
+  // (MB7b: the summary only runs for qualified leads, so the flag is implicit).
+  const BOILERPLATE = new Set(["Name", "Source", "Stage", "Qualified"]);
+  let substantive = 0;
+  const add = (label, val) => {
+    if (val !== undefined && val !== null && String(val).trim() !== "") {
+      lines.push(`${label}: ${val}`);
+      if (!BOILERPLATE.has(label)) substantive++;
+    }
+  };
+
+  add("Name", lead.name);
+  const couple = [q.groomName, q.brideName].filter(Boolean).join(" & ");
+  add("Couple", couple);
+  add("Source", lead.marketingSource || lead.source);
+  add("Stage", lead.stage);
+  add("Wedding style", q.weddingStyle || ka.weddingStyle);
+  add("City", ka.city);
+  add("Event date", ka.eventDate);
+  add("Number of events", ka.numberOfEvents);
+  add("Venue status", q.venueStatus);
+  add("Venue", q.venueName || q.venueArea);
+  const services = (q.servicesRequired || []).join(", ") || ka.servicesRequired;
+  add("Services wanted", services);
+  if (q.budgetAmount) add("Budget", `₹${q.budgetAmount}`);
+  add("Budget note", q.budgetNote || ka.budget);
+  add("Per-service budget", q.budgetPerService);
+  add("Email on file", q.email || lead.email ? "yes" : "");
+  add("Qualified", lead.qualified ? "yes" : "");
+
+  // Events captured (dates) — a real signal of seriousness.
+  const eventDays = (lead.events || []).flatMap((e) => e.eventDays || []);
+  if (eventDays.length) add("Events in system", `${eventDays.length} day(s)`);
+
+  // Last few journey beats for momentum context (not counted as "data" — the
+  // birth event is always present).
+  const recent = journeyEntries.slice(-4).map((e) => e.title).filter(Boolean);
+  if (recent.length) lines.push(`Recent activity: ${recent.join("; ")}`);
+
+  // "Meaningful" = at least one substantive captured fact beyond name/source/stage.
+  const hasData = substantive >= 1;
+  return { facts: lines.join("\n"), hasData };
+};
+
+const firstTextBlock = (response) => {
+  const content = response && response.data && Array.isArray(response.data.content) ? response.data.content : [];
+  const block = content.find((b) => b && b.type === "text" && typeof b.text === "string");
+  return block ? block.text.trim() : null;
+};
+
+// MB7b Slice 3 — the summary now uses HAIKU (the cheap model) instead of Sonnet.
+// The whole point of the qualification-trigger is cost: we only ever pay for
+// leads worth a rep's time, and we pay the Haiku price, not the Sonnet price.
+const SUMMARY_MODEL = "claude-haiku-4-5";
+
+// A lead is "closed" — Kiara never spends a token on disqualified / lost leads.
+const isClosed = (lead) =>
+  lead.stage === "lost" || lead.isLost === true || lead.lostStatus === "approved";
+
+// The Haiku call + cache write. Throws on a hard model failure (callers that
+// must stay fire-safe wrap this).
+const generate = async (lead) => {
+  let journeyEntries = [];
+  try {
+    journeyEntries = (await JourneyService.buildJourney(lead._id)).entries;
+  } catch (_) { /* journey is advisory context */ }
+
+  const { facts, hasData } = composeFacts(lead.toObject(), journeyEntries);
+  if (!hasData) {
+    return {
+      text: "Not enough info yet — Kiara hasn't captured the couple, their event, or what they want. Call them to discover the basics.",
+      generatedAt: null,
+      cached: false,
+      empty: true,
+    };
+  }
+
+  const response = await callAnthropic({
+    model: SUMMARY_MODEL,
+    max_tokens: 200,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: `Lead facts:\n${facts}\n\nWrite the briefing.` }],
+  });
+  const text = firstTextBlock(response);
+  if (!text) throw httpError(502, "Kiara couldn't compose a summary — try again");
+
+  const generatedAt = new Date();
+  lead.kiaraSummary = { text, generatedAt };
+  await lead.save();
+  return { text, generatedAt, cached: false };
+};
+
+// GET — read the summary. The model is called ONLY for qualified, still-open
+// leads: a fresh (un-qualified) lead returns the pre-qualification placeholder
+// with NO API call; a closed lead returns the closed notice with NO API call.
+// force=true regenerates (qualified leads only).
+const getSummary = async (enquiryId, { force = false } = {}) => {
+  const lead = await Enquiry.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+
+  if (isClosed(lead)) {
+    return { text: "This lead is closed — no summary.", generatedAt: null, cached: false, blocked: true };
+  }
+  if (!lead.qualified) {
+    return {
+      text: "Summary available after qualification.",
+      generatedAt: null,
+      cached: false,
+      pending: true,
+    };
+  }
+  if (!force && lead.kiaraSummary && lead.kiaraSummary.text) {
+    return { text: lead.kiaraSummary.text, generatedAt: lead.kiaraSummary.generatedAt, cached: true };
+  }
+  return await generate(lead);
+};
+
+// TRIGGER — called from the qualification path (cockpit qualified-call outcome,
+// Kiara WhatsApp qualification, intern→sales-lead handoff). Fire-safe: a summary
+// failure must NEVER break the qualification action. Generates exactly once
+// (skips if a summary already exists), and never for closed leads.
+const generateForQualified = async (enquiryId) => {
+  try {
+    const lead = await Enquiry.findById(enquiryId);
+    if (!lead || isClosed(lead) || !lead.qualified) return null;
+    if (lead.kiaraSummary && lead.kiaraSummary.text) return null; // already generated
+    return await generate(lead);
+  } catch (e) {
+    console.error("[KiaraSummary] generateForQualified failed:", e.message);
+    return null;
+  }
+};
+
+module.exports = { getSummary, generateForQualified, composeFacts, SYSTEM_PROMPT, SUMMARY_MODEL };

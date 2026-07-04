@@ -31,10 +31,25 @@ console.log("[payment:config] Razorpay", {
   keySecretSet: Boolean(_keySecret),
 });
 
-var instance = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+// MB7a — dormant-until-armed: the Razorpay SDK throws at construction when
+// key_id is empty, so build it LAZILY (only when configured). This lets the
+// server boot with no keys (dormant), mirroring Google/Meta. Existing callers
+// (orders.create/fetch) get the instance on demand via getInstance().
+const razorpayConfigured = () =>
+  !!((process.env.RAZORPAY_KEY_ID || "").trim() && (process.env.RAZORPAY_KEY_SECRET || "").trim());
+
+let _instance = null;
+const getInstance = () => {
+  if (_instance) return _instance;
+  if (!razorpayConfigured()) {
+    throw Object.assign(new Error("Razorpay is not configured (RAZORPAY_KEY_ID/SECRET unset)"), { statusCode: 503 });
+  }
+  _instance = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID,
+    key_secret: process.env.RAZORPAY_KEY_SECRET,
+  });
+  return _instance;
+};
 
 const CreatePayment = ({ _id }) => {
   return new Promise((resolve, reject) => {
@@ -52,7 +67,7 @@ const CreatePayment = ({ _id }) => {
             notes: { user, paymentFor, event: event || "" },
             partial_payment: false, // indicates whether the customer can make a partial payment.
           };
-          instance.orders.create(options, function (err, order) {
+          getInstance().orders.create(options, function (err, order) {
             if (err) {
               logPaymentError("CreatePayment:razorpay_orders_create", {
                 err,
@@ -89,7 +104,7 @@ const CreatePayment = ({ _id }) => {
 
 const GetPaymentStatus = ({ order_id, response }) => {
   return new Promise((resolve, reject) => {
-    instance.orders.fetch(order_id, function (err, order) {
+    getInstance().orders.fetch(order_id, function (err, order) {
       if (err) {
         logPaymentError("GetPaymentStatus:razorpay_orders_fetch", { err, order_id });
         reject({ message: "error", err });
@@ -119,7 +134,7 @@ const GetPaymentStatus = ({ order_id, response }) => {
 
 const GetPaymentTransactions = ({ order_id }) => {
   return new Promise((resolve, reject) => {
-    instance.orders.fetchPayments(order_id, function (err, transactions) {
+    getInstance().orders.fetchPayments(order_id, function (err, transactions) {
       if (err) {
         logPaymentError("GetPaymentTransactions:razorpay", { err, order_id });
         reject({ message: "error", err });
@@ -134,8 +149,41 @@ const GetPaymentTransactions = ({ order_id }) => {
   });
 };
 
+// Razorpay mode: dormant (unset), live (rzp_live_*), else test. Test keys
+// operate in Razorpay test mode automatically; going live = swapping prod keys.
+const razorpayMode = () => {
+  if (!razorpayConfigured()) return "dormant";
+  return (process.env.RAZORPAY_KEY_ID || "").trim().startsWith("rzp_live_") ? "live" : "test";
+};
+
+// Create a Razorpay payment link for a milestone. amountPaise is in PAISE.
+// Dormant when keys are unset → returns { dormant: true } (no API call), so the
+// flow works pre-config and the sales lead chases manually. Never throws.
+const CreatePaymentLink = async ({ amountPaise, description, customer = {}, reference }) => {
+  if (!razorpayConfigured()) return { dormant: true, mode: "dormant" };
+  try {
+    const link = await getInstance().paymentLink.create({
+      amount: amountPaise,
+      currency: "INR",
+      accept_partial: false,
+      description: description || "Wedsy payment",
+      reference_id: reference || undefined,
+      customer: { name: customer.name || "", contact: customer.contact || "", email: customer.email || "" },
+      notify: { sms: false, email: false }, // we chase via our own channels
+      reminder_enable: false,
+    });
+    return { dormant: false, mode: razorpayMode(), id: link.id, url: link.short_url, raw: link };
+  } catch (error) {
+    logPaymentError("CreatePaymentLink", { error });
+    return { dormant: false, mode: razorpayMode(), error: error?.error?.description || error?.message || "link creation failed" };
+  }
+};
+
 module.exports = {
   CreatePayment,
   GetPaymentStatus,
   GetPaymentTransactions,
+  CreatePaymentLink,
+  razorpayConfigured,
+  razorpayMode,
 };

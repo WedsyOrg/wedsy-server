@@ -510,6 +510,12 @@ const AdminLogin = (req, res) => {
       .then(async (user) => {
         if (user) {
           const { _id } = user;
+          // Access control (password-mgmt Slice 3): a disabled admin cannot log in.
+          if (user.isDisabled) {
+            return res
+              .status(403)
+              .send({ message: "Your access has been disabled. Contact your administrator." });
+          }
           if (
             password &&
             user.password &&
@@ -780,19 +786,59 @@ const FirstResetPassword = async (req, res) => {
   }
 };
 
+// POST /auth/admin/change-password — SELF password change (Slice 1). Acts ONLY
+// on req.auth.user_id, so it can never target another admin. Verifies the
+// current password against the stored bcrypt hash, then validates + saves the
+// new one. Never logs or returns password values.
+const ChangeOwnPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string" || !currentPassword || !newPassword) {
+      return res.status(400).send({ message: "currentPassword and newPassword are required" });
+    }
+    if (newPassword.length < 8) {
+      return res.status(400).send({ message: "Password must be at least 8 characters" });
+    }
+    const admin = await Admin.findById(req.auth.user_id);
+    if (!admin) return res.status(401).send({ message: "invalid user" });
+    if (!admin.password || !(await CheckHash(currentPassword, admin.password))) {
+      return res.status(401).send({ message: "Current password is incorrect" });
+    }
+    if (await CheckHash(newPassword, admin.password)) {
+      return res.status(400).send({ message: "New password cannot be the same as the current one" });
+    }
+    admin.password = await CreateHash(newPassword);
+    admin.mustResetPassword = false;
+    await admin.save();
+    console.log(`[auth] Password changed by admin ${admin._id}`);
+    return res.status(200).send({ message: "Password updated" });
+  } catch (error) {
+    console.error("[auth] ChangeOwnPassword error:", error.message);
+    return res.status(500).send({ message: "Server error" });
+  }
+};
+
 // GET /auth/admin/permissions — the caller's resolved permission strings.
 // Drives which Settings sections the frontend renders.
 const GetPermissions = async (req, res) => {
   try {
     const admin = await Admin.findById(req.auth.user_id).lean();
-    if (!admin || !admin.roleId) {
-      return res.status(200).send({ permissions: [] });
+    const { permissionsForAdmin, roleIdsOf } = require("../middlewares/requirePermission");
+    const ids = roleIdsOf(admin);
+    if (!admin || ids.length === 0) {
+      return res.status(200).send({ permissions: [], roleNames: [] });
     }
+    // RBAC v2: union of permissions across every role; roleNames lists all.
     const Role = require("../models/Role");
-    const role = await Role.findById(admin.roleId).lean();
+    const [permissions, roles] = await Promise.all([
+      permissionsForAdmin(admin),
+      Role.find({ _id: { $in: ids } }, { name: 1 }).lean(),
+    ]);
+    const roleNames = roles.map((r) => r.name);
     res.status(200).send({
-      permissions: role && Array.isArray(role.permissions) ? role.permissions : [],
-      roleName: role ? role.name : null,
+      permissions,
+      roleNames,
+      roleName: roleNames[0] || null, // back-compat
     });
   } catch (error) {
     res.status(500).send({ message: "Server error" });
@@ -816,4 +862,5 @@ module.exports = {
   ResetPassword,
   GetPermissions,
   FirstResetPassword,
+  ChangeOwnPassword,
 };
