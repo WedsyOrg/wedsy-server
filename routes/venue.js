@@ -13,7 +13,7 @@ const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, quotePdf } = require("../controllers/venueQuote");
-const { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf } = require("../controllers/venueInvoice");
+const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const { getCompetitive } = require("../controllers/venueCompetitive");
@@ -105,7 +105,11 @@ router.get("/:slug/invoices", venueOwnerAuth, listInvoices);
 router.post("/:slug/invoices", venueOwnerAuth, requireCapability("leads"), createFromBooking);
 router.get("/:slug/invoices/:invoiceId/pdf", venueOwnerAuth, invoicePdf);
 router.get("/:slug/invoices/:invoiceId", venueOwnerAuth, getInvoice);
-router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapability("leads"), addPayment);
+// D7: recording money is a bookings_money capability (alias-compatible with
+// legacy "billing"); owner approval decisions are owner-gated in-controller.
+router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapability("bookings_money"), addPayment);
+router.post("/:slug/invoices/:invoiceId/payments/:paymentId/approve", venueOwnerAuth, requireCapability("bookings_money"), approvePayment);
+router.post("/:slug/invoices/:invoiceId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), rejectPayment);
 
 // ── D8 document engine: templates + bills (documents capability) ──
 router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);

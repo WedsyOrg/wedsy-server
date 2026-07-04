@@ -5,21 +5,15 @@ const VenueRole = require("../models/VenueRole");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const VenueTeamActivity = require("../models/VenueTeamActivity");
 const { VENUE_ROLES, roleHasCapability } = require("../utils/venueRoles");
-const { ensureVenueRoles } = require("../utils/venueRbac");
+const { ensureVenueRoles, isOwnerActor: rbacIsOwnerActor } = require("../utils/venueRbac");
 const { optStr } = require("../utils/venueInput");
 
 const BCRYPT_ROUNDS = 10;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-// Owner-actor test (D5: owner is king). True for the real owner token and for
-// members holding the legacy "owner" role or the system Owner bundle.
-async function isOwnerActor(req) {
-  if (!req.venueOwner.memberId) return true; // owner token
-  if (req.venueOwner.role === "owner") return true;
-  const roleRef = req.venueMember && req.venueMember.roleRef;
-  if (!roleRef) return false;
-  const role = await VenueRole.findById(roleRef).select("isSystem").lean();
-  return Boolean(role && role.isSystem);
+// Owner-actor test (D5: owner is king) — shared RBAC helper bound to req.
+function isOwnerActor(req) {
+  return rbacIsOwnerActor(req.venueOwner, req.venueMember);
 }
 
 function generateTempPassword() {

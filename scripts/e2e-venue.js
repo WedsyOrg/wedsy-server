@@ -709,6 +709,56 @@ async function run() {
     check("docs: delete template -> 200", tplDel.status === 200, `status ${tplDel.status}`);
   }
 
+  // ================= D7: payments approval — pending, owner labels, rollups =================
+  if (process.env.E2E_PAYAPPROVAL === "1") {
+    // fixture: booking + invoice of 100000 (no GST for round numbers)
+    const pbk = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "PayApproval Couple", couplePhone: "9444400001", totalValue: 100000, days: [{ date: new Date(Date.now() + 55 * 86400000).toISOString(), eventType: "Wedding", guestCount: 100 } ] } });
+    const pinv = await api("POST", `/venues/${SLUG}/invoices`, { token, body: { booking: pbk.json.booking._id, lineItems: [{ label: "Venue hire", qty: 1, unitPrice: 100000 }], gstMode: "none" } });
+    const invId = pinv.json.invoice._id;
+
+    // an Accounts-bundle member (bookings_money + documents)
+    const prl = await api("GET", `/venues/${SLUG}/roles`, { token });
+    const accountsRole = (prl.json.roles || []).find((r) => r.name === "Accounts");
+    const pinvite = await api("POST", `/venues/${SLUG}/team`, { token, body: { name: "Paula Accounts", phone: "9333300002", email: "paula@test-palace.local", roleId: accountsRole._id, withPassword: true } });
+    const plogin = await api("POST", "/venue-owner/member-auth", { body: { email: "paula@test-palace.local", password: pinvite.json.tempPassword } });
+    const paulaToken = plogin.json.token;
+    check("payapproval: accounts member logs in", plogin.status === 200 && paulaToken, `status ${plogin.status}`);
+
+    // member records -> pending_approval, full who/when/how/proof answers
+    const mp = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token: paulaToken, body: { amount: 40000, mode: "cash", collectedBy: "Paula (front desk)", proofUrl: "https://files.local/receipt-1.jpg", note: "advance cash" } });
+    check("payapproval: member entry -> pending_approval", mp.status === 200 && mp.json.payment.status === "pending_approval" && mp.json.payment.recordedByType === "member" && mp.json.payment.recordedByName === "Paula Accounts" && mp.json.payment.collectedBy === "Paula (front desk)" && mp.json.payment.proofUrl.includes("receipt-1"), JSON.stringify(mp.json.payment && { s: mp.json.payment.status, n: mp.json.payment.recordedByName }));
+    check("payapproval: pending excluded from received", mp.json.received === 0 && mp.json.invoice.status === "unpaid", `received=${mp.json.received} status=${mp.json.invoice.status}`);
+    const sum1 = await api("GET", `/venues/${SLUG}/payments/summary`, { token });
+    check("payapproval: summary shows approval queue, not revenue", sum1.json.totals.pendingApproval === 40000 && sum1.json.pendingEntries.some((e) => String(e.invoiceId) === String(invId)), `pendingApproval=${sum1.json.totals.pendingApproval}`);
+
+    // owner approves -> rollups flip
+    const payId = mp.json.payment._id;
+    const app = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${payId}/approve`, { token });
+    check("payapproval: owner approve -> received flips", app.status === 200 && app.json.received === 40000 && app.json.invoice.status === "partially_paid", `received=${app.json.received}`);
+    const appAgain = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${payId}/approve`, { token });
+    check("payapproval: double-approve -> 409", appAgain.status === 409, `status ${appAgain.status}`);
+
+    // member cannot approve their own entry
+    const mp2 = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token: paulaToken, body: { amount: 10000, mode: "upi" } });
+    const pay2 = mp2.json.payment._id;
+    const selfApprove = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${pay2}/approve`, { token: paulaToken });
+    check("payapproval: member approve -> 403 (owner only)", selfApprove.status === 403, `status ${selfApprove.status}`);
+
+    // reject path: audit kept, never counted
+    const rej = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${pay2}/reject`, { token, body: { reason: "no proof attached" } });
+    check("payapproval: owner reject -> kept for audit, not counted", rej.status === 200 && rej.json.payment.status === "rejected" && rej.json.payment.rejectedReason === "no proof attached", `status ${rej.status}`);
+    const sum2 = await api("GET", `/venues/${SLUG}/payments/summary`, { token });
+    check("payapproval: rejected excluded everywhere", sum2.json.totals.pendingApproval === 0 && sum2.json.perBooking.find((b) => String(b.bookingId) === String(pbk.json.booking._id)).received === 40000, `pendingApproval=${sum2.json.totals.pendingApproval}`);
+
+    // owner entry: auto-approved + permanent label
+    const op = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token, body: { amount: 25000, mode: "bank_transfer" } });
+    check("payapproval: owner entry auto-approved + labeled", op.status === 200 && op.json.payment.status === "approved" && op.json.payment.ownerEntry === true && op.json.received === 65000, `received=${op.json.received}`);
+
+    // over-recording guard: pending+approved claim balance (35000 left)
+    const over = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token, body: { amount: 35001 } });
+    check("payapproval: overpayment still rejected", over.status === 400, `status ${over.status}`);
+  }
+
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
     // isVerified on public detail (derived from status; test-palace is published -> false)

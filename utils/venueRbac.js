@@ -86,4 +86,21 @@ async function hasCapability(reqVenueOwner, capability, venueMember) {
   );
 }
 
-module.exports = { ensureVenueRoles, migrateLegacyMembers, hasCapability, bundleGrants };
+// Owner-actor test (D5/D7: owner is king). True for the real owner token and
+// for members holding the legacy "owner" role or the system Owner bundle.
+async function isOwnerActor(reqVenueOwner, venueMember) {
+  if (!reqVenueOwner) return false;
+  if (!reqVenueOwner.memberId) return true; // owner token
+  if (reqVenueOwner.role === "owner") return true;
+  let member = venueMember;
+  if (!member || String(member._id) !== String(reqVenueOwner.memberId)) {
+    member = await VenueTeamMember.findById(reqVenueOwner.memberId).select("role roleRef").lean();
+  }
+  if (!member) return false;
+  if (member.role === "owner") return true;
+  if (!member.roleRef) return false;
+  const role = await VenueRole.findById(member.roleRef).select("isSystem").lean();
+  return Boolean(role && role.isSystem);
+}
+
+module.exports = { ensureVenueRoles, migrateLegacyMembers, hasCapability, bundleGrants, isOwnerActor };

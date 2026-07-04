@@ -52,6 +52,20 @@ const VenueInvoiceSchema = new mongoose.Schema(
         amount: { type: Number, default: 0 },
         mode: { type: String, enum: ["bank_transfer", "cash", "cheque", "upi", "card"], default: "bank_transfer" },
         note: { type: String, default: "" },
+        // D7 payments approval (all additive). Who recorded it, who physically
+        // collected, optional proof upload. Pre-existing entries have no
+        // status field and default to "approved" — exactly their old meaning.
+        recordedByType: { type: String, enum: ["owner", "member", ""], default: "" },
+        recordedById: { type: mongoose.Schema.Types.ObjectId },
+        recordedByName: { type: String, default: "" },
+        collectedBy: { type: String, default: "" },
+        proofUrl: { type: String, default: "" },
+        status: { type: String, enum: ["pending_approval", "approved", "rejected"], default: "approved" },
+        // Permanent "Owner entry" label (D7: owner-recorded auto-approves).
+        ownerEntry: { type: Boolean, default: false },
+        approvedByName: { type: String, default: "" },
+        approvedAt: { type: Date },
+        rejectedReason: { type: String, default: "" },
       },
     ],
   },

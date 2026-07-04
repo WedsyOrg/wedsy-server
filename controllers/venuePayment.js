@@ -21,11 +21,35 @@ const summary = async (req, res) => {
     const bookings = await VenueBooking.find({ venue: venue._id, status: { $ne: "cancelled" } }).lean();
     const invoices = await VenueInvoice.find({ venue: venue._id }).lean();
 
-    // Received per booking = sum of all payments across that booking's invoices.
+    // Received per booking = sum of APPROVED payments across that booking's
+    // invoices (D7: pending entries never count as received revenue; entries
+    // without a status predate D7 and read as approved). Pending entries are
+    // surfaced separately as the owner's approval queue.
     const receivedByBooking = {};
+    let pendingApproval = 0;
+    const pendingEntries = [];
     for (const inv of invoices) {
       const key = String(inv.booking);
-      const paid = (inv.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      let paid = 0;
+      for (const p of inv.payments || []) {
+        const st = p.status || "approved";
+        if (st === "approved") paid += Number(p.amount) || 0;
+        else if (st === "pending_approval") {
+          pendingApproval += Number(p.amount) || 0;
+          pendingEntries.push({
+            invoiceId: inv._id,
+            invoiceNumber: inv.invoiceNumber,
+            bookingId: inv.booking,
+            paymentId: p._id,
+            amount: Number(p.amount) || 0,
+            mode: p.mode,
+            date: p.date,
+            recordedByName: p.recordedByName,
+            collectedBy: p.collectedBy,
+            proofUrl: p.proofUrl,
+          });
+        }
+      }
       receivedByBooking[key] = (receivedByBooking[key] || 0) + paid;
     }
 
@@ -58,7 +82,8 @@ const summary = async (req, res) => {
 
     return res.status(200).json({
       perBooking,
-      totals: { confirmedValue, received, pending: confirmedValue - received },
+      totals: { confirmedValue, received, pending: confirmedValue - received, pendingApproval },
+      pendingEntries,
       overdue,
     });
   } catch (err) { return res.status(500).json({ message: err.message }); }
