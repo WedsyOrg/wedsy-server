@@ -14,6 +14,7 @@ router.use("/enquiry", require("./enquiry"));
 router.use("/project", require("./project")); // Lifecycle Slice D
 router.use("/settings", require("./settings")); // Settings Suite
 router.use("/custom-field", require("./custom-field")); // Settings Suite
+router.use("/step-definition", require("./step-definition")); // MB8b journey steps
 router.use("/decor", require("./decor"));
 router.use("/decor-package", require("./decor-package"));
 router.use("/search", require("./search"));
@@ -74,11 +75,21 @@ router.use("/vendor-review", require("./vendor-review"));
 router.use("/admin", require("./admin"));
 router.use("/department", require("./department"));
 router.use("/role", require("./role"));
+router.use("/org", require("./org")); // MB10 — org chart + permission matrix (read)
 router.use("/stages", require("./stage"));
 router.use("/activity", require("./activity"));
 router.use("/venues", require("./venue"));
 router.use("/places", require("./places"));
 router.use("/venue-owner", require("./venueOwner"));
 router.use("/conversations", require("./conversation"));
+router.use("/wa", require("./waConversation")); // Kiara admin chat API
+router.use("/attendance", require("./attendance")); // HRMS brick #1 (MB5 Slice 2)
+router.use("/calendar", require("./calendar")); // Team calendar + meeting mode + huddles (MB5 Slice 3)
+router.use("/admin-notifications", require("./notifications")); // in-OS staff notifications (MB5)
+router.use("/google", require("./google")); // Google Workspace (MB6 Slice 8 — dormant until env-wired)
+router.use("/saved-views", require("./savedViews")); // per-user leads filter sets (MB6 Slice 9)
+router.use("/onboarding", require("./onboarding")); // onboarding & money engine (MB7a)
+router.use("/lead-tasks", require("./leadTask")); // collaboration tasks (MB7b Slice 2)
+router.use("/nurture-templates", require("./nurtureTemplate")); // nurture library (MB7b Slice 4)
 
 module.exports = router;

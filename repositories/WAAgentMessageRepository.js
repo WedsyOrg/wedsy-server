@@ -1,7 +1,9 @@
 const WAAgentMessage = require('../models/WAAgentMessage');
 
-const saveMessage = async (phone, role, message) => {
-  return await new WAAgentMessage({ phone, role, message }).save();
+// `extra` (additive, optional) carries the media* fields for inbound media rows;
+// existing 3-arg callers pass nothing and behave exactly as before.
+const saveMessage = async (phone, role, message, extra = {}) => {
+  return await new WAAgentMessage({ phone, role, message, ...extra }).save();
 };
 
 const getHistory = async (phone, limit = 30) => {

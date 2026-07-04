@@ -13,8 +13,9 @@ const { permissionSatisfies } = require("../middlewares/requirePermission");
 //                           assignee dropdowns, no emails/phones/status leakage.
 const listAdmins = async (callerId) => {
   const caller = callerId ? await AdminRepository.findById(callerId) : null;
-  const role = caller && caller.roleId ? await RoleRepository.findById(caller.roleId) : null;
-  const perms = role && Array.isArray(role.permissions) ? role.permissions : [];
+  // RBAC v2: union of permissions across all of the caller's roles.
+  const { permissionsForAdmin } = require("../middlewares/requirePermission");
+  const perms = await permissionsForAdmin(caller);
 
   if (permissionSatisfies(perms, "users:view:all").allowed) {
     return await AdminRepository.findAll();

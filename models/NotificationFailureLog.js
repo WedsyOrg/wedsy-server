@@ -3,7 +3,12 @@ const mongoose = require('mongoose');
 const NotificationFailureLogSchema = new mongoose.Schema({
   service: {
     type: String,
-    enum: ['WhatsApp', 'SMS', 'Email', 'Razorpay', 'S3', 'Anthropic', 'GoogleSheets', 'Instagram', 'QualifiedLeadDB'],
+    // NOTE (kiara-ig-fixes): 'KiaraCrmSync' was already referenced by the
+    // WhatsApp/Instagram agents but was MISSING from this enum — so CRM-sync
+    // failure logs silently failed validation and never persisted (a swallowed
+    // error). Added here, alongside the new IG lead-link / extractor-parse
+    // surfaces, so these failures are actually recorded.
+    enum: ['WhatsApp', 'SMS', 'Email', 'Razorpay', 'S3', 'Anthropic', 'GoogleSheets', 'Instagram', 'QualifiedLeadDB', 'KiaraCrmSync', 'IgLeadLink', 'IgExtractorParse'],
     required: true
   },
   template: {
