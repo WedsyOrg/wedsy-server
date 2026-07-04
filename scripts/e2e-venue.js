@@ -759,6 +759,85 @@ async function run() {
     check("payapproval: overpayment still rejected", over.status === 400, `status ${over.status}`);
   }
 
+  // ================= D6: rooms per-wedding workflow — check-in/out + settlement =================
+  if (process.env.E2E_CHECKIN === "1") {
+    const cday = (n) => new Date(Date.now() + n * 86400000).toISOString();
+    // room + booking + allotment fixtures
+    const rRoom = await api("POST", `/venues/${SLUG}/rooms`, { token, body: { name: "Checkin Suite", type: "suite", capacity: 3 } });
+    const roomC = rRoom.json.room._id;
+    const cbk = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "Checkin Couple", couplePhone: "9222200001", totalValue: 200000, days: [{ date: cday(20), eventType: "Wedding", guestCount: 120 }] } });
+    const cbkId = cbk.json.booking._id;
+    const alr = await api("POST", `/venues/${SLUG}/bookings/${cbkId}/allotments`, { token, body: { room: roomC, guestName: "Uncle Ajay", guestPhone: "9222200002", checkInAt: cday(20), checkOutAt: cday(22) } });
+    const alId = alr.json.allotments[0]._id;
+
+    // full-capture check-in in ONE round trip
+    const cin = await api("POST", `/venues/${SLUG}/allotments/${alId}/check-in`, {
+      token,
+      body: {
+        guestCount: 3, extraBeds: 1, deposit: 10000,
+        inventory: [{ item: "Towels", qty: 4 }, { item: "Iron", qty: 1 }],
+        idCaptureUrl: "https://files.local/id-ajay.jpg", photoUrl: "https://files.local/guest-ajay.jpg", signatureUrl: "https://files.local/sign-ajay.png",
+        notes: "late arrival expected",
+      },
+    });
+    check("checkin: single-call capture -> checked_in with full block",
+      cin.status === 200 && cin.json.allotment.status === "checked_in" && cin.json.allotment.checkIn.guestCount === 3 && cin.json.allotment.checkIn.extraBeds === 1 && cin.json.allotment.checkIn.inventory.length === 2 && cin.json.allotment.checkIn.signatureUrl.includes("sign-ajay") && cin.json.allotment.deposit.amount === 10000,
+      `status ${cin.status}`);
+    const cinAgain = await api("POST", `/venues/${SLUG}/allotments/${alId}/check-in`, { token, body: {} });
+    check("checkin: double check-in -> 409", cinAgain.status === 409, `status ${cinAgain.status}`);
+
+    // check-out with checklist + damages: 10000 deposit, 6000 damages
+    const cout = await api("POST", `/venues/${SLUG}/allotments/${alId}/check-out`, {
+      token,
+      body: {
+        checklist: [{ item: "Towels", ok: true }, { item: "Iron", ok: false }],
+        damages: [{ desc: "Broken iron", charge: 1500 }, { desc: "Stained carpet", charge: 4500 }],
+        notes: "guest informed",
+      },
+    });
+    check("checkin: checkout computes settlement exactly",
+      cout.status === 200 && cout.json.settlement.deposit === 10000 && cout.json.settlement.damagesTotal === 6000 && cout.json.settlement.deducted === 6000 && cout.json.settlement.refundDue === 4000 && cout.json.settlement.payableDue === 0,
+      JSON.stringify(cout.json.settlement));
+    check("checkin: damages produce an addon invoice ref", Boolean(cout.json.settlement.invoiceRef), `ref=${cout.json.settlement.invoiceRef}`);
+
+    // the settlement payment landed as an approved owner entry on the addon invoice
+    const sInv = await api("GET", `/venues/${SLUG}/invoices/${cout.json.settlement.invoiceRef}`, { token });
+    const sPay = sInv.json.invoice.payments[0];
+    check("checkin: settlement recorded through payments engine (owner entry, approved)",
+      sInv.json.invoice.kind === "addon" && sInv.json.invoice.totals.grandTotal === 6000 && sPay && sPay.status === "approved" && sPay.ownerEntry === true && sPay.amount === 6000 && sPay.collectedBy === "Deposit settlement",
+      JSON.stringify(sPay && { s: sPay.status, a: sPay.amount }));
+
+    // printable slip
+    const slip = await apiBinary(`/venues/${SLUG}/allotments/${alId}/settlement-slip`, { token });
+    check("checkin: settlement slip PDF renders", slip.status === 200 && slip.head.startsWith("%PDF") && slip.bytes > 800, `bytes=${slip.bytes}`);
+
+    // archive -> booking roomsHistory; rooms live on
+    const arch = await api("POST", `/venues/${SLUG}/allotments/${alId}/archive`, { token });
+    check("checkin: archive -> 200", arch.status === 200 && arch.json.allotment.archived === true, `status ${arch.status}`);
+    const archAgain = await api("POST", `/venues/${SLUG}/allotments/${alId}/archive`, { token });
+    check("checkin: double archive -> 409", archAgain.status === 409, `status ${archAgain.status}`);
+    const bkAfter = await api("GET", `/venues/${SLUG}/bookings/${cbkId}`, { token });
+    const hist = (bkAfter.json.booking.roomsHistory || [])[0];
+    check("checkin: booking carries the archived block",
+      hist && hist.roomName === "Checkin Suite" && hist.guestName === "Uncle Ajay" && hist.damagesTotal === 6000 && hist.refundDue === 4000,
+      JSON.stringify(hist && { r: hist.roomName, d: hist.damagesTotal }));
+
+    // damages beyond deposit -> payableDue; validation teeth
+    const alr2 = await api("POST", `/venues/${SLUG}/bookings/${cbkId}/allotments`, { token, body: { room: roomC, guestName: "Aunt Rekha", checkInAt: cday(25), checkOutAt: cday(26) } });
+    const alId2 = alr2.json.allotments[0]._id;
+    await api("POST", `/venues/${SLUG}/allotments/${alId2}/check-in`, { token, body: { deposit: 2000 } });
+    const cout2 = await api("POST", `/venues/${SLUG}/allotments/${alId2}/check-out`, { token, body: { damages: [{ desc: "Cracked mirror", charge: 5000 }] } });
+    check("checkin: damages beyond deposit -> payableDue",
+      cout2.json.settlement.deducted === 2000 && cout2.json.settlement.refundDue === 0 && cout2.json.settlement.payableDue === 3000,
+      JSON.stringify(cout2.json.settlement));
+    const alr3 = await api("POST", `/venues/${SLUG}/bookings/${cbkId}/allotments`, { token, body: { room: roomC, guestName: "Neg", checkInAt: cday(28), checkOutAt: cday(29) } });
+    const badDamage = await api("POST", `/venues/${SLUG}/allotments/${alr3.json.allotments[0]._id}/check-out`, { token, body: { damages: [{ desc: "x", charge: -5 }] } });
+    check("checkin: checkout before check-in -> 409", badDamage.status === 409, `status ${badDamage.status}`);
+    await api("POST", `/venues/${SLUG}/allotments/${alr3.json.allotments[0]._id}/check-in`, { token, body: {} });
+    const badDamage2 = await api("POST", `/venues/${SLUG}/allotments/${alr3.json.allotments[0]._id}/check-out`, { token, body: { damages: [{ desc: "x", charge: -5 }] } });
+    check("checkin: negative damage charge -> 400", badDamage2.status === 400, `status ${badDamage2.status}`);
+  }
+
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
     // isVerified on public detail (derived from status; test-palace is published -> false)

@@ -22,6 +22,7 @@ const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity 
 const roles = require("../controllers/venueRoles");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
+const checkin = require("../controllers/venueCheckin");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -137,6 +138,12 @@ router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
 router.patch("/:slug/allotments/:allotmentId", venueOwnerAuth, requireCapability("leads"), updateAllotment);
+
+// ── D6 per-wedding room workflow — rooms_checkin capability (tablet flow) ──
+router.post("/:slug/allotments/:allotmentId/check-in", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.checkInAllotment);
+router.post("/:slug/allotments/:allotmentId/check-out", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.checkOutAllotment);
+router.get("/:slug/allotments/:allotmentId/settlement-slip", venueOwnerAuth, checkin.settlementSlip);
+router.post("/:slug/allotments/:allotmentId/archive", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.archiveAllotment);
 router.get("/:slug/occupancy", venueOwnerAuth, occupancy);
 
 router.get("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, listRunsheet);

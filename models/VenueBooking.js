@@ -31,6 +31,23 @@ const VenueBookingSchema = new mongoose.Schema(
       default: "confirmed",
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "VenueOwner" },
+    // D6 (additive): archived per-wedding room blocks — the immutable summary
+    // of each completed stay. Rooms themselves live on in Venue.rooms.
+    roomsHistory: [
+      {
+        allotment: { type: mongoose.Schema.Types.ObjectId, ref: "VenueRoomAllotment" },
+        roomName: { type: String, default: "" },
+        guestName: { type: String, default: "" },
+        checkInAt: { type: Date },
+        checkOutAt: { type: Date },
+        guestCount: { type: Number, default: 0 },
+        extraBeds: { type: Number, default: 0 },
+        damagesTotal: { type: Number, default: 0 },
+        deducted: { type: Number, default: 0 },
+        refundDue: { type: Number, default: 0 },
+        archivedAt: { type: Date },
+      },
+    ],
   },
   { timestamps: true }
 );

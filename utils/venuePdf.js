@@ -278,4 +278,55 @@ async function streamContractPdf(res, { venue, contract }) {
   doc.end();
 }
 
-module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf };
+// D6 deposit-settlement slip — printed at guest check-out.
+async function streamSettlementPdf(res, { venue, allotment, roomName, booking }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
+  const doc = startDoc(res, `settlement-${allotment._id}.pdf`);
+  venueHeader(doc, venue, "Deposit Settlement Slip", logoBuffer);
+
+  doc.fillColor(GREY).fontSize(10);
+  doc.text(`Guest: ${allotment.guestName || "—"}${allotment.guestPhone ? "  ·  " + allotment.guestPhone : ""}`);
+  if (booking && booking.coupleName) doc.text(`Wedding: ${booking.coupleName}`);
+  doc.text(`Room: ${roomName || "—"}`);
+  const ci = allotment.actualCheckInAt || allotment.checkInAt;
+  const co = allotment.actualCheckOutAt || allotment.checkOutAt;
+  doc.text(`Stay: ${ci ? new Date(ci).toDateString() : "—"} → ${co ? new Date(co).toDateString() : "—"}`);
+  doc.moveDown(0.8);
+
+  const damages = (allotment.checkOut && allotment.checkOut.damages) || [];
+  if (damages.length) {
+    doc.fillColor(BURGUNDY).fontSize(12).text("Damages");
+    doc.moveDown(0.2).fillColor("#222222").fontSize(10);
+    for (const d of damages) {
+      const y = doc.y;
+      doc.text(`• ${d.desc}`, 50, y, { width: 380 });
+      doc.text(formatINR(d.charge), 460, y, { width: 85, align: "right" });
+      doc.moveDown(0.2);
+    }
+    doc.moveDown(0.5);
+  }
+
+  const s = allotment.settlement || {};
+  const right = (label, value, opts = {}) => {
+    const y = doc.y;
+    doc.fillColor(opts.bold ? BURGUNDY : GREY).fontSize(opts.bold ? 12 : 10);
+    doc.text(label, 300, y, { width: 140, align: "right" });
+    doc.text(value, 450, y, { width: 95, align: "right" });
+    doc.moveDown(0.3);
+  };
+  right("Deposit held", formatINR(s.deposit || 0));
+  right("Damages total", formatINR(s.damagesTotal || 0));
+  right("Deducted from deposit", "− " + formatINR(s.deducted || 0));
+  doc.moveDown(0.1);
+  right("Refund due to guest", formatINR(s.refundDue || 0), { bold: true });
+  if (s.payableDue > 0) right("Balance payable by guest", formatINR(s.payableDue), { bold: true });
+
+  doc.moveDown(0.8).fillColor(GREY).fontSize(9);
+  if (allotment.checkOut && allotment.checkOut.byName) {
+    doc.text(`Checked out by ${allotment.checkOut.byName} on ${s.settledAt ? new Date(s.settledAt).toUTCString() : "—"}.`, 50, doc.y, { width: 495 });
+  }
+  poweredByFooter(doc, "This slip records the deposit settlement for the stay above.");
+  doc.end();
+}
+
+module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf, streamSettlementPdf };
