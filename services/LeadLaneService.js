@@ -258,6 +258,16 @@ const addEntry = async (leadId, laneId, { text } = {}, actorId) => {
   return entry.toObject();
 };
 
+// GET /lanes/:laneId/entries — the FULL thread, oldest-first.
+const listEntries = async (leadId, laneId, { limit } = {}) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId }).lean();
+  if (!lane) throw err(404, "Lane not found");
+  const lim = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
+  const list = await LaneEntry.find({ laneId }).sort({ at: 1 }).limit(lim).lean();
+  return { lane: { _id: lane._id, key: lane.key, name: lane.name }, list };
+};
+
 // FIRE-SAFE auto entry by lane KEY (used by the action-service hooks). No-op
 // when the lead has no such lane; never throws.
 const autoEntry = async (leadId, laneKey, autoType, text) => {
@@ -308,6 +318,7 @@ const autoEntryByLaneId = async (laneId, autoType, text) => {
 module.exports = {
   LANE_LIBRARY,
   listLanes,
+  listEntries,
   assemble,
   addLane,
   patchLane,

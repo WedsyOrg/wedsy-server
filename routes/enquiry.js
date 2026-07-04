@@ -494,6 +494,12 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   leadLane.List
 );
+router.get(
+  "/:_id/lanes/:laneId/entries",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadLane.ListEntries
+);
 router.post(
   "/:_id/lanes/assemble",
   CheckAdminLogin,
