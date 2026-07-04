@@ -44,12 +44,19 @@ app.use(bodyParser.json({
 //Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
+  max: 2000,
   message: { error: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
   // Skip localhost — both IPv4 and IPv6 loopback (::1, and the IPv4-mapped form).
-  skip: (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip), // skip localhost
+  // Also skip session verification and the chat polling reads: the Client File
+  // chat polls every 5s, which would saturate any per-IP budget and 429 the
+  // whole app. Auth on those routes still rejects unauthenticated callers;
+  // per-user keyed limits land in MB5.
+  skip: (req) =>
+    ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || // skip localhost
+    (req.method === 'GET' &&
+      (req.path === '/auth/admin' || req.path.startsWith('/wa/conversations'))),
 });
 app.use(limiter);
 
@@ -173,4 +180,15 @@ httpServer.listen(port, function () {
   // Google Sheets one-way sync (sheet → leads) for every connected venue — every 15 min.
   // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).
   cron.schedule("*/15 * * * *", () => { runScheduledSheetSync(); }, IST);
+
+  // Slice B4 — the daily escalation sweep (lane silence ladder + deal clock +
+  // lane wake pass) — 8am IST, env-gated so staging/dev don't double-notify.
+  if (process.env.ESCALATION_SWEEP === "1") {
+    cron.schedule("0 8 * * *", () => {
+      require("./services/EscalationSweepService")
+        .runSweep()
+        .then((r) => console.log("[EscalationSweep]", r))
+        .catch((e) => console.error("[EscalationSweep] failed:", e.message));
+    }, IST);
+  }
 });

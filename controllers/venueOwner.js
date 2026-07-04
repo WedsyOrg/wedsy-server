@@ -93,7 +93,6 @@ const verifyClaim = async (req, res) => {
     if (!venue) return res.status(404).json({ message: "Venue not found" });
 
     const DEV_OTP = "000000";
-    console.log("[DEV] otp:", otp, "NODE_ENV:", process.env.NODE_ENV, "match:", otp === DEV_OTP);
     const result = otp === DEV_OTP && process.env.NODE_ENV !== "production"
       ? { Valid: true }
       : await VerifyOTP(phone, referenceId, otp);
