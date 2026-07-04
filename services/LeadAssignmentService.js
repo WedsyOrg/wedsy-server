@@ -48,6 +48,21 @@ const doAssignLead = async (enquiryId) => {
     if (!(await SettingsService.get("assignment.autoAssignEnabled"))) {
       return null; // auto-assignment switched off in Settings — lead stays unassigned
     }
+    // MB5 Slice 4: triage mode — the lead lands UNASSIGNED in the triage queue
+    // instead of round-robin. 'auto' (the shipped default) is byte-identical
+    // to the old behavior.
+    if ((await SettingsService.get("assignment.mode")) === "triage") {
+      await Enquiry.findByIdAndUpdate(enquiryId, {
+        $set: { triagePending: true, triageEnteredAt: new Date() },
+      });
+      await LeadInternalEventService.record({
+        leadId: enquiryId,
+        type: "triage_entered",
+        actorId: null,
+        payload: {},
+      });
+      return null;
+    }
     const assignee = await pickAssignee();
     if (!assignee) {
       await LeadInternalEventService.record({

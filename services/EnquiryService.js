@@ -3,6 +3,8 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
+const AdminNotificationService = require("./AdminNotificationService");
+const Admin = require("../models/Admin");
 
 // Default disqualification reasons. Runtime list comes from SettingsService
 // ("lost.reasons"), which defaults to exactly this constant.
@@ -13,6 +15,137 @@ const httpError = (status, message) => {
   const err = new Error(message);
   err.status = status;
   return err;
+};
+
+// Best-effort INTERNAL notification when a lead is disqualified (request or
+// auto-approve): the assigned owner's reporting manager (if set) PLUS every
+// Revenue Head — so a rep whose manager link was never configured can no longer
+// make a lose-lead request vanish silently (Signal Matrix Slice 2). The actor is
+// excluded (no self-notify). Never the external NotificationService, and never
+// allowed to break the disqualify op: lookups are guarded and
+// AdminNotificationService.notify is itself fire-safe.
+const notifyManagerOfDisqualification = async (enquiry, { type, title, message, actorId }) => {
+  try {
+    if (!enquiry) return;
+    const recipients = new Set();
+    if (enquiry.assignedTo) {
+      const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
+      if (owner && owner.reportingManagerId) recipients.add(String(owner.reportingManagerId));
+    }
+    const TriageService = require("./TriageService");
+    for (const id of await TriageService.revenueHeadIds()) recipients.add(String(id));
+    if (actorId) recipients.delete(String(actorId));
+    if (!recipients.size) {
+      console.warn(
+        `notifyManagerOfDisqualification: NO recipients for lead ${enquiry._id} — ` +
+          "owner has no reportingManagerId and no active Revenue Head exists"
+      );
+      return;
+    }
+    await AdminNotificationService.notify([...recipients], {
+      type,
+      title,
+      message: message || "",
+      leadId: enquiry._id,
+      payload: { requestedBy: actorId || null },
+    });
+  } catch (e) {
+    console.error("notifyManagerOfDisqualification failed:", e.message);
+  }
+};
+
+// Symmetric notify-back: tell the original requester the outcome of their
+// disqualification request. Recipient is already on the doc (lostRequestedBy) —
+// no lookup. Same best-effort contract as the submit-side helper: guarded, and
+// notify no-ops on a null recipient, so the decision op can never be broken.
+const notifyRequesterOfDecision = async (enquiry, { type, title, note, actorId }) => {
+  try {
+    if (!enquiry || !enquiry.lostRequestedBy) return;
+    await AdminNotificationService.notify(enquiry.lostRequestedBy, {
+      type,
+      title,
+      message: note || "",
+      leadId: enquiry._id,
+      payload: { decidedBy: actorId || null },
+    });
+  } catch (e) {
+    console.error("notifyRequesterOfDecision failed:", e.message);
+  }
+};
+
+// Best-effort INTERNAL notification when a lost lead is recovered: the assignee's
+// reporting manager (if any) PLUS all Revenue Heads. Same guarded contract as the
+// disqualify helpers above — the Admin lookup is wrapped, notify is itself fire-safe
+// and filters falsy recipients, so a recover op can never be broken by notify.
+const notifyOfRecovery = async (enquiry, { type, title, message }) => {
+  try {
+    if (!enquiry) return;
+    const recipients = [];
+    if (enquiry.assignedTo) {
+      const owner = await Admin.findById(enquiry.assignedTo, { reportingManagerId: 1 }).lean();
+      if (owner && owner.reportingManagerId) recipients.push(owner.reportingManagerId);
+    }
+    const TriageService = require("./TriageService");
+    recipients.push(...(await TriageService.revenueHeadIds()));
+    await AdminNotificationService.notify(recipients, {
+      type,
+      title,
+      message: message || "",
+      leadId: enquiry._id,
+    });
+  } catch (e) {
+    console.error("notifyOfRecovery failed:", e.message);
+  }
+};
+
+// Recover a lost lead: un-lost an APPROVED-lost lead and put it back into the pipeline.
+// Additive sibling to the reopen branch in updateStage — same un-lost field writes,
+// but it KEEPS every lost audit field (lostReason/lostRequestedBy/At/lostDecidedBy/At/
+// lostDecisionNote) so we retain the full history of what happened. No migration.
+const recoverLead = async (enquiryId, actorId) => {
+  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+    throw httpError(400, "Invalid enquiry id");
+  }
+  const enquiry = await EnquiryRepository.findById(enquiryId);
+  if (!enquiry) {
+    throw httpError(404, "Enquiry not found");
+  }
+  if (enquiry.lostStatus !== "approved") {
+    throw httpError(400, "Lead is not lost");
+  }
+
+  const hadStageBeforeLost = !!enquiry.stageBeforeLost;
+  const restoredStage = enquiry.stageBeforeLost || "new";
+  const priorReason = enquiry.lostReason || "";
+
+  // Reset the ACTIVE lost state only; audit fields are intentionally NOT written here.
+  const recovered = await EnquiryRepository.updateFieldsById(enquiryId, {
+    stage: restoredStage,
+    updatedBy: actorId,
+    lostStatus: "none",
+    isLost: false,
+    stageBeforeLost: "",
+  });
+  if (!recovered) {
+    throw httpError(404, "Enquiry not found");
+  }
+
+  await ActivityLogService.record({
+    actorId,
+    action: "lead.recovered",
+    entityType: "lead",
+    entityId: String(enquiryId),
+    summary: `Lead recovered (was lost: ${priorReason})`,
+    meta: { restoredStage, hadStageBeforeLost },
+  });
+
+  await notifyOfRecovery(enquiry, {
+    type: "lead_recovered",
+    title: `Lead recovered: ${enquiry.name}`,
+    message: `${actorId || "Someone"} recovered this lead (was lost: ${priorReason})`,
+  });
+
+  return recovered;
 };
 
 // Update an enquiry's pipeline stage.
@@ -130,6 +263,12 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
       summary: `Disqualified directly (approval disabled; reason: ${reason})`,
       meta: { reason, note: note || "", autoApproved: true },
     });
+    await notifyManagerOfDisqualification(enquiry, {
+      type: "lead_disqualified",
+      title: `Lead disqualified: ${enquiry.name}`,
+      message: reason,
+      actorId,
+    });
     return updatedDirect;
   }
 
@@ -149,6 +288,13 @@ const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId
     entityId: String(enquiryId),
     summary: `Disqualification requested (reason: ${reason})`,
     meta: { reason, note: note || "" },
+  });
+
+  await notifyManagerOfDisqualification(enquiry, {
+    type: "lead_disqualify_requested",
+    title: `Disqualification requested: ${enquiry.name}`,
+    message: reason,
+    actorId,
   });
 
   return updated;
@@ -197,6 +343,12 @@ const decideDisqualification = async (
       summary: "Disqualification approved",
       meta: { movedToStage: "lost", reason: enquiry.lostReason },
     });
+    await notifyRequesterOfDecision(enquiry, {
+      type: "lead_disqualify_approved",
+      title: `Disqualification approved: ${enquiry.name}`,
+      note,
+      actorId,
+    });
     return updated;
   }
 
@@ -218,6 +370,12 @@ const decideDisqualification = async (
     entityId: String(enquiryId),
     summary: "Disqualification rejected",
     meta: { restoredStage: enquiry.stageBeforeLost, note: note || "" },
+  });
+  await notifyRequesterOfDecision(enquiry, {
+    type: "lead_disqualify_rejected",
+    title: `Disqualification rejected: ${enquiry.name}`,
+    note,
+    actorId,
   });
   return updated;
 };
@@ -267,5 +425,6 @@ module.exports = {
   updateAssignedTo,
   requestDisqualification,
   decideDisqualification,
+  recoverLead,
   LOST_REASONS,
 };

@@ -1,6 +1,7 @@
 const Enquiry = require("../models/Enquiry");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const LeadAssignmentService = require("./LeadAssignmentService");
+const AdminNotificationService = require("./AdminNotificationService");
 
 const escapeRegExp = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -90,14 +91,82 @@ const recordReEnquiry = async (enquiryId, { source, message, adFormAnswers } = {
   }
 };
 
+// Best-effort INTERNAL OS notification (never the external NotificationService) the
+// moment a lead is created — speed-to-lead alerting for staff. Recipient is resolved
+// from the assignment outcome: an assignee came back → ping that person; otherwise the
+// lead is sitting unassigned (triage mode, auto-assign off, or no pool capacity) → ping
+// the triage holders so it doesn't age silently. AdminNotificationService.notify is
+// itself fire-safe and no-ops on an empty recipient list; this wrapper adds a second
+// guard so the create path can never be broken by notification work. Fires ONCE per
+// lead, from afterCreate only.
+const notifyNewLead = async (enquiryId, assignee) => {
+  try {
+    const lead = await Enquiry.findById(enquiryId, { name: 1, source: 1 }).lean();
+    if (!lead) return;
+    const assigned = !!(assignee && assignee._id);
+    // Lazy-require TriageService to match the existing late-require pattern here and
+    // sidestep any service load-order coupling.
+    const recipient = assigned
+      ? assignee._id
+      : await require("./TriageService").triageHolderIds();
+    const source = lead.source || "";
+    const message = assigned
+      ? `Assigned to you — call now, golden window is ticking.${source ? ` Source: ${source}.` : ""}`
+      : `Waiting in triage — grab it fast.${source ? ` Source: ${source}.` : ""}`;
+    await AdminNotificationService.notify(recipient, {
+      type: "new_lead",
+      title: `New lead: ${lead.name}`,
+      message,
+      leadId: enquiryId,
+      payload: { source, assigned },
+    });
+  } catch (e) {
+    console.error("LeadIntakeService.notifyNewLead failed:", e.message);
+  }
+};
+
 // Post-create hook for genuinely-new leads: auto-assignment. Runs AFTER the existing
 // (venue-hardened) validation and insert — additive only, never blocks the response.
 const afterCreate = async (enquiryId) => {
+  let assignee = null;
   try {
-    await LeadAssignmentService.assignLead(enquiryId);
+    // assignLead returns the chosen admin (auto mode) or null (triage / disabled /
+    // no capacity). We branch the new-lead notification on this outcome.
+    assignee = await LeadAssignmentService.assignLead(enquiryId);
   } catch (e) {
     console.error("LeadIntakeService.afterCreate failed:", e.message);
   }
+  // Internal OS new-lead notification — additive, fire-safe; runs after assignment so
+  // the recipient is known. Self-insulated (own try/catch); can never throw into create.
+  await notifyNewLead(enquiryId, assignee);
+  // MB5 Slice 5: Kiara safety net — after-hours creates get the welcome
+  // template immediately. Template-gated (dormant when unset); fire-safe.
+  try {
+    await require("./KiaraSafetyNetService").maybeEngageOnCreate(enquiryId);
+  } catch (e) {
+    console.error("LeadIntakeService.afterCreate safety net failed:", e.message);
+  }
+};
+
+// The ONE create path for hook/intake-created leads (WhatsApp, Instagram, …).
+// Mirrors the CreateNew controller's create branch and PINS the board/list-
+// critical fields explicitly (stage and the boolean flags), so an intake-created
+// lead can never be shaped differently from a manually created one — the board
+// renders only configured stage columns, so a lead with a missing/unknown stage
+// silently disappears from it.
+const createLead = async ({ name, phone, verified = false, source, additionalInfo = {} }) => {
+  const created = await new Enquiry({
+    name,
+    phone,
+    verified,
+    source,
+    additionalInfo,
+    stage: "new",
+    isInterested: false,
+    isLost: false,
+  }).save();
+  await afterCreate(created._id);
+  return created;
 };
 
 module.exports = {
@@ -105,4 +174,5 @@ module.exports = {
   findExistingByNormalizedPhone,
   recordReEnquiry,
   afterCreate,
+  createLead,
 };

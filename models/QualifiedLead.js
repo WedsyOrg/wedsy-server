@@ -15,7 +15,10 @@ const QualifiedLeadSchema = new mongoose.Schema({
   weddingStyle: { type: String, default: '' },
   source: { type: String, default: 'WhatsApp' },
   qualifiedAt: { type: Date, default: Date.now },
-  googleSheetSynced: { type: Boolean, default: false }
+  googleSheetSynced: { type: Boolean, default: false },
+  // Additive (Kiara ↔ Wedsy OS): mirrors googleSheetSynced for the CRM sync —
+  // the two flags are independent, either side may land first.
+  crmSynced: { type: Boolean, default: false }
 });
 
 module.exports = mongoose.model('QualifiedLead', QualifiedLeadSchema);
