@@ -115,6 +115,12 @@ async function run() {
     contact: { primaryName: "Test Owner", primaryPhone: OWNER_PHONE, whatsappPhone: OWNER_PHONE, email: "owner@test-palace.local" },
     pricing: { currency: "INR", perPlate: { veg: 1500, nonVeg: 1900 }, tiers: [{ hours: 12, price: 250000 }] },
     coverPhoto: "https://example.local/test-palace-cover.jpg",
+    // Phase 4.2: deterministic Google-rating fixtures (no live fetch in suites).
+    googlePlaceId: "test-place-id-palace",
+    googleRating: 4.6,
+    googleReviewCount: 132,
+    googleReviews: [{ authorName: "Asha", rating: 5, text: "Beautiful venue!", time: 1700000000 }],
+    googleReviewsRefreshedAt: new Date(),
   };
   if (!venue) {
     venue = await Venue.create(venueDefaults);
