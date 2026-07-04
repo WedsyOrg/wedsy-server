@@ -34,6 +34,44 @@ const GetCategory = async (req, res) => {
   }
 };
 
+// ── Slice B5b — Agreement & Billing (one whole-category surface) ─────────────
+const BILLING = "settings_billing";
+
+// GET /settings/billing — every billing.* + broadcast.* key with effective values.
+const GetBilling = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, BILLING)) {
+      return res.status(403).json({ message: "Forbidden", required: `${BILLING}:edit:all` });
+    }
+    res.status(200).json({ values: await SettingsService.getCategory(BILLING) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// PUT /settings/billing { "<key>": <value>, … } — billing-category keys only.
+const PutBilling = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, BILLING)) {
+      return res.status(403).json({ message: "Forbidden", required: `${BILLING}:edit:all` });
+    }
+    const body = req.body || {};
+    const keys = Object.keys(body);
+    if (!keys.length) return res.status(400).json({ message: "No settings in body" });
+    for (const key of keys) {
+      if (SettingsService.categoryForKey(key) !== BILLING) {
+        return res.status(400).json({ message: `${key} is not a billing setting` });
+      }
+    }
+    for (const key of keys) await SettingsService.set(key, body[key], req.auth.user_id);
+    res.status(200).json({ values: await SettingsService.getCategory(BILLING) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
 // PUT /settings { key, value } — the key's category decides the gate.
 const Put = async (req, res) => {
   try {
@@ -80,4 +118,4 @@ const GetPublic = async (req, res) => {
   }
 };
 
-module.exports = { GetCategory, Put, GetPublic, callerPermissions };
+module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling };

@@ -128,6 +128,7 @@ router.post(
 const leadTeam = require("../controllers/leadTeam");
 const leadLane = require("../controllers/leadLane");
 const leadPayment = require("../controllers/leadPayment");
+const billingDoc = require("../controllers/billingDoc");
 router.get(
   "/team/mine",
   CheckAdminLogin,
@@ -515,6 +516,20 @@ router.delete(
   CheckAdminLogin,
   requirePermission("leads:delete:all", { ownerField: "assignedTo" }),
   leadPayment.Remove
+);
+
+// Slice B5b — money paperwork (owner/manager scoped; NO roster fallback).
+router.get(
+  "/:_id/agreement.pdf",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  billingDoc.AgreementPdf
+);
+router.get(
+  "/:_id/payments/:paymentId/invoice.pdf",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  billingDoc.InvoicePdf
 );
 
 // ── Slice B3 — WORKSTREAM LANES. Reads: view scope + roster fallback (the
