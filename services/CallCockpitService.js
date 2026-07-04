@@ -270,6 +270,15 @@ const logCall = async (
     console.error("[logCall] due-call auto-complete failed:", e.message);
   }
 
+  // Slice B3 — echo into the lead_comms lane when the lane engine is live on
+  // this lead (fire-safe no-op otherwise).
+  await require("./LeadLaneService").autoEntry(
+    enquiryId,
+    "lead_comms",
+    "call_logged",
+    `Call logged — ${entry.outcome || (entry.connected ? "connected" : "attempted")}`
+  );
+
   await LeadInternalEventService.record({
     leadId: enquiryId,
     type: "call_logged",

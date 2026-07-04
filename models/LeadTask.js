@@ -14,6 +14,9 @@ const LeadTaskSchema = new mongoose.Schema(
     // micro-task surfaced in the step's inline panel; null → a lead-level
     // collaboration task (MB7b). Reuses this model rather than a parallel one.
     stepId: { type: ObjectId, ref: "LeadStep", default: null, index: true },
+    // Slice B3 — optional link to a workstream lane (LeadLane). Set → the task
+    // lives in that lane's thread; completion echoes an auto entry there.
+    laneId: { type: ObjectId, ref: "LeadLane", default: null, index: true },
     title: { type: String, required: true },
     // assignee/dueAt stay REQUIRED for MB7b collaboration tasks (the createTask
     // service validates them) but are OPTIONAL at the schema level so step
