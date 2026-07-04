@@ -18,7 +18,8 @@ const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
-const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
+const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
+const roles = require("../controllers/venueRoles");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -156,6 +157,15 @@ router.get("/:slug/team", venueOwnerAuth, requireCapability("team"), listMembers
 router.post("/:slug/team", venueOwnerAuth, requireCapability("team"), inviteMember);
 router.get("/:slug/team/activity", venueOwnerAuth, requireCapability("team"), getActivity);
 router.patch("/:slug/team/:memberId", venueOwnerAuth, requireCapability("team"), updateMember);
+// Password set/reset is additionally owner-gated inside the controller (D5:
+// owner is king — team capability alone can't rotate credentials).
+router.post("/:slug/team/:memberId/password", venueOwnerAuth, requireCapability("team"), setMemberPassword);
+
+// ── RBAC v2 roles (owner-editable capability bundles) — team capability ──
+router.get("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.listRoles);
+router.post("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.createRole);
+router.patch("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.updateRole);
+router.delete("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.deleteRole);
 
 // Availability — availability capability.
 router.post("/:slug/availability", venueOwnerAuth, requireCapability("availability"), saveAvailability);

@@ -360,6 +360,42 @@ async function run() {
     ok("9 cross-venue occupancy read -> 403", idorOcc.status === 403, `status ${idorOcc.status}`);
   }
 
+  // ═══════════ 10. RBAC v2 WRITE SURFACES (roles / member-auth / password) ═══════════
+  console.log("\n— 10. RBAC v2 hostile input —");
+  {
+    // gated without token
+    const noTokRoles = await api("GET", `/venues/${A}/roles`, {});
+    ok("10 roles list without token -> 401", noTokRoles.status === 401, `status ${noTokRoles.status}`);
+    const noTokCreate = await api("POST", `/venues/${A}/roles`, { body: { name: "X", capabilities: ["leads"] } });
+    ok("10 role create without token -> 401", noTokCreate.status === 401, `status ${noTokCreate.status}`);
+
+    // hostile input on role create
+    const giant = await api("POST", `/venues/${A}/roles`, { token: tokenA, body: { name: "R".repeat(10000), capabilities: ["leads"] } });
+    ok("10 10k-char role name -> 400", giant.status === 400, `status ${giant.status}`);
+    const badCap = await api("POST", `/venues/${A}/roles`, { token: tokenA, body: { name: "Hax", capabilities: ["__proto__"] } });
+    ok("10 unknown capability -> 400", badCap.status === 400, `status ${badCap.status}`);
+    const emptyCaps = await api("POST", `/venues/${A}/roles`, { token: tokenA, body: { name: "Empty", capabilities: [] } });
+    ok("10 empty capabilities -> 400", emptyCaps.status === 400, `status ${emptyCaps.status}`);
+
+    // tenancy: venue B owner cannot read or write venue A roles
+    const idorRoles = await api("GET", `/venues/${A}/roles`, { token: tokenB });
+    ok("10 cross-venue roles read -> 403", idorRoles.status === 403, `status ${idorRoles.status}`);
+    const idorCreate = await api("POST", `/venues/${A}/roles`, { token: tokenB, body: { name: "Intruder", capabilities: ["team"] } });
+    ok("10 cross-venue role create -> 403", idorCreate.status === 403, `status ${idorCreate.status}`);
+
+    // member-auth: malformed and unknown creds never 5xx, never leak which part failed
+    const noBody = await api("POST", "/venue-owner/member-auth", { body: {} });
+    ok("10 member-auth empty body -> 400", noBody.status === 400, `status ${noBody.status}`);
+    const unknown = await api("POST", "/venue-owner/member-auth", { body: { email: "ghost@nowhere.local", password: "whatever123" } });
+    ok("10 member-auth unknown email -> 401 generic", unknown.status === 401, `status ${unknown.status}`);
+
+    // password endpoint: owner-gated + member must exist
+    const noTokPw = await api("POST", `/venues/${A}/team/000000000000000000000000/password`, { body: {} });
+    ok("10 password reset without token -> 401", noTokPw.status === 401, `status ${noTokPw.status}`);
+    const ghostPw = await api("POST", `/venues/${A}/team/000000000000000000000000/password`, { token: tokenA, body: {} });
+    ok("10 password reset unknown member -> 404", ghostPw.status === 404, `status ${ghostPw.status}`);
+  }
+
   finish();
 }
 

@@ -11,8 +11,15 @@ const VenueTeamMemberSchema = new mongoose.Schema(
     ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "VenueOwner" }, // anchor account
     name: { type: String, required: true, trim: true },
     phone: { type: String, required: true, trim: true },
-    email: { type: String, trim: true, default: "" },
+    email: { type: String, trim: true, lowercase: true, default: "" },
+    // Legacy 5-enum role — kept as the fallback for pre-RBAC-v2 tokens and
+    // unmigrated members. New resolution goes through roleRef (VenueRole).
     role: { type: String, enum: VENUE_ROLES, default: "sales" },
+    // RBAC v2 (D5): the owner-editable capability bundle this member holds.
+    roleRef: { type: mongoose.Schema.Types.ObjectId, ref: "VenueRole" },
+    // Email+password member login (owner auth stays phone OTP). Never selected
+    // by default; login code opts in explicitly.
+    passwordHash: { type: String, default: "", select: false },
     isActive: { type: Boolean, default: true },
     // Actor (owner or member) id that invited this member; not a strict ref since the
     // actor may be either type.
@@ -24,6 +31,13 @@ const VenueTeamMemberSchema = new mongoose.Schema(
 
 VenueTeamMemberSchema.index({ venueId: 1, phone: 1 }, { unique: true });
 VenueTeamMemberSchema.index({ phone: 1 });
+// Email is the member-login key: unique per venue, but only when set — legacy
+// members with empty emails must not collide (partial index, additive).
+VenueTeamMemberSchema.index(
+  { venueId: 1, email: 1 },
+  { unique: true, partialFilterExpression: { email: { $gt: "" } } }
+);
+VenueTeamMemberSchema.index({ email: 1 });
 
 module.exports =
   mongoose.models.VenueTeamMember || mongoose.model("VenueTeamMember", VenueTeamMemberSchema);

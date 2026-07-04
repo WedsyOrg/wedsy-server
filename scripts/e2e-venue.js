@@ -443,6 +443,86 @@ async function run() {
     check("roles: listing_manager payments GET -> 200 (open read)", lmPayments.status === 200, `status ${lmPayments.status}`);
   }
 
+  // ================= RBAC v2 (D5): bundles, member email login, owner reset =================
+  if (process.env.E2E_RBAC === "1") {
+    // Roles list seeds system Owner + 4 defaults and migrates legacy members.
+    const rl = await api("GET", `/venues/${SLUG}/roles`, { token });
+    const names = (rl.json.roles || []).map((r) => r.name);
+    check("rbac: roles list seeds Owner + 4 defaults",
+      rl.status === 200 && ["Owner", "Manager", "Sales", "Front Desk", "Accounts"].every((n) => names.includes(n)),
+      `status ${rl.status} names=${names.join(",")}`);
+    const ownerRole = (rl.json.roles || []).find((r) => r.isSystem);
+    check("rbac: system Owner role has every capability",
+      ownerRole && Array.isArray(rl.json.capabilities) && rl.json.capabilities.every((c) => ownerRole.capabilities.includes(c)),
+      `caps=${ownerRole && ownerRole.capabilities.length}`);
+
+    // Legacy members got migrated onto capability-preserving bundles.
+    const team = await api("GET", `/venues/${SLUG}/team`, { token });
+    const legacyLm = (team.json.members || []).find((m) => m.role === "listing_manager");
+    check("rbac: legacy listing_manager migrated to a capability-preserving bundle",
+      legacyLm && legacyLm.roleRef && legacyLm.roleRef.name === "Listing Manager", `bundle=${legacyLm && legacyLm.roleRef && legacyLm.roleRef.name}`);
+
+    // Custom role: starts insights-only.
+    const cr = await api("POST", `/venues/${SLUG}/roles`, { token, body: { name: "Auditor", capabilities: ["insights"] } });
+    check("rbac: create custom role -> 201", cr.status === 201 && cr.json.role && cr.json.role.name === "Auditor", `status ${cr.status}`);
+    const auditorId = cr.json.role && cr.json.role._id;
+    const crBad = await api("POST", `/venues/${SLUG}/roles`, { token, body: { name: "Bad", capabilities: ["superpowers"] } });
+    check("rbac: unknown capability -> 400", crBad.status === 400, `status ${crBad.status}`);
+
+    // Invite a member with email + generated temp password on the custom role.
+    const inv = await api("POST", `/venues/${SLUG}/team`, {
+      token,
+      body: { name: "Rita Auditor", phone: "9333300001", email: "Rita@Test-Palace.local", roleId: auditorId, withPassword: true },
+    });
+    check("rbac: invite with email + temp password -> 201 + password returned once",
+      inv.status === 201 && inv.json.tempPassword && inv.json.member && !inv.json.member.passwordHash, `status ${inv.status}`);
+    const ritaPass = inv.json.tempPassword;
+    const ritaId = inv.json.member && inv.json.member._id;
+
+    // Email login (case-insensitive email), same member JWT shape.
+    const ml = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: ritaPass } });
+    check("rbac: member email login -> 200 member token", ml.status === 200 && ml.json.token && ml.json.venueOwner && ml.json.venueOwner.isMember === true, `status ${ml.status}`);
+    const ritaToken = ml.json.token;
+    const mlBad = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: "wrong-password" } });
+    check("rbac: wrong password -> 401", mlBad.status === 401, `status ${mlBad.status}`);
+
+    // Capability enforcement through the bundle: insights yes, leads no.
+    const ritaLeadsDenied = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token: ritaToken, body: { coupleName: "X", couplePhone: "9111100001" } });
+    check("rbac: custom role without leads -> 403 on lead write", ritaLeadsDenied.status === 403, `status ${ritaLeadsDenied.status}`);
+
+    // Live grant: owner adds leads to the bundle -> same token now passes.
+    const grant = await api("PATCH", `/venues/${SLUG}/roles/${auditorId}`, { token, body: { capabilities: ["insights", "leads"] } });
+    check("rbac: owner edits bundle -> 200", grant.status === 200, `status ${grant.status}`);
+    const ritaLeadsOk = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token: ritaToken, body: { coupleName: "RBAC Lead", couplePhone: "9111100002" } });
+    check("rbac: grant applies to LIVE token (no re-login)", [200, 201].includes(ritaLeadsOk.status), `status ${ritaLeadsOk.status}`);
+
+    // System Owner role immutable; role with members undeletable (409 → reassign → delete OK).
+    const sysEdit = await api("PATCH", `/venues/${SLUG}/roles/${ownerRole._id}`, { token, body: { name: "Root" } });
+    check("rbac: system Owner role edit -> 403", sysEdit.status === 403, `status ${sysEdit.status}`);
+    const delWithMembers = await api("DELETE", `/venues/${SLUG}/roles/${auditorId}`, { token });
+    check("rbac: delete role with members -> 409", delWithMembers.status === 409, `status ${delWithMembers.status}`);
+    const salesRole = (rl.json.roles || []).find((r) => r.name === "Sales");
+    await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { roleId: salesRole._id } });
+    const delEmpty = await api("DELETE", `/venues/${SLUG}/roles/${auditorId}`, { token });
+    check("rbac: delete after reassign -> 200", delEmpty.status === 200, `status ${delEmpty.status}`);
+
+    // Owner resets the member's password: old stops working, new works.
+    const reset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token, body: {} });
+    check("rbac: owner reset issues new temp password", reset.status === 200 && reset.json.tempPassword, `status ${reset.status}`);
+    const oldLogin = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: ritaPass } });
+    check("rbac: old password -> 401 after reset", oldLogin.status === 401, `status ${oldLogin.status}`);
+    const newLogin = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: reset.json.tempPassword } });
+    check("rbac: new password logs in", newLogin.status === 200 && newLogin.json.token, `status ${newLogin.status}`);
+
+    // Member cannot reset passwords even with a team-capability bundle path
+    // (owner-only), and a deactivated member's live token dies per-request.
+    const ritaReset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token: newLogin.json.token, body: {} });
+    check("rbac: member password reset -> 403 (owner-only)", ritaReset.status === 403, `status ${ritaReset.status}`);
+    await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { isActive: false } });
+    const deadToken = await api("GET", `/venues/${SLUG}/enquiries`, { token: newLogin.json.token });
+    check("rbac: deactivated member live token -> 401", deadToken.status === 401, `status ${deadToken.status}`);
+  }
+
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
     // isVerified on public detail (derived from status; test-palace is published -> false)
