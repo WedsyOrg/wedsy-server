@@ -33,7 +33,7 @@ const nameOf = async (adminId) => {
 // Create a task (born-in-chat when createdInChatMessageId is set, else standalone).
 const createTask = async (
   leadId,
-  { title, assigneeId, dueAt, createdInChatMessageId, kind = "task", nurtureText = "" } = {},
+  { title, assigneeId, dueAt, createdInChatMessageId, kind = "task", nurtureText = "", laneId } = {},
   assignerId
 ) => {
   if (!isId(leadId)) throw httpError(400, "Invalid leadId");
@@ -52,6 +52,8 @@ const createTask = async (
     kind: ["task", "nurture"].includes(kind) ? kind : "task",
     nurtureText: String(nurtureText || "").slice(0, 5000),
     createdInChatMessageId: createdInChatMessageId && isId(createdInChatMessageId) ? createdInChatMessageId : null,
+    // Slice B3 — lane-born tasks carry their lane; validated soft (bad id → null).
+    laneId: laneId && isId(laneId) ? laneId : null,
   });
 
   const assigneeName = await nameOf(assigneeId);
@@ -108,6 +110,14 @@ const completeTask = async (taskId, actorId) => {
   });
   // Signal spine: completing a task is employee activity.
   await EnquiryRepository.touchLastActivity(task.leadId);
+  // Slice B3 — a lane task's completion echoes into its lane (fire-safe).
+  if (task.laneId) {
+    await require("./LeadLaneService").autoEntryByLaneId(
+      task.laneId,
+      "task_done",
+      `Task done: ${task.title}`
+    );
+  }
   return task;
 };
 

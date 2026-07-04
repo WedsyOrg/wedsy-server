@@ -138,6 +138,15 @@ const onFollowUpBooked = async (enquiryId, followUp, actorId) => {
       followUpId: followUp._id || null,
     });
 
+    // Slice B3 — echo the booking into the lead_comms lane (fire-safe no-op
+    // when the lane engine isn't live on this lead).
+    await require("./LeadLaneService").autoEntry(
+      lead._id,
+      "lead_comms",
+      "meeting_booked",
+      `Meeting booked · ${followUp.type === "meet" ? "G-Meet" : "Visit"} · ${start.toLocaleString()}`
+    );
+
     // 3. Huddle (gmeet only): assigned to the lead's sales lead, due AT the meet.
     if (followUp.type === "meet") {
       await CalendarEvent.create({

@@ -345,6 +345,13 @@ const markProposalSent = async (enquiryId, { amount } = {}, actorId) => {
     actorId: actorId || null,
     payload: amt != null ? { amount: amt } : {},
   });
+  // Slice B3 — echo into the lead_comms lane (fire-safe no-op without lanes).
+  await require("./LeadLaneService").autoEntry(
+    enquiryId,
+    "lead_comms",
+    "proposal_sent",
+    amt != null ? `Proposal sent · ₹${amt.toLocaleString("en-IN")}` : "Proposal sent"
+  );
   return updated;
 };
 

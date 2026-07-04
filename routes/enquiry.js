@@ -126,6 +126,7 @@ router.post(
 // Literal path: MUST stay above /:_id. Roster-scoped inside the controller; no
 // ownerField narrowing (the roster IS the soft grant), no 403 gating added.
 const leadTeam = require("../controllers/leadTeam");
+const leadLane = require("../controllers/leadLane");
 router.get(
   "/team/mine",
   CheckAdminLogin,
@@ -481,6 +482,41 @@ router.post(
   CheckAdminLogin,
   ...LEADS_EDIT_SCOPED,
   lifecycle.ProposalSent
+);
+
+// ── Slice B3 — WORKSTREAM LANES. Reads: view scope + roster fallback (the
+// guard is in the controller). Writes: owner/manager scope OR the lane's own
+// owner (checked per-request in the controller — enforceLeadScope would lock
+// out lane owners, so it is deliberately NOT used here).
+router.get(
+  "/:_id/lanes",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadLane.List
+);
+router.post(
+  "/:_id/lanes/assemble",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.Assemble
+);
+router.post(
+  "/:_id/lanes",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.Add
+);
+router.patch(
+  "/:_id/lanes/:laneId",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.Patch
+);
+router.post(
+  "/:_id/lanes/:laneId/entries",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.AddEntry
 );
 // ── MB9a-2 — per-lead golden-window clock + rescue actions. Claim/reassign/
 // dismiss gate leads:edit + ownerField, so only a manager/RevHead whose scope

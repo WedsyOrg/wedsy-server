@@ -83,6 +83,8 @@ const EVENT_TITLES = {
   qualified: "Qualified ✦",
   // Slice B2 — the deal spine's proposal marker.
   proposal_sent: "Proposal sent",
+  // Slice B3 — the lane engine.
+  team_assembled: "Team assembled 🤝",
 };
 
 // Moments rendered from the RAW embedded arrays (lead.callLog[] / lead.followUps[])
