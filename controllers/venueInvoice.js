@@ -134,12 +134,12 @@ const addPayment = async (req, res) => {
 // GET /venues/:slug/invoices/:invoiceId/pdf
 const invoicePdf = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email gstin pan");
+    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email gstin pan logo");
     if (!venue) return;
     const invoice = await VenueInvoice.findOne({ _id: req.params.invoiceId, venue: venue._id }).lean();
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
     const booking = await VenueBooking.findById(invoice.booking).select("coupleName couplePhone").lean();
-    streamInvoicePdf(res, { venue, booking, invoice });
+    await streamInvoicePdf(res, { venue, booking, invoice });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
