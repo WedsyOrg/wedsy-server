@@ -49,7 +49,7 @@ async function apiBinary(path, { token } = {}) {
   if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${API}${path}`, { method: "GET", headers });
   const buf = Buffer.from(await res.arrayBuffer());
-  return { status: res.status, contentType: res.headers.get("content-type") || "", bytes: buf.length, head: buf.slice(0, 5).toString("latin1") };
+  return { status: res.status, contentType: res.headers.get("content-type") || "", bytes: buf.length, head: buf.slice(0, 5).toString("latin1"), body: buf.toString("latin1") };
 }
 
 async function login() {
@@ -594,6 +594,43 @@ async function run() {
     // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
     const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
     check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
+  }
+
+  // ================= Venue logo on quote/invoice PDFs =================
+  if (process.env.E2E_PDF_LOGO === "1") {
+    // Tiny solid-colour JPEG via sharp (already a dependency) — no fixtures.
+    const sharp = require("sharp");
+    const jpeg = await sharp({ create: { width: 24, height: 24, channels: 3, background: { r: 107, g: 30, b: 46 } } }).jpeg().toBuffer();
+    const dataUri = `data:image/jpeg;base64,${jpeg.toString("base64")}`;
+
+    const setLogo = await api("PUT", `/venues/${SLUG}`, { token, body: { logo: dataUri } });
+    check("pdf-logo: PUT venue.logo (listing gate) -> 200", setLogo.status === 200 && setLogo.json.venue && setLogo.json.venue.logo === dataUri, `status ${setLogo.status}`);
+
+    // Fresh lead -> quote -> PDF with the logo embedded as an image XObject.
+    const lead = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "PDF Logo Couple", couplePhone: `97${Date.now() % 1e8}` } });
+    const leadId = lead.json.enquiryId || (lead.json.enquiry && lead.json.enquiry._id);
+    const q = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: leadId, lineItems: [{ label: "Hall", qty: 1, unitPrice: 50000 }], gstPercent: 18, discount: 0 } });
+    const quoteId = q.json.quote && q.json.quote._id;
+    const withLogo = await apiBinary(`/venues/${SLUG}/quotes/${quoteId}/pdf`, { token });
+    check("pdf-logo: quote PDF embeds image object when logo set",
+      withLogo.status === 200 && withLogo.head.startsWith("%PDF") && withLogo.body.includes("/XObject"),
+      `bytes=${withLogo.bytes} hasImage=${withLogo.body.includes("/XObject")}`);
+
+    // Graceful absence: clear the logo -> same PDF renders with no image object.
+    const clearLogo = await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
+    check("pdf-logo: clearing logo -> 200", clearLogo.status === 200, `status ${clearLogo.status}`);
+    const without = await apiBinary(`/venues/${SLUG}/quotes/${quoteId}/pdf`, { token });
+    check("pdf-logo: PDF without logo still renders (no image object)",
+      without.status === 200 && without.head.startsWith("%PDF") && !without.body.includes("/XObject"),
+      `bytes=${without.bytes}`);
+
+    // Unreachable URL logo must degrade gracefully, never 500.
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "http://127.0.0.1:9/nope.jpg" } });
+    const broken = await apiBinary(`/venues/${SLUG}/quotes/${quoteId}/pdf`, { token });
+    check("pdf-logo: unreachable logo URL degrades gracefully (200, no image)",
+      broken.status === 200 && broken.head.startsWith("%PDF") && !broken.body.includes("/XObject"),
+      `status ${broken.status}`);
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
   }
 
   // ================= Phase 5 (PMS): rooms, allotments, runsheet, occupancy =================
