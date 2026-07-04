@@ -19,6 +19,10 @@ const { getAnalytics } = require("../controllers/venueAnalytics");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
+const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
+const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
+const { createAllotments, listAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
+const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
 const { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter, reviewsRefreshLimiter } = require("../utils/venueEnquiryRateLimit");
@@ -42,6 +46,11 @@ router.get("/", optionalAdminAuth, getVenues);
 router.post("/", CheckAdminLogin, createVenue);
 // Public "list your venue" lead from the landing page — rate-limited + validated.
 router.post("/onboarding-requests", publicReadLimiter, createOnboardingRequest);
+
+// ── Phase 3.5 contracts: PUBLIC token-addressed acknowledgment (rate-limited,
+//    no auth — the signed short-lived token is the credential) ──
+router.get("/contract-ack/:token", publicReadLimiter, getAckContract);
+router.post("/contract-ack/:token", publicReadLimiter, acknowledgeContract);
 // Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
@@ -91,6 +100,32 @@ router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapabi
 
 // ── Phase 3.4: payments summary + Phase 4.1: analytics — open reads ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
+
+// ── Phase 5 (PMS): rooms inventory (listing), allotments + runsheet (leads),
+//    occupancy (open read) ──
+router.get("/:slug/rooms", venueOwnerAuth, listRooms);
+router.post("/:slug/rooms", venueOwnerAuth, requireCapability("listing"), addRoom);
+router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), updateRoom);
+router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
+
+router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
+router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
+router.patch("/:slug/allotments/:allotmentId", venueOwnerAuth, requireCapability("leads"), updateAllotment);
+router.get("/:slug/occupancy", venueOwnerAuth, occupancy);
+
+router.get("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, listRunsheet);
+router.post("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, requireCapability("leads"), createRunsheetItem);
+router.post("/:slug/bookings/:bookingId/runsheet/reorder", venueOwnerAuth, requireCapability("leads"), reorderRunsheet);
+router.patch("/:slug/runsheet/:itemId", venueOwnerAuth, requireCapability("leads"), updateRunsheetItem);
+router.delete("/:slug/runsheet/:itemId", venueOwnerAuth, requireCapability("leads"), deleteRunsheetItem);
+
+// ── Phase 3.5 contracts (booking surface -> leads capability) ──
+router.get("/:slug/bookings/:bookingId/contracts", venueOwnerAuth, listContracts);
+router.post("/:slug/bookings/:bookingId/contracts", venueOwnerAuth, requireCapability("leads"), generateContract);
+router.patch("/:slug/contracts/:contractId", venueOwnerAuth, requireCapability("leads"), updateContract);
+router.post("/:slug/contracts/:contractId/send", venueOwnerAuth, requireCapability("leads"), sendContract);
+router.get("/:slug/contracts/:contractId/pdf", venueOwnerAuth, contractPdf);
+
 router.get("/:slug/analytics", venueOwnerAuth, getAnalytics);
 
 // ── Phase 4.2 reviews: owner-facing display/monitor (24h venue-doc cache);

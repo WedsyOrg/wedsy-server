@@ -3,6 +3,8 @@ const VenueOwner = require("../models/VenueOwner");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueBooking = require("../models/VenueBooking");
 const VenueInvoice = require("../models/VenueInvoice");
+const VenueRoomAllotment = require("../models/VenueRoomAllotment");
+const VenueRunsheetItem = require("../models/VenueRunsheetItem");
 
 // Stages that no longer need follow-up.
 const TERMINAL_STAGES = ["booked", "lost"];
@@ -91,11 +93,34 @@ const getDashboardOverview = async (req, res) => {
     );
     const revenue = { confirmedValue, received, pending: confirmedValue - received };
 
+    // ── Today (Phase 5 PMS): expected check-ins/outs + runsheet items due ──
+    // UTC day window to match the allotment/runsheet day quantisation.
+    const utcDayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const utcDayEnd = new Date(utcDayStart.getTime() + 86400000);
+    const [checkInsToday, checkOutsToday, runsheetDueToday] = await Promise.all([
+      VenueRoomAllotment.countDocuments({
+        venue: venueId,
+        status: "allotted",
+        checkInAt: { $gte: utcDayStart, $lt: utcDayEnd },
+      }),
+      VenueRoomAllotment.countDocuments({
+        venue: venueId,
+        status: "checked_in",
+        checkOutAt: { $gte: utcDayStart, $lt: utcDayEnd },
+      }),
+      VenueRunsheetItem.countDocuments({
+        venue: venueId,
+        day: utcDayStart,
+        status: { $ne: "done" },
+      }),
+    ]);
+
     return res.status(200).json({
       onboarding: { steps, completed, total, percent },
       isVerified,
       followUps: { dueToday, overdue },
       revenue,
+      today: { checkIns: checkInsToday, checkOuts: checkOutsToday, runsheetDue: runsheetDueToday },
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
