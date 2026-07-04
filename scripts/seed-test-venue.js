@@ -115,6 +115,12 @@ async function run() {
     contact: { primaryName: "Test Owner", primaryPhone: OWNER_PHONE, whatsappPhone: OWNER_PHONE, email: "owner@test-palace.local" },
     pricing: { currency: "INR", perPlate: { veg: 1500, nonVeg: 1900 }, tiers: [{ hours: 12, price: 250000 }] },
     coverPhoto: "https://example.local/test-palace-cover.jpg",
+    // D3 date-inventory: two bookable event spaces + one display-only.
+    spaces: [
+      { name: "Grand Lawn", type: "outdoor", capacitySeated: 500, capacityStanding: 800, isBookable: true },
+      { name: "Crystal Hall", type: "indoor", capacitySeated: 250, capacityStanding: 400, isBookable: true },
+      { name: "Photo Gazebo", type: "semi-outdoor", capacitySeated: 0, capacityStanding: 30, isBookable: false },
+    ],
     // Phase 4.2: deterministic Google-rating fixtures (no live fetch in suites).
     googlePlaceId: "test-place-id-palace",
     googleRating: 4.6,
@@ -136,6 +142,15 @@ async function run() {
     await venue.save();
     console.log(`[seed] reset venue ${venue.slug} (${venue._id})`);
   }
+
+  // D3 date-inventory: holds + space-date claims are suite-written state —
+  // clear them so a reseeded venue starts with an open calendar.
+  try {
+    const VenueHold = require("../models/VenueHold");
+    const VenueSpaceDate = require("../models/VenueSpaceDate");
+    await VenueHold.deleteMany({ venue: venue._id });
+    await VenueSpaceDate.deleteMany({ venue: venue._id });
+  } catch (_) {} // models absent on pre-D3 branches
 
   // 2. Owner (upsert by phone). role owner, phone-verified so dashboard treats it as a real account.
   let owner = await VenueOwner.findOne({ phone: OWNER_PHONE });

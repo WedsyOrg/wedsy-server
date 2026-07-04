@@ -20,6 +20,7 @@ const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
 const roles = require("../controllers/venueRoles");
+const cal = require("../controllers/venueCalendar");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -166,6 +167,23 @@ router.get("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.list
 router.post("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.createRole);
 router.patch("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.updateRole);
 router.delete("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.deleteRole);
+
+// ── D3 date-inventory + holds ──
+// Create accepts BOTH tokens: admin JWT = wedsy-side concierge request,
+// venue token = owner-raised hold (availability capability). Everything else
+// is owner-side; decisions (approve/decline/release/convert) + block/unblock
+// are availability-gated writes, calendar/demand are open venue reads.
+router.post("/:slug/holds", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("availability"), cal.createHold);
+router.get("/:slug/holds", venueOwnerAuth, requireCapability("availability"), cal.listHolds);
+router.post("/:slug/holds/:holdId/approve", venueOwnerAuth, requireCapability("availability"), cal.approveHold);
+router.post("/:slug/holds/:holdId/decline", venueOwnerAuth, requireCapability("availability"), cal.declineHold);
+router.post("/:slug/holds/:holdId/release", venueOwnerAuth, requireCapability("availability"), cal.releaseHold);
+router.post("/:slug/holds/:holdId/convert", venueOwnerAuth, requireCapability("availability"), cal.convertHold);
+router.post("/:slug/calendar/block", venueOwnerAuth, requireCapability("availability"), cal.blockDates);
+router.post("/:slug/calendar/unblock", venueOwnerAuth, requireCapability("availability"), cal.unblockDates);
+router.get("/:slug/calendar", venueOwnerAuth, cal.getCalendar);
+router.get("/:slug/calendar/demand", venueOwnerAuth, cal.demandHeat);
+router.patch("/:slug/calendar/settings", venueOwnerAuth, requireCapability("availability"), cal.updateCalendarSettings);
 
 // Availability — availability capability.
 router.post("/:slug/availability", venueOwnerAuth, requireCapability("availability"), saveAvailability);

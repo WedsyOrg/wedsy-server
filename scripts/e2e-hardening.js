@@ -396,6 +396,37 @@ async function run() {
     ok("10 password reset unknown member -> 404", ghostPw.status === 404, `status ${ghostPw.status}`);
   }
 
+  // ═══════════ 11. D3 HOLDS / CALENDAR WRITE SURFACES ═══════════
+  console.log("\n— 11. Holds / calendar hostile input —");
+  {
+    const noTokHold = await api("POST", `/venues/${A}/holds`, { body: { dates: ["2032-01-01"] } });
+    ok("11 hold create without token -> 401", noTokHold.status === 401, `status ${noTokHold.status}`);
+    const idorHold = await api("POST", `/venues/${A}/holds`, { token: tokenB, body: { dates: ["2032-01-01"] } });
+    ok("11 cross-venue hold create -> 403", idorHold.status === 403, `status ${idorHold.status}`);
+    const idorCal = await api("GET", `/venues/${A}/calendar?month=2032-01`, { token: tokenB });
+    ok("11 cross-venue calendar read -> 403", idorCal.status === 403, `status ${idorCal.status}`);
+
+    const tooMany = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: Array.from({ length: 40 }, (_, i) => `2032-03-${String((i % 28) + 1).padStart(2, "0")}`) } });
+    ok("11 40-date hold -> 400", tooMany.status === 400, `status ${tooMany.status}`);
+    const badDate = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-02-30"] } });
+    ok("11 impossible calendar date -> 400", badDate.status === 400, `status ${badDate.status}`);
+    const giantNotes = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-01-05"], notes: "N".repeat(10000) } });
+    ok("11 10k-char hold notes -> 400", giantNotes.status === 400, `status ${giantNotes.status}`);
+    const foreignSpace = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-01-06"], space: "000000000000000000000000" } });
+    ok("11 unknown space -> 400", foreignSpace.status === 400, `status ${foreignSpace.status}`);
+    const foreignEnq = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-01-07"], linkedEnquiry: "000000000000000000000000" } });
+    ok("11 foreign linkedEnquiry -> 400", foreignEnq.status === 400, `status ${foreignEnq.status}`);
+
+    const ghostApprove = await api("POST", `/venues/${A}/holds/000000000000000000000000/approve`, { token: tokenA });
+    ok("11 approve unknown hold -> 404", ghostApprove.status === 404, `status ${ghostApprove.status}`);
+    const badRange = await api("GET", `/venues/${A}/calendar?from=2032-01-01&to=2033-01-01`, { token: tokenA });
+    ok("11 oversized calendar range -> 400", badRange.status === 400, `status ${badRange.status}`);
+    const badMonth = await api("GET", `/venues/${A}/calendar?month=203201`, { token: tokenA });
+    ok("11 malformed month -> 400", badMonth.status === 400, `status ${badMonth.status}`);
+    const badSettings = await api("PATCH", `/venues/${A}/calendar/settings`, { token: tokenA, body: { holdExpiryDays: 999 } });
+    ok("11 holdExpiryDays out of range -> 400", badSettings.status === 400, `status ${badSettings.status}`);
+  }
+
   finish();
 }
 

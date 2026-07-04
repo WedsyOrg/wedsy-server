@@ -18,6 +18,7 @@ const {
   birthdayReminder,
 } = require("./utils/notificationJobs");
 const { runDailyFollowUpReminders } = require("./utils/venueReminderJob");
+const { runHoldExpirySweep } = require("./utils/venueHoldExpiryJob");
 const socketStore = require("./utils/socket");
 const Chat = require("./models/Chat");
 const { runScheduledSheetSync } = require("./controllers/venueSheetsSync");
@@ -176,6 +177,10 @@ httpServer.listen(port, function () {
   // Venue owner follow-up reminders (Phase 1.4) — 9am IST. Env-gated + log-only
   // by default (REMINDERS_LOG_ONLY); no-ops gracefully without WhatsApp creds.
   cron.schedule("0 9 * * *", () => { runDailyFollowUpReminders(); }, IST);
+
+  // D3 hold-expiry sweep — hourly. Pure DB mutation + logs (no external
+  // sends); off-switch: HOLD_EXPIRY_DISABLED=true.
+  cron.schedule("15 * * * *", () => { runHoldExpirySweep().catch((e) => console.error(`[holdExpiry] ${e.message}`)); }, IST);
 
   // Google Sheets one-way sync (sheet → leads) for every connected venue — every 15 min.
   // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).

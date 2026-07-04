@@ -523,6 +523,111 @@ async function run() {
     check("rbac: deactivated member live token -> 401", deadToken.status === 401, `status ${deadToken.status}`);
   }
 
+  // ================= D3: date-inventory, holds, calendar =================
+  if (process.env.E2E_HOLDS === "1") {
+    const jwtH = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwtH.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const hday = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+
+    // spaces present on the venue (from seed), incl. a non-bookable one
+    const det0 = await api("GET", `/venues/${SLUG}`, {});
+    const allSpaces = (det0.json.venue.spaces || []);
+    const lawn = allSpaces.find((s) => s.name === "Grand Lawn");
+    const gazebo = allSpaces.find((s) => s.name === "Photo Gazebo");
+    check("holds: seed venue has bookable spaces", Boolean(lawn && gazebo), `n=${allSpaces.length}`);
+
+    // wedsy-side (admin JWT) hold request -> requested, owner untouched
+    const wReq = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(40), hday(41)], space: lawn._id, requestedByName: "Wedsy CRM", notes: "Couple shortlisted you" } });
+    check("holds: wedsy-side create -> 201 requested (admin JWT)", wReq.status === 201 && wReq.json.hold.status === "requested" && wReq.json.hold.requestedBy === "wedsy", `status ${wReq.status}`);
+    const holdA = wReq.json.hold;
+
+    // non-bookable space rejected; bad dates rejected
+    const badSpace = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(40)], space: gazebo._id } });
+    check("holds: non-bookable space -> 400", badSpace.status === 400, `status ${badSpace.status}`);
+    const badDates = await api("POST", `/venues/${SLUG}/holds`, { token, body: { dates: ["not-a-date"] } });
+    check("holds: malformed dates -> 400", badDates.status === 400, `status ${badDates.status}`);
+
+    // owner approves -> SpaceDate rows claimed, calendar shows held
+    const app1 = await api("POST", `/venues/${SLUG}/holds/${holdA._id}/approve`, { token });
+    check("holds: owner approve -> 200 + rows claimed", app1.status === 200 && app1.json.claimed === 2, `status ${app1.status} claimed=${app1.json.claimed}`);
+    const calMonth = hday(40).slice(0, 7);
+    const cal1 = await api("GET", `/venues/${SLUG}/calendar?from=${hday(40)}&to=${hday(41)}`, { token });
+    const day40 = cal1.json.days && cal1.json.days.find((d) => d.date === hday(40));
+    check("holds: calendar merges held state", cal1.status === 200 && day40 && day40.spaces.some((s) => s.state === "held"), `spaces=${day40 && JSON.stringify(day40.spaces.map((s) => s.state))}`);
+
+    // overlapping second hold approval -> 409 (unique-index guard)
+    const wReq2 = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(41)], space: lawn._id } });
+    const app2 = await api("POST", `/venues/${SLUG}/holds/${wReq2.json.hold._id}/approve`, { token });
+    check("holds: overlapping approve -> 409", app2.status === 409, `status ${app2.status}`);
+
+    // RACE: 5 holds on one fresh space-date, approved concurrently -> exactly one wins
+    const raceHolds = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(50)], space: lawn._id, requestedByName: `racer-${i}` } });
+      raceHolds.push(r.json.hold);
+    }
+    const raceResults = await Promise.all(raceHolds.map((h) => api("POST", `/venues/${SLUG}/holds/${h._id}/approve`, { token })));
+    const raceWins = raceResults.filter((r) => r.status === 200).length;
+    const raceLosses = raceResults.filter((r) => r.status === 409).length;
+    check("holds: 5-way concurrent approve race -> exactly one wins", raceWins === 1 && raceLosses === 4, `wins=${raceWins} losses=${raceLosses}`);
+
+    // decline + release
+    const dReq = await api("POST", `/venues/${SLUG}/holds`, { token, body: { dates: [hday(60)] } });
+    const dec = await api("POST", `/venues/${SLUG}/holds/${dReq.json.hold._id}/decline`, { token, body: { notes: "date clash" } });
+    check("holds: decline -> 200 declined", dec.status === 200 && dec.json.hold.status === "declined", `status ${dec.status}`);
+    const rel = await api("POST", `/venues/${SLUG}/holds/${holdA._id}/release`, { token });
+    check("holds: release frees the dates", rel.status === 200 && rel.json.hold.status === "released", `status ${rel.status}`);
+    const calFree = await api("GET", `/venues/${SLUG}/calendar?from=${hday(40)}&to=${hday(41)}`, { token });
+    const day40b = calFree.json.days.find((d) => d.date === hday(40));
+    check("holds: released dates open again", day40b && day40b.spaces.length === 0, `spaces=${day40b && day40b.spaces.length}`);
+
+    // convert-on-booking flips held -> booked atomically
+    const cReq = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(70)], space: lawn._id } });
+    await api("POST", `/venues/${SLUG}/holds/${cReq.json.hold._id}/approve`, { token });
+    const bkH = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "Hold Convert Couple", couplePhone: "9666600001", totalValue: 500000, days: [{ date: `${hday(70)}T00:00:00.000Z`, eventType: "Wedding", guestCount: 300 }] } });
+    const conv = await api("POST", `/venues/${SLUG}/holds/${cReq.json.hold._id}/convert`, { token, body: { bookingId: bkH.json.booking._id } });
+    check("holds: convert -> 200, rows booked", conv.status === 200 && conv.json.hold.status === "converted" && conv.json.converted === 1, `status ${conv.status} converted=${conv.json.converted}`);
+    const calBooked = await api("GET", `/venues/${SLUG}/calendar?from=${hday(70)}&to=${hday(70)}`, { token });
+    check("holds: calendar shows booked after convert", calBooked.json.days[0].spaces.some((s) => s.state === "booked"), `states=${JSON.stringify(calBooked.json.days[0].spaces.map((s) => s.state))}`);
+
+    // manual block / unblock (venue-wide) + conflict with block
+    const blk = await api("POST", `/venues/${SLUG}/calendar/block`, { token, body: { dates: [hday(80)], notes: "maintenance" } });
+    check("holds: manual block -> 201 rows for every bookable space", blk.status === 201 && blk.json.blocked === 2, `status ${blk.status} blocked=${blk.json.blocked}`);
+    const blkHold = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(80)], space: lawn._id } });
+    const blkApp = await api("POST", `/venues/${SLUG}/holds/${blkHold.json.hold._id}/approve`, { token });
+    check("holds: approve over blocked date -> 409", blkApp.status === 409, `status ${blkApp.status}`);
+    const unblk = await api("POST", `/venues/${SLUG}/calendar/unblock`, { token, body: { dates: [hday(80)] } });
+    check("holds: unblock -> frees exactly the blocked rows", unblk.status === 200 && unblk.json.unblocked === 2, `unblocked=${unblk.json.unblocked}`);
+
+    // legacy venue-wide blockedDates respected at approval
+    await api("POST", `/venues/${SLUG}/availability`, { token, body: { blockedDates: [hday(90)] } });
+    const legHold = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(90)], space: lawn._id } });
+    const legApp = await api("POST", `/venues/${SLUG}/holds/${legHold.json.hold._id}/approve`, { token });
+    check("holds: legacy blockedDates conflict -> 409", legApp.status === 409, `status ${legApp.status}`);
+    await api("POST", `/venues/${SLUG}/availability`, { token, body: { blockedDates: [] } });
+
+    // demand heat: seed a lead with an eventDate in range, expect >=1 on that day
+    await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "Demand Couple", couplePhone: "9666600002", eventDate: `${hday(85)}T00:00:00.000Z` } });
+    const heat = await api("GET", `/venues/${SLUG}/calendar/demand?from=${hday(84)}&to=${hday(86)}`, { token });
+    const heat85 = (heat.json.demand || []).find((d) => d.date === hday(85));
+    check("holds: demand heat counts non-lost leads by eventDate", heat.status === 200 && heat85 && heat85.leads >= 1, `demand=${JSON.stringify(heat.json.demand)}`);
+
+    // settings: hold expiry days venue-configurable
+    const setOk = await api("PATCH", `/venues/${SLUG}/calendar/settings`, { token, body: { holdExpiryDays: 2 } });
+    check("holds: settings holdExpiryDays -> 200", setOk.status === 200 && setOk.json.holdExpiryDays === 2, `status ${setOk.status}`);
+    const setBad = await api("PATCH", `/venues/${SLUG}/calendar/settings`, { token, body: { holdExpiryDays: 0 } });
+    check("holds: holdExpiryDays 0 -> 400", setBad.status === 400, `status ${setBad.status}`);
+    const hExp = await api("POST", `/venues/${SLUG}/holds`, { token, body: { dates: [hday(95)] } });
+    const expDelta = new Date(hExp.json.hold.expiresAt) - Date.now();
+    check("holds: new hold expiry honors venue setting (~2d)", expDelta > 1.8 * 86400000 && expDelta < 2.2 * 86400000, `delta=${Math.round(expDelta / 3600000)}h`);
+    await api("PATCH", `/venues/${SLUG}/calendar/settings`, { token, body: { holdExpiryDays: 5 } });
+
+    // month view shape
+    const mon = await api("GET", `/venues/${SLUG}/calendar?month=${calMonth}`, { token });
+    check("holds: month view returns full month with demand+visits fields", mon.status === 200 && mon.json.days.length >= 28 && "demand" in mon.json.days[0] && "visits" in mon.json.days[0], `days=${mon.json.days && mon.json.days.length}`);
+  }
+
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
     // isVerified on public detail (derived from status; test-palace is published -> false)
