@@ -38,6 +38,17 @@ const List = async (req, res) => {
   }
 };
 
+// GET /enquiry/:_id/lanes/:laneId/entries — full thread, oldest-first.
+// READ: roster members allowed (Slice B1 guard).
+const ListEntries = async (req, res) => {
+  try {
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    res.status(200).json(await LeadLaneService.listEntries(req.params._id, req.params.laneId, { limit: req.query.limit }));
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
 // POST /enquiry/:_id/lanes/assemble — { lanes: [{key,name,ownerId,state,wake?}] }
 const Assemble = async (req, res) => {
   try {
@@ -78,4 +89,4 @@ const AddEntry = async (req, res) => {
   }
 };
 
-module.exports = { List, Assemble, Add, Patch, AddEntry };
+module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry };

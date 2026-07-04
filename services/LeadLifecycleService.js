@@ -355,6 +355,122 @@ const markProposalSent = async (enquiryId, { amount } = {}, actorId) => {
   return updated;
 };
 
+// ── Slice B5a — deal total + THE ONBOARD HINGE ────────────────────────────────
+const setDealTotal = async (enquiryId, amount, actorId) => {
+  assertValidId(enquiryId);
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt < 0) throw httpError(400, "amount must be a non-negative number");
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  const from = lead.dealTotal != null ? Number(lead.dealTotal) : null;
+  const updated = await EnquiryRepository.updateFieldsById(enquiryId, { dealTotal: amt });
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "deal_total_changed",
+    actorId: actorId || null,
+    payload: { from, to: amt },
+  });
+  return updated;
+};
+
+// The WIN BROADCAST — the whole team hears the bell (audience per settings
+// broadcast.winAudience). NEVER carries any amount. Fire-safe.
+const broadcastWin = async (lead, actorId) => {
+  try {
+    const Role = require("../models/Role");
+    const audienceSetting = await SettingsService.get("broadcast.winAudience");
+    let recipients = [];
+    if (audienceSetting === "sales_cs_leadership") {
+      const names = ["Revenue Head", "Founder", "Sales Lead", "Client Servicing Executive"];
+      const roles = await Role.find({ name: { $in: names }, deletedAt: null }, { _id: 1 }).lean();
+      const roleIds = roles.map((r) => r._id);
+      const admins = await Admin.find(
+        { status: "active", $or: [{ roleId: { $in: roleIds } }, { roleIds: { $in: roleIds } }] },
+        { _id: 1 }
+      ).lean();
+      recipients = admins.map((a) => a._id);
+      if (lead.assignedTo) recipients.push(lead.assignedTo);
+    } else {
+      const admins = await Admin.find({ status: "active" }, { _id: 1 }).lean();
+      recipients = admins.map((a) => a._id);
+    }
+    const ownerDoc = lead.assignedTo ? await Admin.findById(lead.assignedTo, { name: 1 }).lean() : null;
+    const q = lead.qualificationData || {};
+    const couple = q.groomName && q.brideName ? `${q.groomName} & ${q.brideName}` : lead.name || "The couple";
+    // Actor INCLUDED — they earned the bell. Dedupe ids only.
+    const ids = [...new Set(recipients.map(String))];
+    await AdminNotificationService.notify(ids, {
+      type: "client_won",
+      title: `🏆 Client won by ${ownerDoc ? ownerDoc.name : "the team"}`,
+      message: `${couple} is now a Wedsy client`,
+      leadId: lead._id,
+      // Deliberately NO amount anywhere in the broadcast.
+      payload: { wonBy: lead.assignedTo ? String(lead.assignedTo) : null, onboardedBy: actorId ? String(actorId) : null },
+    });
+  } catch (e) {
+    console.error("[broadcastWin] failed:", e.message);
+  }
+};
+
+// POST /enquiry/:_id/onboard { feeAmount, dealTotal?, mode?, note? } — the win
+// hinge: onboard from ANY live stage (the meeting_scheduled gate is gone; the
+// legacy /convert route keeps it). In order: dealTotal → Project + stage won
+// (the ONE shared convertLead path, gate skipped) → fee payment #1 → journey
+// event → lane echo → win broadcast.
+const onboardClient = async (enquiryId, { feeAmount, dealTotal, mode, note } = {}, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  if (!lead.qualified) throw httpError(422, "Qualify the lead before onboarding");
+  if (lead.lostStatus === "pending") throw httpError(422, "A disqualification decision is pending on this lead");
+  if (lead.isLost || lead.lostStatus === "approved" || lead.stage === "lost") {
+    throw httpError(422, "This lead is lost — recover it before onboarding");
+  }
+  if (lead.stage === "won") throw httpError(409, "This client is already onboarded");
+  const existingProject = await require("../repositories/ProjectRepository").findByLeadId(enquiryId);
+  if (existingProject) throw httpError(409, "This client is already onboarded");
+
+  const fee = Number(feeAmount);
+  if (!Number.isFinite(fee) || fee <= 0) throw httpError(400, "feeAmount must be a positive number");
+
+  if (dealTotal !== undefined && dealTotal !== null && dealTotal !== "") {
+    await setDealTotal(enquiryId, dealTotal, actorId);
+  }
+  const effectiveTotal =
+    dealTotal != null && dealTotal !== "" ? Number(dealTotal) : lead.dealTotal != null ? Number(lead.dealTotal) : 0;
+
+  // Project + stage → won through the ONE shared path (gate skipped).
+  const project = await require("./ProjectService").convertLead(
+    enquiryId,
+    { value: effectiveTotal, skipStageGate: true },
+    actorId
+  );
+
+  // Fee payment #1 (mode default "bank"; the ledger echoes lead_comms itself).
+  const payment = await require("./LeadPaymentService").record(
+    enquiryId,
+    { amount: fee, mode: mode || "bank", note: note || "Onboarding fee", projectId: project._id },
+    actorId
+  );
+
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "client_onboarded",
+    actorId: actorId || null,
+    payload: { projectId: String(project._id), feeRecorded: true },
+  });
+  await require("./LeadLaneService").autoEntry(
+    enquiryId,
+    "lead_comms",
+    "agreement",
+    "Client onboarded 🏆 — agreement & fee in"
+  );
+  await broadcastWin(lead, actorId);
+
+  const fresh = await Enquiry.findById(enquiryId).lean();
+  return { lead: fresh, project, payment };
+};
+
 // ── Quick notes (Redesign) ───────────────────────────────────────────────────
 // One note = one "commented" internal event (shows in the journey) + an append
 // to the legacy updates.notes blob so the old surfaces keep seeing it.
@@ -710,6 +826,8 @@ module.exports = {
   qualifyLead,
   unqualifyLead,
   markProposalSent,
+  setDealTotal,
+  onboardClient,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };

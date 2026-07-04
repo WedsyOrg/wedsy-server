@@ -111,6 +111,18 @@ const DEFAULTS = {
   "dealclock.meetingHeldToProposalDays": 2,
   "dealclock.proposalToAgreementDays": 4,
   "dealclock.agreementToOnboardedDays": 3,
+  // Slice B5a — who hears the win bell. "all" = every active admin.
+  "broadcast.winAudience": "all",
+  // Slice B5b — agreement & billing (the founder-editable money paperwork).
+  // agreementContent merge tags: {couple} {eventDates} {venue} {amount} {today}.
+  "billing.agreementContent":
+    "SERVICE AGREEMENT\n\nThis agreement is made on {today} between Wedsy and {couple} for wedding planning and execution services.\n\nEvent dates: {eventDates}\nVenue: {venue}\nTotal engagement value: {amount}\n\nScope, deliverables and milestone payments as discussed and recorded on the Wedsy OS deal record. This document is system-generated from the deal record on the date above.",
+  "billing.companyLegalName": "Wedsy",
+  "billing.companyAddress": "",
+  "billing.gstin": "",
+  "billing.invoicePrefix": "WD-",
+  "billing.invoiceNextNumber": 1,
+  "billing.defaultTaxRate": 18,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -159,6 +171,14 @@ const KEY_CATEGORY = {
   "dealclock.meetingHeldToProposalDays": "settings_sla",
   "dealclock.proposalToAgreementDays": "settings_sla",
   "dealclock.agreementToOnboardedDays": "settings_sla",
+  "broadcast.winAudience": "settings_billing",
+  "billing.agreementContent": "settings_billing",
+  "billing.companyLegalName": "settings_billing",
+  "billing.companyAddress": "settings_billing",
+  "billing.gstin": "settings_billing",
+  "billing.invoicePrefix": "settings_billing",
+  "billing.invoiceNextNumber": "settings_billing",
+  "billing.defaultTaxRate": "settings_billing",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -219,6 +239,42 @@ const validateValue = (key, value) => {
       return value;
     case "sla.rescueTier2Minutes":
       if (!isIntInRange(value, 1, 30)) throw err(400, "sla.rescueTier2Minutes must be an integer 1–30");
+      return value;
+    case "billing.agreementContent":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 50000) {
+        throw err(400, "billing.agreementContent must be a non-empty string of at most 50000 chars");
+      }
+      return value;
+    case "billing.companyLegalName":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 300) {
+        throw err(400, "billing.companyLegalName must be a non-empty string of at most 300 chars");
+      }
+      return value.trim();
+    case "billing.companyAddress":
+      if (typeof value !== "string" || value.length > 1000) {
+        throw err(400, "billing.companyAddress must be a string of at most 1000 chars");
+      }
+      return value;
+    case "billing.gstin":
+      if (typeof value !== "string" || value.length > 20) {
+        throw err(400, "billing.gstin must be a string of at most 20 chars");
+      }
+      return value.trim();
+    case "billing.invoicePrefix":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 10) {
+        throw err(400, "billing.invoicePrefix must be a non-empty string of at most 10 chars");
+      }
+      return value.trim();
+    case "billing.invoiceNextNumber":
+      if (!isIntInRange(value, 1, 1000000000)) throw err(400, "billing.invoiceNextNumber must be a positive integer");
+      return value;
+    case "billing.defaultTaxRate":
+      if (!isIntInRange(value, 0, 50)) throw err(400, "billing.defaultTaxRate must be an integer 0–50");
+      return value;
+    case "broadcast.winAudience":
+      if (!["all", "sales_cs_leadership"].includes(value)) {
+        throw err(400, "broadcast.winAudience must be 'all' or 'sales_cs_leadership'");
+      }
       return value;
     case "dealclock.qualifiedToMeetingDays":
     case "dealclock.meetingHeldToProposalDays":
