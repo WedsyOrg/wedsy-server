@@ -628,6 +628,87 @@ async function run() {
     check("holds: month view returns full month with demand+visits fields", mon.status === 200 && mon.json.days.length >= 28 && "demand" in mon.json.days[0] && "visits" in mon.json.days[0], `days=${mon.json.days && mon.json.days.length}`);
   }
 
+  // ================= D8: document engine — templates, bills, GST modes, ack =================
+  if (process.env.E2E_DOCS === "1") {
+    // fixture booking
+    const dbk = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "Docs Couple", couplePhone: "9555500001", totalValue: 118000, days: [{ date: new Date(Date.now() + 45 * 86400000).toISOString(), eventType: "Wedding", guestCount: 150 }] } });
+    const dbkId = dbk.json.booking._id;
+
+    // template CRUD
+    const tpl = await api("POST", `/venues/${SLUG}/doc-templates`, { token, body: { type: "bill", name: "Standard Wedding Bill", lineItems: [{ label: "Venue hire", category: "venue_hire", qty: 1, unitPrice: 100000 }], terms: ["50% advance to confirm", "Balance 7 days before event"], gstMode: "exclusive", gstPercent: 18 } });
+    check("docs: create template -> 201", tpl.status === 201 && tpl.json.template.name === "Standard Wedding Bill", `status ${tpl.status}`);
+    const tplId = tpl.json.template._id;
+    const tplDup = await api("POST", `/venues/${SLUG}/doc-templates`, { token, body: { type: "bill", name: "Standard Wedding Bill" } });
+    check("docs: duplicate template name -> 400", tplDup.status === 400, `status ${tplDup.status}`);
+    const tplBadType = await api("POST", `/venues/${SLUG}/doc-templates`, { token, body: { type: "receipt", name: "X" } });
+    check("docs: unknown template type -> 400", tplBadType.status === 400, `status ${tplBadType.status}`);
+
+    // GST modes — asserted to the rupee. 100000 @18%:
+    //   exclusive: gst 18000, grand 118000 | inclusive: gst 15254, taxable 84746, grand 100000 | none: 0 / 100000
+    const bEx = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, templateId: tplId } });
+    check("docs: bill from template seeds items+terms", bEx.status === 201 && bEx.json.bill.lineItems.length === 1 && bEx.json.bill.terms.length === 2 && bEx.json.bill.billNumber.startsWith("BILL-"), `status ${bEx.status}`);
+    check("docs: GST exclusive exact", bEx.json.bill.totals.subtotal === 100000 && bEx.json.bill.totals.gst === 18000 && bEx.json.bill.totals.grandTotal === 118000 && bEx.json.bill.totals.taxable === 100000, JSON.stringify(bEx.json.bill.totals));
+    const bIn = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, lineItems: [{ label: "All-in package", qty: 1, unitPrice: 100000 }], gstMode: "inclusive", gstPercent: 18 } });
+    check("docs: GST inclusive exact (back-computed)", bIn.json.bill.totals.gst === 15254 && bIn.json.bill.totals.taxable === 84746 && bIn.json.bill.totals.grandTotal === 100000, JSON.stringify(bIn.json.bill.totals));
+    const bNo = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, lineItems: [{ label: "No-GST line", qty: 1, unitPrice: 100000 }], gstMode: "none" } });
+    check("docs: GST none exact", bNo.json.bill.totals.gst === 0 && bNo.json.bill.totals.grandTotal === 100000, JSON.stringify(bNo.json.bill.totals));
+    const bBadMode = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, gstMode: "magic" } });
+    check("docs: unknown gstMode -> 400", bBadMode.status === 400, `status ${bBadMode.status}`);
+
+    // send -> public white-label payload -> phone-verified acceptance
+    const sent = await api("POST", `/venues/${SLUG}/bills/${bEx.json.bill._id}/send`, { token });
+    check("docs: send bill -> ackToken", sent.status === 200 && sent.json.ackToken, `status ${sent.status}`);
+    const ackTok = sent.json.ackToken;
+    const pub = await api("GET", `/venues/doc-ack/${ackTok}`, {});
+    check("docs: public ack payload is white-label (venue identity + terms, no venue internals)", pub.status === 200 && pub.json.venue && pub.json.venue.name && pub.json.terms.length === 2 && pub.json.docType === "bill", `status ${pub.status}`);
+    const wrongPhone = await api("POST", `/venues/doc-ack/${ackTok}`, { body: { name: "Impostor", phone: "9000000000" } });
+    check("docs: wrong phone -> 403", wrongPhone.status === 403, `status ${wrongPhone.status}`);
+    const acc = await api("POST", `/venues/doc-ack/${ackTok}`, { body: { name: "Docs Couple", phone: "9555500001", channel: "whatsapp" } });
+    check("docs: accept -> 200 acceptance logged", acc.status === 200 && acc.json.acceptedAt, `status ${acc.status}`);
+    const accAgain = await api("POST", `/venues/doc-ack/${ackTok}`, { body: { name: "Again", phone: "9555500001" } });
+    check("docs: double-accept -> 409", accAgain.status === 409, `status ${accAgain.status}`);
+    const badTok = await api("GET", `/venues/doc-ack/not-a-token`, {});
+    check("docs: garbage ack token -> 401", badTok.status === 401, `status ${badTok.status}`);
+
+    // conversion: numbering continues the EXISTING invoice sequence
+    const inv0 = await api("POST", `/venues/${SLUG}/invoices`, { token, body: { booking: dbkId, kind: "advance" } });
+    const seq0 = inv0.json.invoice.seq;
+    const conv = await api("POST", `/venues/${SLUG}/bills/${bEx.json.bill._id}/convert`, { token });
+    check("docs: accepted bill converts -> real invoice, sequence intact", conv.status === 201 && conv.json.invoice.seq === seq0 + 1 && conv.json.bill.status === "converted" && conv.json.invoice.billRef === conv.json.bill._id, `seq ${seq0}->${conv.json.invoice && conv.json.invoice.seq}`);
+    check("docs: converted invoice carries acceptance + gstMode + terms", conv.json.invoice.acceptance && conv.json.invoice.acceptance.name === "Docs Couple" && conv.json.invoice.gstMode === "exclusive" && conv.json.invoice.terms.length === 2, JSON.stringify(conv.json.invoice.acceptance));
+    const editConverted = await api("PATCH", `/venues/${SLUG}/bills/${bEx.json.bill._id}`, { token, body: { discount: 1 } });
+    check("docs: converted bill is immutable -> 409", editConverted.status === 409, `status ${editConverted.status}`);
+
+    // add-on billing: supplementary bill -> addon invoice
+    const addon = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, isAddon: true, lineItems: [{ label: "Extra 50 plates", qty: 50, unitPrice: 1500 }], gstMode: "exclusive", gstPercent: 18 } });
+    check("docs: add-on bill math exact", addon.json.bill.isAddon === true && addon.json.bill.totals.subtotal === 75000 && addon.json.bill.totals.gst === 13500 && addon.json.bill.totals.grandTotal === 88500, JSON.stringify(addon.json.bill.totals));
+    const addonConv = await api("POST", `/venues/${SLUG}/bills/${addon.json.bill._id}/convert`, { token });
+    check("docs: add-on converts to kind=addon invoice", addonConv.status === 201 && addonConv.json.invoice.kind === "addon", `kind ${addonConv.json.invoice && addonConv.json.invoice.kind}`);
+
+    // white-label PDF: logo -> /XObject present; Powered by Wedsy footer bytes
+    const sharpD = require("sharp");
+    const logoJ = await sharpD({ create: { width: 24, height: 24, channels: 3, background: { r: 107, g: 30, b: 46 } } }).jpeg().toBuffer();
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: `data:image/jpeg;base64,${logoJ.toString("base64")}` } });
+    const bpdf = await apiBinary(`/venues/${SLUG}/bills/${bIn.json.bill._id}/pdf`, { token });
+    check("docs: bill PDF renders with logo image object", bpdf.status === 200 && bpdf.head.startsWith("%PDF") && bpdf.body.includes("/XObject"), `bytes=${bpdf.bytes}`);
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
+    const bpdf2 = await apiBinary(`/venues/${SLUG}/bills/${bIn.json.bill._id}/pdf`, { token });
+    check("docs: bill PDF graceful without logo", bpdf2.status === 200 && bpdf2.head.startsWith("%PDF") && !bpdf2.body.includes("/XObject"), `bytes=${bpdf2.bytes}`);
+
+    // quote ack path (same engine)
+    const qEnq = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "Quote Ack Couple", couplePhone: "9555500002" } });
+    const qEnqId = qEnq.json.enquiryId || (qEnq.json.enquiry && qEnq.json.enquiry._id);
+    const q = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: qEnqId, lineItems: [{ label: "Hall", qty: 1, unitPrice: 50000 }], gstMode: "inclusive", gstPercent: 5, terms: ["Valid 14 days"] } });
+    check("docs: quote with inclusive mode exact", q.json.quote.totals.gst === 2381 && q.json.quote.totals.grandTotal === 50000, JSON.stringify(q.json.quote.totals));
+    const qSend = await api("POST", `/venues/${SLUG}/quotes/${q.json.quote._id}/send-ack`, { token });
+    const qAcc = await api("POST", `/venues/doc-ack/${qSend.json.ackToken}`, { body: { name: "Quote Ack Couple", phone: "9555500002" } });
+    check("docs: quote acceptance via public link", qAcc.status === 200 && qAcc.json.acceptedAt, `status ${qAcc.status}`);
+
+    // template delete
+    const tplDel = await api("DELETE", `/venues/${SLUG}/doc-templates/${tplId}`, { token });
+    check("docs: delete template -> 200", tplDel.status === 200, `status ${tplDel.status}`);
+  }
+
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
     // isVerified on public detail (derived from status; test-palace is published -> false)

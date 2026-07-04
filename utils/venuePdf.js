@@ -97,7 +97,7 @@ function lineItemsTable(doc, lineItems) {
   doc.moveDown(0.5);
 }
 
-function totalsBlock(doc, totals, gstPercent, discount) {
+function totalsBlock(doc, totals, gstPercent, discount, gstMode) {
   const right = (label, value, opts = {}) => {
     const y = doc.y;
     doc.fillColor(opts.bold ? BURGUNDY : GREY).fontSize(opts.bold ? 12 : 10);
@@ -107,9 +107,46 @@ function totalsBlock(doc, totals, gstPercent, discount) {
   };
   right("Subtotal", formatINR(totals.subtotal));
   if (discount) right("Discount", "− " + formatINR(discount));
-  right(`GST (${gstPercent}%)`, formatINR(totals.gst));
+  // D8 GST modes: exclusive shows GST added on top (historical layout);
+  // inclusive shows the back-computed split; none omits the GST line.
+  if (gstMode === "inclusive") {
+    right("Taxable value", formatINR(totals.taxable != null ? totals.taxable : totals.grandTotal - totals.gst));
+    right(`GST (${gstPercent}% incl.)`, formatINR(totals.gst));
+  } else if (gstMode !== "none") {
+    right(`GST (${gstPercent}%)`, formatINR(totals.gst));
+  }
   doc.moveDown(0.1);
   right("Grand Total", formatINR(totals.grandTotal), { bold: true });
+}
+
+// D8 white-label: numbered Terms & Conditions block (from template/policyDoc).
+function termsBlock(doc, terms) {
+  const list = (terms || []).filter(Boolean);
+  if (!list.length) return;
+  doc.moveDown(0.8);
+  doc.fillColor(BURGUNDY).fontSize(12).text("Terms & Conditions", 50, doc.y);
+  doc.moveDown(0.2).fillColor("#222222").fontSize(9);
+  list.forEach((t, i) => {
+    doc.text(`${i + 1}. ${t}`, 50, doc.y, { width: 495 });
+    doc.moveDown(0.15);
+  });
+}
+
+// D8 acceptance stamp for money docs (quotes/bills) accepted via the public link.
+function acceptanceLine(doc, acceptance) {
+  if (!acceptance || !acceptance.at) return;
+  doc.moveDown(0.5).fillColor(GREY).fontSize(9);
+  doc.text(
+    `Accepted by ${acceptance.name || "—"} on ${new Date(acceptance.at).toUTCString()} via ${acceptance.channel || "link"} (phone verified).`,
+    50, doc.y, { width: 495 }
+  );
+}
+
+// D8 white-label footer: the document is the VENUE's; Wedsy stays small print.
+function poweredByFooter(doc, systemLine) {
+  doc.moveDown(1.5).fillColor(GREY).fontSize(8);
+  if (systemLine) doc.text(systemLine, 50, doc.y, { align: "center", width: 495 });
+  doc.fillColor("#999999").fontSize(7).text("Powered by Wedsy", 50, doc.y + 2, { align: "center", width: 495 });
 }
 
 // Quote PDF.
@@ -123,8 +160,10 @@ async function streamQuotePdf(res, { venue, enquiry, quote }) {
   doc.text(`Status: ${quote.status || "draft"}`);
   doc.moveDown(0.8);
   lineItemsTable(doc, quote.lineItems);
-  totalsBlock(doc, quote.totals || {}, quote.gstPercent, quote.discount);
-  doc.moveDown(2).fillColor(GREY).fontSize(8).text("This is a system-generated quotation.", 50, doc.y, { align: "center", width: 495 });
+  totalsBlock(doc, quote.totals || {}, quote.gstPercent, quote.discount, quote.gstMode);
+  termsBlock(doc, quote.terms);
+  acceptanceLine(doc, quote.acceptance);
+  poweredByFooter(doc, "This is a system-generated quotation.");
   doc.end();
 }
 
@@ -143,7 +182,7 @@ async function streamInvoicePdf(res, { venue, booking, invoice }) {
   doc.text(`Payment status: ${invoice.status}`);
   doc.moveDown(0.8);
   lineItemsTable(doc, invoice.lineItems);
-  totalsBlock(doc, invoice.totals || {}, invoice.gstPercent, invoice.discount);
+  totalsBlock(doc, invoice.totals || {}, invoice.gstPercent, invoice.discount, invoice.gstMode);
 
   const paid = (invoice.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const balance = (invoice.totals ? invoice.totals.grandTotal : 0) - paid;
@@ -152,7 +191,31 @@ async function streamInvoicePdf(res, { venue, booking, invoice }) {
   doc.text(formatINR(paid), 450, doc.y - 12, { width: 95, align: "right" });
   doc.text(`Balance: ${formatINR(balance)}`, 330, doc.y, { width: 110, align: "right" });
   doc.text(formatINR(balance), 450, doc.y - 12, { width: 95, align: "right" });
-  doc.moveDown(2).fillColor(GREY).fontSize(8).text("This is a system-generated tax invoice.", 50, doc.y, { align: "center", width: 495 });
+  termsBlock(doc, invoice.terms);
+  acceptanceLine(doc, invoice.acceptance);
+  poweredByFooter(doc, "This is a system-generated tax invoice.");
+  doc.end();
+}
+
+// D8 bill PDF — the pre-invoice working document ("pro forma"). Same white-
+// label layout as the invoice, its own reference number, never a tax invoice.
+async function streamBillPdf(res, { venue, booking, bill }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
+  const doc = startDoc(res, `${bill.billNumber || "bill"}.pdf`);
+  venueHeader(doc, venue, `${bill.isAddon ? "Add-on Bill" : "Bill"}  ·  ${bill.billNumber || ""}`, logoBuffer);
+  doc.fillColor(GREY).fontSize(10);
+  const taxLines = [];
+  if (venue.gstin) taxLines.push(`GSTIN: ${venue.gstin}`);
+  if (venue.pan) taxLines.push(`PAN: ${venue.pan}`);
+  if (taxLines.length) doc.text(taxLines.join("   "));
+  if (booking && booking.coupleName) doc.text(`Billed to: ${booking.coupleName}${booking.couplePhone ? "  ·  " + booking.couplePhone : ""}`);
+  doc.text(`Status: ${bill.status}`);
+  doc.moveDown(0.8);
+  lineItemsTable(doc, bill.lineItems);
+  totalsBlock(doc, bill.totals || {}, bill.gstPercent, bill.discount, bill.gstMode);
+  termsBlock(doc, bill.terms);
+  acceptanceLine(doc, bill.acceptance);
+  poweredByFooter(doc, "This is a working bill — the tax invoice is issued on conversion.");
   doc.end();
 }
 
@@ -211,7 +274,8 @@ async function streamContractPdf(res, { venue, contract }) {
     doc.text("Pending — the couple acknowledges this contract through the secure link shared by the venue.");
   }
   doc.moveDown(0.3).text("This is a digital acknowledgment recorded by Wedsy on behalf of the venue, not an electronic signature service.", { width: 495 });
+  poweredByFooter(doc);
   doc.end();
 }
 
-module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf };
+module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf };

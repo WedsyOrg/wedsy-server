@@ -427,6 +427,36 @@ async function run() {
     ok("11 holdExpiryDays out of range -> 400", badSettings.status === 400, `status ${badSettings.status}`);
   }
 
+  // ═══════════ 12. D8 DOCUMENT ENGINE WRITE SURFACES ═══════════
+  console.log("\n— 12. Docs hostile input —");
+  {
+    const noTokTpl = await api("POST", `/venues/${A}/doc-templates`, { body: { type: "bill", name: "X" } });
+    ok("12 template create without token -> 401", noTokTpl.status === 401, `status ${noTokTpl.status}`);
+    const idorTpl = await api("POST", `/venues/${A}/doc-templates`, { token: tokenB, body: { type: "bill", name: "Intruder" } });
+    ok("12 cross-venue template create -> 403", idorTpl.status === 403, `status ${idorTpl.status}`);
+    const giantTpl = await api("POST", `/venues/${A}/doc-templates`, { token: tokenA, body: { type: "bill", name: "T".repeat(10000) } });
+    ok("12 10k-char template name -> 400", giantTpl.status === 400, `status ${giantTpl.status}`);
+    const giantTerms = await api("POST", `/venues/${A}/doc-templates`, { token: tokenA, body: { type: "bill", name: "GT", terms: ["x".repeat(5000)] } });
+    ok("12 5k-char term -> 400", giantTerms.status === 400, `status ${giantTerms.status}`);
+
+    const bkForBill = await api("POST", `/venues/${A}/bookings`, { token: tokenA, body: { coupleName: "Docs Torture", days: [{ date: new Date(Date.now() + 40 * 86400000).toISOString() }] } });
+    const bId12 = bkForBill.json.booking && bkForBill.json.booking._id;
+    const negQty = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: bId12, lineItems: [{ label: "Neg", qty: -5, unitPrice: 100 }] } });
+    ok("12 negative bill qty -> 400", negQty.status === 400, `status ${negQty.status}`);
+    const hugeUnit = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: bId12, lineItems: [{ label: "Huge", qty: 1, unitPrice: 1e12 }] } });
+    ok("12 absurd unitPrice -> 400", hugeUnit.status === 400, `status ${hugeUnit.status}`);
+    const foreignBooking = await api("POST", `/venues/${A}/bills`, { token: tokenB, body: { booking: bId12 } });
+    ok("12 cross-venue bill create -> 403", foreignBooking.status === 403, `status ${foreignBooking.status}`);
+    const ghostBooking = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: "000000000000000000000000" } });
+    ok("12 unknown booking on bill -> 404", ghostBooking.status === 404, `status ${ghostBooking.status}`);
+
+    // The shared public-read bucket may already be exhausted this deep into the
+    // suite — 429 is an equally hard rejection here; the pure 401 path is
+    // asserted with fresh budget in e2e-venue's E2E_DOCS section.
+    const tamperedAck = await api("POST", "/venues/doc-ack/evil.token.here", { body: { name: "X", phone: "9000000000" } });
+    ok("12 tampered doc-ack token rejected (401/429)", [401, 429].includes(tamperedAck.status), `status ${tamperedAck.status}`);
+  }
+
   finish();
 }
 

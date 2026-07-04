@@ -5,7 +5,7 @@
 const Venue = require("../models/Venue");
 const VenueQuote = require("../models/VenueQuote");
 const VenueEnquiry = require("../models/VenueEnquiry");
-const { computeTotals } = require("../utils/venueMoney");
+const { computeTotals, GST_MODES } = require("../utils/venueMoney");
 const { streamQuotePdf } = require("../utils/venuePdf");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 
@@ -21,7 +21,7 @@ const createQuote = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
-    const { enquiry, lineItems, gstPercent, discount } = req.body || {};
+    const { enquiry, lineItems, gstPercent, gstMode, discount, terms } = req.body || {};
     if (!enquiry) return res.status(400).json({ message: "enquiry is required" });
     const enquiryDoc = await VenueEnquiry.findOne({ _id: enquiry, venueId: venue._id }).select("_id").lean();
     if (!enquiryDoc) return res.status(404).json({ message: "Enquiry not found for this venue" });
@@ -30,7 +30,12 @@ const createQuote = async (req, res) => {
     const disc = Number(discount) || 0;
     if (!Number.isFinite(pct) || pct < 0 || pct > 100) return res.status(400).json({ message: "gstPercent must be 0..100" });
     if (!Number.isFinite(disc) || disc < 0) return res.status(400).json({ message: "discount must be >= 0" });
-    const totals = computeTotals(lineItems, pct, disc);
+    if (gstMode !== undefined && !GST_MODES.includes(gstMode)) return res.status(400).json({ message: `gstMode must be one of ${GST_MODES.join(", ")}` });
+    if (terms !== undefined && (!Array.isArray(terms) || terms.some((t) => typeof t !== "string" || t.length > 2000) || terms.length > 50)) {
+      return res.status(400).json({ message: "terms must be an array of strings (max 50 × 2000 chars)" });
+    }
+    const mode = gstMode || "exclusive";
+    const totals = computeTotals(lineItems, pct, disc, mode);
 
     // Next version + supersede earlier non-final versions.
     const latest = await VenueQuote.findOne({ enquiry }).sort({ version: -1 }).select("version").lean();
@@ -46,8 +51,10 @@ const createQuote = async (req, res) => {
       version,
       lineItems: Array.isArray(lineItems) ? lineItems : [],
       gstPercent: pct,
+      gstMode: mode,
       discount: disc,
       totals,
+      terms: Array.isArray(terms) ? terms : [],
       status: "draft",
     });
     return res.status(201).json({ quote });
@@ -84,7 +91,11 @@ const updateQuote = async (req, res) => {
     if (!venue) return;
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id });
     if (!quote) return res.status(404).json({ message: "Quote not found" });
-    const { lineItems, gstPercent, discount, status } = req.body || {};
+    const { lineItems, gstPercent, gstMode, discount, status, terms } = req.body || {};
+    if (gstMode !== undefined && !GST_MODES.includes(gstMode)) return res.status(400).json({ message: `gstMode must be one of ${GST_MODES.join(", ")}` });
+    if (terms !== undefined && (!Array.isArray(terms) || terms.some((t) => typeof t !== "string" || t.length > 2000) || terms.length > 50)) {
+      return res.status(400).json({ message: "terms must be an array of strings (max 50 × 2000 chars)" });
+    }
     const QUOTE_STATUS = ["draft", "sent", "accepted", "superseded"];
     if (status !== undefined && !QUOTE_STATUS.includes(status)) {
       return res.status(400).json({ message: `status must be one of ${QUOTE_STATUS.join(", ")}` });
@@ -102,9 +113,11 @@ const updateQuote = async (req, res) => {
     }
     if (lineItems !== undefined) quote.lineItems = Array.isArray(lineItems) ? lineItems : [];
     if (gstPercent !== undefined) quote.gstPercent = Number(gstPercent);
+    if (gstMode !== undefined) quote.gstMode = gstMode;
     if (discount !== undefined) quote.discount = Number(discount) || 0;
-    if (lineItems !== undefined || gstPercent !== undefined || discount !== undefined) {
-      quote.totals = computeTotals(quote.lineItems, quote.gstPercent, quote.discount);
+    if (terms !== undefined) quote.terms = terms;
+    if (lineItems !== undefined || gstPercent !== undefined || discount !== undefined || gstMode !== undefined) {
+      quote.totals = computeTotals(quote.lineItems, quote.gstPercent, quote.discount, quote.gstMode);
     }
     if (status !== undefined) quote.status = status;
     await quote.save();

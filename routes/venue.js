@@ -21,6 +21,7 @@ const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
 const roles = require("../controllers/venueRoles");
 const cal = require("../controllers/venueCalendar");
+const docs = require("../controllers/venueDocs");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -54,6 +55,9 @@ router.post("/onboarding-requests", publicReadLimiter, createOnboardingRequest);
 //    no auth — the signed short-lived token is the credential) ──
 router.get("/contract-ack/:token", publicReadLimiter, getAckContract);
 router.post("/contract-ack/:token", publicReadLimiter, acknowledgeContract);
+// D8 doc acceptance (quotes/bills) — same typed-token + rate-limit pattern.
+router.get("/doc-ack/:token", publicReadLimiter, docs.getAckDoc);
+router.post("/doc-ack/:token", publicReadLimiter, docs.acceptDoc);
 // Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
@@ -102,6 +106,19 @@ router.post("/:slug/invoices", venueOwnerAuth, requireCapability("leads"), creat
 router.get("/:slug/invoices/:invoiceId/pdf", venueOwnerAuth, invoicePdf);
 router.get("/:slug/invoices/:invoiceId", venueOwnerAuth, getInvoice);
 router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapability("leads"), addPayment);
+
+// ── D8 document engine: templates + bills (documents capability) ──
+router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);
+router.post("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.createTemplate);
+router.patch("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.updateTemplate);
+router.delete("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.deleteTemplate);
+router.get("/:slug/bills", venueOwnerAuth, docs.listBills);
+router.post("/:slug/bills", venueOwnerAuth, requireCapability("documents"), docs.createBill);
+router.get("/:slug/bills/:billId/pdf", venueOwnerAuth, docs.billPdf);
+router.patch("/:slug/bills/:billId", venueOwnerAuth, requireCapability("documents"), docs.updateBill);
+router.post("/:slug/bills/:billId/send", venueOwnerAuth, requireCapability("documents"), docs.sendBill);
+router.post("/:slug/bills/:billId/convert", venueOwnerAuth, requireCapability("documents"), docs.convertBill);
+router.post("/:slug/quotes/:quoteId/send-ack", venueOwnerAuth, requireCapability("documents"), docs.sendQuoteAck);
 
 // ── Phase 3.4: payments summary + Phase 4.1: analytics — open reads ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);

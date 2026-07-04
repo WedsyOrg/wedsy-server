@@ -7,7 +7,7 @@ const VenueInvoice = require("../models/VenueInvoice");
 const VenueBooking = require("../models/VenueBooking");
 const VenueQuote = require("../models/VenueQuote");
 const VenueCounter = require("../models/VenueCounter");
-const { computeTotals } = require("../utils/venueMoney");
+const { computeTotals, GST_MODES } = require("../utils/venueMoney");
 const { streamInvoicePdf } = require("../utils/venuePdf");
 
 async function resolveOwnedVenue(req, res, select = "_id") {
@@ -23,62 +23,80 @@ function paymentStatus(grandTotal, received) {
   return "partially_paid";
 }
 
+// Allocate the per-venue invoice number and create the invoice doc — the ONE
+// numbering path (D8: bill conversion reuses it; the sequence machinery is
+// untouched). Atomic per-venue sequence: lazy-init the counter to the current
+// max seq so it never collides with pre-existing/seeded invoices, then
+// allocate via an atomic $inc. Returns the created invoice; throws on the
+// (extremely unlikely) triple allocation collision.
+async function allocateInvoice(venue, fields) {
+  const prefix = venue.invoicePrefix || "INV-";
+  const counterKey = `${venue._id}:invoice`;
+  const maxDoc = await VenueInvoice.findOne({ venue: venue._id }).sort({ seq: -1 }).select("seq").lean();
+  try {
+    await VenueCounter.updateOne({ key: counterKey }, { $setOnInsert: { seq: maxDoc ? maxDoc.seq : 0 } }, { upsert: true });
+  } catch (e) { if (e.code !== 11000) throw e; } // concurrent first-init race — fine
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const seq = await VenueCounter.next(counterKey);
+    const invoiceNumber = `${prefix}${String(seq).padStart(4, "0")}`;
+    try {
+      return await VenueInvoice.create({ ...fields, venue: venue._id, invoiceNumber, seq });
+    } catch (e) {
+      if (e.code === 11000 && attempt < 2) continue; // allocate next
+      throw e;
+    }
+  }
+  const err = new Error("Could not allocate an invoice number, please retry");
+  err.statusCode = 409;
+  throw err;
+}
+
 // POST /venues/:slug/invoices — create-from-booking.
 const createFromBooking = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res, "_id invoicePrefix");
     if (!venue) return;
-    const { booking, kind, lineItems, gstPercent, discount } = req.body || {};
+    const { booking, kind, lineItems, gstPercent, gstMode, discount, terms } = req.body || {};
     if (!booking) return res.status(400).json({ message: "booking is required" });
     const bookingDoc = await VenueBooking.findOne({ _id: booking, venue: venue._id }).lean();
     if (!bookingDoc) return res.status(404).json({ message: "Booking not found for this venue" });
+    if (gstMode !== undefined && !GST_MODES.includes(gstMode)) {
+      return res.status(400).json({ message: `gstMode must be one of ${GST_MODES.join(", ")}` });
+    }
+    if (terms !== undefined && (!Array.isArray(terms) || terms.some((t) => typeof t !== "string" || t.length > 2000) || terms.length > 50)) {
+      return res.status(400).json({ message: "terms must be an array of strings (max 50 × 2000 chars)" });
+    }
 
     // Line items: explicit body > latest accepted quote for the enquiry > single line from booking total.
     let items = Array.isArray(lineItems) ? lineItems : null;
     let pct = gstPercent !== undefined ? Number(gstPercent) : 18;
     let disc = Number(discount) || 0;
+    let mode = gstMode || "exclusive";
     if (!items && bookingDoc.enquiry) {
       const quote = await VenueQuote.findOne({ enquiry: bookingDoc.enquiry, status: "accepted" }).sort({ version: -1 }).lean()
         || await VenueQuote.findOne({ enquiry: bookingDoc.enquiry }).sort({ version: -1 }).lean();
-      if (quote) { items = quote.lineItems; pct = quote.gstPercent; disc = quote.discount; }
+      if (quote) { items = quote.lineItems; pct = quote.gstPercent; disc = quote.discount; if (!gstMode && quote.gstMode) mode = quote.gstMode; }
     }
     if (!items) items = [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: bookingDoc.totalValue || 0 }];
-    const totals = computeTotals(items, pct, disc);
+    const totals = computeTotals(items, pct, disc, mode);
 
-    // Atomic per-venue invoice sequence (no read-modify-write race). Lazy-init the
-    // counter to the current max seq so it never collides with pre-existing/seeded
-    // invoices, then allocate via an atomic $inc.
-    const prefix = venue.invoicePrefix || "INV-";
-    const counterKey = `${venue._id}:invoice`;
-    const maxDoc = await VenueInvoice.findOne({ venue: venue._id }).sort({ seq: -1 }).select("seq").lean();
-    try {
-      await VenueCounter.updateOne({ key: counterKey }, { $setOnInsert: { seq: maxDoc ? maxDoc.seq : 0 } }, { upsert: true });
-    } catch (e) { if (e.code !== 11000) throw e; } // concurrent first-init race — fine
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const seq = await VenueCounter.next(counterKey);
-      const invoiceNumber = `${prefix}${String(seq).padStart(4, "0")}`;
-      try {
-        const invoice = await VenueInvoice.create({
-          venue: venue._id,
-          booking: bookingDoc._id,
-          invoiceNumber,
-          seq,
-          kind: kind === "final" ? "final" : "advance",
-          lineItems: items,
-          gstPercent: pct,
-          discount: disc,
-          totals,
-          status: "unpaid",
-          payments: [],
-        });
-        return res.status(201).json({ invoice });
-      } catch (e) {
-        if (e.code === 11000 && attempt < 2) continue; // extremely unlikely; allocate next
-        throw e;
-      }
-    }
-    return res.status(409).json({ message: "Could not allocate an invoice number, please retry" });
-  } catch (err) { return res.status(500).json({ message: err.message }); }
+    const KINDS = ["advance", "final", "addon"];
+    const invoice = await allocateInvoice(venue, {
+      booking: bookingDoc._id,
+      kind: KINDS.includes(kind) ? kind : "advance",
+      lineItems: items,
+      gstPercent: pct,
+      gstMode: mode,
+      discount: disc,
+      totals,
+      terms: Array.isArray(terms) ? terms : [],
+      status: "unpaid",
+      payments: [],
+    });
+    return res.status(201).json({ invoice });
+  } catch (err) {
+    return res.status(err.statusCode || 500).json({ message: err.message });
+  }
 };
 
 const listInvoices = async (req, res) => {
@@ -143,4 +161,4 @@ const invoicePdf = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf };
+module.exports = { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf, allocateInvoice };

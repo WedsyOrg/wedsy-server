@@ -9,7 +9,7 @@ const VenueInvoiceSchema = new mongoose.Schema(
     booking: { type: mongoose.Schema.Types.ObjectId, ref: "VenueBooking", required: true },
     invoiceNumber: { type: String, required: true },
     seq: { type: Number, required: true }, // per-venue sequence backing invoiceNumber
-    kind: { type: String, enum: ["advance", "final"], default: "advance" },
+    kind: { type: String, enum: ["advance", "final", "addon"], default: "advance" },
     lineItems: [
       {
         label: { type: String, default: "" },
@@ -21,12 +21,26 @@ const VenueInvoiceSchema = new mongoose.Schema(
       },
     ],
     gstPercent: { type: Number, default: 18 },
+    // D8 (additive): how GST was applied. Pre-existing invoices read as
+    // "exclusive" — exactly the math they were created with.
+    gstMode: { type: String, enum: ["exclusive", "inclusive", "none"], default: "exclusive" },
     discount: { type: Number, default: 0 },
     totals: {
       subtotal: { type: Number, default: 0 },
+      taxable: { type: Number, default: 0 },
       gst: { type: Number, default: 0 },
       grandTotal: { type: Number, default: 0 },
     },
+    // D8 (additive): T&C stamped from template/policyDoc + acceptance log.
+    terms: [String],
+    acceptance: {
+      name: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      at: { type: Date },
+      channel: { type: String, enum: ["link", "whatsapp", ""], default: "" },
+    },
+    // Set when this invoice was converted from a bill (D8 bill-before-invoice).
+    billRef: { type: mongoose.Schema.Types.ObjectId, ref: "VenueBill" },
     status: {
       type: String,
       enum: ["unpaid", "partially_paid", "paid"],
