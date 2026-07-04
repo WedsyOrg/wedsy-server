@@ -520,7 +520,7 @@ async function run() {
   if (process.env.E2E_CONTRACTS === "1") {
     // Seed structured policies so generation has known content.
     await api("PUT", `/venues/${SLUG}`, { token, body: { policyDoc: { policies: ["No outside DJ after 11pm"], terms: ["50% advance to confirm"], refund: ["No refund within 7 days"] } } });
-    const couplePhone = `95${Date.now() % 1e8}`;
+    const couplePhone = `95${String(Date.now() % 1e8).padStart(8, "0")}`;
     const bk = await api("POST", `/venues/${SLUG}/bookings`, {
       token,
       body: { coupleName: "Contract Couple", couplePhone, totalValue: 400000, days: [{ date: new Date(Date.now() + 30 * 86400000).toISOString(), eventType: "Wedding", guestCount: 250 }], paymentSchedule: [{ label: "Advance", amount: 100000 }] },
