@@ -125,12 +125,12 @@ const updateQuote = async (req, res) => {
 // GET /venues/:slug/quotes/:quoteId/pdf
 const quotePdf = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email");
+    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email logo");
     if (!venue) return;
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id }).lean();
     if (!quote) return res.status(404).json({ message: "Quote not found" });
     const enquiry = await VenueEnquiry.findById(quote.enquiry).select("coupleName name couplePhone").lean();
-    streamQuotePdf(res, { venue, enquiry, quote });
+    await streamQuotePdf(res, { venue, enquiry, quote });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

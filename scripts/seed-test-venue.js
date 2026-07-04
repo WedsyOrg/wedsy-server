@@ -123,6 +123,11 @@ async function run() {
     console.log(`[seed] created venue ${venue.slug} (${venue._id})`);
   } else {
     Object.assign(venue, venueDefaults);
+    // Fields that suites WRITE but the defaults above don't cover — clear them
+    // so a "reset" venue is actually deterministic across repeated runs
+    // (stale policyDoc/logo made the back-compat e2e checks order-dependent).
+    venue.policyDoc = undefined;
+    venue.logo = "";
     await venue.save();
     console.log(`[seed] reset venue ${venue.slug} (${venue._id})`);
   }
