@@ -25,13 +25,16 @@ const defaultCsOwner = async () => {
 
 // Convert a Meeting-Scheduled lead into a Project (Slice D). The lead moves to the
 // "won" terminal stage and leaves every active dashboard/list view.
-const convertLead = async (enquiryId, { csOwnerId, value, handoffNote } = {}, actorId) => {
+// skipStageGate (Slice B5a): the ONBOARD hinge converts from ANY live stage —
+// the meeting_scheduled gate stays for the legacy /convert route only. One
+// shared creation path, never forked.
+const convertLead = async (enquiryId, { csOwnerId, value, handoffNote, skipStageGate = false } = {}, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
   const lead = await EnquiryRepository.findById(enquiryId);
   if (!lead) throw httpError(404, "Enquiry not found");
-  if (lead.stage !== "meeting_scheduled") {
+  if (!skipStageGate && lead.stage !== "meeting_scheduled") {
     throw httpError(422, "Only a Meeting-Scheduled lead can move to Projects — advance the stage first");
   }
   if (lead.lostStatus === "pending") {

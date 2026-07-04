@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { receiveMessage } = require('../services/InstagramAgentService');
+const { receiveMessage, receiveAttachment } = require('../services/InstagramAgentService');
 
 const VerifyWebhook = (req, res) => {
   const mode = req.query['hub.mode'];
@@ -45,10 +45,22 @@ const ReceiveMessage = (req, res) => {
     if (!messaging || !messaging.message || messaging.message.is_echo) return;
     const senderId = messaging.sender.id;
     const text = messaging.message.text;
-    if (!text) return;
-    receiveMessage(senderId, text).catch(err =>
-      console.error('[InstagramAgent] Unhandled error:', err.message)
-    );
+    if (text) {
+      receiveMessage(senderId, text).catch(err =>
+        console.error('[InstagramAgent] Unhandled error:', err.message)
+      );
+      return;
+    }
+    // Inbound attachments (image/video/audio/file): download + store each,
+    // mirroring the WhatsApp media path. Previously these were silently dropped.
+    const attachments = messaging.message.attachments;
+    if (Array.isArray(attachments)) {
+      for (const attachment of attachments) {
+        receiveAttachment(senderId, attachment).catch(err =>
+          console.error('[InstagramAgent] Unhandled error:', err.message)
+        );
+      }
+    }
   } catch (error) {
     console.error('[InstagramAgent] Webhook parse error:', error.message);
   }

@@ -4,6 +4,8 @@ const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
 const { CreateHash } = require("../utils/password");
+const ActivityLogService = require("../services/ActivityLogService");
+const PeopleService = require("../services/PeopleService");
 
 // Legacy roles[] kept in sync with the RBAC role's department so legacy gates
 // stay consistent (schema enum: owner|crm|sales|ops|finance).
@@ -37,23 +39,24 @@ const GetAll = async (req, res) => {
   }
 };
 
-// POST /admin — founder-gated via users:create:all
+// POST /admin — founder-gated via users:create:all.
+// MB10: accepts the simple single-hat body OR a hats[] array (multi-hat). Permissions
+// = the UNION of every hat's role (roleIds[]); the primary hat mirrors the live
+// top-level departmentId/roleId/reportingManagerId. Guardrails: reporting cycles,
+// founder-grant (only a founder may assign Founder), email uniqueness.
 const CreateAdmin = async (req, res) => {
   try {
-    const { name, email, password, roleId, departmentId, reportingManagerId } =
-      req.body || {};
+    const { name, email, password } = req.body || {};
 
-    if (!name || !email || !password || !roleId || !departmentId) {
+    if (!name || !email || !password) {
       return res.status(400).json({
-        message: "name, email, password, roleId, and departmentId are required.",
+        message: "name, email, and password are required.",
       });
     }
-    if (
-      !mongoose.isValidObjectId(roleId) ||
-      !mongoose.isValidObjectId(departmentId) ||
-      (reportingManagerId && !mongoose.isValidObjectId(reportingManagerId))
-    ) {
-      return res.status(400).json({ message: "Invalid id format." });
+
+    const rawHats = PeopleService.normalizeHats(req.body || {});
+    if (!rawHats.length) {
+      return res.status(400).json({ message: "At least one (department, role) hat is required." });
     }
 
     const existing = await Admin.findOne({ email: String(email).trim() });
@@ -63,27 +66,12 @@ const CreateAdmin = async (req, res) => {
         .json({ message: "An account with this email already exists." });
     }
 
-    const role = await Role.findById(roleId).lean();
-    if (!role) {
-      return res.status(400).json({ message: "roleId does not match any role." });
-    }
-    const department = await Department.findById(departmentId).lean();
-    if (!department) {
-      return res
-        .status(400)
-        .json({ message: "departmentId does not match any department." });
-    }
+    const resolved = await PeopleService.resolveHats(rawHats);
+    await PeopleService.assertNotGrantingFounder(resolved.roleIds, req.auth.user_id);
+    await PeopleService.assertNoReportingCycle(null, resolved.hats);
 
-    let managerId = null;
-    if (reportingManagerId) {
-      const manager = await Admin.findById(reportingManagerId).lean();
-      if (!manager) {
-        return res
-          .status(400)
-          .json({ message: "reportingManagerId does not match any user." });
-      }
-      managerId = manager._id;
-    }
+    // Legacy roles[] derive from the PRIMARY hat's role/department.
+    const primaryRole = await Role.findById(resolved.primary.roleId).lean();
 
     const hashed = await CreateHash(password);
     const created = await Admin.create({
@@ -91,11 +79,10 @@ const CreateAdmin = async (req, res) => {
       email: String(email).trim(),
       phone: "PENDING",
       password: hashed,
-      roles: await legacyRolesForRole(role),
-      roleId,
-      departmentId,
-      reportingManagerId: managerId,
+      roles: await legacyRolesForRole(primaryRole),
       status: "active",
+      joinedAt: new Date(),
+      ...PeopleService.fieldsFromHats(resolved),
     });
 
     // Invite email (Lifecycle Slice G — ships dark until the template id exists).
@@ -118,6 +105,7 @@ const CreateAdmin = async (req, res) => {
     delete safe.password;
     return res.status(201).json(safe);
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -138,6 +126,35 @@ const UpdateAdmin = async (req, res) => {
 
     const body = req.body || {};
     const update = {};
+
+    // MB10 multi-hat path: an explicit hats[] replaces the person's (department,
+    // role, manager) hats wholesale. Mirrors the primary hat to the top-level
+    // fields + sets roleIds union. Guardrails: founder-grant + transitive cycle.
+    if (Array.isArray(body.hats)) {
+      const rawHats = PeopleService.normalizeHats(body);
+      const resolved = await PeopleService.resolveHats(rawHats);
+      await PeopleService.assertNotGrantingFounder(resolved.roleIds, req.auth.user_id);
+      await PeopleService.assertNoReportingCycle(target._id, resolved.hats);
+      const primaryRole = await Role.findById(resolved.primary.roleId).lean();
+      Object.assign(update, PeopleService.fieldsFromHats(resolved), {
+        roles: await legacyRolesForRole(primaryRole),
+      });
+      if (body.status !== undefined) {
+        if (!STATUS_VALUES.includes(body.status)) {
+          return res.status(400).json({ message: "status must be one of: active, inactive, on_leave." });
+        }
+        update.status = body.status;
+      }
+      if (body.phone !== undefined && typeof body.phone === "string" && body.phone.trim()) {
+        update.phone = body.phone.trim();
+      }
+      const updatedHats = await Admin.findByIdAndUpdate(
+        id,
+        { $set: update },
+        { new: true, runValidators: true, projection: { password: 0 } }
+      ).lean();
+      return res.status(200).json(updatedHats);
+    }
 
     // Lifecycle Slice I: phone is editable (fixes the seeded "PENDING" phones).
     if (body.phone !== undefined) {
@@ -191,17 +208,16 @@ const UpdateAdmin = async (req, res) => {
         if (!mongoose.isValidObjectId(body.reportingManagerId)) {
           return res.status(400).json({ message: "Invalid reportingManagerId format." });
         }
-        if (String(body.reportingManagerId) === String(target._id)) {
-          return res
-            .status(400)
-            .json({ message: "A user cannot report to themselves." });
-        }
         const manager = await Admin.findById(body.reportingManagerId).lean();
         if (!manager) {
           return res
             .status(400)
             .json({ message: "reportingManagerId does not match any user." });
         }
+        // Transitive cycle guard (A→B→…→A), not just direct self-report.
+        await PeopleService.assertNoReportingCycle(target._id, [
+          { reportingManagerId: manager._id },
+        ]);
         update.reportingManagerId = manager._id;
       }
     }
@@ -213,6 +229,93 @@ const UpdateAdmin = async (req, res) => {
     ).lean();
     return res.status(200).json(updated);
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// POST /admin/set-password (Slice 2) — an access-manager sets a NEW password for
+// ANY team member (forgot-password case): no current password required. Gated by
+// requirePermission("team:manage_access:all"). Audited (never the password).
+const SetMemberPassword = async (req, res) => {
+  try {
+    const { targetAdminId, newPassword } = req.body || {};
+    if (!mongoose.Types.ObjectId.isValid(targetAdminId)) {
+      return res.status(400).json({ message: "Invalid targetAdminId." });
+    }
+    if (typeof newPassword !== "string" || newPassword.length < 8) {
+      return res.status(400).json({ message: "Password must be at least 8 characters" });
+    }
+    const target = await Admin.findById(targetAdminId);
+    if (!target) return res.status(404).json({ message: "Target admin not found." });
+
+    target.password = await CreateHash(newPassword);
+    // The member now has a known password — clear any forced-reset flag.
+    target.mustResetPassword = false;
+    await target.save();
+
+    await ActivityLogService.record({
+      actorId: req.auth.user_id,
+      action: "admin.password_set",
+      entityType: "admin",
+      entityId: String(target._id),
+      summary: `Set a new password for ${target.name}`,
+      meta: { targetAdminId: String(target._id), targetName: target.name }, // NO password
+    });
+    console.log(`[admin] Password set for ${target._id} by ${req.auth.user_id}`);
+    return res.status(200).json({ message: "Password set" });
+  } catch (error) {
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
+// POST /admin/access (Slice 3) — disable / re-enable a team member's access.
+// Gated by requirePermission("team:manage_access:all"). A disabled admin cannot
+// log in AND existing tokens are rejected by CheckAdminLogin. Safety: cannot
+// disable self; a non-founder cannot disable a founder (wildcard) account.
+const SetMemberAccess = async (req, res) => {
+  try {
+    const { targetAdminId, disabled } = req.body || {};
+    if (!mongoose.Types.ObjectId.isValid(targetAdminId)) {
+      return res.status(400).json({ message: "Invalid targetAdminId." });
+    }
+    if (typeof disabled !== "boolean") {
+      return res.status(400).json({ message: "disabled must be a boolean." });
+    }
+    // Safety: never let an admin lock themselves out.
+    if (String(targetAdminId) === String(req.auth.user_id)) {
+      return res.status(400).json({ message: "You cannot disable your own access." });
+    }
+    const target = await Admin.findById(targetAdminId);
+    if (!target) return res.status(404).json({ message: "Target admin not found." });
+
+    // Protect the top account: a non-founder cannot disable a founder.
+    if (disabled) {
+      const { permissionsForAdmin } = require("../middlewares/requirePermission");
+      const acting = await Admin.findById(req.auth.user_id);
+      const [targetPerms, actingPerms] = await Promise.all([
+        permissionsForAdmin(target),
+        permissionsForAdmin(acting),
+      ]);
+      const isFounder = (perms) => (perms || []).includes("*:*:all");
+      if (isFounder(targetPerms) && !isFounder(actingPerms)) {
+        return res.status(403).json({ message: "You cannot disable a founder account." });
+      }
+    }
+
+    target.isDisabled = disabled;
+    await target.save();
+
+    await ActivityLogService.record({
+      actorId: req.auth.user_id,
+      action: disabled ? "admin.disabled" : "admin.enabled",
+      entityType: "admin",
+      entityId: String(target._id),
+      summary: `${disabled ? "Disabled" : "Re-enabled"} access for ${target.name}`,
+      meta: { targetAdminId: String(target._id), targetName: target.name, disabled },
+    });
+    return res.status(200).json({ message: disabled ? "Access disabled" : "Access enabled", isDisabled: disabled });
+  } catch (error) {
     return res.status(500).json({ message: "Server error" });
   }
 };
@@ -221,4 +324,6 @@ module.exports = {
   GetAll,
   CreateAdmin,
   UpdateAdmin,
+  SetMemberPassword,
+  SetMemberAccess,
 };

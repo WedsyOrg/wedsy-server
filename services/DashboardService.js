@@ -1,6 +1,7 @@
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
+const Followup = require("../models/Followup");
 const LeadLifecycleService = require("./LeadLifecycleService");
 const WAConversationRepository = require("../repositories/WAConversationRepository");
 const { computeLeadHealth } = require("../utils/leadHealth");
@@ -76,16 +77,36 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
 
-  // MISSION-QUIET (Kiara): WhatsApp leads actively handled by the AI agent
-  // (mode ai, open, not escalated) carry no call-now pressure — Kiara is
-  // already talking to them. They re-enter missions the moment the
-  // conversation escalates or qualifies (needsHuman flips / qualified path).
+  // MB5 Slice 4: lazy triage-escalation sweep rides the dashboard read too
+  // (same no-new-infra pattern). No-op outside triage mode / working hours.
+  try {
+    await require("./TriageService").sweepEscalations();
+  } catch (e) {
+    console.error("[Dashboard] triage sweep failed:", e.message);
+  }
+
+  // MB5 Slice 5: Kiara safety net sweep — in-hours golden-window misses get
+  // the welcome template. Template-gated; dormant when unset.
+  try {
+    await require("./KiaraSafetyNetService").sweepGoldenWindowMisses();
+  } catch (e) {
+    console.error("[Dashboard] safety net sweep failed:", e.message);
+  }
+
+  // MISSION-QUIET (Kiara): leads actively handled by the AI agent (mode ai,
+  // open, not escalated) carry no call-now pressure — Kiara is already
+  // talking to them. WhatsApp-source leads + safety-net-engaged leads (any
+  // source, Slice 5). They re-enter missions the moment the conversation
+  // escalates or qualifies (needsHuman flips / qualified path).
   let kiaraQuietIds = [];
   try {
     const quietConvIds = await WAConversationRepository.findQuietEnquiryIds();
     if (quietConvIds.length) {
       const quietLeads = await Enquiry.find(
-        { _id: { $in: quietConvIds }, source: "whatsapp" },
+        {
+          _id: { $in: quietConvIds },
+          $or: [{ source: "whatsapp" }, { kiaraSafetyNetAt: { $ne: null } }],
+        },
         { _id: 1 }
       ).lean();
       kiaraQuietIds = quietLeads.map((l) => l._id);
@@ -112,6 +133,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     stageCounts,
     orphanedLeads,
     returnedLeadDocs,
+    journeyFuDocs,
   ] = await Promise.all([
     // Open follow-ups due today or overdue.
     Enquiry.find({
@@ -165,27 +187,92 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
         visibility,
       ],
     }).lean(),
+    // Signal Matrix Slice 6 — JOURNEY follow-ups (the Followup collection, the
+    // post-qual store) due today or overdue. Lead-scoped after the fact (below)
+    // with the SAME scope + ACTIVE + visibility narrowing as missionLeads, so
+    // both stores surface in the mission without merging them.
+    Followup.find({
+      dueAt: { $lte: todayEnd },
+      $or: [{ status: "open" }, { status: "snoozed", snoozedUntil: { $lte: now } }],
+    }).lean(),
   ]);
 
   // Today's mission rows: one per due/overdue follow-up, chronological.
-  const todaysMission = missionLeads
-    .flatMap((lead) =>
-      (lead.followUps || [])
-        .filter((f) => !f.completedAt && new Date(f.scheduledAt) <= todayEnd)
-        .map((f) => ({
-          ...leadRow(lead),
-          followUpId: f._id,
-          type: f.type,
-          scheduledAt: f.scheduledAt,
-          promiseNote: f.promiseNote || "",
-          overdue: new Date(f.scheduledAt) < now,
-          meetingToday:
-            ["meet", "visit"].includes(f.type) &&
-            new Date(f.scheduledAt) >= todayStart &&
-            new Date(f.scheduledAt) <= todayEnd,
-        }))
-    )
-    .sort((a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt));
+  // Slice 6: BOTH follow-up stores, tagged — "cadence" (embedded pre-qual rows,
+  // completed via PUT /enquiry/:id/follow-up/:fid/complete) and "journey"
+  // (Followup collection, completed via PATCH /enquiry/:id/followups/:fid).
+  // Ownership slice: journey leads are resolved FIRST so one batched Admin
+  // lookup (no N+1) can name every owner across both stores.
+  let fuLeadById = new Map();
+  if (journeyFuDocs.length) {
+    const fuLeadIds = [...new Set(journeyFuDocs.map((f) => String(f.leadId)))];
+    const fuLeads = await Enquiry.find({
+      $and: [{ _id: { $in: fuLeadIds } }, scopeFilter, ACTIVE, visibility],
+    }).lean();
+    fuLeadById = new Map(fuLeads.map((l) => [String(l._id), l]));
+  }
+
+  // Ownership decoration (ADDITIVE — no criteria change): owner {_id,name} =
+  // the lead's assignedTo; isYours = it's the requesting admin's lead. Journey
+  // rows also name the follow-up's own ownerId when it differs from the lead
+  // owner. ONE batched Admin query covers every id across both stores.
+  const ownerIds = new Set();
+  for (const l of missionLeads) if (l.assignedTo) ownerIds.add(String(l.assignedTo));
+  for (const l of fuLeadById.values()) if (l.assignedTo) ownerIds.add(String(l.assignedTo));
+  for (const f of journeyFuDocs) {
+    if (f.ownerId && fuLeadById.has(String(f.leadId))) ownerIds.add(String(f.ownerId));
+  }
+  const ownerAdmins = ownerIds.size
+    ? await Admin.find({ _id: { $in: [...ownerIds] } }, { name: 1 }).lean()
+    : [];
+  const ownerNameById = new Map(ownerAdmins.map((a) => [String(a._id), a.name]));
+  const ownerOf = (id) => (id ? { _id: String(id), name: ownerNameById.get(String(id)) || "—" } : null);
+  const isYours = (id) => !!id && String(id) === String(adminId);
+
+  const cadenceMission = missionLeads.flatMap((lead) =>
+    (lead.followUps || [])
+      .filter((f) => !f.completedAt && new Date(f.scheduledAt) <= todayEnd)
+      .map((f) => ({
+        ...leadRow(lead),
+        followUpId: f._id,
+        store: "cadence",
+        type: f.type,
+        scheduledAt: f.scheduledAt,
+        promiseNote: f.promiseNote || "",
+        overdue: new Date(f.scheduledAt) < now,
+        meetingToday:
+          ["meet", "visit"].includes(f.type) &&
+          new Date(f.scheduledAt) >= todayStart &&
+          new Date(f.scheduledAt) <= todayEnd,
+        owner: ownerOf(lead.assignedTo),
+        isYours: isYours(lead.assignedTo),
+      }))
+  );
+  const journeyMission = journeyFuDocs
+    .filter((f) => fuLeadById.has(String(f.leadId)))
+    .map((f) => {
+      const lead = fuLeadById.get(String(f.leadId));
+      return {
+        ...leadRow(lead),
+        followUpId: f._id,
+        store: "journey",
+        type: null,
+        title: f.title,
+        scheduledAt: f.dueAt,
+        promiseNote: "",
+        overdue: new Date(f.dueAt) < now,
+        meetingToday: false,
+        owner: ownerOf(lead.assignedTo),
+        isYours: isYours(lead.assignedTo),
+        followUpOwner:
+          f.ownerId && String(f.ownerId) !== String(lead.assignedTo || "")
+            ? ownerOf(f.ownerId)
+            : null,
+      };
+    });
+  const todaysMission = [...cadenceMission, ...journeyMission].sort(
+    (a, b) => new Date(a.scheduledAt) - new Date(b.scheduledAt)
+  );
 
   const unresponsiveDecide = unresponsiveLeads.map((lead) => ({
     ...leadRow(lead),

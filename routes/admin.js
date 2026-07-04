@@ -15,6 +15,11 @@ router.post("/", CheckAdminLogin, requirePermission("users:create:all"), admin.C
 // management) and are intentionally left auth-only — see classification notes.
 router.get("/enquiries/:enquiryId/venue-journey", CheckAdminLogin, venueJourney.GetVenueJourney);
 router.get("/venue-conversations/:conversationId/messages", CheckAdminLogin, venueJourney.GetVenueConversationMessages);
+// ACCESS CONTROL (password-mgmt) — gated to the new team:manage_access permission
+// (founder *:*:all + the Admin role; NOT regular members). Literal paths, kept
+// above the PUT /:id param route.
+router.post("/set-password", CheckAdminLogin, requirePermission("team:manage_access:all"), admin.SetMemberPassword);
+router.post("/access", CheckAdminLogin, requirePermission("team:manage_access:all"), admin.SetMemberAccess);
 // PUT /:id is method-distinct from the GETs above, but kept last so any future
 // param routes stay below the literal paths.
 router.put("/:id", CheckAdminLogin, requirePermission("users:edit:all"), admin.UpdateAdmin);

@@ -53,8 +53,17 @@ const ReceiveMessage = (req, res) => {
         console.error('[WhatsAppAgent] Unhandled error:', err.message)
       );
     } else {
-      // Non-text (image/audio/…): placeholder + conversation bump, no AI reply.
-      receiveMedia(phone, message.type, { profileName }).catch(err =>
+      // Non-text (image/document/video/audio/sticker): the media object lives
+      // under message[message.type]. We pass its id/mime/filename/caption to the
+      // service so it can download + store the bytes — no AI reply (unchanged).
+      const media = message[message.type] || {};
+      receiveMedia(phone, message.type, {
+        profileName,
+        mediaId: media.id,
+        mimeType: media.mime_type,
+        filename: media.filename, // documents only
+        caption: media.caption,
+      }).catch(err =>
         console.error('[WhatsAppAgent] Unhandled error:', err.message)
       );
     }

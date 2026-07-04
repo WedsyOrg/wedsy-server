@@ -9,8 +9,14 @@ const DEFAULTS = {
   "assignment.overflowRoles": ["Sales Executive"],
   "assignment.dailyCap": 15,
   "assignment.autoAssignEnabled": true,
-  "golden.windowMinutes": 30,
-  "golden.workStartHour": 10,
+  // MB5 Slice 4: 'auto' = round-robin exactly as before (zero behavior change
+  // on deploy); 'triage' = new leads land unassigned in the Triage queue.
+  "assignment.mode": "auto",
+  "triage.escalateAfterMinutes": 10,
+  // MB5 Slice 5: founder-approved default changes — golden window 15 min,
+  // working hours 11:00–19:00 IST.
+  "golden.windowMinutes": 15,
+  "golden.workStartHour": 11,
   "golden.workEndHour": 19,
   "cadence.attemptOffsetsDays": [0, 1, 3, 5],
   "cadence.maxAttempts": 4,
@@ -36,6 +42,87 @@ const DEFAULTS = {
   // FIELDS stay code-defined (extractor + QualifiedLead + Sheets coupling).
   "kiara.systemPrompt": KIARA_DEFAULT_SYSTEM_PROMPT,
   "kiara.reengageTemplateName": "",
+  // MB5 Slice 5: the safety net's approved welcome template. '' = the whole
+  // safety net is DORMANT (ships off; founder arms it in Settings → Kiara).
+  "kiara.welcomeTemplateName": "",
+  // MB6 Slice 6: the services master list (qualification multi-select chips).
+  "services.available": [
+    "Venue",
+    "Decor",
+    "Catering",
+    "Photography",
+    "Makeup",
+    "Mehendi",
+    "Logistics",
+    "Entertainment",
+  ],
+  // MB6 Slice 6: cockpit call scripts — founder-editable in Settings (the
+  // settings_scripts category). Draft v1 texts; the cockpit renders these live.
+  "cockpit.briefScript":
+    "Hi {{name}}! This is {{caller}} from Wedsy — first of all, congratulations on the wedding! 🎉 " +
+    "I saw your enquiry come in and wanted to call right away. A quick line about us: we're a Bengaluru " +
+    "wedding company that takes care of everything under one roof — planning, decor, catering, photography, " +
+    "makeup, mehendi, and all the running-around on the day itself. But before I talk shop — tell me about " +
+    "you two! When's the big day, and how far along are the preparations?",
+  "cockpit.servicesScript":
+    "Lovely — so here's how we usually help. Some couples hand us the entire wedding, others just the pieces " +
+    "they don't want to worry about: the venue hunt, decor, catering, photography, makeup, mehendi, " +
+    "entertainment, or simply the day-of logistics so the family actually gets to enjoy the wedding. " +
+    "Which parts are still open for you? I'll note them down so the right team preps before we meet.",
+  "cockpit.budgetScript":
+    "And just so I point you to the right options — do you have a rough budget in mind? Even a ballpark " +
+    "for the pieces you want us to handle helps us tailor things properly. And honestly, if you'd rather " +
+    "not put a number on it yet, that's completely fine — most couples figure it out with us as we go.",
+  "cockpit.qualificationIntro":
+    "Before I let you go — let me make sure I have everything so the team can hit the ground running: " +
+    "both your names, the date or month you're aiming for, whether the venue is sorted, and the best email " +
+    "to send our ideas to (yours and your partner's, if you like — that way nobody misses anything). " +
+    "Two quick minutes, promise!",
+  // MB7a Slice 3 — e-sign agreement terms (founder-editable, settings_agreement).
+  // PLACEHOLDER, not legal text — the founder pastes the real terms later.
+  "agreement.terms":
+    "[PLACEHOLDER — replace with Wedsy's real service agreement before going live.] " +
+    "This Wedsy wedding services agreement sets out what we'll deliver, the payment " +
+    "milestones (onboarding fee, advance, and balance), timelines, and cancellation " +
+    "terms. By accepting, you confirm you've read and agree to these terms. " +
+    "Edit this in Settings → Agreement.",
+  // Bump when the terms change materially — stamped onto each acceptance.
+  "agreement.version": "v1",
+  // MB7b Slice 4 — nurture cadence (days between CS touches in the couple's
+  // WhatsApp group). Founder-editable; the rolling nurture task reschedules to
+  // now + this many days on every completed touch or couple inbound.
+  "nurture.cadenceDays": 2,
+  // MB8c-2a-ii — the ONE accountability threshold. A step in_progress (or
+  // assigned & not_started) with no movement in this many days needs attention.
+  // The command-center banner, the chat follow-up cards, and the Pipeline
+  // "stuck" flag ALL derive from this single value (default 3 days).
+  "accountability.staleDays": 3,
+  // MB9a-2 — speed-to-lead SLA. The golden-window clock duration (minutes from
+  // "human needed" to first human contact) + the rescue-escalation thresholds.
+  // Distinct from the legacy MB5 golden.windowMinutes (the cockpit/safety-net
+  // display) so neither changes the other.
+  "sla.goldenWindowMinutes": 30,
+  "sla.rescueTier1Minutes": 5,
+  "sla.rescueTier2Minutes": 1,
+  // Slice B4 — deal-clock SLAs (days a lead may sit in a spine station before
+  // the escalation ladder starts). meeting-past-unclosed fires immediately and
+  // has no setting.
+  "dealclock.qualifiedToMeetingDays": 3,
+  "dealclock.meetingHeldToProposalDays": 2,
+  "dealclock.proposalToAgreementDays": 4,
+  "dealclock.agreementToOnboardedDays": 3,
+  // Slice B5a — who hears the win bell. "all" = every active admin.
+  "broadcast.winAudience": "all",
+  // Slice B5b — agreement & billing (the founder-editable money paperwork).
+  // agreementContent merge tags: {couple} {eventDates} {venue} {amount} {today}.
+  "billing.agreementContent":
+    "SERVICE AGREEMENT\n\nThis agreement is made on {today} between Wedsy and {couple} for wedding planning and execution services.\n\nEvent dates: {eventDates}\nVenue: {venue}\nTotal engagement value: {amount}\n\nScope, deliverables and milestone payments as discussed and recorded on the Wedsy OS deal record. This document is system-generated from the deal record on the date above.",
+  "billing.companyLegalName": "Wedsy",
+  "billing.companyAddress": "",
+  "billing.gstin": "",
+  "billing.invoicePrefix": "WD-",
+  "billing.invoiceNextNumber": 1,
+  "billing.defaultTaxRate": 18,
 };
 
 // key → settings permission category. Every write is gated by ITS category.
@@ -44,6 +131,8 @@ const KEY_CATEGORY = {
   "assignment.overflowRoles": "settings_assignment",
   "assignment.dailyCap": "settings_assignment",
   "assignment.autoAssignEnabled": "settings_assignment",
+  "assignment.mode": "settings_assignment",
+  "triage.escalateAfterMinutes": "settings_assignment",
   "golden.windowMinutes": "settings_sla",
   "golden.workStartHour": "settings_sla",
   "golden.workEndHour": "settings_sla",
@@ -62,6 +151,34 @@ const KEY_CATEGORY = {
   // Kiara's brain — founder-gated category.
   "kiara.systemPrompt": "settings_kiara",
   "kiara.reengageTemplateName": "settings_kiara",
+  "kiara.welcomeTemplateName": "settings_kiara",
+  // Services master list rides the templates/tag-library category.
+  "services.available": "settings_templates",
+  // Cockpit scripts — their own resource (seed-granted; founder wildcard covers).
+  "cockpit.briefScript": "settings_scripts",
+  "cockpit.servicesScript": "settings_scripts",
+  "cockpit.budgetScript": "settings_scripts",
+  "cockpit.qualificationIntro": "settings_scripts",
+  "agreement.terms": "settings_agreement",
+  "agreement.version": "settings_agreement",
+  "nurture.cadenceDays": "settings_nurture",
+  // Accountability threshold rides the SLA settings category.
+  "accountability.staleDays": "settings_sla",
+  "sla.goldenWindowMinutes": "settings_sla",
+  "sla.rescueTier1Minutes": "settings_sla",
+  "sla.rescueTier2Minutes": "settings_sla",
+  "dealclock.qualifiedToMeetingDays": "settings_sla",
+  "dealclock.meetingHeldToProposalDays": "settings_sla",
+  "dealclock.proposalToAgreementDays": "settings_sla",
+  "dealclock.agreementToOnboardedDays": "settings_sla",
+  "broadcast.winAudience": "settings_billing",
+  "billing.agreementContent": "settings_billing",
+  "billing.companyLegalName": "settings_billing",
+  "billing.companyAddress": "settings_billing",
+  "billing.gstin": "settings_billing",
+  "billing.invoicePrefix": "settings_billing",
+  "billing.invoiceNextNumber": "settings_billing",
+  "billing.defaultTaxRate": "settings_billing",
 };
 
 const err = (status, message) => Object.assign(new Error(message), { status });
@@ -78,10 +195,92 @@ const validateValue = (key, value) => {
     case "lost.reasons":
     case "recycle.reasons":
     case "tags.available":
+    case "services.available":
       if (!isStringArray(value)) throw err(400, `${key} must be a non-empty array of non-empty strings`);
       return value.map((s) => s.trim());
+    case "cockpit.briefScript":
+    case "cockpit.servicesScript":
+    case "cockpit.budgetScript":
+    case "cockpit.qualificationIntro":
+      if (typeof value !== "string" || value.length > 5000) {
+        throw err(400, `${key} must be a string of at most 5000 chars`);
+      }
+      return value;
+    case "agreement.terms":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 50000) {
+        throw err(400, "agreement.terms must be a non-empty string of at most 50000 chars");
+      }
+      return value;
+    case "agreement.version":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 40) {
+        throw err(400, "agreement.version must be a non-empty string of at most 40 chars");
+      }
+      return value.trim();
     case "assignment.dailyCap":
       if (!isIntInRange(value, 1, 100)) throw err(400, "assignment.dailyCap must be an integer 1–100");
+      return value;
+    case "assignment.mode":
+      if (!["auto", "triage"].includes(value)) throw err(400, "assignment.mode must be 'auto' or 'triage'");
+      return value;
+    case "triage.escalateAfterMinutes":
+      if (!isIntInRange(value, 1, 240)) throw err(400, "triage.escalateAfterMinutes must be an integer 1–240");
+      return value;
+    case "nurture.cadenceDays":
+      if (!isIntInRange(value, 1, 30)) throw err(400, "nurture.cadenceDays must be an integer 1–30");
+      return value;
+    case "accountability.staleDays":
+      if (!isIntInRange(value, 1, 30)) throw err(400, "accountability.staleDays must be an integer 1–30");
+      return value;
+    case "sla.goldenWindowMinutes":
+      if (!isIntInRange(value, 5, 480)) throw err(400, "sla.goldenWindowMinutes must be an integer 5–480");
+      return value;
+    case "sla.rescueTier1Minutes":
+      if (!isIntInRange(value, 1, 60)) throw err(400, "sla.rescueTier1Minutes must be an integer 1–60");
+      return value;
+    case "sla.rescueTier2Minutes":
+      if (!isIntInRange(value, 1, 30)) throw err(400, "sla.rescueTier2Minutes must be an integer 1–30");
+      return value;
+    case "billing.agreementContent":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 50000) {
+        throw err(400, "billing.agreementContent must be a non-empty string of at most 50000 chars");
+      }
+      return value;
+    case "billing.companyLegalName":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 300) {
+        throw err(400, "billing.companyLegalName must be a non-empty string of at most 300 chars");
+      }
+      return value.trim();
+    case "billing.companyAddress":
+      if (typeof value !== "string" || value.length > 1000) {
+        throw err(400, "billing.companyAddress must be a string of at most 1000 chars");
+      }
+      return value;
+    case "billing.gstin":
+      if (typeof value !== "string" || value.length > 20) {
+        throw err(400, "billing.gstin must be a string of at most 20 chars");
+      }
+      return value.trim();
+    case "billing.invoicePrefix":
+      if (typeof value !== "string" || value.trim().length === 0 || value.length > 10) {
+        throw err(400, "billing.invoicePrefix must be a non-empty string of at most 10 chars");
+      }
+      return value.trim();
+    case "billing.invoiceNextNumber":
+      if (!isIntInRange(value, 1, 1000000000)) throw err(400, "billing.invoiceNextNumber must be a positive integer");
+      return value;
+    case "billing.defaultTaxRate":
+      if (!isIntInRange(value, 0, 50)) throw err(400, "billing.defaultTaxRate must be an integer 0–50");
+      return value;
+    case "broadcast.winAudience":
+      if (!["all", "sales_cs_leadership"].includes(value)) {
+        throw err(400, "broadcast.winAudience must be 'all' or 'sales_cs_leadership'");
+      }
+      return value;
+    case "dealclock.qualifiedToMeetingDays":
+    case "dealclock.meetingHeldToProposalDays":
+    case "dealclock.proposalToAgreementDays":
+    case "dealclock.agreementToOnboardedDays":
+      if (!isIntInRange(value, 1, 60)) throw err(400, `${key} must be an integer 1–60`);
       return value;
     case "assignment.autoAssignEnabled":
     case "lost.approvalRequired":
@@ -140,13 +339,14 @@ const validateValue = (key, value) => {
       }
       return value;
     }
-    case "kiara.reengageTemplateName": {
+    case "kiara.reengageTemplateName":
+    case "kiara.welcomeTemplateName": {
       if (typeof value !== "string" || value.length > 200) {
-        throw err(400, "kiara.reengageTemplateName must be a string of at most 200 chars");
+        throw err(400, `${key} must be a string of at most 200 chars`);
       }
       // Meta template names: lowercase/digits/underscores. Empty = unset.
       if (value && !/^[a-z0-9_]+$/.test(value)) {
-        throw err(400, "kiara.reengageTemplateName must match Meta's template-name format (lowercase letters, digits, underscores)");
+        throw err(400, `${key} must match Meta's template-name format (lowercase letters, digits, underscores)`);
       }
       return value;
     }

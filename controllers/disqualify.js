@@ -28,10 +28,9 @@ const isManagerOfAssigned = async (actorId, assignedToId) => {
 const actorHasApprovePermission = async (actorId) => {
   if (!actorId) return false;
   const admin = await AdminRepository.findById(actorId);
-  if (!admin || !admin.roleId) return false;
-  const role = await RoleRepository.findById(admin.roleId);
-  if (!role || !Array.isArray(role.permissions)) return false;
-  return permissionSatisfies(role.permissions, "leads:approve:own").allowed;
+  const { permissionsForAdmin } = require("../middlewares/requirePermission");
+  const perms = await permissionsForAdmin(admin); // RBAC v2 union
+  return permissionSatisfies(perms, "leads:approve:own").allowed;
 };
 
 // POST /enquiry/:_id/disqualify

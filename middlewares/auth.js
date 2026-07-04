@@ -193,6 +193,10 @@ function CheckLogin(req, res, next) {
           .then((user) => {
             if (!user) {
               res.status(401).send({ message: "invalid user" });
+            } else if (user.isDisabled) {
+              // Access control (password-mgmt Slice 3): disabling cuts access
+              // IMMEDIATELY — an existing token is rejected here, not just at login.
+              res.status(403).send({ message: "Your access has been disabled. Contact your administrator." });
             } else {
               req.auth = {
                 user_id: _id,
@@ -290,6 +294,10 @@ function CheckAdminLogin(req, res, next) {
           .then((user) => {
             if (!user) {
               res.status(401).send({ message: "invalid user" });
+            } else if (user.isDisabled) {
+              // Access control (password-mgmt Slice 3): disabling cuts access
+              // IMMEDIATELY — an existing token is rejected here, not just at login.
+              res.status(403).send({ message: "Your access has been disabled. Contact your administrator." });
             } else {
               req.auth = {
                 user_id: _id,

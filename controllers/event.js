@@ -4,8 +4,9 @@ const User = require("../models/User");
 const { SendUpdate } = require("../utils/update");
 const EventShare = require("../models/EventShare");
 const { sha256 } = require("./eventShare");
+const OnboardingService = require("../services/OnboardingService");
 
-const CreateNew = (req, res) => {
+const CreateNew = async (req, res) => {
   const { user_id, isAdmin } = req.auth;
   // Auto-derive name from groomName + brideName if both provided and name is missing.
   // Keeps downstream code that reads `name` working unchanged.
@@ -16,24 +17,32 @@ const CreateNew = (req, res) => {
   if (!name || !community || !eventDay || !date || !time || !venue) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
-    // Store the provided date both as date and eventDate to ensure consistency
-    new Event({
-      user: isAdmin ? user : user_id,
-      name,
-      brideName: brideName || null,
-      groomName: groomName || null,
-      community,
-      eventDate: date, // Add the eventDate field explicitly
-      // eventSpace is optional (additive) — existing callers that omit it get the schema default "".
-      eventDays: [{ name: eventDay, date, time, venue, eventSpace: eventSpace || "" }],
-    })
-      .save()
-      .then((result) => {
-        res.status(200).send({ message: "success", _id: result._id });
-      })
-      .catch((error) => {
-        res.status(400).send({ message: "error", error });
-      });
+    try {
+      // MB7a Slice 1 — draft cap: a user may hold at most 3 unfinalized drafts.
+      const ownerId = isAdmin ? user : user_id;
+      if (ownerId) {
+        const drafts = await OnboardingService.countDrafts(ownerId);
+        if (drafts >= OnboardingService.MAX_DRAFTS) {
+          return res.status(409).send({
+            message: `Draft limit reached (max ${OnboardingService.MAX_DRAFTS}) — finalize or delete a draft before creating another.`,
+          });
+        }
+      }
+      // Store the provided date both as date and eventDate to ensure consistency
+      const result = await new Event({
+        user: ownerId,
+        name,
+        brideName: brideName || null,
+        groomName: groomName || null,
+        community,
+        eventDate: date, // Add the eventDate field explicitly
+        // eventSpace is optional (additive) — existing callers that omit it get the schema default "".
+        eventDays: [{ name: eventDay, date, time, venue, eventSpace: eventSpace || "" }],
+      }).save();
+      res.status(200).send({ message: "success", _id: result._id });
+    } catch (error) {
+      res.status(400).send({ message: "error", error });
+    }
   }
 };
 
@@ -1736,6 +1745,11 @@ const FinalizeEvent = (req, res) => {
         )
           .then((result) => {
             if (result) {
+              // MB7a Slice 1 — client commits (key 1 of the two-key gate).
+              OnboardingService.recordEventJourney(event, "client_finalised", isAdmin ? user_id : null, {
+                eventId: String(_id),
+                by: isAdmin ? "admin" : "client",
+              });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "Event not found" });
@@ -1904,6 +1918,8 @@ const ApproveEvent = (req, res) => {
                   phone: event?.user?.phone,
                 },
               });
+              // MB7a Slice 1 — Wedsy validates (key 2); payment now unlocks.
+              OnboardingService.recordEventJourney(event, "wedsy_approved", user_id, { eventId: String(_id) });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "Event not found" });
