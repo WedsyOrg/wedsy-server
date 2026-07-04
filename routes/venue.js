@@ -23,6 +23,7 @@ const roles = require("../controllers/venueRoles");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const checkin = require("../controllers/venueCheckin");
+const activityFeed = require("../controllers/venueActivityFeed");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -144,6 +145,10 @@ router.post("/:slug/allotments/:allotmentId/check-in", venueOwnerAuth, requireCa
 router.post("/:slug/allotments/:allotmentId/check-out", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.checkOutAllotment);
 router.get("/:slug/allotments/:allotmentId/settlement-slip", venueOwnerAuth, checkin.settlementSlip);
 router.post("/:slug/allotments/:allotmentId/archive", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.archiveAllotment);
+
+// ── D10 activity spine — owner-side read of their own trail (no write route
+//    exists; the model enforces append-only) ──
+router.get("/:slug/activity", venueOwnerAuth, activityFeed.listActivity);
 router.get("/:slug/occupancy", venueOwnerAuth, occupancy);
 
 router.get("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, listRunsheet);

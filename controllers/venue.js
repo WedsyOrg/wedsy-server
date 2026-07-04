@@ -89,10 +89,14 @@ const updateVenue = async (req, res) => {
     } else {
       ownerVenueId = req.venueOwner.venueId;
     }
+    // D10: identify the actor so the activity spine records who changed what.
+    const { actorFromReq } = require("../utils/venueActivity");
+    const actor = await actorFromReq(req);
     const venue = await VenueService.updateVenueBySlug(
       slug,
       ownerVenueId,
-      req.body || {}
+      req.body || {},
+      actor
     );
     return res.status(200).json({ venue });
   } catch (err) {

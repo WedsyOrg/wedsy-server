@@ -838,6 +838,50 @@ async function run() {
     check("checkin: negative damage charge -> 400", badDamage2.status === 400, `status ${badDamage2.status}`);
   }
 
+  // ================= D10: activity spine — hooks, dual-actor, filters =================
+  if (process.env.E2E_ACTIVITY === "1") {
+    // owner edits: pricing (high), photos (low), rename (high, then rename back)
+    await api("PUT", `/venues/${SLUG}`, { token, body: { pricing: { perPlate: { veg: 1725 } } } });
+    await api("PUT", `/venues/${SLUG}`, { token, body: { photos: { venue: ["https://files.local/g1.jpg"] } } });
+    await api("PUT", `/venues/${SLUG}`, { token, body: { name: "Test Palace Regal" } });
+    await api("PUT", `/venues/${SLUG}`, { token, body: { name: "Test Palace" } });
+
+    const feed = await api("GET", `/venues/${SLUG}/activity?limit=50`, { token });
+    check("activity: owner GET returns the trail", feed.status === 200 && feed.json.activity.length >= 4, `n=${feed.json.total}`);
+    const pricingRow = feed.json.activity.find((a) => a.field === "pricing.perPlate.veg");
+    check("activity: pricing change logged HIGH with old/new", pricingRow && pricingRow.severity === "high" && pricingRow.new === "1725" && pricingRow.actorType === "venue_team" && pricingRow.actorName === "Owner", JSON.stringify(pricingRow && { s: pricingRow.severity, n: pricingRow.new }));
+    const photoRow = feed.json.activity.find((a) => a.field === "photos.venue");
+    check("activity: photos change logged LOW", photoRow && photoRow.severity === "low", `sev=${photoRow && photoRow.severity}`);
+    const renameRow = feed.json.activity.find((a) => a.action === "venue_renamed");
+    check("activity: rename logged as venue_renamed HIGH", renameRow && renameRow.severity === "high", `sev=${renameRow && renameRow.severity}`);
+
+    // dual-actor: a member edit carries the member's name
+    const arl = await api("GET", `/venues/${SLUG}/roles`, { token });
+    const mgrRole = (arl.json.roles || []).find((r) => r.name === "Manager");
+    const ainv = await api("POST", `/venues/${SLUG}/team`, { token, body: { name: "Meera Manager", phone: "9333300003", email: "meera@test-palace.local", roleId: mgrRole._id, withPassword: true } });
+    const alog = await api("POST", "/venue-owner/member-auth", { body: { email: "meera@test-palace.local", password: ainv.json.tempPassword } });
+    await api("PUT", `/venues/${SLUG}`, { token: alog.json.token, body: { tagline: "edited by meera" } });
+    const feed2 = await api("GET", `/venues/${SLUG}/activity?limit=10`, { token });
+    const meeraRow = feed2.json.activity.find((a) => a.field === "tagline");
+    check("activity: member edit carries member identity", meeraRow && meeraRow.actorType === "venue_team" && meeraRow.actorName === "Meera Manager", JSON.stringify(meeraRow && { t: meeraRow.actorType, n: meeraRow.actorName }));
+
+    // filters
+    const highOnly = await api("GET", `/venues/${SLUG}/activity?severity=high`, { token });
+    check("activity: severity filter", highOnly.status === 200 && highOnly.json.activity.length >= 2 && highOnly.json.activity.every((a) => a.severity === "high"), `n=${highOnly.json.total}`);
+    const badSev = await api("GET", `/venues/${SLUG}/activity?severity=catastrophic`, { token });
+    check("activity: unknown severity -> 400", badSev.status === 400, `status ${badSev.status}`);
+
+    // no-op writes don't pollute the trail
+    const before = (await api("GET", `/venues/${SLUG}/activity?limit=500`, { token })).json.total;
+    await api("PUT", `/venues/${SLUG}`, { token, body: { name: "Test Palace" } }); // unchanged value
+    const after = (await api("GET", `/venues/${SLUG}/activity?limit=500`, { token })).json.total;
+    check("activity: no-op write adds nothing", after === before, `before=${before} after=${after}`);
+
+    // append-only at the API surface: no write routes exist
+    const tryPost = await api("POST", `/venues/${SLUG}/activity`, { token, body: {} });
+    check("activity: no write route (POST -> 404)", tryPost.status === 404, `status ${tryPost.status}`);
+  }
+
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
     // isVerified on public detail (derived from status; test-palace is published -> false)

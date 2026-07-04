@@ -116,7 +116,7 @@ const CONTACT_SCALARS = [
   "whatsappPhone", "whatsappSameAsPrimary",
 ];
 
-const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
+const updateVenueBySlug = async (slug, ownerVenueId, updates = {}, actor = null) => {
   if (!slug) throw new Error("Slug is required");
   const venue = await VenueRepository.findBySlug(slug);
   if (!venue) throw new Error("Venue not found");
@@ -218,6 +218,15 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}) => {
       if (updates.contact[k] !== undefined) $set[`contact.${k}`] = updates.contact[k];
     }
     if (Array.isArray(updates.contact.languages)) $set["contact.languages"] = updates.contact.languages;
+  }
+
+  // D10 activity spine: observe the change, never block it. `venue` is the
+  // pre-update doc; $set holds exactly what changes. Fire-and-forget.
+  if (actor) {
+    try {
+      const { entriesForVenueUpdate, logActivity } = require("../utils/venueActivity");
+      logActivity(entriesForVenueUpdate(venue._id, venue, $set, actor)).catch(() => {});
+    } catch (_) { /* activity module absent on older branches */ }
   }
 
   return VenueRepository.updateBySlug(slug, $set);
