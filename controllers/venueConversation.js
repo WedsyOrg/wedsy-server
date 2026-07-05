@@ -1,6 +1,7 @@
 const VenueConversation = require("../models/VenueConversation");
 const VenueMessage = require("../models/VenueMessage");
 const Venue = require("../models/Venue");
+const { matchFlagTerms } = require("../utils/venueChatFlags");
 
 const createOrGetConversation = async ({ venueId, enquiryId, userId }) => {
   if (!venueId || !enquiryId || !userId) {
@@ -151,20 +152,31 @@ const sendMessage = async (req, res) => {
       senderId = req.venueOwner.venueOwnerId;
     }
 
+    // MB-V2 D4: keyword-flag routing (dormant unless VENUE_CHAT_FLAG_TERMS set).
+    const flaggedTerms = matchFlagTerms(text);
+
     const message = await VenueMessage.create({
       conversationId: conversation._id,
       senderId,
       senderType,
       messageType: messageType || "text",
       content: { text: text.trim() },
+      flaggedTerms,
       isRead: false,
     });
 
     conversation.lastMessageAt = new Date();
     if (senderType === "couple") {
       conversation.unreadCountVenue = (conversation.unreadCountVenue || 0) + 1;
+      conversation.lastCoupleMessageAt = new Date();
     } else {
       conversation.unreadCountCouple = (conversation.unreadCountCouple || 0) + 1;
+    }
+    // Sticky flag + accumulate distinct terms for the triage view.
+    if (flaggedTerms.length) {
+      conversation.flagged = true;
+      const set = new Set([...(conversation.flaggedTerms || []), ...flaggedTerms]);
+      conversation.flaggedTerms = Array.from(set);
     }
     await conversation.save();
 
@@ -197,13 +209,27 @@ const getMessages = async (req, res) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const messages = await VenueMessage.find({ conversationId: conversation._id })
+    // MB-V2 D4: hide the intervention half the caller isn't meant to see.
+    // couple never sees venue_only; venue never sees couple_only. wedsy "both"
+    // and the couple/venue messages themselves are always visible.
+    const hiddenTarget = callerType === "couple" ? "venue_only" : "couple_only";
+    const messages = await VenueMessage.find({
+      conversationId: conversation._id,
+      target: { $ne: hiddenTarget },
+    })
       .sort({ createdAt: 1 })
       .lean();
 
-    const otherPartyType = callerType === "couple" ? "venue" : "couple";
+    // Mark read everything the caller just saw that they didn't send —
+    // includes wedsy interventions addressed to them.
+    const ownType = callerType;
     await VenueMessage.updateMany(
-      { conversationId: conversation._id, senderType: otherPartyType, isRead: false },
+      {
+        conversationId: conversation._id,
+        senderType: { $ne: ownType },
+        target: { $ne: hiddenTarget },
+        isRead: false,
+      },
       { $set: { isRead: true } }
     );
 

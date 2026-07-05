@@ -6,6 +6,7 @@ const queues = require("../controllers/adminVenueQueues");
 const availability = require("../controllers/adminVenueAvailability");
 const leads = require("../controllers/adminVenueLeads");
 const planner = require("../controllers/adminVenuePlanner");
+const chat = require("../controllers/adminVenueChat");
 const { CheckAdminLogin } = require("../middlewares/auth");
 
 // MB-V2 P0 — Wedsy-internal venue workspace (Wedsy OS "Venues" module).
@@ -54,6 +55,14 @@ router.post("/shortlists/:id/items/:itemId/hold", CheckAdminLogin, planner.reque
 router.post("/shortlists/:id/items/:itemId/visit", CheckAdminLogin, planner.scheduleItemVisit);
 router.get("/site-visits", CheckAdminLogin, planner.listSiteVisits);
 router.patch("/site-visits/:visitId", CheckAdminLogin, planner.updateSiteVisit);
+
+// P2 (D4) — chat oversight: thread list (all/flagged/triage + SLA), thread
+// read (admin sees both targeting halves), intervention/offer sender, and the
+// log-only WhatsApp nudge trigger.
+router.get("/chats", CheckAdminLogin, chat.listThreads);
+router.get("/chats/:conversationId", CheckAdminLogin, chat.getThread);
+router.post("/chats/:conversationId/intervene", CheckAdminLogin, chat.sendIntervention);
+router.post("/chats/:conversationId/nudge", CheckAdminLogin, chat.nudgeVenue);
 
 router.get("/:slug/summary", CheckAdminLogin, ops.venueSummary);
 router.get("/:slug/enquiries", CheckAdminLogin, ops.listVenueEnquiries);

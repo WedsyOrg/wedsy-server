@@ -1781,6 +1781,86 @@ async function run() {
     check("planner: list rollup (counts + link flag)", lists.status === 200 && listRow && listRow.itemCount === 1 && listRow.reactedCount === 1 && listRow.hasPresentLink === true, listRow && JSON.stringify({ itemCount: listRow.itemCount, reactedCount: listRow.reactedCount }));
   }
 
+  // ================= MB-V2 P2: chat oversight (D4) =================
+  if (process.env.E2E_CHAT === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Admin thread list — the seeded conversation shows up with couple + venue.
+    const threads = await api("GET", `/admin/venues/chats?slug=${SLUG}`, { token: adminToken });
+    const thread = threads.status === 200 && (threads.json.threads || [])[0];
+    check("chat: admin thread list -> 200 with the seeded conversation", Boolean(thread) && thread.venue && thread.venue.slug === SLUG && thread.couple, `status ${threads.status}`);
+    const convId = thread && thread._id;
+    const coupleUserId = thread && thread.couple && thread.couple._id;
+    check("chat: SLA breach surfaced (venue silent > window on 2d-old couple msg)", thread && thread.slaBreached === true && thread.hoursSinceCouple >= 24, thread && JSON.stringify({ sla: thread.slaBreached, hrs: thread.hoursSinceCouple }));
+    check("chat: response advertises slaHours + flagTerms config", typeof threads.json.slaHours === "number" && Array.isArray(threads.json.flagTerms));
+
+    // Couple + venue tokens for targeting checks.
+    const coupleToken = jwt.sign({ _id: coupleUserId }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Admin reads the full thread (both targeting halves later).
+    const readThread = await api("GET", `/admin/venues/chats/${convId}`, { token: adminToken });
+    check("chat: admin thread read -> 200 with the couple's opener", readThread.status === 200 && (readThread.json.messages || []).some((m) => m.senderType === "couple"), `status ${readThread.status}`);
+
+    // Intervention: target BOTH — visible to couple AND venue.
+    const both = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "Wedsy here — happy to help you both close this!", target: "both" } });
+    check("chat: intervention (both) -> 201 senderType wedsy", both.status === 201 && both.json.message.senderType === "wedsy" && both.json.message.target === "both", `status ${both.status}`);
+    // Intervention: COUPLE_ONLY — couple sees it, venue must NOT.
+    const coupleOnly = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "Psst couple — this venue often flexes on pax.", target: "couple_only" } });
+    check("chat: intervention (couple_only) -> 201", coupleOnly.status === 201, `status ${coupleOnly.status}`);
+    // Intervention: VENUE_ONLY — venue sees it, couple must NOT.
+    const venueOnly = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "Venue — please reply, this couple is hot.", target: "venue_only" } });
+    check("chat: intervention (venue_only) -> 201", venueOnly.status === 201, `status ${venueOnly.status}`);
+
+    // Structured offer.
+    const offer = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { kind: "offer", title: "Wedsy Assured: 5% off", body: "Book this week and Wedsy covers 5%.", validUntil: "2027-12-31", target: "both" } });
+    check("chat: offer message -> 201 with offer payload", offer.status === 201 && offer.json.message.messageType === "offer" && offer.json.message.offer.title === "Wedsy Assured: 5% off", `status ${offer.status}`);
+    const offerNoTitle = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { kind: "offer", body: "no title" } });
+    check("chat: offer without title -> 400", offerNoTitle.status === 400, `status ${offerNoTitle.status}`);
+    const badTarget = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "x", target: "everyone" } });
+    check("chat: unknown target -> 400", badTarget.status === 400, `status ${badTarget.status}`);
+    const emptyText = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "   " } });
+    check("chat: empty intervention text -> 400", emptyText.status === 400, `status ${emptyText.status}`);
+
+    // ── Targeting enforcement across the three perspectives ──
+    // Couple view: sees both + couple_only + the offer; NOT venue_only.
+    const coupleView = await api("GET", `/conversations/${convId}/messages`, { token: coupleToken });
+    const coupleTexts = (coupleView.json.messages || []).map((m) => m.content && m.content.text);
+    check("chat: couple sees 'both' + 'couple_only' interventions", coupleView.status === 200 && coupleTexts.some((t) => /help you both close/.test(t)) && coupleTexts.some((t) => /flexes on pax/.test(t)), `status ${coupleView.status}`);
+    check("chat: couple does NOT see 'venue_only'", !coupleTexts.some((t) => /this couple is hot/.test(t)));
+    check("chat: couple sees the offer", (coupleView.json.messages || []).some((m) => m.messageType === "offer"));
+    // Venue (owner) view: sees both + venue_only + offer; NOT couple_only.
+    const venueView = await api("GET", `/conversations/${convId}/messages`, { token });
+    const venueTexts = (venueView.json.messages || []).map((m) => m.content && m.content.text);
+    check("chat: venue sees 'both' + 'venue_only' interventions", venueView.status === 200 && venueTexts.some((t) => /help you both close/.test(t)) && venueTexts.some((t) => /this couple is hot/.test(t)), `status ${venueView.status}`);
+    check("chat: venue does NOT see 'couple_only'", !venueTexts.some((t) => /flexes on pax/.test(t)));
+    // Admin sees ALL four interventions.
+    const adminRead2 = await api("GET", `/admin/venues/chats/${convId}`, { token: adminToken });
+    const adminTexts = (adminRead2.json.messages || []).map((m) => m.content && m.content.text);
+    check("chat: admin sees every targeting half", ["help you both close", "flexes on pax", "this couple is hot"].every((frag) => adminTexts.some((t) => t && t.includes(frag))));
+    check("chat: wedsy interventions carry senderType wedsy (distinct render signal)", (adminRead2.json.messages || []).filter((m) => m.senderType === "wedsy").length >= 4);
+
+    // ── Keyword-flag routing (env terms include "cash" & "offline" for the run) ──
+    const flagMsg = await api("POST", `/conversations/${convId}/messages`, { token, body: { text: "We can do a better rate if you pay cash offline.", senderType: "venue" } });
+    check("chat: venue message with flagged terms accepted", flagMsg.status === 201, `status ${flagMsg.status}`);
+    const flaggedList = await api("GET", "/admin/venues/chats?view=flagged", { token: adminToken });
+    const flaggedThread = (flaggedList.json.threads || []).find((t) => String(t._id) === String(convId));
+    check("chat: flagged view surfaces the thread with matched terms", flaggedList.status === 200 && flaggedThread && flaggedThread.flagged === true && flaggedThread.flaggedTerms.includes("cash"), flaggedThread && JSON.stringify(flaggedThread.flaggedTerms));
+    const triageList = await api("GET", "/admin/venues/chats?view=triage", { token: adminToken });
+    check("chat: triage view includes flagged/SLA-breached thread", triageList.status === 200 && (triageList.json.threads || []).some((t) => String(t._id) === String(convId)), `status ${triageList.status}`);
+    const badView = await api("GET", "/admin/venues/chats?view=bogus", { token: adminToken });
+    check("chat: unknown view -> 400", badView.status === 400, `status ${badView.status}`);
+
+    // ── Log-only WhatsApp nudge ──
+    const nudge = await api("POST", `/admin/venues/chats/${convId}/nudge`, { token: adminToken });
+    check("chat: nudge -> 200 log-only", nudge.status === 200 && nudge.json.logOnly === true, `status ${nudge.status}`);
+
+    // Activity spine recorded interventions + nudge.
+    const act = await api("GET", `/admin/venues/${SLUG}/activity?actorType=wedsy_team&limit=50`, { token: adminToken });
+    check("chat: interventions + nudge logged to the spine", act.status === 200 && (act.json.activity || []).some((a) => a.action === "chat_intervention_sent") && (act.json.activity || []).some((a) => a.action === "chat_venue_nudged"), `status ${act.status}`);
+  }
+
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
     // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
     const burst = await Promise.all(Array.from({ length: 75 }, () =>

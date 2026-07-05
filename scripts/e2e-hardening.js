@@ -492,6 +492,7 @@ async function run() {
       "/admin/venues/activity-feed",
       "/admin/venues/shortlists",
       "/admin/venues/site-visits",
+      "/admin/venues/chats",
     ];
     // Admin WRITE surfaces (S2 queues) — same principals must be denied.
     const WRITES13 = [
@@ -502,6 +503,8 @@ async function run() {
       ["POST", "/admin/venues/shortlists"],
       ["POST", "/admin/venues/shortlists/000000000000000000000000/present-link"],
       ["PATCH", "/admin/venues/site-visits/000000000000000000000000"],
+      ["POST", "/admin/venues/chats/000000000000000000000000/intervene"],
+      ["POST", "/admin/venues/chats/000000000000000000000000/nudge"],
     ];
     // CheckAdminLogin's legacy codes: 400 no-token/no-isAdmin-claim/bad-sig,
     // 401 unknown admin _id, 403 disabled — all are hard denials; 2xx is the bug.
