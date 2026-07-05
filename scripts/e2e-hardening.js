@@ -491,8 +491,11 @@ async function run() {
       "/admin/venues/forwards",
       "/admin/venues/activity-feed",
       "/admin/venues/shortlists",
+      "/admin/venues/shortlists/000000000000000000000000",
       "/admin/venues/site-visits",
       "/admin/venues/chats",
+      "/admin/venues/chats/000000000000000000000000",
+      "/admin/venues/claims/000000000000000000000000",
       "/admin/venues/notifications",
     ];
     // Admin WRITE surfaces (S2 queues) — same principals must be denied.
@@ -503,6 +506,13 @@ async function run() {
       ["POST", "/admin/venues/leads/000000000000000000000000/forward"],
       ["POST", "/admin/venues/shortlists"],
       ["POST", "/admin/venues/shortlists/000000000000000000000000/present-link"],
+      // Shortlist-item write sub-routes — throwaway shortlist/item ids so the
+      // assertion exercises the GATE (denied before any id lookup), not the handler.
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/items"],
+      ["PATCH", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001"],
+      ["DELETE", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001"],
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001/hold"],
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001/visit"],
       ["PATCH", "/admin/venues/site-visits/000000000000000000000000"],
       ["POST", "/admin/venues/chats/000000000000000000000000/intervene"],
       ["POST", "/admin/venues/chats/000000000000000000000000/nudge"],
