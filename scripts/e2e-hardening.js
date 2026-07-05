@@ -360,6 +360,113 @@ async function run() {
     ok("9 cross-venue occupancy read -> 403", idorOcc.status === 403, `status ${idorOcc.status}`);
   }
 
+  // ═══════════ 10. RBAC v2 WRITE SURFACES (roles / member-auth / password) ═══════════
+  console.log("\n— 10. RBAC v2 hostile input —");
+  {
+    // gated without token
+    const noTokRoles = await api("GET", `/venues/${A}/roles`, {});
+    ok("10 roles list without token -> 401", noTokRoles.status === 401, `status ${noTokRoles.status}`);
+    const noTokCreate = await api("POST", `/venues/${A}/roles`, { body: { name: "X", capabilities: ["leads"] } });
+    ok("10 role create without token -> 401", noTokCreate.status === 401, `status ${noTokCreate.status}`);
+
+    // hostile input on role create
+    const giant = await api("POST", `/venues/${A}/roles`, { token: tokenA, body: { name: "R".repeat(10000), capabilities: ["leads"] } });
+    ok("10 10k-char role name -> 400", giant.status === 400, `status ${giant.status}`);
+    const badCap = await api("POST", `/venues/${A}/roles`, { token: tokenA, body: { name: "Hax", capabilities: ["__proto__"] } });
+    ok("10 unknown capability -> 400", badCap.status === 400, `status ${badCap.status}`);
+    const emptyCaps = await api("POST", `/venues/${A}/roles`, { token: tokenA, body: { name: "Empty", capabilities: [] } });
+    ok("10 empty capabilities -> 400", emptyCaps.status === 400, `status ${emptyCaps.status}`);
+
+    // tenancy: venue B owner cannot read or write venue A roles
+    const idorRoles = await api("GET", `/venues/${A}/roles`, { token: tokenB });
+    ok("10 cross-venue roles read -> 403", idorRoles.status === 403, `status ${idorRoles.status}`);
+    const idorCreate = await api("POST", `/venues/${A}/roles`, { token: tokenB, body: { name: "Intruder", capabilities: ["team"] } });
+    ok("10 cross-venue role create -> 403", idorCreate.status === 403, `status ${idorCreate.status}`);
+
+    // member-auth: malformed and unknown creds never 5xx, never leak which part failed
+    const noBody = await api("POST", "/venue-owner/member-auth", { body: {} });
+    ok("10 member-auth empty body -> 400", noBody.status === 400, `status ${noBody.status}`);
+    const unknown = await api("POST", "/venue-owner/member-auth", { body: { email: "ghost@nowhere.local", password: "whatever123" } });
+    ok("10 member-auth unknown email -> 401 generic", unknown.status === 401, `status ${unknown.status}`);
+
+    // password endpoint: owner-gated + member must exist
+    const noTokPw = await api("POST", `/venues/${A}/team/000000000000000000000000/password`, { body: {} });
+    ok("10 password reset without token -> 401", noTokPw.status === 401, `status ${noTokPw.status}`);
+    const ghostPw = await api("POST", `/venues/${A}/team/000000000000000000000000/password`, { token: tokenA, body: {} });
+    ok("10 password reset unknown member -> 404", ghostPw.status === 404, `status ${ghostPw.status}`);
+  }
+
+  // ═══════════ 11. D3 HOLDS / CALENDAR WRITE SURFACES ═══════════
+  console.log("\n— 11. Holds / calendar hostile input —");
+  {
+    const noTokHold = await api("POST", `/venues/${A}/holds`, { body: { dates: ["2032-01-01"] } });
+    ok("11 hold create without token -> 401", noTokHold.status === 401, `status ${noTokHold.status}`);
+    const idorHold = await api("POST", `/venues/${A}/holds`, { token: tokenB, body: { dates: ["2032-01-01"] } });
+    ok("11 cross-venue hold create -> 403", idorHold.status === 403, `status ${idorHold.status}`);
+    const idorCal = await api("GET", `/venues/${A}/calendar?month=2032-01`, { token: tokenB });
+    ok("11 cross-venue calendar read -> 403", idorCal.status === 403, `status ${idorCal.status}`);
+
+    const tooMany = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: Array.from({ length: 40 }, (_, i) => `2032-03-${String((i % 28) + 1).padStart(2, "0")}`) } });
+    ok("11 40-date hold -> 400", tooMany.status === 400, `status ${tooMany.status}`);
+    const badDate = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-02-30"] } });
+    ok("11 impossible calendar date -> 400", badDate.status === 400, `status ${badDate.status}`);
+    const giantNotes = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-01-05"], notes: "N".repeat(10000) } });
+    ok("11 10k-char hold notes -> 400", giantNotes.status === 400, `status ${giantNotes.status}`);
+    const foreignSpace = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-01-06"], space: "000000000000000000000000" } });
+    ok("11 unknown space -> 400", foreignSpace.status === 400, `status ${foreignSpace.status}`);
+    const foreignEnq = await api("POST", `/venues/${A}/holds`, { token: tokenA, body: { dates: ["2032-01-07"], linkedEnquiry: "000000000000000000000000" } });
+    ok("11 foreign linkedEnquiry -> 400", foreignEnq.status === 400, `status ${foreignEnq.status}`);
+
+    const ghostApprove = await api("POST", `/venues/${A}/holds/000000000000000000000000/approve`, { token: tokenA });
+    ok("11 approve unknown hold -> 404", ghostApprove.status === 404, `status ${ghostApprove.status}`);
+    const badRange = await api("GET", `/venues/${A}/calendar?from=2032-01-01&to=2033-01-01`, { token: tokenA });
+    ok("11 oversized calendar range -> 400", badRange.status === 400, `status ${badRange.status}`);
+    const badMonth = await api("GET", `/venues/${A}/calendar?month=203201`, { token: tokenA });
+    ok("11 malformed month -> 400", badMonth.status === 400, `status ${badMonth.status}`);
+    const badSettings = await api("PATCH", `/venues/${A}/calendar/settings`, { token: tokenA, body: { holdExpiryDays: 999 } });
+    ok("11 holdExpiryDays out of range -> 400", badSettings.status === 400, `status ${badSettings.status}`);
+  }
+
+  // ═══════════ 12. D8 DOCUMENT ENGINE WRITE SURFACES ═══════════
+  console.log("\n— 12. Docs hostile input —");
+  {
+    const noTokTpl = await api("POST", `/venues/${A}/doc-templates`, { body: { type: "bill", name: "X" } });
+    ok("12 template create without token -> 401", noTokTpl.status === 401, `status ${noTokTpl.status}`);
+    const idorTpl = await api("POST", `/venues/${A}/doc-templates`, { token: tokenB, body: { type: "bill", name: "Intruder" } });
+    ok("12 cross-venue template create -> 403", idorTpl.status === 403, `status ${idorTpl.status}`);
+    const giantTpl = await api("POST", `/venues/${A}/doc-templates`, { token: tokenA, body: { type: "bill", name: "T".repeat(10000) } });
+    ok("12 10k-char template name -> 400", giantTpl.status === 400, `status ${giantTpl.status}`);
+    const giantTerms = await api("POST", `/venues/${A}/doc-templates`, { token: tokenA, body: { type: "bill", name: "GT", terms: ["x".repeat(5000)] } });
+    ok("12 5k-char term -> 400", giantTerms.status === 400, `status ${giantTerms.status}`);
+
+    const bkForBill = await api("POST", `/venues/${A}/bookings`, { token: tokenA, body: { coupleName: "Docs Torture", days: [{ date: new Date(Date.now() + 40 * 86400000).toISOString() }] } });
+    const bId12 = bkForBill.json.booking && bkForBill.json.booking._id;
+    const negQty = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: bId12, lineItems: [{ label: "Neg", qty: -5, unitPrice: 100 }] } });
+    ok("12 negative bill qty -> 400", negQty.status === 400, `status ${negQty.status}`);
+    const hugeUnit = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: bId12, lineItems: [{ label: "Huge", qty: 1, unitPrice: 1e12 }] } });
+    ok("12 absurd unitPrice -> 400", hugeUnit.status === 400, `status ${hugeUnit.status}`);
+    const foreignBooking = await api("POST", `/venues/${A}/bills`, { token: tokenB, body: { booking: bId12 } });
+    ok("12 cross-venue bill create -> 403", foreignBooking.status === 403, `status ${foreignBooking.status}`);
+    const ghostBooking = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: "000000000000000000000000" } });
+    ok("12 unknown booking on bill -> 404", ghostBooking.status === 404, `status ${ghostBooking.status}`);
+
+    // The shared public-read bucket may already be exhausted this deep into the
+    // suite — 429 is an equally hard rejection here; the pure 401 path is
+    // asserted with fresh budget in e2e-venue's E2E_DOCS section.
+    const tamperedAck = await api("POST", "/venues/doc-ack/evil.token.here", { body: { name: "X", phone: "9000000000" } });
+    ok("12 tampered doc-ack token rejected (401/429)", [401, 429].includes(tamperedAck.status), `status ${tamperedAck.status}`);
+
+    // E3x white-label write surfaces
+    const noTokWl = await api("PATCH", `/venues/${A}/documents/settings`, { body: { documentsWhiteLabelDefault: true } });
+    ok("12 doc-settings without token -> 401", noTokWl.status === 401, `status ${noTokWl.status}`);
+    const idorWl = await api("PATCH", `/venues/${A}/documents/settings`, { token: tokenB, body: { documentsWhiteLabelDefault: true } });
+    ok("12 cross-venue doc-settings -> 403", idorWl.status === 403, `status ${idorWl.status}`);
+    const badWlType = await api("PATCH", `/venues/${A}/documents/settings`, { token: tokenA, body: { documentsWhiteLabelDefault: "yes" } });
+    ok("12 non-boolean doc-settings -> 400", badWlType.status === 400, `status ${badWlType.status}`);
+    const badWlDoc = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: bId12, whiteLabel: 1 } });
+    ok("12 non-boolean per-doc whiteLabel -> 400", badWlDoc.status === 400, `status ${badWlDoc.status}`);
+  }
+
   finish();
 }
 

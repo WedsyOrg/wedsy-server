@@ -52,6 +52,40 @@ async function apiBinary(path, { token } = {}) {
   return { status: res.status, contentType: res.headers.get("content-type") || "", bytes: buf.length, head: buf.slice(0, 5).toString("latin1"), body: buf.toString("latin1") };
 }
 
+// E3x: pdfkit compresses content streams (FlateDecode) and shows text as
+// HEX-encoded kerned TJ arrays ([<50> 50 <6f> …] TJ). To grep for a footer or
+// system line: inflate every stream…endstream chunk, then hex-decode all
+// <…> show strings in order — kerning splits mid-word, so concatenating the
+// decoded segments reassembles the original line ("Powered by Wedsy").
+function pdfText(latin1Body) {
+  const zlib = require("zlib");
+  const buf = Buffer.from(latin1Body, "latin1");
+  let raw = "";
+  let idx = 0;
+  for (;;) {
+    const s = buf.indexOf("stream", idx);
+    if (s === -1) break;
+    let start = s + 6;
+    if (buf[start] === 0x0d) start++;
+    if (buf[start] === 0x0a) start++;
+    const e = buf.indexOf("endstream", start);
+    if (e === -1) break;
+    const chunk = buf.slice(start, e);
+    try { raw += zlib.inflateSync(chunk).toString("latin1"); }
+    catch { raw += chunk.toString("latin1"); } // uncompressed stream
+    idx = e + 9;
+  }
+  let out = "";
+  for (const m of raw.matchAll(/<([0-9a-fA-F]+)>/g)) {
+    out += Buffer.from(m[1], "hex").toString("latin1");
+  }
+  // Literal-paren show strings too (uncompressed/simple writers).
+  for (const m of raw.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj/g)) {
+    out += "\n" + m[1];
+  }
+  return out;
+}
+
 async function login() {
   // Dev OTP bypass: login accepts otp "000000" with any non-empty referenceId
   // when NODE_ENV !== "production". Avoids hitting external OTP senders.
@@ -441,6 +475,561 @@ async function run() {
     check("roles: listing_manager bookings GET -> 200 (open read)", lmBookings.status === 200, `status ${lmBookings.status}`);
     const lmPayments = await api("GET", `/venues/${SLUG}/payments/summary`, { token: lmToken });
     check("roles: listing_manager payments GET -> 200 (open read)", lmPayments.status === 200, `status ${lmPayments.status}`);
+  }
+
+  // ================= RBAC v2 (D5): bundles, member email login, owner reset =================
+  if (process.env.E2E_RBAC === "1") {
+    // Roles list seeds system Owner + 4 defaults and migrates legacy members.
+    const rl = await api("GET", `/venues/${SLUG}/roles`, { token });
+    const names = (rl.json.roles || []).map((r) => r.name);
+    check("rbac: roles list seeds Owner + 4 defaults",
+      rl.status === 200 && ["Owner", "Manager", "Sales", "Front Desk", "Accounts"].every((n) => names.includes(n)),
+      `status ${rl.status} names=${names.join(",")}`);
+    const ownerRole = (rl.json.roles || []).find((r) => r.isSystem);
+    check("rbac: system Owner role has every capability",
+      ownerRole && Array.isArray(rl.json.capabilities) && rl.json.capabilities.every((c) => ownerRole.capabilities.includes(c)),
+      `caps=${ownerRole && ownerRole.capabilities.length}`);
+
+    // Legacy members got migrated onto capability-preserving bundles.
+    const team = await api("GET", `/venues/${SLUG}/team`, { token });
+    const legacyLm = (team.json.members || []).find((m) => m.role === "listing_manager");
+    check("rbac: legacy listing_manager migrated to a capability-preserving bundle",
+      legacyLm && legacyLm.roleRef && legacyLm.roleRef.name === "Listing Manager", `bundle=${legacyLm && legacyLm.roleRef && legacyLm.roleRef.name}`);
+
+    // Custom role: starts insights-only.
+    const cr = await api("POST", `/venues/${SLUG}/roles`, { token, body: { name: "Auditor", capabilities: ["insights"] } });
+    check("rbac: create custom role -> 201", cr.status === 201 && cr.json.role && cr.json.role.name === "Auditor", `status ${cr.status}`);
+    const auditorId = cr.json.role && cr.json.role._id;
+    const crBad = await api("POST", `/venues/${SLUG}/roles`, { token, body: { name: "Bad", capabilities: ["superpowers"] } });
+    check("rbac: unknown capability -> 400", crBad.status === 400, `status ${crBad.status}`);
+
+    // Invite a member with email + generated temp password on the custom role.
+    const inv = await api("POST", `/venues/${SLUG}/team`, {
+      token,
+      body: { name: "Rita Auditor", phone: "9333300001", email: "Rita@Test-Palace.local", roleId: auditorId, withPassword: true },
+    });
+    check("rbac: invite with email + temp password -> 201 + password returned once",
+      inv.status === 201 && inv.json.tempPassword && inv.json.member && !inv.json.member.passwordHash, `status ${inv.status}`);
+    const ritaPass = inv.json.tempPassword;
+    const ritaId = inv.json.member && inv.json.member._id;
+
+    // Email login (case-insensitive email), same member JWT shape.
+    const ml = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: ritaPass } });
+    check("rbac: member email login -> 200 member token", ml.status === 200 && ml.json.token && ml.json.venueOwner && ml.json.venueOwner.isMember === true, `status ${ml.status}`);
+    const ritaToken = ml.json.token;
+    const mlBad = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: "wrong-password" } });
+    check("rbac: wrong password -> 401", mlBad.status === 401, `status ${mlBad.status}`);
+
+    // Capability enforcement through the bundle: insights yes, leads no.
+    const ritaLeadsDenied = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token: ritaToken, body: { coupleName: "X", couplePhone: "9111100001" } });
+    check("rbac: custom role without leads -> 403 on lead write", ritaLeadsDenied.status === 403, `status ${ritaLeadsDenied.status}`);
+
+    // Live grant: owner adds leads to the bundle -> same token now passes.
+    const grant = await api("PATCH", `/venues/${SLUG}/roles/${auditorId}`, { token, body: { capabilities: ["insights", "leads"] } });
+    check("rbac: owner edits bundle -> 200", grant.status === 200, `status ${grant.status}`);
+    const ritaLeadsOk = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token: ritaToken, body: { coupleName: "RBAC Lead", couplePhone: "9111100002" } });
+    check("rbac: grant applies to LIVE token (no re-login)", [200, 201].includes(ritaLeadsOk.status), `status ${ritaLeadsOk.status}`);
+
+    // System Owner role immutable; role with members undeletable (409 → reassign → delete OK).
+    const sysEdit = await api("PATCH", `/venues/${SLUG}/roles/${ownerRole._id}`, { token, body: { name: "Root" } });
+    check("rbac: system Owner role edit -> 403", sysEdit.status === 403, `status ${sysEdit.status}`);
+    const delWithMembers = await api("DELETE", `/venues/${SLUG}/roles/${auditorId}`, { token });
+    check("rbac: delete role with members -> 409", delWithMembers.status === 409, `status ${delWithMembers.status}`);
+    const salesRole = (rl.json.roles || []).find((r) => r.name === "Sales");
+    await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { roleId: salesRole._id } });
+    const delEmpty = await api("DELETE", `/venues/${SLUG}/roles/${auditorId}`, { token });
+    check("rbac: delete after reassign -> 200", delEmpty.status === 200, `status ${delEmpty.status}`);
+
+    // Owner resets the member's password: old stops working, new works.
+    const reset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token, body: {} });
+    check("rbac: owner reset issues new temp password", reset.status === 200 && reset.json.tempPassword, `status ${reset.status}`);
+    const oldLogin = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: ritaPass } });
+    check("rbac: old password -> 401 after reset", oldLogin.status === 401, `status ${oldLogin.status}`);
+    const newLogin = await api("POST", "/venue-owner/member-auth", { body: { email: "rita@test-palace.local", password: reset.json.tempPassword } });
+    check("rbac: new password logs in", newLogin.status === 200 && newLogin.json.token, `status ${newLogin.status}`);
+
+    // Member cannot reset passwords even with a team-capability bundle path
+    // (owner-only), and a deactivated member's live token dies per-request.
+    const ritaReset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token: newLogin.json.token, body: {} });
+    check("rbac: member password reset -> 403 (owner-only)", ritaReset.status === 403, `status ${ritaReset.status}`);
+
+    // ── Owner-actor escalation guard (Jul 2026 security fix) ──
+    // A member holding a CUSTOM role WITH the team capability reaches the
+    // controller-level owner guards (the route only gates on `team`). Before
+    // the fix, isOwnerActor(req) fell through to the owner branch and let this
+    // member escalate. Assert the owner-only guards now hold — AND that a
+    // team-capability member can still do legitimate, non-owner team ops.
+    const tmRole = await api("POST", `/venues/${SLUG}/roles`, { token, body: { name: "Team Lead", capabilities: ["team", "leads"] } });
+    check("rbac(esc): create team-capability custom role -> 201", tmRole.status === 201, `status ${tmRole.status}`);
+    const tmRoleId = tmRole.json.role && tmRole.json.role._id;
+    const tmInv = await api("POST", `/venues/${SLUG}/team`, { token, body: { name: "Tara Lead", phone: "9333300009", email: "tara@test-palace.local", roleId: tmRoleId, withPassword: true } });
+    check("rbac(esc): invite team-capability member -> 201", tmInv.status === 201 && tmInv.json.tempPassword, `status ${tmInv.status}`);
+    const taraId = tmInv.json.member && tmInv.json.member._id;
+    const tmLogin = await api("POST", "/venue-owner/member-auth", { body: { email: "tara@test-palace.local", password: tmInv.json.tempPassword } });
+    check("rbac(esc): team-capability member logs in", tmLogin.status === 200 && tmLogin.json.token, `status ${tmLogin.status}`);
+    const taraToken = tmLogin.json.token;
+
+    // (a) setMemberPassword on another member -> 403 (owner-only, not team)
+    const escReset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token: taraToken, body: {} });
+    check("rbac(esc): team-cap member resets another's password -> 403", escReset.status === 403, `status ${escReset.status}`);
+    // (b) assign the system Owner bundle to ANOTHER member -> 403 (the
+    // owner-bundle guard; self-grant is separately blocked 400 by self-modify).
+    const escOwn = await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token: taraToken, body: { roleId: ownerRole._id } });
+    check("rbac(esc): team-cap member grants another the Owner bundle -> 403", escOwn.status === 403, `status ${escOwn.status}`);
+    const escSelf = await api("PATCH", `/venues/${SLUG}/team/${taraId}`, { token: taraToken, body: { roleId: ownerRole._id } });
+    check("rbac(esc): team-cap member self-grant Owner bundle -> 400 (self-modify)", escSelf.status === 400, `status ${escSelf.status}`);
+    // (b') grant Owner bundle at invite time -> 403
+    const escInvOwn = await api("POST", `/venues/${SLUG}/team`, { token: taraToken, body: { name: "Puppet", phone: "9333300010", email: "puppet@test-palace.local", roleId: ownerRole._id } });
+    check("rbac(esc): team-cap member invites onto Owner bundle -> 403", escInvOwn.status === 403, `status ${escInvOwn.status}`);
+    // (c) owner does the same two ops -> success (guard doesn't over-block owner)
+    const ownReset = await api("POST", `/venues/${SLUG}/team/${taraId}/password`, { token, body: {} });
+    check("rbac(esc): owner resets member password -> 200", ownReset.status === 200 && ownReset.json.tempPassword, `status ${ownReset.status}`);
+    const ownGrantsOwner = await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { roleId: ownerRole._id } });
+    check("rbac(esc): owner assigns Owner bundle -> 200", ownGrantsOwner.status === 200, `status ${ownGrantsOwner.status}`);
+    // reassign Rita back off the Owner bundle so later checks are unaffected
+    await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { roleId: salesRole._id } });
+    // (legit) team-capability member CAN do non-owner team ops: invite a
+    // plain member and edit a non-system role — the fix doesn't over-block.
+    const tmLegitInv = await api("POST", `/venues/${SLUG}/team`, { token: taraToken, body: { name: "Vik Helper", phone: "9333300011", email: "vik@test-palace.local", roleId: salesRole._id } });
+    check("rbac(esc): team-cap member invites non-owner member -> 201", tmLegitInv.status === 201, `status ${tmLegitInv.status}`);
+    const tmLegitEdit = await api("PATCH", `/venues/${SLUG}/roles/${tmRoleId}`, { token: taraToken, body: { capabilities: ["team", "leads", "chats"] } });
+    check("rbac(esc): team-cap member edits non-system role -> 200", tmLegitEdit.status === 200, `status ${tmLegitEdit.status}`);
+
+    await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { isActive: false } });
+    const deadToken = await api("GET", `/venues/${SLUG}/enquiries`, { token: newLogin.json.token });
+    check("rbac: deactivated member live token -> 401", deadToken.status === 401, `status ${deadToken.status}`);
+  }
+
+  // ================= D3: date-inventory, holds, calendar =================
+  if (process.env.E2E_HOLDS === "1") {
+    const jwtH = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwtH.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const hday = (n) => new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+
+    // spaces present on the venue (from seed), incl. a non-bookable one
+    const det0 = await api("GET", `/venues/${SLUG}`, {});
+    const allSpaces = (det0.json.venue.spaces || []);
+    const lawn = allSpaces.find((s) => s.name === "Grand Lawn");
+    const gazebo = allSpaces.find((s) => s.name === "Photo Gazebo");
+    check("holds: seed venue has bookable spaces", Boolean(lawn && gazebo), `n=${allSpaces.length}`);
+
+    // wedsy-side (admin JWT) hold request -> requested, owner untouched
+    const wReq = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(40), hday(41)], space: lawn._id, requestedByName: "Wedsy CRM", notes: "Couple shortlisted you" } });
+    check("holds: wedsy-side create -> 201 requested (admin JWT)", wReq.status === 201 && wReq.json.hold.status === "requested" && wReq.json.hold.requestedBy === "wedsy", `status ${wReq.status}`);
+    const holdA = wReq.json.hold;
+
+    // non-bookable space rejected; bad dates rejected
+    const badSpace = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(40)], space: gazebo._id } });
+    check("holds: non-bookable space -> 400", badSpace.status === 400, `status ${badSpace.status}`);
+    const badDates = await api("POST", `/venues/${SLUG}/holds`, { token, body: { dates: ["not-a-date"] } });
+    check("holds: malformed dates -> 400", badDates.status === 400, `status ${badDates.status}`);
+
+    // owner approves -> SpaceDate rows claimed, calendar shows held
+    const app1 = await api("POST", `/venues/${SLUG}/holds/${holdA._id}/approve`, { token });
+    check("holds: owner approve -> 200 + rows claimed", app1.status === 200 && app1.json.claimed === 2, `status ${app1.status} claimed=${app1.json.claimed}`);
+    const calMonth = hday(40).slice(0, 7);
+    const cal1 = await api("GET", `/venues/${SLUG}/calendar?from=${hday(40)}&to=${hday(41)}`, { token });
+    const day40 = cal1.json.days && cal1.json.days.find((d) => d.date === hday(40));
+    check("holds: calendar merges held state", cal1.status === 200 && day40 && day40.spaces.some((s) => s.state === "held"), `spaces=${day40 && JSON.stringify(day40.spaces.map((s) => s.state))}`);
+
+    // overlapping second hold approval -> 409 (unique-index guard)
+    const wReq2 = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(41)], space: lawn._id } });
+    const app2 = await api("POST", `/venues/${SLUG}/holds/${wReq2.json.hold._id}/approve`, { token });
+    check("holds: overlapping approve -> 409", app2.status === 409, `status ${app2.status}`);
+
+    // RACE: 5 holds on one fresh space-date, approved concurrently -> exactly one wins
+    const raceHolds = [];
+    for (let i = 0; i < 5; i++) {
+      const r = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(50)], space: lawn._id, requestedByName: `racer-${i}` } });
+      raceHolds.push(r.json.hold);
+    }
+    const raceResults = await Promise.all(raceHolds.map((h) => api("POST", `/venues/${SLUG}/holds/${h._id}/approve`, { token })));
+    const raceWins = raceResults.filter((r) => r.status === 200).length;
+    const raceLosses = raceResults.filter((r) => r.status === 409).length;
+    check("holds: 5-way concurrent approve race -> exactly one wins", raceWins === 1 && raceLosses === 4, `wins=${raceWins} losses=${raceLosses}`);
+
+    // decline + release
+    const dReq = await api("POST", `/venues/${SLUG}/holds`, { token, body: { dates: [hday(60)] } });
+    const dec = await api("POST", `/venues/${SLUG}/holds/${dReq.json.hold._id}/decline`, { token, body: { notes: "date clash" } });
+    check("holds: decline -> 200 declined", dec.status === 200 && dec.json.hold.status === "declined", `status ${dec.status}`);
+    const rel = await api("POST", `/venues/${SLUG}/holds/${holdA._id}/release`, { token });
+    check("holds: release frees the dates", rel.status === 200 && rel.json.hold.status === "released", `status ${rel.status}`);
+    const calFree = await api("GET", `/venues/${SLUG}/calendar?from=${hday(40)}&to=${hday(41)}`, { token });
+    const day40b = calFree.json.days.find((d) => d.date === hday(40));
+    check("holds: released dates open again", day40b && day40b.spaces.length === 0, `spaces=${day40b && day40b.spaces.length}`);
+
+    // convert-on-booking flips held -> booked atomically
+    const cReq = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(70)], space: lawn._id } });
+    await api("POST", `/venues/${SLUG}/holds/${cReq.json.hold._id}/approve`, { token });
+    const bkH = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "Hold Convert Couple", couplePhone: "9666600001", totalValue: 500000, days: [{ date: `${hday(70)}T00:00:00.000Z`, eventType: "Wedding", guestCount: 300 }] } });
+    const conv = await api("POST", `/venues/${SLUG}/holds/${cReq.json.hold._id}/convert`, { token, body: { bookingId: bkH.json.booking._id } });
+    check("holds: convert -> 200, rows booked", conv.status === 200 && conv.json.hold.status === "converted" && conv.json.converted === 1, `status ${conv.status} converted=${conv.json.converted}`);
+    const calBooked = await api("GET", `/venues/${SLUG}/calendar?from=${hday(70)}&to=${hday(70)}`, { token });
+    check("holds: calendar shows booked after convert", calBooked.json.days[0].spaces.some((s) => s.state === "booked"), `states=${JSON.stringify(calBooked.json.days[0].spaces.map((s) => s.state))}`);
+
+    // manual block / unblock (venue-wide) + conflict with block
+    const blk = await api("POST", `/venues/${SLUG}/calendar/block`, { token, body: { dates: [hday(80)], notes: "maintenance" } });
+    check("holds: manual block -> 201 rows for every bookable space", blk.status === 201 && blk.json.blocked === 2, `status ${blk.status} blocked=${blk.json.blocked}`);
+    const blkHold = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(80)], space: lawn._id } });
+    const blkApp = await api("POST", `/venues/${SLUG}/holds/${blkHold.json.hold._id}/approve`, { token });
+    check("holds: approve over blocked date -> 409", blkApp.status === 409, `status ${blkApp.status}`);
+    const unblk = await api("POST", `/venues/${SLUG}/calendar/unblock`, { token, body: { dates: [hday(80)] } });
+    check("holds: unblock -> frees exactly the blocked rows", unblk.status === 200 && unblk.json.unblocked === 2, `unblocked=${unblk.json.unblocked}`);
+
+    // legacy venue-wide blockedDates respected at approval
+    await api("POST", `/venues/${SLUG}/availability`, { token, body: { blockedDates: [hday(90)] } });
+    const legHold = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { dates: [hday(90)], space: lawn._id } });
+    const legApp = await api("POST", `/venues/${SLUG}/holds/${legHold.json.hold._id}/approve`, { token });
+    check("holds: legacy blockedDates conflict -> 409", legApp.status === 409, `status ${legApp.status}`);
+    await api("POST", `/venues/${SLUG}/availability`, { token, body: { blockedDates: [] } });
+
+    // demand heat: seed a lead with an eventDate in range, expect >=1 on that day
+    await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "Demand Couple", couplePhone: "9666600002", eventDate: `${hday(85)}T00:00:00.000Z` } });
+    const heat = await api("GET", `/venues/${SLUG}/calendar/demand?from=${hday(84)}&to=${hday(86)}`, { token });
+    const heat85 = (heat.json.demand || []).find((d) => d.date === hday(85));
+    check("holds: demand heat counts non-lost leads by eventDate", heat.status === 200 && heat85 && heat85.leads >= 1, `demand=${JSON.stringify(heat.json.demand)}`);
+
+    // settings: hold expiry days venue-configurable
+    const setOk = await api("PATCH", `/venues/${SLUG}/calendar/settings`, { token, body: { holdExpiryDays: 2 } });
+    check("holds: settings holdExpiryDays -> 200", setOk.status === 200 && setOk.json.holdExpiryDays === 2, `status ${setOk.status}`);
+    const setBad = await api("PATCH", `/venues/${SLUG}/calendar/settings`, { token, body: { holdExpiryDays: 0 } });
+    check("holds: holdExpiryDays 0 -> 400", setBad.status === 400, `status ${setBad.status}`);
+    const hExp = await api("POST", `/venues/${SLUG}/holds`, { token, body: { dates: [hday(95)] } });
+    const expDelta = new Date(hExp.json.hold.expiresAt) - Date.now();
+    check("holds: new hold expiry honors venue setting (~2d)", expDelta > 1.8 * 86400000 && expDelta < 2.2 * 86400000, `delta=${Math.round(expDelta / 3600000)}h`);
+    await api("PATCH", `/venues/${SLUG}/calendar/settings`, { token, body: { holdExpiryDays: 5 } });
+
+    // month view shape
+    const mon = await api("GET", `/venues/${SLUG}/calendar?month=${calMonth}`, { token });
+    check("holds: month view returns full month with demand+visits fields", mon.status === 200 && mon.json.days.length >= 28 && "demand" in mon.json.days[0] && "visits" in mon.json.days[0], `days=${mon.json.days && mon.json.days.length}`);
+  }
+
+  // ================= D8: document engine — templates, bills, GST modes, ack =================
+  if (process.env.E2E_DOCS === "1") {
+    // fixture booking
+    const dbk = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "Docs Couple", couplePhone: "9555500001", totalValue: 118000, days: [{ date: new Date(Date.now() + 45 * 86400000).toISOString(), eventType: "Wedding", guestCount: 150 }] } });
+    const dbkId = dbk.json.booking._id;
+
+    // template CRUD
+    const tpl = await api("POST", `/venues/${SLUG}/doc-templates`, { token, body: { type: "bill", name: "Standard Wedding Bill", lineItems: [{ label: "Venue hire", category: "venue_hire", qty: 1, unitPrice: 100000 }], terms: ["50% advance to confirm", "Balance 7 days before event"], gstMode: "exclusive", gstPercent: 18 } });
+    check("docs: create template -> 201", tpl.status === 201 && tpl.json.template.name === "Standard Wedding Bill", `status ${tpl.status}`);
+    const tplId = tpl.json.template._id;
+    const tplDup = await api("POST", `/venues/${SLUG}/doc-templates`, { token, body: { type: "bill", name: "Standard Wedding Bill" } });
+    check("docs: duplicate template name -> 400", tplDup.status === 400, `status ${tplDup.status}`);
+    const tplBadType = await api("POST", `/venues/${SLUG}/doc-templates`, { token, body: { type: "receipt", name: "X" } });
+    check("docs: unknown template type -> 400", tplBadType.status === 400, `status ${tplBadType.status}`);
+
+    // GST modes — asserted to the rupee. 100000 @18%:
+    //   exclusive: gst 18000, grand 118000 | inclusive: gst 15254, taxable 84746, grand 100000 | none: 0 / 100000
+    const bEx = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, templateId: tplId } });
+    check("docs: bill from template seeds items+terms", bEx.status === 201 && bEx.json.bill.lineItems.length === 1 && bEx.json.bill.terms.length === 2 && bEx.json.bill.billNumber.startsWith("BILL-"), `status ${bEx.status}`);
+    check("docs: GST exclusive exact", bEx.json.bill.totals.subtotal === 100000 && bEx.json.bill.totals.gst === 18000 && bEx.json.bill.totals.grandTotal === 118000 && bEx.json.bill.totals.taxable === 100000, JSON.stringify(bEx.json.bill.totals));
+    const bIn = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, lineItems: [{ label: "All-in package", qty: 1, unitPrice: 100000 }], gstMode: "inclusive", gstPercent: 18 } });
+    check("docs: GST inclusive exact (back-computed)", bIn.json.bill.totals.gst === 15254 && bIn.json.bill.totals.taxable === 84746 && bIn.json.bill.totals.grandTotal === 100000, JSON.stringify(bIn.json.bill.totals));
+    const bNo = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, lineItems: [{ label: "No-GST line", qty: 1, unitPrice: 100000 }], gstMode: "none" } });
+    check("docs: GST none exact", bNo.json.bill.totals.gst === 0 && bNo.json.bill.totals.grandTotal === 100000, JSON.stringify(bNo.json.bill.totals));
+    const bBadMode = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, gstMode: "magic" } });
+    check("docs: unknown gstMode -> 400", bBadMode.status === 400, `status ${bBadMode.status}`);
+
+    // send -> public white-label payload -> phone-verified acceptance
+    const sent = await api("POST", `/venues/${SLUG}/bills/${bEx.json.bill._id}/send`, { token });
+    check("docs: send bill -> ackToken", sent.status === 200 && sent.json.ackToken, `status ${sent.status}`);
+    const ackTok = sent.json.ackToken;
+    const pub = await api("GET", `/venues/doc-ack/${ackTok}`, {});
+    check("docs: public ack payload is white-label (venue identity + terms, no venue internals)", pub.status === 200 && pub.json.venue && pub.json.venue.name && pub.json.terms.length === 2 && pub.json.docType === "bill", `status ${pub.status}`);
+    const wrongPhone = await api("POST", `/venues/doc-ack/${ackTok}`, { body: { name: "Impostor", phone: "9000000000" } });
+    check("docs: wrong phone -> 403", wrongPhone.status === 403, `status ${wrongPhone.status}`);
+    const acc = await api("POST", `/venues/doc-ack/${ackTok}`, { body: { name: "Docs Couple", phone: "9555500001", channel: "whatsapp" } });
+    check("docs: accept -> 200 acceptance logged", acc.status === 200 && acc.json.acceptedAt, `status ${acc.status}`);
+    const accAgain = await api("POST", `/venues/doc-ack/${ackTok}`, { body: { name: "Again", phone: "9555500001" } });
+    check("docs: double-accept -> 409", accAgain.status === 409, `status ${accAgain.status}`);
+    const badTok = await api("GET", `/venues/doc-ack/not-a-token`, {});
+    check("docs: garbage ack token -> 401", badTok.status === 401, `status ${badTok.status}`);
+
+    // conversion: numbering continues the EXISTING invoice sequence
+    const inv0 = await api("POST", `/venues/${SLUG}/invoices`, { token, body: { booking: dbkId, kind: "advance" } });
+    const seq0 = inv0.json.invoice.seq;
+    const conv = await api("POST", `/venues/${SLUG}/bills/${bEx.json.bill._id}/convert`, { token });
+    check("docs: accepted bill converts -> real invoice, sequence intact", conv.status === 201 && conv.json.invoice.seq === seq0 + 1 && conv.json.bill.status === "converted" && conv.json.invoice.billRef === conv.json.bill._id, `seq ${seq0}->${conv.json.invoice && conv.json.invoice.seq}`);
+    check("docs: converted invoice carries acceptance + gstMode + terms", conv.json.invoice.acceptance && conv.json.invoice.acceptance.name === "Docs Couple" && conv.json.invoice.gstMode === "exclusive" && conv.json.invoice.terms.length === 2, JSON.stringify(conv.json.invoice.acceptance));
+    const editConverted = await api("PATCH", `/venues/${SLUG}/bills/${bEx.json.bill._id}`, { token, body: { discount: 1 } });
+    check("docs: converted bill is immutable -> 409", editConverted.status === 409, `status ${editConverted.status}`);
+
+    // add-on billing: supplementary bill -> addon invoice
+    const addon = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, isAddon: true, lineItems: [{ label: "Extra 50 plates", qty: 50, unitPrice: 1500 }], gstMode: "exclusive", gstPercent: 18 } });
+    check("docs: add-on bill math exact", addon.json.bill.isAddon === true && addon.json.bill.totals.subtotal === 75000 && addon.json.bill.totals.gst === 13500 && addon.json.bill.totals.grandTotal === 88500, JSON.stringify(addon.json.bill.totals));
+    const addonConv = await api("POST", `/venues/${SLUG}/bills/${addon.json.bill._id}/convert`, { token });
+    check("docs: add-on converts to kind=addon invoice", addonConv.status === 201 && addonConv.json.invoice.kind === "addon", `kind ${addonConv.json.invoice && addonConv.json.invoice.kind}`);
+
+    // white-label PDF: logo -> /XObject present; Powered by Wedsy footer bytes
+    const sharpD = require("sharp");
+    const logoJ = await sharpD({ create: { width: 24, height: 24, channels: 3, background: { r: 107, g: 30, b: 46 } } }).jpeg().toBuffer();
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: `data:image/jpeg;base64,${logoJ.toString("base64")}` } });
+    const bpdf = await apiBinary(`/venues/${SLUG}/bills/${bIn.json.bill._id}/pdf`, { token });
+    check("docs: bill PDF renders with logo image object", bpdf.status === 200 && bpdf.head.startsWith("%PDF") && bpdf.body.includes("/XObject"), `bytes=${bpdf.bytes}`);
+    await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
+    const bpdf2 = await apiBinary(`/venues/${SLUG}/bills/${bIn.json.bill._id}/pdf`, { token });
+    check("docs: bill PDF graceful without logo", bpdf2.status === 200 && bpdf2.head.startsWith("%PDF") && !bpdf2.body.includes("/XObject"), `bytes=${bpdf2.bytes}`);
+
+    // ── E3x white-label persistence: per-doc flag + venue default + renders ──
+    {
+      const SYS_BILL = "This is a working bill";
+      const SYS_INV = "This is a system-generated tax invoice";
+      const SYS_QUOTE = "This is a system-generated quotation";
+      const FOOTER = "Powered by Wedsy";
+
+      // Default-false bill (bIn, created before any default change): co-branded.
+      check("e3x: legacy/default bill is co-branded (whiteLabel false)", bIn.json.bill.whiteLabel === false, `wl=${bIn.json.bill.whiteLabel}`);
+      const coText = pdfText(bpdf2.body);
+      check("e3x: co-branded bill PDF has system line + footer", coText.includes(SYS_BILL) && coText.includes(FOOTER), `sys=${coText.includes(SYS_BILL)} foot=${coText.includes(FOOTER)}`);
+
+      // Setting is validated and documents-gated (capability sweep lives in hardening).
+      const badSet = await api("PATCH", `/venues/${SLUG}/documents/settings`, { token, body: { documentsWhiteLabelDefault: "yes" } });
+      check("e3x: non-boolean default -> 400", badSet.status === 400, `status ${badSet.status}`);
+      const setOn = await api("PATCH", `/venues/${SLUG}/documents/settings`, { token, body: { documentsWhiteLabelDefault: true } });
+      check("e3x: set documentsWhiteLabelDefault true -> 200", setOn.status === 200 && setOn.json.documentsWhiteLabelDefault === true, `status ${setOn.status}`);
+
+      // New bill inherits the venue default; PDF drops the system line, keeps footer.
+      const wlBill = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, lineItems: [{ label: "White-label package", qty: 1, unitPrice: 200000 }], gstMode: "exclusive", gstPercent: 18 } });
+      check("e3x: new bill inherits whiteLabel default", wlBill.status === 201 && wlBill.json.bill.whiteLabel === true, `wl=${wlBill.json.bill && wlBill.json.bill.whiteLabel}`);
+      const wlPdf = await apiBinary(`/venues/${SLUG}/bills/${wlBill.json.bill._id}/pdf`, { token });
+      const wlText = pdfText(wlPdf.body);
+      check("e3x: white-label bill PDF venue-only + small footer", wlPdf.status === 200 && !wlText.includes(SYS_BILL) && wlText.includes(FOOTER), `sys=${wlText.includes(SYS_BILL)} foot=${wlText.includes(FOOTER)}`);
+
+      // Per-doc override beats the default, both directions; PATCH toggles live.
+      const coBill = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, whiteLabel: false, lineItems: [{ label: "Co-branded line", qty: 1, unitPrice: 1000 }] } });
+      check("e3x: explicit whiteLabel:false overrides true default", coBill.json.bill.whiteLabel === false, `wl=${coBill.json.bill.whiteLabel}`);
+      const flip = await api("PATCH", `/venues/${SLUG}/bills/${coBill.json.bill._id}`, { token, body: { whiteLabel: true } });
+      check("e3x: bill whiteLabel PATCHes", flip.status === 200 && flip.json.bill.whiteLabel === true, `wl=${flip.json.bill && flip.json.bill.whiteLabel}`);
+      const badWl = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, whiteLabel: "yes" } });
+      check("e3x: non-boolean per-doc whiteLabel -> 400", badWl.status === 400, `status ${badWl.status}`);
+
+      // Conversion carries the flag; invoice PDF renders white-label.
+      const wlConv = await api("POST", `/venues/${SLUG}/bills/${wlBill.json.bill._id}/convert`, { token });
+      check("e3x: conversion carries whiteLabel to invoice", wlConv.status === 201 && wlConv.json.invoice.whiteLabel === true, `wl=${wlConv.json.invoice && wlConv.json.invoice.whiteLabel}`);
+      const wlInvPdf = await apiBinary(`/venues/${SLUG}/invoices/${wlConv.json.invoice._id}/pdf`, { token });
+      const wlInvText = pdfText(wlInvPdf.body);
+      check("e3x: white-label invoice PDF venue-only + small footer", !wlInvText.includes(SYS_INV) && wlInvText.includes(FOOTER), `sys=${wlInvText.includes(SYS_INV)} foot=${wlInvText.includes(FOOTER)}`);
+
+      // Quote lane: explicit flag persists and renders; co-branded stays intact.
+      const wlEnq = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "WL Quote Couple", couplePhone: "9555500003" } });
+      const wlEnqId = wlEnq.json.enquiryId || (wlEnq.json.enquiry && wlEnq.json.enquiry._id);
+      const wlQuote = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: wlEnqId, whiteLabel: true, lineItems: [{ label: "Hall", qty: 1, unitPrice: 90000 }] } });
+      check("e3x: quote persists whiteLabel", wlQuote.status === 201 && wlQuote.json.quote.whiteLabel === true, `wl=${wlQuote.json.quote && wlQuote.json.quote.whiteLabel}`);
+      const wlQPdf = await apiBinary(`/venues/${SLUG}/quotes/${wlQuote.json.quote._id}/pdf`, { token });
+      const wlQText = pdfText(wlQPdf.body);
+      check("e3x: white-label quote PDF venue-only + small footer", !wlQText.includes(SYS_QUOTE) && wlQText.includes(FOOTER), `sys=${wlQText.includes(SYS_QUOTE)} foot=${wlQText.includes(FOOTER)}`);
+      const coQuote = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: wlEnqId, whiteLabel: false, lineItems: [{ label: "Hall", qty: 1, unitPrice: 90000 }] } });
+      const coQPdf = await apiBinary(`/venues/${SLUG}/quotes/${coQuote.json.quote._id}/pdf`, { token });
+      const coQText = pdfText(coQPdf.body);
+      check("e3x: co-branded quote PDF keeps system line", coQText.includes(SYS_QUOTE) && coQText.includes(FOOTER), `sys=${coQText.includes(SYS_QUOTE)}`);
+
+      // Leave the venue default as found (false) for the rest of the suite.
+      const setOff = await api("PATCH", `/venues/${SLUG}/documents/settings`, { token, body: { documentsWhiteLabelDefault: false } });
+      check("e3x: reset default -> 200", setOff.status === 200 && setOff.json.documentsWhiteLabelDefault === false, `status ${setOff.status}`);
+    }
+
+    // quote ack path (same engine)
+    const qEnq = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "Quote Ack Couple", couplePhone: "9555500002" } });
+    const qEnqId = qEnq.json.enquiryId || (qEnq.json.enquiry && qEnq.json.enquiry._id);
+    const q = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: qEnqId, lineItems: [{ label: "Hall", qty: 1, unitPrice: 50000 }], gstMode: "inclusive", gstPercent: 5, terms: ["Valid 14 days"] } });
+    check("docs: quote with inclusive mode exact", q.json.quote.totals.gst === 2381 && q.json.quote.totals.grandTotal === 50000, JSON.stringify(q.json.quote.totals));
+    const qSend = await api("POST", `/venues/${SLUG}/quotes/${q.json.quote._id}/send-ack`, { token });
+    const qAcc = await api("POST", `/venues/doc-ack/${qSend.json.ackToken}`, { body: { name: "Quote Ack Couple", phone: "9555500002" } });
+    check("docs: quote acceptance via public link", qAcc.status === 200 && qAcc.json.acceptedAt, `status ${qAcc.status}`);
+
+    // template delete
+    const tplDel = await api("DELETE", `/venues/${SLUG}/doc-templates/${tplId}`, { token });
+    check("docs: delete template -> 200", tplDel.status === 200, `status ${tplDel.status}`);
+
+    // "Quote accepted -> confirm booking" (review add): the publicly-accepted
+    // quote surfaces on the dashboard until the owner confirms the booking.
+    const dash1 = await api("GET", "/venues/dashboard/overview", { token });
+    const cardItem = (dash1.json.actionNeeded && dash1.json.actionNeeded.quotesAwaitingBooking || []).find((i) => String(i.quoteId) === String(q.json.quote._id));
+    check("docs: accepted quote surfaces on dashboard card", dash1.status === 200 && cardItem && cardItem.coupleName === "Quote Ack Couple" && cardItem.acceptedBy === "Quote Ack Couple", JSON.stringify(cardItem));
+    const notAccepted = await api("POST", `/venues/${SLUG}/quotes/${bEx.json.bill._id}/confirm-booking`, { token });
+    check("docs: confirm-booking on non-quote id -> 404", notAccepted.status === 404, `status ${notAccepted.status}`);
+    const confirm = await api("POST", `/venues/${SLUG}/quotes/${q.json.quote._id}/confirm-booking`, { token });
+    check("docs: confirm-booking creates the draft booking with quote total", confirm.status === 200 && confirm.json.booking && confirm.json.booking.totalValue === 50000, `status ${confirm.status} total=${confirm.json.booking && confirm.json.booking.totalValue}`);
+    const confirmAgain = await api("POST", `/venues/${SLUG}/quotes/${q.json.quote._id}/confirm-booking`, { token });
+    check("docs: confirm-booking idempotent (one booking per enquiry)", confirmAgain.status === 200 && String(confirmAgain.json.booking._id) === String(confirm.json.booking._id), `ids match=${String(confirmAgain.json.booking && confirmAgain.json.booking._id) === String(confirm.json.booking._id)}`);
+    const dash2 = await api("GET", "/venues/dashboard/overview", { token });
+    const stillThere = (dash2.json.actionNeeded.quotesAwaitingBooking || []).some((i) => String(i.quoteId) === String(q.json.quote._id));
+    check("docs: card clears once the booking exists", !stillThere, `still=${stillThere}`);
+  }
+
+  // ================= D7: payments approval — pending, owner labels, rollups =================
+  if (process.env.E2E_PAYAPPROVAL === "1") {
+    // fixture: booking + invoice of 100000 (no GST for round numbers)
+    const pbk = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "PayApproval Couple", couplePhone: "9444400001", totalValue: 100000, days: [{ date: new Date(Date.now() + 55 * 86400000).toISOString(), eventType: "Wedding", guestCount: 100 } ] } });
+    const pinv = await api("POST", `/venues/${SLUG}/invoices`, { token, body: { booking: pbk.json.booking._id, lineItems: [{ label: "Venue hire", qty: 1, unitPrice: 100000 }], gstMode: "none" } });
+    const invId = pinv.json.invoice._id;
+
+    // an Accounts-bundle member (bookings_money + documents)
+    const prl = await api("GET", `/venues/${SLUG}/roles`, { token });
+    const accountsRole = (prl.json.roles || []).find((r) => r.name === "Accounts");
+    const pinvite = await api("POST", `/venues/${SLUG}/team`, { token, body: { name: "Paula Accounts", phone: "9333300002", email: "paula@test-palace.local", roleId: accountsRole._id, withPassword: true } });
+    const plogin = await api("POST", "/venue-owner/member-auth", { body: { email: "paula@test-palace.local", password: pinvite.json.tempPassword } });
+    const paulaToken = plogin.json.token;
+    check("payapproval: accounts member logs in", plogin.status === 200 && paulaToken, `status ${plogin.status}`);
+
+    // member records -> pending_approval, full who/when/how/proof answers
+    const mp = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token: paulaToken, body: { amount: 40000, mode: "cash", collectedBy: "Paula (front desk)", proofUrl: "https://files.local/receipt-1.jpg", note: "advance cash" } });
+    check("payapproval: member entry -> pending_approval", mp.status === 200 && mp.json.payment.status === "pending_approval" && mp.json.payment.recordedByType === "member" && mp.json.payment.recordedByName === "Paula Accounts" && mp.json.payment.collectedBy === "Paula (front desk)" && mp.json.payment.proofUrl.includes("receipt-1"), JSON.stringify(mp.json.payment && { s: mp.json.payment.status, n: mp.json.payment.recordedByName }));
+    check("payapproval: pending excluded from received", mp.json.received === 0 && mp.json.invoice.status === "unpaid", `received=${mp.json.received} status=${mp.json.invoice.status}`);
+    const sum1 = await api("GET", `/venues/${SLUG}/payments/summary`, { token });
+    check("payapproval: summary shows approval queue, not revenue", sum1.json.totals.pendingApproval === 40000 && sum1.json.pendingEntries.some((e) => String(e.invoiceId) === String(invId)), `pendingApproval=${sum1.json.totals.pendingApproval}`);
+
+    // owner approves -> rollups flip
+    const payId = mp.json.payment._id;
+    const app = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${payId}/approve`, { token });
+    check("payapproval: owner approve -> received flips", app.status === 200 && app.json.received === 40000 && app.json.invoice.status === "partially_paid", `received=${app.json.received}`);
+    const appAgain = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${payId}/approve`, { token });
+    check("payapproval: double-approve -> 409", appAgain.status === 409, `status ${appAgain.status}`);
+
+    // member cannot approve their own entry
+    const mp2 = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token: paulaToken, body: { amount: 10000, mode: "upi" } });
+    const pay2 = mp2.json.payment._id;
+    const selfApprove = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${pay2}/approve`, { token: paulaToken });
+    check("payapproval: member approve -> 403 (owner only)", selfApprove.status === 403, `status ${selfApprove.status}`);
+
+    // reject path: audit kept, never counted
+    const rej = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments/${pay2}/reject`, { token, body: { reason: "no proof attached" } });
+    check("payapproval: owner reject -> kept for audit, not counted", rej.status === 200 && rej.json.payment.status === "rejected" && rej.json.payment.rejectedReason === "no proof attached", `status ${rej.status}`);
+    const sum2 = await api("GET", `/venues/${SLUG}/payments/summary`, { token });
+    check("payapproval: rejected excluded everywhere", sum2.json.totals.pendingApproval === 0 && sum2.json.perBooking.find((b) => String(b.bookingId) === String(pbk.json.booking._id)).received === 40000, `pendingApproval=${sum2.json.totals.pendingApproval}`);
+
+    // owner entry: auto-approved + permanent label
+    const op = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token, body: { amount: 25000, mode: "bank_transfer" } });
+    check("payapproval: owner entry auto-approved + labeled", op.status === 200 && op.json.payment.status === "approved" && op.json.payment.ownerEntry === true && op.json.received === 65000, `received=${op.json.received}`);
+
+    // over-recording guard: pending+approved claim balance (35000 left)
+    const over = await api("POST", `/venues/${SLUG}/invoices/${invId}/payments`, { token, body: { amount: 35001 } });
+    check("payapproval: overpayment still rejected", over.status === 400, `status ${over.status}`);
+  }
+
+  // ================= D6: rooms per-wedding workflow — check-in/out + settlement =================
+  if (process.env.E2E_CHECKIN === "1") {
+    const cday = (n) => new Date(Date.now() + n * 86400000).toISOString();
+    // room + booking + allotment fixtures
+    const rRoom = await api("POST", `/venues/${SLUG}/rooms`, { token, body: { name: "Checkin Suite", type: "suite", capacity: 3 } });
+    const roomC = rRoom.json.room._id;
+    const cbk = await api("POST", `/venues/${SLUG}/bookings`, { token, body: { coupleName: "Checkin Couple", couplePhone: "9222200001", totalValue: 200000, days: [{ date: cday(20), eventType: "Wedding", guestCount: 120 }] } });
+    const cbkId = cbk.json.booking._id;
+    const alr = await api("POST", `/venues/${SLUG}/bookings/${cbkId}/allotments`, { token, body: { room: roomC, guestName: "Uncle Ajay", guestPhone: "9222200002", checkInAt: cday(20), checkOutAt: cday(22) } });
+    const alId = alr.json.allotments[0]._id;
+
+    // full-capture check-in in ONE round trip
+    const cin = await api("POST", `/venues/${SLUG}/allotments/${alId}/check-in`, {
+      token,
+      body: {
+        guestCount: 3, extraBeds: 1, deposit: 10000,
+        inventory: [{ item: "Towels", qty: 4 }, { item: "Iron", qty: 1 }],
+        idCaptureUrl: "https://files.local/id-ajay.jpg", photoUrl: "https://files.local/guest-ajay.jpg", signatureUrl: "https://files.local/sign-ajay.png",
+        notes: "late arrival expected",
+      },
+    });
+    check("checkin: single-call capture -> checked_in with full block",
+      cin.status === 200 && cin.json.allotment.status === "checked_in" && cin.json.allotment.checkIn.guestCount === 3 && cin.json.allotment.checkIn.extraBeds === 1 && cin.json.allotment.checkIn.inventory.length === 2 && cin.json.allotment.checkIn.signatureUrl.includes("sign-ajay") && cin.json.allotment.deposit.amount === 10000,
+      `status ${cin.status}`);
+    const cinAgain = await api("POST", `/venues/${SLUG}/allotments/${alId}/check-in`, { token, body: {} });
+    check("checkin: double check-in -> 409", cinAgain.status === 409, `status ${cinAgain.status}`);
+
+    // check-out with checklist + damages: 10000 deposit, 6000 damages
+    const cout = await api("POST", `/venues/${SLUG}/allotments/${alId}/check-out`, {
+      token,
+      body: {
+        checklist: [{ item: "Towels", ok: true }, { item: "Iron", ok: false }],
+        damages: [{ desc: "Broken iron", charge: 1500 }, { desc: "Stained carpet", charge: 4500 }],
+        notes: "guest informed",
+      },
+    });
+    check("checkin: checkout computes settlement exactly",
+      cout.status === 200 && cout.json.settlement.deposit === 10000 && cout.json.settlement.damagesTotal === 6000 && cout.json.settlement.deducted === 6000 && cout.json.settlement.refundDue === 4000 && cout.json.settlement.payableDue === 0,
+      JSON.stringify(cout.json.settlement));
+    check("checkin: damages produce an addon invoice ref", Boolean(cout.json.settlement.invoiceRef), `ref=${cout.json.settlement.invoiceRef}`);
+
+    // the settlement payment landed as an approved owner entry on the addon invoice
+    const sInv = await api("GET", `/venues/${SLUG}/invoices/${cout.json.settlement.invoiceRef}`, { token });
+    const sPay = sInv.json.invoice.payments[0];
+    check("checkin: settlement recorded through payments engine (owner entry, approved)",
+      sInv.json.invoice.kind === "addon" && sInv.json.invoice.totals.grandTotal === 6000 && sPay && sPay.status === "approved" && sPay.ownerEntry === true && sPay.amount === 6000 && sPay.collectedBy === "Deposit settlement",
+      JSON.stringify(sPay && { s: sPay.status, a: sPay.amount }));
+
+    // printable slip
+    const slip = await apiBinary(`/venues/${SLUG}/allotments/${alId}/settlement-slip`, { token });
+    check("checkin: settlement slip PDF renders", slip.status === 200 && slip.head.startsWith("%PDF") && slip.bytes > 800, `bytes=${slip.bytes}`);
+
+    // archive -> booking roomsHistory; rooms live on
+    const arch = await api("POST", `/venues/${SLUG}/allotments/${alId}/archive`, { token });
+    check("checkin: archive -> 200", arch.status === 200 && arch.json.allotment.archived === true, `status ${arch.status}`);
+    const archAgain = await api("POST", `/venues/${SLUG}/allotments/${alId}/archive`, { token });
+    check("checkin: double archive -> 409", archAgain.status === 409, `status ${archAgain.status}`);
+    const bkAfter = await api("GET", `/venues/${SLUG}/bookings/${cbkId}`, { token });
+    const hist = (bkAfter.json.booking.roomsHistory || [])[0];
+    check("checkin: booking carries the archived block",
+      hist && hist.roomName === "Checkin Suite" && hist.guestName === "Uncle Ajay" && hist.damagesTotal === 6000 && hist.refundDue === 4000,
+      JSON.stringify(hist && { r: hist.roomName, d: hist.damagesTotal }));
+
+    // damages beyond deposit -> payableDue; validation teeth
+    const alr2 = await api("POST", `/venues/${SLUG}/bookings/${cbkId}/allotments`, { token, body: { room: roomC, guestName: "Aunt Rekha", checkInAt: cday(25), checkOutAt: cday(26) } });
+    const alId2 = alr2.json.allotments[0]._id;
+    await api("POST", `/venues/${SLUG}/allotments/${alId2}/check-in`, { token, body: { deposit: 2000 } });
+    const cout2 = await api("POST", `/venues/${SLUG}/allotments/${alId2}/check-out`, { token, body: { damages: [{ desc: "Cracked mirror", charge: 5000 }] } });
+    check("checkin: damages beyond deposit -> payableDue",
+      cout2.json.settlement.deducted === 2000 && cout2.json.settlement.refundDue === 0 && cout2.json.settlement.payableDue === 3000,
+      JSON.stringify(cout2.json.settlement));
+    const alr3 = await api("POST", `/venues/${SLUG}/bookings/${cbkId}/allotments`, { token, body: { room: roomC, guestName: "Neg", checkInAt: cday(28), checkOutAt: cday(29) } });
+    const badDamage = await api("POST", `/venues/${SLUG}/allotments/${alr3.json.allotments[0]._id}/check-out`, { token, body: { damages: [{ desc: "x", charge: -5 }] } });
+    check("checkin: checkout before check-in -> 409", badDamage.status === 409, `status ${badDamage.status}`);
+    await api("POST", `/venues/${SLUG}/allotments/${alr3.json.allotments[0]._id}/check-in`, { token, body: {} });
+    const badDamage2 = await api("POST", `/venues/${SLUG}/allotments/${alr3.json.allotments[0]._id}/check-out`, { token, body: { damages: [{ desc: "x", charge: -5 }] } });
+    check("checkin: negative damage charge -> 400", badDamage2.status === 400, `status ${badDamage2.status}`);
+  }
+
+  // ================= D10: activity spine — hooks, dual-actor, filters =================
+  if (process.env.E2E_ACTIVITY === "1") {
+    // owner edits: pricing (high), photos (low), rename (high, then rename back)
+    await api("PUT", `/venues/${SLUG}`, { token, body: { pricing: { perPlate: { veg: 1725 } } } });
+    await api("PUT", `/venues/${SLUG}`, { token, body: { photos: { venue: ["https://files.local/g1.jpg"] } } });
+    await api("PUT", `/venues/${SLUG}`, { token, body: { name: "Test Palace Regal" } });
+    await api("PUT", `/venues/${SLUG}`, { token, body: { name: "Test Palace" } });
+
+    const feed = await api("GET", `/venues/${SLUG}/activity?limit=50`, { token });
+    check("activity: owner GET returns the trail", feed.status === 200 && feed.json.activity.length >= 4, `n=${feed.json.total}`);
+    const pricingRow = feed.json.activity.find((a) => a.field === "pricing.perPlate.veg");
+    check("activity: pricing change logged HIGH with old/new", pricingRow && pricingRow.severity === "high" && pricingRow.new === "1725" && pricingRow.actorType === "venue_team" && pricingRow.actorName === "Owner", JSON.stringify(pricingRow && { s: pricingRow.severity, n: pricingRow.new }));
+    const photoRow = feed.json.activity.find((a) => a.field === "photos.venue");
+    check("activity: photos change logged LOW", photoRow && photoRow.severity === "low", `sev=${photoRow && photoRow.severity}`);
+    const renameRow = feed.json.activity.find((a) => a.action === "venue_renamed");
+    check("activity: rename logged as venue_renamed HIGH", renameRow && renameRow.severity === "high", `sev=${renameRow && renameRow.severity}`);
+
+    // dual-actor: a member edit carries the member's name
+    const arl = await api("GET", `/venues/${SLUG}/roles`, { token });
+    const mgrRole = (arl.json.roles || []).find((r) => r.name === "Manager");
+    const ainv = await api("POST", `/venues/${SLUG}/team`, { token, body: { name: "Meera Manager", phone: "9333300003", email: "meera@test-palace.local", roleId: mgrRole._id, withPassword: true } });
+    const alog = await api("POST", "/venue-owner/member-auth", { body: { email: "meera@test-palace.local", password: ainv.json.tempPassword } });
+    await api("PUT", `/venues/${SLUG}`, { token: alog.json.token, body: { tagline: "edited by meera" } });
+    const feed2 = await api("GET", `/venues/${SLUG}/activity?limit=10`, { token });
+    const meeraRow = feed2.json.activity.find((a) => a.field === "tagline");
+    check("activity: member edit carries member identity", meeraRow && meeraRow.actorType === "venue_team" && meeraRow.actorName === "Meera Manager", JSON.stringify(meeraRow && { t: meeraRow.actorType, n: meeraRow.actorName }));
+
+    // filters
+    const highOnly = await api("GET", `/venues/${SLUG}/activity?severity=high`, { token });
+    check("activity: severity filter", highOnly.status === 200 && highOnly.json.activity.length >= 2 && highOnly.json.activity.every((a) => a.severity === "high"), `n=${highOnly.json.total}`);
+    const badSev = await api("GET", `/venues/${SLUG}/activity?severity=catastrophic`, { token });
+    check("activity: unknown severity -> 400", badSev.status === 400, `status ${badSev.status}`);
+
+    // no-op writes don't pollute the trail
+    const before = (await api("GET", `/venues/${SLUG}/activity?limit=500`, { token })).json.total;
+    await api("PUT", `/venues/${SLUG}`, { token, body: { name: "Test Palace" } }); // unchanged value
+    const after = (await api("GET", `/venues/${SLUG}/activity?limit=500`, { token })).json.total;
+    check("activity: no-op write adds nothing", after === before, `before=${before} after=${after}`);
+
+    // append-only at the API surface: no write routes exist
+    const tryPost = await api("POST", `/venues/${SLUG}/activity`, { token, body: {} });
+    check("activity: no write route (POST -> 404)", tryPost.status === 404, `status ${tryPost.status}`);
   }
 
   // ================= Couple-side: isVerified, view beacon, availability, browse =================

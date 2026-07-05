@@ -4,11 +4,14 @@ try { VenueTeamMember = require("../models/VenueTeamMember"); } catch (_) {}
 
 // Per-request guard: a team-member token is only valid while the member is still
 // active and bound to the same venue. Rejects a deactivated member's live JWT.
+// Returns the fresh member doc (or true for owner tokens) so the downstream
+// capability gate can reuse it instead of re-reading (stashed as req.venueMember).
 async function memberStillValid(payload) {
   if (!payload.memberId) return true; // owner token — no membership to check
   if (!VenueTeamMember) return true; // model absent on pre-team branches
-  const m = await VenueTeamMember.findById(payload.memberId).select("isActive venueId").lean();
-  return Boolean(m && m.isActive && String(m.venueId) === String(payload.venueId));
+  const m = await VenueTeamMember.findById(payload.memberId).select("isActive venueId role roleRef").lean();
+  if (!(m && m.isActive && String(m.venueId) === String(payload.venueId))) return false;
+  return m;
 }
 
 function venueOwnerAuth(req, res, next) {
@@ -35,9 +38,13 @@ function venueOwnerAuth(req, res, next) {
       return res.status(401).json({ message: "Invalid token" });
     }
     try {
-      if (!(await memberStillValid(payload))) {
+      const membership = await memberStillValid(payload);
+      if (!membership) {
         return res.status(401).json({ message: "Member account is inactive" });
       }
+      // Fresh member doc (RBAC v2) — reused by requireCapability to resolve
+      // the capability bundle without a second read. true = owner token.
+      if (membership !== true) req.venueMember = membership;
     } catch (e) {
       return res.status(500).json({ message: e.message });
     }

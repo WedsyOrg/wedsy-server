@@ -281,6 +281,25 @@ async function enrichVenue(venueOrId) {
   update.enrichedAt = new Date();
 
   await Venue.updateOne({ _id }, { $set: update });
+
+  // D10: enrichment is a SYSTEM actor on the activity spine — one summary row
+  // (field-level noise would drown the owner's trail). Fire-and-forget.
+  try {
+    const { logActivity } = require("./venueActivity");
+    const touched = Object.keys(update).filter((k) => k !== "enrichedAt");
+    if (touched.length > 0) {
+      logActivity({
+        venue: _id,
+        actorType: "system",
+        actorName: "enrichment",
+        action: "venue_enriched",
+        entity: "venue",
+        field: touched.join(",").slice(0, 500),
+        severity: "normal",
+      }).catch(() => {});
+    }
+  } catch (_) { /* activity module absent on older branches */ }
+
   return { _id, slug: venue.slug, set: update };
 }
 

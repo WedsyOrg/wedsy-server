@@ -79,4 +79,16 @@ const reviewsRefreshLimiter = rateLimit({
   message: { message: "Reviews were refreshed recently — try again in a bit." },
 });
 
-module.exports = { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter, reviewsRefreshLimiter };
+// Member email+password login (RBAC v2) — its own bucket so shared public-read
+// exhaustion never locks members out, sized against credential stuffing.
+const MEMBER_AUTH_WINDOW_MS = num(process.env.VENUE_MEMBER_AUTH_WINDOW_MS, 10 * 60 * 1000); // 10m
+const MEMBER_AUTH_MAX = num(process.env.VENUE_MEMBER_AUTH_MAX, 20);
+const memberAuthLimiter = rateLimit({
+  windowMs: MEMBER_AUTH_WINDOW_MS,
+  max: MEMBER_AUTH_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Too many login attempts — try again in a few minutes." },
+});
+
+module.exports = { enquiryIpLimiter, enquiryPhoneLimiter, publicReadLimiter, reviewsRefreshLimiter, memberAuthLimiter };

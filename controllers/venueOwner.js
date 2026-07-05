@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
+const bcrypt = require("bcrypt");
 const VenueOwner = require("../models/VenueOwner");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const VenueTeamActivity = require("../models/VenueTeamActivity");
@@ -483,6 +484,53 @@ const login = async (req, res) => {
   }
 };
 
+// POST /venue-owner/member-auth — RBAC v2 (D5) member login: email + password.
+// Owner auth is UNCHANGED (phone OTP above); this is the member-only lane.
+// Mints the same venue_owner member JWT shape. An email held at multiple
+// venues reuses the existing selection-token flow, bound to the email and to
+// only those identities whose password matched.
+const memberLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password || typeof email !== "string" || typeof password !== "string") {
+      return res.status(400).json({ message: "email and password are required" });
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    const candidates = await VenueTeamMember.find({ email: cleanEmail, isActive: true })
+      .select("+passwordHash")
+      .populate("venueId", "name slug status");
+
+    const matched = [];
+    for (const m of candidates) {
+      if (!m.venueId || !m.passwordHash) continue;
+      if (await bcrypt.compare(password, m.passwordHash)) matched.push(m);
+    }
+    if (matched.length === 0) {
+      // Level timing between no-such-email and wrong-password.
+      if (candidates.length === 0) await bcrypt.compare(password, "$2b$10$invalidsaltinvalidsaltinvalidsalt12345678901234567890");
+      return res.status(401).json({ message: "Invalid email or password" });
+    }
+
+    if (matched.length === 1) {
+      const out = await loginAsIdentity({ kind: "member", doc: matched[0] });
+      return res.status(200).json({ success: true, ...out });
+    }
+
+    const selectionToken = jwt.sign(
+      { type: "venue_identity_select", email: cleanEmail, options: matched.map((m) => ({ kind: "member", id: String(m._id) })) },
+      process.env.JWT_SECRET,
+      { expiresIn: "10m" }
+    );
+    return res.status(200).json({
+      multiple: true,
+      selectionToken,
+      identities: matched.map((m) => ({ kind: "member", id: String(m._id), venueId: String(m.venueId._id), venueName: m.venueId.name, role: m.role })),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 // POST /venue-owner/auth/select-identity — exchange a selection token + chosen
 // identity for the venue_owner session token. Re-resolves the identity from the
 // DB (never trusts a client-supplied role) and verifies it was among the offered
@@ -499,18 +547,21 @@ const selectIdentity = async (req, res) => {
     } catch {
       return res.status(400).json({ message: "Invalid or expired selection token" });
     }
-    if (payload.type !== "venue_identity_select" || !Array.isArray(payload.options) || !payload.phone) {
+    // Tokens are bound to the verified credential: phone (OTP flow) or email
+    // (member password flow). Exactly one must be present.
+    if (payload.type !== "venue_identity_select" || !Array.isArray(payload.options) || (!payload.phone && !payload.email)) {
       return res.status(400).json({ message: "Invalid selection token" });
     }
     const offered = payload.options.some((o) => o.kind === kind && String(o.id) === String(id));
     if (!offered) return res.status(403).json({ message: "Identity not offered for this selection" });
 
     let identity = null;
-    if (kind === "owner") {
+    if (kind === "owner" && payload.phone) {
       const o = await VenueOwner.findOne({ _id: id, phone: payload.phone }).populate("venueId", "name slug status");
       if (o && o.venueId) identity = { kind: "owner", doc: o };
     } else if (kind === "member") {
-      const m = await VenueTeamMember.findOne({ _id: id, phone: payload.phone, isActive: true }).populate("venueId", "name slug status");
+      const match = payload.phone ? { _id: id, phone: payload.phone, isActive: true } : { _id: id, email: payload.email, isActive: true };
+      const m = await VenueTeamMember.findOne(match).populate("venueId", "name slug status");
       if (m && m.venueId) identity = { kind: "member", doc: m };
     }
     if (!identity) return res.status(404).json({ message: "Identity no longer available" });
@@ -642,4 +693,4 @@ const portfolioOverview = async (req, res) => {
   }
 };
 
-module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, selectIdentity, myVenues, switchVenue, portfolioOverview };
+module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, memberLogin, selectIdentity, myVenues, switchVenue, portfolioOverview };

@@ -97,7 +97,7 @@ function lineItemsTable(doc, lineItems) {
   doc.moveDown(0.5);
 }
 
-function totalsBlock(doc, totals, gstPercent, discount) {
+function totalsBlock(doc, totals, gstPercent, discount, gstMode) {
   const right = (label, value, opts = {}) => {
     const y = doc.y;
     doc.fillColor(opts.bold ? BURGUNDY : GREY).fontSize(opts.bold ? 12 : 10);
@@ -107,9 +107,49 @@ function totalsBlock(doc, totals, gstPercent, discount) {
   };
   right("Subtotal", formatINR(totals.subtotal));
   if (discount) right("Discount", "− " + formatINR(discount));
-  right(`GST (${gstPercent}%)`, formatINR(totals.gst));
+  // D8 GST modes: exclusive shows GST added on top (historical layout);
+  // inclusive shows the back-computed split; none omits the GST line.
+  if (gstMode === "inclusive") {
+    right("Taxable value", formatINR(totals.taxable != null ? totals.taxable : totals.grandTotal - totals.gst));
+    right(`GST (${gstPercent}% incl.)`, formatINR(totals.gst));
+  } else if (gstMode !== "none") {
+    right(`GST (${gstPercent}%)`, formatINR(totals.gst));
+  }
   doc.moveDown(0.1);
   right("Grand Total", formatINR(totals.grandTotal), { bold: true });
+}
+
+// D8 white-label: numbered Terms & Conditions block (from template/policyDoc).
+function termsBlock(doc, terms) {
+  const list = (terms || []).filter(Boolean);
+  if (!list.length) return;
+  doc.moveDown(0.8);
+  doc.fillColor(BURGUNDY).fontSize(12).text("Terms & Conditions", 50, doc.y);
+  doc.moveDown(0.2).fillColor("#222222").fontSize(9);
+  list.forEach((t, i) => {
+    doc.text(`${i + 1}. ${t}`, 50, doc.y, { width: 495 });
+    doc.moveDown(0.15);
+  });
+}
+
+// D8 acceptance stamp for money docs (quotes/bills) accepted via the public link.
+function acceptanceLine(doc, acceptance) {
+  if (!acceptance || !acceptance.at) return;
+  doc.moveDown(0.5).fillColor(GREY).fontSize(9);
+  doc.text(
+    `Accepted by ${acceptance.name || "—"} on ${new Date(acceptance.at).toUTCString()} via ${acceptance.channel || "link"} (phone verified).`,
+    50, doc.y, { width: 495 }
+  );
+}
+
+// D8 white-label footer: the document is the VENUE's; Wedsy stays small print.
+// E3x: whiteLabel=true drops the system-voice line entirely — venue branding
+// only, with just the subtle attribution. whiteLabel=false (default) keeps the
+// historical co-branded render (system line + footer) byte-for-byte.
+function poweredByFooter(doc, systemLine, whiteLabel) {
+  doc.moveDown(1.5).fillColor(GREY).fontSize(8);
+  if (systemLine && !whiteLabel) doc.text(systemLine, 50, doc.y, { align: "center", width: 495 });
+  doc.fillColor("#999999").fontSize(7).text("Powered by Wedsy", 50, doc.y + 2, { align: "center", width: 495 });
 }
 
 // Quote PDF.
@@ -123,8 +163,10 @@ async function streamQuotePdf(res, { venue, enquiry, quote }) {
   doc.text(`Status: ${quote.status || "draft"}`);
   doc.moveDown(0.8);
   lineItemsTable(doc, quote.lineItems);
-  totalsBlock(doc, quote.totals || {}, quote.gstPercent, quote.discount);
-  doc.moveDown(2).fillColor(GREY).fontSize(8).text("This is a system-generated quotation.", 50, doc.y, { align: "center", width: 495 });
+  totalsBlock(doc, quote.totals || {}, quote.gstPercent, quote.discount, quote.gstMode);
+  termsBlock(doc, quote.terms);
+  acceptanceLine(doc, quote.acceptance);
+  poweredByFooter(doc, "This is a system-generated quotation.", quote.whiteLabel);
   doc.end();
 }
 
@@ -143,7 +185,7 @@ async function streamInvoicePdf(res, { venue, booking, invoice }) {
   doc.text(`Payment status: ${invoice.status}`);
   doc.moveDown(0.8);
   lineItemsTable(doc, invoice.lineItems);
-  totalsBlock(doc, invoice.totals || {}, invoice.gstPercent, invoice.discount);
+  totalsBlock(doc, invoice.totals || {}, invoice.gstPercent, invoice.discount, invoice.gstMode);
 
   const paid = (invoice.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
   const balance = (invoice.totals ? invoice.totals.grandTotal : 0) - paid;
@@ -152,7 +194,31 @@ async function streamInvoicePdf(res, { venue, booking, invoice }) {
   doc.text(formatINR(paid), 450, doc.y - 12, { width: 95, align: "right" });
   doc.text(`Balance: ${formatINR(balance)}`, 330, doc.y, { width: 110, align: "right" });
   doc.text(formatINR(balance), 450, doc.y - 12, { width: 95, align: "right" });
-  doc.moveDown(2).fillColor(GREY).fontSize(8).text("This is a system-generated tax invoice.", 50, doc.y, { align: "center", width: 495 });
+  termsBlock(doc, invoice.terms);
+  acceptanceLine(doc, invoice.acceptance);
+  poweredByFooter(doc, "This is a system-generated tax invoice.", invoice.whiteLabel);
+  doc.end();
+}
+
+// D8 bill PDF — the pre-invoice working document ("pro forma"). Same white-
+// label layout as the invoice, its own reference number, never a tax invoice.
+async function streamBillPdf(res, { venue, booking, bill }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
+  const doc = startDoc(res, `${bill.billNumber || "bill"}.pdf`);
+  venueHeader(doc, venue, `${bill.isAddon ? "Add-on Bill" : "Bill"}  ·  ${bill.billNumber || ""}`, logoBuffer);
+  doc.fillColor(GREY).fontSize(10);
+  const taxLines = [];
+  if (venue.gstin) taxLines.push(`GSTIN: ${venue.gstin}`);
+  if (venue.pan) taxLines.push(`PAN: ${venue.pan}`);
+  if (taxLines.length) doc.text(taxLines.join("   "));
+  if (booking && booking.coupleName) doc.text(`Billed to: ${booking.coupleName}${booking.couplePhone ? "  ·  " + booking.couplePhone : ""}`);
+  doc.text(`Status: ${bill.status}`);
+  doc.moveDown(0.8);
+  lineItemsTable(doc, bill.lineItems);
+  totalsBlock(doc, bill.totals || {}, bill.gstPercent, bill.discount, bill.gstMode);
+  termsBlock(doc, bill.terms);
+  acceptanceLine(doc, bill.acceptance);
+  poweredByFooter(doc, "This is a working bill — the tax invoice is issued on conversion.", bill.whiteLabel);
   doc.end();
 }
 
@@ -211,7 +277,59 @@ async function streamContractPdf(res, { venue, contract }) {
     doc.text("Pending — the couple acknowledges this contract through the secure link shared by the venue.");
   }
   doc.moveDown(0.3).text("This is a digital acknowledgment recorded by Wedsy on behalf of the venue, not an electronic signature service.", { width: 495 });
+  poweredByFooter(doc);
   doc.end();
 }
 
-module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf };
+// D6 deposit-settlement slip — printed at guest check-out.
+async function streamSettlementPdf(res, { venue, allotment, roomName, booking }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
+  const doc = startDoc(res, `settlement-${allotment._id}.pdf`);
+  venueHeader(doc, venue, "Deposit Settlement Slip", logoBuffer);
+
+  doc.fillColor(GREY).fontSize(10);
+  doc.text(`Guest: ${allotment.guestName || "—"}${allotment.guestPhone ? "  ·  " + allotment.guestPhone : ""}`);
+  if (booking && booking.coupleName) doc.text(`Wedding: ${booking.coupleName}`);
+  doc.text(`Room: ${roomName || "—"}`);
+  const ci = allotment.actualCheckInAt || allotment.checkInAt;
+  const co = allotment.actualCheckOutAt || allotment.checkOutAt;
+  doc.text(`Stay: ${ci ? new Date(ci).toDateString() : "—"} → ${co ? new Date(co).toDateString() : "—"}`);
+  doc.moveDown(0.8);
+
+  const damages = (allotment.checkOut && allotment.checkOut.damages) || [];
+  if (damages.length) {
+    doc.fillColor(BURGUNDY).fontSize(12).text("Damages");
+    doc.moveDown(0.2).fillColor("#222222").fontSize(10);
+    for (const d of damages) {
+      const y = doc.y;
+      doc.text(`• ${d.desc}`, 50, y, { width: 380 });
+      doc.text(formatINR(d.charge), 460, y, { width: 85, align: "right" });
+      doc.moveDown(0.2);
+    }
+    doc.moveDown(0.5);
+  }
+
+  const s = allotment.settlement || {};
+  const right = (label, value, opts = {}) => {
+    const y = doc.y;
+    doc.fillColor(opts.bold ? BURGUNDY : GREY).fontSize(opts.bold ? 12 : 10);
+    doc.text(label, 300, y, { width: 140, align: "right" });
+    doc.text(value, 450, y, { width: 95, align: "right" });
+    doc.moveDown(0.3);
+  };
+  right("Deposit held", formatINR(s.deposit || 0));
+  right("Damages total", formatINR(s.damagesTotal || 0));
+  right("Deducted from deposit", "− " + formatINR(s.deducted || 0));
+  doc.moveDown(0.1);
+  right("Refund due to guest", formatINR(s.refundDue || 0), { bold: true });
+  if (s.payableDue > 0) right("Balance payable by guest", formatINR(s.payableDue), { bold: true });
+
+  doc.moveDown(0.8).fillColor(GREY).fontSize(9);
+  if (allotment.checkOut && allotment.checkOut.byName) {
+    doc.text(`Checked out by ${allotment.checkOut.byName} on ${s.settledAt ? new Date(s.settledAt).toUTCString() : "—"}.`, 50, doc.y, { width: 495 });
+  }
+  poweredByFooter(doc, "This slip records the deposit settlement for the stay above.");
+  doc.end();
+}
+
+module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf, streamSettlementPdf };

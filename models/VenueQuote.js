@@ -22,11 +22,25 @@ const VenueQuoteSchema = new mongoose.Schema(
       },
     ],
     gstPercent: { type: Number, default: 18 },
+    // D8 (additive): GST mode; pre-existing quotes read as "exclusive".
+    gstMode: { type: String, enum: ["exclusive", "inclusive", "none"], default: "exclusive" },
+    // E3x white-label: true → PDF renders venue-branding-only (small
+    // "Powered by Wedsy" footer, no system line). Defaults per venue setting.
+    whiteLabel: { type: Boolean, default: false },
     discount: { type: Number, default: 0 },
     totals: {
       subtotal: { type: Number, default: 0 },
+      taxable: { type: Number, default: 0 },
       gst: { type: Number, default: 0 },
       grandTotal: { type: Number, default: 0 },
+    },
+    // D8 (additive): T&C block + acceptance log.
+    terms: [String],
+    acceptance: {
+      name: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      at: { type: Date },
+      channel: { type: String, enum: ["link", "whatsapp", ""], default: "" },
     },
     status: {
       type: String,

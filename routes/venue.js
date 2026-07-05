@@ -12,13 +12,18 @@ const { addInteraction, getInteractions } = require("../controllers/venueLeadInt
 const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
-const { createQuote, listQuotes, getQuote, updateQuote, quotePdf } = require("../controllers/venueQuote");
-const { createFromBooking, listInvoices, getInvoice, addPayment, invoicePdf } = require("../controllers/venueInvoice");
+const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
+const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
-const { listMembers, inviteMember, updateMember, getActivity } = require("../controllers/venueTeam");
+const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
+const roles = require("../controllers/venueRoles");
+const cal = require("../controllers/venueCalendar");
+const docs = require("../controllers/venueDocs");
+const checkin = require("../controllers/venueCheckin");
+const activityFeed = require("../controllers/venueActivityFeed");
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -52,6 +57,9 @@ router.post("/onboarding-requests", publicReadLimiter, createOnboardingRequest);
 //    no auth — the signed short-lived token is the credential) ──
 router.get("/contract-ack/:token", publicReadLimiter, getAckContract);
 router.post("/contract-ack/:token", publicReadLimiter, acknowledgeContract);
+// D8 doc acceptance (quotes/bills) — same typed-token + rate-limit pattern.
+router.get("/doc-ack/:token", publicReadLimiter, docs.getAckDoc);
+router.post("/doc-ack/:token", publicReadLimiter, docs.acceptDoc);
 // Venue-owner dashboard home widgets (onboarding, verification, follow-ups).
 router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
@@ -93,13 +101,34 @@ router.post("/:slug/quotes", venueOwnerAuth, requireCapability("leads"), createQ
 router.get("/:slug/quotes/:quoteId/pdf", venueOwnerAuth, quotePdf);
 router.get("/:slug/quotes/:quoteId", venueOwnerAuth, getQuote);
 router.patch("/:slug/quotes/:quoteId", venueOwnerAuth, requireCapability("leads"), updateQuote);
+// "Quote accepted -> confirm booking" owner action (D8 review add).
+router.post("/:slug/quotes/:quoteId/confirm-booking", venueOwnerAuth, requireCapability("leads"), confirmBookingFromQuote);
 
 // ── Phase 3: invoices (3.3) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/invoices", venueOwnerAuth, listInvoices);
 router.post("/:slug/invoices", venueOwnerAuth, requireCapability("leads"), createFromBooking);
 router.get("/:slug/invoices/:invoiceId/pdf", venueOwnerAuth, invoicePdf);
 router.get("/:slug/invoices/:invoiceId", venueOwnerAuth, getInvoice);
-router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapability("leads"), addPayment);
+// D7: recording money is a bookings_money capability (alias-compatible with
+// legacy "billing"); owner approval decisions are owner-gated in-controller.
+router.post("/:slug/invoices/:invoiceId/payments", venueOwnerAuth, requireCapability("bookings_money"), addPayment);
+router.post("/:slug/invoices/:invoiceId/payments/:paymentId/approve", venueOwnerAuth, requireCapability("bookings_money"), approvePayment);
+router.post("/:slug/invoices/:invoiceId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), rejectPayment);
+
+// ── D8 document engine: templates + bills (documents capability) ──
+router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);
+router.post("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.createTemplate);
+router.patch("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.updateTemplate);
+router.delete("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.deleteTemplate);
+router.get("/:slug/bills", venueOwnerAuth, docs.listBills);
+router.post("/:slug/bills", venueOwnerAuth, requireCapability("documents"), docs.createBill);
+router.get("/:slug/bills/:billId/pdf", venueOwnerAuth, docs.billPdf);
+router.patch("/:slug/bills/:billId", venueOwnerAuth, requireCapability("documents"), docs.updateBill);
+router.post("/:slug/bills/:billId/send", venueOwnerAuth, requireCapability("documents"), docs.sendBill);
+router.post("/:slug/bills/:billId/convert", venueOwnerAuth, requireCapability("documents"), docs.convertBill);
+router.post("/:slug/quotes/:quoteId/send-ack", venueOwnerAuth, requireCapability("documents"), docs.sendQuoteAck);
+// E3x: venue-level default for the per-document whiteLabel flag.
+router.patch("/:slug/documents/settings", venueOwnerAuth, requireCapability("documents"), docs.updateDocSettings);
 
 // ── Phase 3.4: payments summary + Phase 4.1: analytics — open reads ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
@@ -114,6 +143,16 @@ router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
 router.patch("/:slug/allotments/:allotmentId", venueOwnerAuth, requireCapability("leads"), updateAllotment);
+
+// ── D6 per-wedding room workflow — rooms_checkin capability (tablet flow) ──
+router.post("/:slug/allotments/:allotmentId/check-in", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.checkInAllotment);
+router.post("/:slug/allotments/:allotmentId/check-out", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.checkOutAllotment);
+router.get("/:slug/allotments/:allotmentId/settlement-slip", venueOwnerAuth, checkin.settlementSlip);
+router.post("/:slug/allotments/:allotmentId/archive", venueOwnerAuth, requireCapability("rooms_checkin"), checkin.archiveAllotment);
+
+// ── D10 activity spine — owner-side read of their own trail (no write route
+//    exists; the model enforces append-only) ──
+router.get("/:slug/activity", venueOwnerAuth, activityFeed.listActivity);
 router.get("/:slug/occupancy", venueOwnerAuth, occupancy);
 
 router.get("/:slug/bookings/:bookingId/runsheet", venueOwnerAuth, listRunsheet);
@@ -156,6 +195,32 @@ router.get("/:slug/team", venueOwnerAuth, requireCapability("team"), listMembers
 router.post("/:slug/team", venueOwnerAuth, requireCapability("team"), inviteMember);
 router.get("/:slug/team/activity", venueOwnerAuth, requireCapability("team"), getActivity);
 router.patch("/:slug/team/:memberId", venueOwnerAuth, requireCapability("team"), updateMember);
+// Password set/reset is additionally owner-gated inside the controller (D5:
+// owner is king — team capability alone can't rotate credentials).
+router.post("/:slug/team/:memberId/password", venueOwnerAuth, requireCapability("team"), setMemberPassword);
+
+// ── RBAC v2 roles (owner-editable capability bundles) — team capability ──
+router.get("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.listRoles);
+router.post("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.createRole);
+router.patch("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.updateRole);
+router.delete("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.deleteRole);
+
+// ── D3 date-inventory + holds ──
+// Create accepts BOTH tokens: admin JWT = wedsy-side concierge request,
+// venue token = owner-raised hold (availability capability). Everything else
+// is owner-side; decisions (approve/decline/release/convert) + block/unblock
+// are availability-gated writes, calendar/demand are open venue reads.
+router.post("/:slug/holds", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("availability"), cal.createHold);
+router.get("/:slug/holds", venueOwnerAuth, requireCapability("availability"), cal.listHolds);
+router.post("/:slug/holds/:holdId/approve", venueOwnerAuth, requireCapability("availability"), cal.approveHold);
+router.post("/:slug/holds/:holdId/decline", venueOwnerAuth, requireCapability("availability"), cal.declineHold);
+router.post("/:slug/holds/:holdId/release", venueOwnerAuth, requireCapability("availability"), cal.releaseHold);
+router.post("/:slug/holds/:holdId/convert", venueOwnerAuth, requireCapability("availability"), cal.convertHold);
+router.post("/:slug/calendar/block", venueOwnerAuth, requireCapability("availability"), cal.blockDates);
+router.post("/:slug/calendar/unblock", venueOwnerAuth, requireCapability("availability"), cal.unblockDates);
+router.get("/:slug/calendar", venueOwnerAuth, cal.getCalendar);
+router.get("/:slug/calendar/demand", venueOwnerAuth, cal.demandHeat);
+router.patch("/:slug/calendar/settings", venueOwnerAuth, requireCapability("availability"), cal.updateCalendarSettings);
 
 // Availability — availability capability.
 router.post("/:slug/availability", venueOwnerAuth, requireCapability("availability"), saveAvailability);

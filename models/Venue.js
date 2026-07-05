@@ -35,6 +35,9 @@ const VenueSchema = new mongoose.Schema({
     bestFor: [String],
     description: { type: String, default: "" },
     photos: [String],
+    // D3 date-inventory (additive): whether this space participates in the
+    // holds/booking calendar. Listing-only display spaces set false.
+    isBookable: { type: Boolean, default: true },
   }],
   accommodation: {
     available: { type: Boolean, default: false },
@@ -159,6 +162,15 @@ const VenueSchema = new mongoose.Schema({
     phones: [{ number: { type: String }, name: { type: String } }],
   },
   blockedDates: [String],
+  // D3 (additive) venue-tunable operational settings.
+  settings: {
+    // How long an approved/requested hold lives before the expiry sweep frees
+    // it. Owner-configurable; 5 days is the marketplace default.
+    holdExpiryDays: { type: Number, default: 5, min: 1, max: 60 },
+    // E3x: default for the per-document whiteLabel flag on new quotes/bills/
+    // invoices. false keeps the co-branded render (system line + footer).
+    documentsWhiteLabelDefault: { type: Boolean, default: false },
+  },
   // backward compat
   phone: { type: String, default: "" },
   email: { type: String, default: "" },
