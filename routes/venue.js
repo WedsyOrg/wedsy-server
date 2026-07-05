@@ -24,6 +24,7 @@ const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
+const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
@@ -204,6 +205,10 @@ router.get("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.list
 router.post("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.createRole);
 router.patch("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.updateRole);
 router.delete("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.deleteRole);
+
+// ── MB-V2 P1: planner site visits, owner side (leads capability) ──
+router.get("/:slug/site-visits", venueOwnerAuth, requireCapability("leads"), siteVisits.listOwnSiteVisits);
+router.patch("/:slug/site-visits/:visitId", venueOwnerAuth, requireCapability("leads"), siteVisits.updateOwnSiteVisit);
 
 // ── D3 date-inventory + holds ──
 // Create accepts BOTH tokens: admin JWT = wedsy-side concierge request,

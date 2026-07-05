@@ -490,6 +490,8 @@ async function run() {
       "/admin/venues/leads",
       "/admin/venues/forwards",
       "/admin/venues/activity-feed",
+      "/admin/venues/shortlists",
+      "/admin/venues/site-visits",
     ];
     // Admin WRITE surfaces (S2 queues) — same principals must be denied.
     const WRITES13 = [
@@ -497,6 +499,9 @@ async function run() {
       ["POST", "/admin/venues/claims/000000000000000000000000/reject"],
       ["PATCH", "/admin/venues/onboarding-requests/000000000000000000000000"],
       ["POST", "/admin/venues/leads/000000000000000000000000/forward"],
+      ["POST", "/admin/venues/shortlists"],
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/present-link"],
+      ["PATCH", "/admin/venues/site-visits/000000000000000000000000"],
     ];
     // CheckAdminLogin's legacy codes: 400 no-token/no-isAdmin-claim/bad-sig,
     // 401 unknown admin _id, 403 disabled — all are hard denials; 2xx is the bug.
@@ -532,6 +537,27 @@ async function run() {
     const adminTok13 = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
     const hostileSearch = await api("GET", `/admin/venues?search=${encodeURIComponent("(((((((a+)+)+)+)+$^\\")}`, { token: adminTok13 });
     ok("13 hostile regex search -> not 500", hostileSearch.status !== 500, `status ${hostileSearch.status}`);
+
+    // P1 planner tenancy: a FOREIGN owner cannot read another venue's visits.
+    const foreignVisits = await api("GET", `/venues/${A}/site-visits`, { token: tokenB });
+    ok("13 cross-venue site-visits read -> 403", foreignVisits.status === 403, `status ${foreignVisits.status}`);
+    const foreignVisitWrite = await api("PATCH", `/venues/${A}/site-visits/000000000000000000000000`, { token: tokenB, body: { status: "cancelled" } });
+    ok("13 cross-venue site-visit write -> 403", foreignVisitWrite.status === 403, `status ${foreignVisitWrite.status}`);
+
+    // P1 present-token TYPING: the public surface must hard-reject junk
+    // (400 for malformed, 404 for well-formed-unknown, 429 if the shared
+    // public bucket is already dry this deep into the suite — never 2xx/500).
+    const presDenied = (s) => [400, 404, 429].includes(s);
+    const presMalformed = await api("GET", "/venues/present/../../etc/passwd");
+    ok("13 present traversal-ish token rejected", presDenied(presMalformed.status), `status ${presMalformed.status}`);
+    const presShort = await api("GET", "/venues/present/abc123");
+    ok("13 present short token rejected", presDenied(presShort.status) && presShort.status !== 404, `status ${presShort.status}`);
+    const presLong = await api("GET", `/venues/present/${"a".repeat(96)}`);
+    ok("13 present oversized token rejected", presDenied(presLong.status) && presLong.status !== 404, `status ${presLong.status}`);
+    const presUpper = await api("GET", `/venues/present/${"AB".repeat(24)}`);
+    ok("13 present non-lowercase-hex token rejected (typed, not looked up)", presDenied(presUpper.status) && presUpper.status !== 404, `status ${presUpper.status}`);
+    const presReactJunk = await api("POST", `/venues/present/${"ab".repeat(24)}/react`, { rawBody: '"hax"' });
+    ok("13 present react hostile body -> not 500", presReactJunk.status !== 500 && presReactJunk.status !== 200, `status ${presReactJunk.status}`);
   }
 
   finish();

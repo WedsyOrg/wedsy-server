@@ -5,6 +5,7 @@ const ops = require("../controllers/adminVenueOps");
 const queues = require("../controllers/adminVenueQueues");
 const availability = require("../controllers/adminVenueAvailability");
 const leads = require("../controllers/adminVenueLeads");
+const planner = require("../controllers/adminVenuePlanner");
 const { CheckAdminLogin } = require("../middlewares/auth");
 
 // MB-V2 P0 — Wedsy-internal venue workspace (Wedsy OS "Venues" module).
@@ -38,6 +39,21 @@ router.get("/forwards", CheckAdminLogin, leads.listForwards);
 
 // P0 S5 (D10) — cross-venue high-severity firehose (severity=all opts out).
 router.get("/activity-feed", CheckAdminLogin, ops.activityFirehose);
+
+// P1 — Lead Planner: shortlists (venue-owned, one per CRM lead), present-link
+// management, one-tap hold + site visit (both run the D2 linkage), and
+// site-visit oversight. Public present-mode reads live under /venues/present.
+router.post("/shortlists", CheckAdminLogin, planner.createShortlist);
+router.get("/shortlists", CheckAdminLogin, planner.listShortlists);
+router.get("/shortlists/:id", CheckAdminLogin, planner.getShortlist);
+router.post("/shortlists/:id/items", CheckAdminLogin, planner.addItem);
+router.patch("/shortlists/:id/items/:itemId", CheckAdminLogin, planner.updateItem);
+router.delete("/shortlists/:id/items/:itemId", CheckAdminLogin, planner.removeItem);
+router.post("/shortlists/:id/present-link", CheckAdminLogin, planner.generatePresentLink);
+router.post("/shortlists/:id/items/:itemId/hold", CheckAdminLogin, planner.requestItemHold);
+router.post("/shortlists/:id/items/:itemId/visit", CheckAdminLogin, planner.scheduleItemVisit);
+router.get("/site-visits", CheckAdminLogin, planner.listSiteVisits);
+router.patch("/site-visits/:visitId", CheckAdminLogin, planner.updateSiteVisit);
 
 router.get("/:slug/summary", CheckAdminLogin, ops.venueSummary);
 router.get("/:slug/enquiries", CheckAdminLogin, ops.listVenueEnquiries);

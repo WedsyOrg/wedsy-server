@@ -1677,6 +1677,110 @@ async function run() {
     check("firehose: unknown severity -> 400", fireBad.status === 400, `status ${fireBad.status}`);
   }
 
+  // ================= MB-V2 P1: lead planner — shortlists, present mode, D2 linkage =================
+  if (process.env.E2E_PLANNER === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const CRM_ID = "crm-lead-e2e-0001";
+    const PLANNER_PHONE = "9877001122";
+
+    // Shortlist create (idempotent per CRM lead) + validation.
+    const noId = await api("POST", "/admin/venues/shortlists", { token: adminToken, body: { coupleName: "No Id" } });
+    check("planner: shortlist without crmEnquiryId -> 400", noId.status === 400, `status ${noId.status}`);
+    const sl = await api("POST", "/admin/venues/shortlists", { token: adminToken, body: { crmEnquiryId: CRM_ID, coupleName: "Aarohi & Vikram", couplePhone: PLANNER_PHONE } });
+    check("planner: shortlist created", sl.status === 201 && sl.json.shortlist && sl.json.duplicate === false, `status ${sl.status}`);
+    const slId = sl.json.shortlist && sl.json.shortlist._id;
+    const slDup = await api("POST", "/admin/venues/shortlists", { token: adminToken, body: { crmEnquiryId: CRM_ID } });
+    check("planner: duplicate crmEnquiryId -> 200 existing", slDup.status === 200 && slDup.json.duplicate === true && String(slDup.json.shortlist._id) === String(slId), `status ${slDup.status}`);
+
+    // Items: add (dedupe 409), unknown venue 404, notes patch.
+    const add1 = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: SLUG, notes: "Great lawn for 450 pax" } });
+    check("planner: add venue A -> 201", add1.status === 201, `status ${add1.status}`);
+    const add1Dup = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: SLUG } });
+    check("planner: duplicate venue on shortlist -> 409", add1Dup.status === 409, `status ${add1Dup.status}`);
+    const add2 = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: "test-palace-two" } });
+    check("planner: add venue B -> 201", add2.status === 201, `status ${add2.status}`);
+    const addGhost = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: "no-such-venue" } });
+    check("planner: unknown venue -> 404", addGhost.status === 404, `status ${addGhost.status}`);
+    const items = add2.json.shortlist.items;
+    const itemA = items.find((i) => i.venue && i.venue.slug === SLUG);
+    const itemB = items.find((i) => i.venue && i.venue.slug === "test-palace-two");
+    check("planner: detail items carry venue cards", Boolean(itemA && itemB && itemA.venue.name), itemA && itemA.venue && itemA.venue.name);
+    const patchNote = await api("PATCH", `/admin/venues/shortlists/${slId}/items/${itemA._id}`, { token: adminToken, body: { notes: "Owner quotes ₹1500/plate veg" } });
+    check("planner: item notes patched", patchNote.status === 200, `status ${patchNote.status}`);
+    const patchBadStatus = await api("PATCH", `/admin/venues/shortlists/${slId}/items/${itemA._id}`, { token: adminToken, body: { status: "reacted" } });
+    check("planner: admin cannot force status=reacted -> 400", patchBadStatus.status === 400, `status ${patchBadStatus.status}`);
+
+    // Present link + PUBLIC present mode.
+    const link1 = await api("POST", `/admin/venues/shortlists/${slId}/present-link`, { token: adminToken });
+    check("planner: present link -> 48-hex token", link1.status === 200 && /^[a-f0-9]{48}$/.test(link1.json.presentToken || ""), `status ${link1.status}`);
+    const token1 = link1.json.presentToken;
+    const pub1 = await api("GET", `/venues/present/${token1}`);
+    check("present: public read -> 200 with venue cards", pub1.status === 200 && Array.isArray(pub1.json.items) && pub1.json.items.length === 2 && pub1.json.items.every((i) => i.venue && i.venue.name), `status ${pub1.status}`);
+    check("present: no phone/CRM leakage in public payload", !JSON.stringify(pub1.json).includes(PLANNER_PHONE) && !JSON.stringify(pub1.json).includes(CRM_ID));
+    const pubItemA = pub1.json.items.find((i) => i.venue.name === "Test Palace");
+    const reactOk = await api("POST", `/venues/present/${token1}/react`, { body: { itemId: pubItemA.itemId, reaction: "love" } });
+    check("present: couple reaction accepted", reactOk.status === 200 && reactOk.json.reaction === "love", `status ${reactOk.status}`);
+    const reactBad = await api("POST", `/venues/present/${token1}/react`, { body: { itemId: pubItemA.itemId, reaction: "meh" } });
+    check("present: unknown reaction -> 400", reactBad.status === 400, `status ${reactBad.status}`);
+    const reactGhost = await api("POST", `/venues/present/${token1}/react`, { body: { itemId: "000000000000000000000000", reaction: "no" } });
+    check("present: unknown item -> 404", reactGhost.status === 404, `status ${reactGhost.status}`);
+    const afterReact = await api("GET", `/admin/venues/shortlists/${slId}`, { token: adminToken });
+    const reactedItem = afterReact.json.shortlist.items.find((i) => String(i._id) === String(pubItemA.itemId));
+    check("planner: reaction lands in admin view (status reacted)", reactedItem && reactedItem.reaction === "love" && reactedItem.status === "reacted", reactedItem && reactedItem.status);
+
+    // Token typing + replay-after-rotation.
+    const malformed = await api("GET", "/venues/present/not-a-token");
+    check("present: malformed token -> 400", malformed.status === 400, `status ${malformed.status}`);
+    const unknownTok = await api("GET", `/venues/present/${"ab".repeat(24)}`);
+    check("present: well-formed unknown token -> 404", unknownTok.status === 404, `status ${unknownTok.status}`);
+    const link2 = await api("POST", `/admin/venues/shortlists/${slId}/present-link`, { token: adminToken });
+    const replay = await api("GET", `/venues/present/${token1}`);
+    check("present: rotated link kills the old token (replay -> 404)", link2.status === 200 && replay.status === 404, `replay ${replay.status}`);
+
+    // One-tap hold: D2 linkage creates the owner-visible lead (source wedsy + crmLeadRef).
+    const holdDate = new Date(Date.now() + 220 * 86400000).toISOString().slice(0, 10);
+    const tapHold = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemA._id}/hold`, { token: adminToken, body: { dates: [holdDate] } });
+    check("planner: one-tap hold -> 201 wedsy request + linked enquiry", tapHold.status === 201 && tapHold.json.hold.requestedBy === "wedsy" && Boolean(tapHold.json.enquiryId), `status ${tapHold.status}`);
+    const linkedEnqId = tapHold.json.enquiryId;
+    const enqList = await api("GET", `/admin/venues/${SLUG}/enquiries?source=wedsy&limit=100`, { token: adminToken });
+    const linkedEnq = (enqList.json.enquiries || []).find((e) => String(e._id) === String(linkedEnqId));
+    check("planner: D2 lead is owner-visible with source=wedsy + crmLeadRef", Boolean(linkedEnq) && linkedEnq.crmLeadRef === CRM_ID, linkedEnq && linkedEnq.crmLeadRef);
+    const tapHoldAgain = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemA._id}/hold`, { token: adminToken, body: { dates: [holdDate] } });
+    check("planner: second hold while active -> 409", tapHoldAgain.status === 409, `status ${tapHoldAgain.status}`);
+    const badDates = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemB._id}/hold`, { token: adminToken, body: { dates: ["soon"] } });
+    check("planner: malformed hold dates -> 400", badDates.status === 400, `status ${badDates.status}`);
+
+    // Site visit on the SAME couple+venue reuses the D2 lead (phone dedup).
+    const visitAt = new Date(Date.now() + 12 * 86400000).toISOString();
+    const visit = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemA._id}/visit`, { token: adminToken, body: { scheduledAt: visitAt, notes: "Bring decor lookbook" } });
+    check("planner: visit scheduled -> 201", visit.status === 201, `status ${visit.status}`);
+    check("planner: D2 dedup — visit reuses the hold's enquiry", visit.status === 201 && String(visit.json.enquiryId) === String(linkedEnqId), `enq ${visit.json && visit.json.enquiryId}`);
+    const visitId = visit.json.visit && visit.json.visit._id;
+    const visitBad = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemB._id}/visit`, { token: adminToken, body: { scheduledAt: "whenever" } });
+    check("planner: malformed visit datetime -> 400", visitBad.status === 400, `status ${visitBad.status}`);
+
+    // Owner side: sees + progresses the walk-through.
+    const ownerVisits = await api("GET", `/venues/${SLUG}/site-visits`, { token });
+    check("planner: owner sees the visit with couple attached", ownerVisits.status === 200 && (ownerVisits.json.visits || []).some((v) => String(v._id) === String(visitId) && v.enquiryRef && v.enquiryRef.coupleName), `status ${ownerVisits.status}`);
+    const ownerConfirm = await api("PATCH", `/venues/${SLUG}/site-visits/${visitId}`, { token, body: { status: "confirmed" } });
+    check("planner: owner confirms visit -> 200", ownerConfirm.status === 200 && ownerConfirm.json.visit.status === "confirmed", `status ${ownerConfirm.status}`);
+    const adminVisits = await api("GET", `/admin/venues/site-visits?status=confirmed`, { token: adminToken });
+    check("planner: admin visit oversight reflects owner's confirm", adminVisits.status === 200 && (adminVisits.json.visits || []).some((v) => String(v._id) === String(visitId) && v.venue && v.venue.slug === SLUG), `status ${adminVisits.status}`);
+    const adminVisitBad = await api("GET", "/admin/venues/site-visits?status=bogus", { token: adminToken });
+    check("planner: unknown visit status filter -> 400", adminVisitBad.status === 400, `status ${adminVisitBad.status}`);
+
+    // Item removal keeps the shortlist consistent.
+    const rm = await api("DELETE", `/admin/venues/shortlists/${slId}/items/${itemB._id}`, { token: adminToken });
+    check("planner: item removal -> 200, one item left", rm.status === 200 && rm.json.shortlist.items.length === 1, `status ${rm.status}`);
+
+    // Planner list rollup.
+    const lists = await api("GET", "/admin/venues/shortlists?limit=50", { token: adminToken });
+    const listRow = (lists.json.shortlists || []).find((s) => s.crmEnquiryId === CRM_ID);
+    check("planner: list rollup (counts + link flag)", lists.status === 200 && listRow && listRow.itemCount === 1 && listRow.reactedCount === 1 && listRow.hasPresentLink === true, listRow && JSON.stringify({ itemCount: listRow.itemCount, reactedCount: listRow.reactedCount }));
+  }
+
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
     // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
     const burst = await Promise.all(Array.from({ length: 75 }, () =>

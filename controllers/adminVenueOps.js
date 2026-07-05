@@ -214,7 +214,7 @@ const listVenueEnquiries = async (req, res) => {
         .sort({ createdAt: -1, _id: 1 })
         .skip(skip)
         .limit(limit)
-        .select("name phone coupleName couplePhone email eventDate guestCount budget source stage status estimatedValue assignedTo createdAt activities")
+        .select("name phone coupleName couplePhone email eventDate guestCount budget source stage status estimatedValue assignedTo crmLeadRef createdAt activities")
         .lean(),
       VenueEnquiry.countDocuments(filter),
     ]);

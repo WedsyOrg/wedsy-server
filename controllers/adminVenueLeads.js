@@ -98,7 +98,7 @@ const listLeads = async (req, res) => {
               $project: {
                 name: 1, phone: 1, coupleName: 1, couplePhone: 1, eventDate: 1,
                 guestCount: 1, budget: 1, source: 1, stage: 1, status: 1,
-                estimatedValue: 1, createdAt: 1, activities: 1,
+                estimatedValue: 1, crmLeadRef: 1, createdAt: 1, activities: 1,
                 venue: { $arrayElemAt: ["$venue", 0] },
                 forward: { $arrayElemAt: ["$forward", 0] },
               },

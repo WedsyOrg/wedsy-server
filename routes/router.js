@@ -81,6 +81,7 @@ router.use("/role", require("./role"));
 router.use("/org", require("./org")); // MB10 — org chart + permission matrix (read)
 router.use("/stages", require("./stage"));
 router.use("/activity", require("./activity"));
+router.use("/venues/present", require("./venuePresent")); // MB-V2 P1 public present-mode (mounted above /venues)
 router.use("/venues", require("./venue"));
 router.use("/places", require("./places"));
 router.use("/venue-owner", require("./venueOwner"));
