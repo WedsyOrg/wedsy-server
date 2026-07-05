@@ -74,7 +74,10 @@ const directory = async (req, res) => {
           from: "venueowners",
           let: { vid: "$_id" },
           pipeline: [
-            { $match: { $expr: { $and: [{ $eq: ["$venueId", "$$vid"] }, { $eq: ["$isActive", true] }, { $eq: ["$role", "owner"] }] } } },
+            // ANY active VenueOwner doc = claimed. The collection is the
+            // primary-account table; `role` is a title (a claim approved for a
+            // "manager" designation still claims the venue).
+            { $match: { $expr: { $and: [{ $eq: ["$venueId", "$$vid"] }, { $eq: ["$isActive", true] }] } } },
             { $limit: 1 },
             { $project: { name: 1, phone: 1, verificationStatus: 1, claimedAt: 1 } },
           ],
@@ -152,7 +155,7 @@ const venueSummary = async (req, res) => {
     ]);
     const holds = {};
     for (const h of holdsByStatus) holds[h._id] = h.n;
-    const hasOwner = owners.some((o) => o.role === "owner") || !!venue.vendorId;
+    const hasOwner = owners.length > 0 || !!venue.vendorId;
     const claimState = hasOwner ? "claimed" : pendingClaim ? "pending" : "unclaimed";
     return res.status(200).json({
       venue,

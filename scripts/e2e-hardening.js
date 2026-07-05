@@ -482,6 +482,17 @@ async function run() {
       `/admin/venues/${A}/summary`,
       `/admin/venues/${A}/enquiries`,
       `/admin/venues/${A}/activity`,
+      "/admin/venues/claims",
+      "/admin/venues/onboarding-requests",
+      "/admin/venues/partner-board",
+      "/admin/venues/day-board?date=2030-01-01",
+      "/admin/venues/holds",
+    ];
+    // Admin WRITE surfaces (S2 queues) — same principals must be denied.
+    const WRITES13 = [
+      ["POST", "/admin/venues/claims/000000000000000000000000/approve"],
+      ["POST", "/admin/venues/claims/000000000000000000000000/reject"],
+      ["PATCH", "/admin/venues/onboarding-requests/000000000000000000000000"],
     ];
     // CheckAdminLogin's legacy codes: 400 no-token/no-isAdmin-claim/bad-sig,
     // 401 unknown admin _id, 403 disabled — all are hard denials; 2xx is the bug.
@@ -495,6 +506,14 @@ async function run() {
       ok(`13 ${path} foreign owner token -> denied`, denied(asForeignOwner.status), `status ${asForeignOwner.status}`);
       const asMember = await api("GET", path, { token: memberToken });
       ok(`13 ${path} member token -> denied`, denied(asMember.status), `status ${asMember.status}`);
+    }
+    for (const [method, path] of WRITES13) {
+      const noTok = await api(method, path, { body: { status: "contacted" } });
+      ok(`13 ${method} ${path} no token -> denied`, denied(noTok.status), `status ${noTok.status}`);
+      const asOwner = await api(method, path, { token: tokenA, body: { status: "contacted" } });
+      ok(`13 ${method} ${path} owner token -> denied`, denied(asOwner.status), `status ${asOwner.status}`);
+      const asMember = await api(method, path, { token: memberToken, body: { status: "contacted" } });
+      ok(`13 ${method} ${path} member token -> denied`, denied(asMember.status), `status ${asMember.status}`);
     }
     // Wrong-secret admin token — signature must fail, not just claims.
     const forged = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, "not-the-real-secret", { expiresIn: "1h" });

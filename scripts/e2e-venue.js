@@ -1474,6 +1474,150 @@ async function run() {
   // availability) also use.
   // ================= Public-route rate limiting (callback + generate-location) =================
   // Run on a freshly-started server (publicReadLimiter counters reset on restart).
+  // ================= MB-V2 P0 S2: admin queues (claims, onboarding, partner board) =================
+  // Runs BEFORE the public-ratelimit section — it seeds fixtures through the
+  // public onboarding/claim intakes, which that section rate-exhausts.
+  if (process.env.E2E_ADMIN_QUEUES === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Fixture A: a fresh unclaimed venue + a manual claim on it (clean approve).
+    const freshVenue = await api("POST", "/venues", { token: adminToken, body: { name: "Queue Test Manor", venueType: "resort", city: "Bangalore" } });
+    const freshSlug = freshVenue.json && freshVenue.json.venue && freshVenue.json.venue.slug;
+    check("queues: fixture venue created", freshVenue.status === 201 && Boolean(freshSlug), `status ${freshVenue.status}`);
+    const claimA = await api("POST", "/venue-owner/claim/manual", { body: { slug: freshSlug, name: "Fresh Owner", designation: "owner", phone: "9811111111", email: "fresh@qtm.local" } });
+    check("queues: manual claim submitted on fixture venue", claimA.status === 201, `status ${claimA.status}`);
+    // Fixture B: a new_venue_signup claim (no slug).
+    const claimB = await api("POST", "/venue-owner/claim/manual", { body: { name: "Signup Owner", designation: "manager", phone: "9822222222", email: "signup@qtm.local", newVenueName: "Signup Palace", newVenueType: "weird-type", newVenueAddress: "12 Test Road" } });
+    check("queues: new-venue signup claim submitted", claimB.status === 201, `status ${claimB.status}`);
+    // Fixture C: a manual claim against test-palace (conflicting active owner).
+    const claimC = await api("POST", "/venue-owner/claim/manual", { body: { slug: SLUG, name: "Impostor", designation: "owner", phone: "9833333333", email: "impostor@qtm.local" } });
+    check("queues: conflicting claim submitted on seeded venue", claimC.status === 201, `status ${claimC.status}`);
+
+    // Queue list + detail.
+    const claims = await api("GET", "/admin/venues/claims?status=pending_manual_review&limit=100", { token: adminToken });
+    check("queues: claims list -> 200 with pending requests", claims.status === 200 && claims.json.total >= 3, `status ${claims.status}, total ${claims.json && claims.json.total}`);
+    const rows = (claims.json && claims.json.requests) || [];
+    const reqA = rows.find((r) => r.venueSlug === freshSlug);
+    const reqB = rows.find((r) => r.tier === "new_venue_signup" && r.phone === "9822222222");
+    const reqC = rows.find((r) => r.venueSlug === SLUG && r.phone === "9833333333");
+    check("queues: all three fixtures visible in queue", Boolean(reqA && reqB && reqC));
+    const claimsBadTier = await api("GET", "/admin/venues/claims?tier=bogus", { token: adminToken });
+    check("queues: unknown tier filter -> 400", claimsBadTier.status === 400, `status ${claimsBadTier.status}`);
+    const detailC = await api("GET", `/admin/venues/claims/${reqC && reqC._id}`, { token: adminToken });
+    check("queues: claim detail surfaces current-owner conflict", detailC.status === 200 && detailC.json.currentOwner && detailC.json.currentOwner.phone === OWNER_PHONE, `status ${detailC.status}`);
+
+    // Approve A: creates a verified owner on the fixture venue.
+    const approveA = await api("POST", `/admin/venues/claims/${reqA && reqA._id}/approve`, { token: adminToken, body: { reviewNote: "checks out" } });
+    check("queues: approve existing-venue claim -> 200 verified owner", approveA.status === 200 && approveA.json.owner && approveA.json.owner.verificationStatus === "verified" && approveA.json.owner.phone === "9811111111", `status ${approveA.status}`);
+    const approveAgain = await api("POST", `/admin/venues/claims/${reqA && reqA._id}/approve`, { token: adminToken });
+    check("queues: double approve -> 409", approveAgain.status === 409, `status ${approveAgain.status}`);
+    const sumAfterA = await api("GET", `/admin/venues/${freshSlug}/summary`, { token: adminToken });
+    check("queues: fixture venue now claimState=claimed", sumAfterA.status === 200 && sumAfterA.json.claimState === "claimed", sumAfterA.json && sumAfterA.json.claimState);
+    const actAfterA = await api("GET", `/admin/venues/${freshSlug}/activity?actorType=wedsy_team&limit=20`, { token: adminToken });
+    check("queues: approval logged to activity spine (high)", actAfterA.status === 200 && (actAfterA.json.activity || []).some((a) => a.action === "claim_approved" && a.severity === "high"), `rows ${actAfterA.json && actAfterA.json.total}`);
+
+    // Approve B: creates the venue (draft, type mapped to enum) + owner.
+    const approveB = await api("POST", `/admin/venues/claims/${reqB && reqB._id}/approve`, { token: adminToken });
+    check("queues: approve new-venue signup -> 200 with created venue", approveB.status === 200 && approveB.json.venue && approveB.json.venue.slug, `status ${approveB.status}`);
+    const createdSlug = approveB.json && approveB.json.venue && approveB.json.venue.slug;
+    const createdSum = await api("GET", `/admin/venues/${createdSlug}/summary`, { token: adminToken });
+    check("queues: signup venue is draft + claimed + type coerced to enum", createdSum.status === 200 && createdSum.json.venue.status === "draft" && createdSum.json.venue.venueType === "other" && createdSum.json.claimState === "claimed", createdSum.json && createdSum.json.venue && createdSum.json.venue.venueType);
+
+    // Approve C must 409 (active owner with different phone), then reject it.
+    const approveC = await api("POST", `/admin/venues/claims/${reqC && reqC._id}/approve`, { token: adminToken });
+    check("queues: conflicting approve -> 409 (owner phone mismatch)", approveC.status === 409, `status ${approveC.status}`);
+    const rejectC = await api("POST", `/admin/venues/claims/${reqC && reqC._id}/reject`, { token: adminToken, body: { reviewNote: "not the owner" } });
+    check("queues: reject -> 200 with reviewer stamp", rejectC.status === 200 && rejectC.json.request.status === "rejected" && Boolean(rejectC.json.request.reviewedAt), `status ${rejectC.status}`);
+    const rejectAgain = await api("POST", `/admin/venues/claims/${reqC && reqC._id}/reject`, { token: adminToken });
+    check("queues: double reject -> 409", rejectAgain.status === 409, `status ${rejectAgain.status}`);
+
+    // Onboarding queue: public intake -> guarded transitions.
+    const onb1 = await api("POST", "/venues/onboarding-requests", { body: { name: "Ravi", venueName: "Lakeside Grounds", city: "Mysore", phone: "9844444444" } });
+    const onb2 = await api("POST", "/venues/onboarding-requests", { body: { name: "Meera", venueName: "Hilltop Farms", city: "Coorg", phone: "9855555555" } });
+    check("queues: onboarding intakes accepted", [200, 201].includes(onb1.status) && [200, 201].includes(onb2.status), `statuses ${onb1.status},${onb2.status}`);
+    const onbList = await api("GET", "/admin/venues/onboarding-requests?status=new&limit=100", { token: adminToken });
+    check("queues: onboarding list -> 200 with new requests", onbList.status === 200 && onbList.json.total >= 2, `status ${onbList.status}, total ${onbList.json && onbList.json.total}`);
+    const onbRows = (onbList.json && onbList.json.requests) || [];
+    const r1 = onbRows.find((r) => r.phone === "9844444444");
+    const r2 = onbRows.find((r) => r.phone === "9855555555");
+    const move1 = await api("PATCH", `/admin/venues/onboarding-requests/${r1 && r1._id}`, { token: adminToken, body: { status: "contacted" } });
+    check("queues: onboarding new -> contacted", move1.status === 200 && move1.json.request.status === "contacted", `status ${move1.status}`);
+    const moveBack = await api("PATCH", `/admin/venues/onboarding-requests/${r1 && r1._id}`, { token: adminToken, body: { status: "new" } });
+    check("queues: backwards transition -> 400 (not an allowed target)", moveBack.status === 400 || moveBack.status === 409, `status ${moveBack.status}`);
+    const move2 = await api("PATCH", `/admin/venues/onboarding-requests/${r2 && r2._id}`, { token: adminToken, body: { status: "converted" } });
+    check("queues: onboarding new -> converted", move2.status === 200, `status ${move2.status}`);
+    const moveTerminal = await api("PATCH", `/admin/venues/onboarding-requests/${r2 && r2._id}`, { token: adminToken, body: { status: "dropped" } });
+    check("queues: converted is terminal -> 409", moveTerminal.status === 409, `status ${moveTerminal.status}`);
+    const moveBogus = await api("PATCH", `/admin/venues/onboarding-requests/${r1 && r1._id}`, { token: adminToken, body: { status: "abducted" } });
+    check("queues: unknown onboarding status -> 400", moveBogus.status === 400, `status ${moveBogus.status}`);
+
+    // Partner board: derived columns fed by both queues.
+    const board = await api("GET", "/admin/venues/partner-board", { token: adminToken });
+    const cols = (board.json && board.json.columns) || {};
+    check("queues: partner board -> 200 with 4 columns", board.status === 200 && ["prospect", "contacted", "onboarded", "live"].every((k) => Array.isArray(cols[k])), `status ${board.status}`);
+    check("queues: contacted onboarding request on board", (cols.contacted || []).some((c) => c.kind === "onboarding_request" && c.phone === "9844444444"));
+    check("queues: seeded venue (claimed+published) in live column", (cols.live || []).some((c) => c.kind === "venue" && c.slug === SLUG));
+    check("queues: signup-created venue (claimed+draft) in onboarded column", (cols.onboarded || []).some((c) => c.kind === "venue" && c.slug === createdSlug));
+    check("queues: approved fixture venue in onboarded column", (cols.onboarded || []).some((c) => c.kind === "venue" && c.slug === freshSlug));
+  }
+
+  // ================= MB-V2 P0 S3: admin day-board + cross-venue hold tracker =================
+  if (process.env.E2E_ADMIN_BOARD === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    // Far-future date so no other section's holds/bookings collide.
+    const boardDate = new Date(Date.now() + 200 * 86400000).toISOString().slice(0, 10);
+
+    const vDetail = await api("GET", `/venues/${SLUG}`);
+    const spaces = ((vDetail.json && vDetail.json.venue && vDetail.json.venue.spaces) || []).filter((s) => s.isBookable !== false);
+    const spaceId = spaces[0] && spaces[0]._id;
+    check("board: seeded venue has a bookable space", Boolean(spaceId));
+
+    // Wedsy-side hold REQUEST through the EXISTING route (admin token).
+    const holdReq = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { space: spaceId, dates: [boardDate], notes: "day-board probe" } });
+    check("board: wedsy hold request via existing route -> 201 requestedBy=wedsy", holdReq.status === 201 && holdReq.json.hold && holdReq.json.hold.requestedBy === "wedsy", `status ${holdReq.status}`);
+    const holdId = holdReq.json.hold && holdReq.json.hold._id;
+
+    const b1 = await api("GET", `/admin/venues/day-board?date=${boardDate}`, { token: adminToken });
+    const row1 = b1.status === 200 && (b1.json.venues || []).find((v) => v.slug === SLUG);
+    check("board: day-board -> 200 with seeded venue row", Boolean(row1), `status ${b1.status}`);
+    check("board: pending hold counted, no space claimed yet", row1 && row1.pendingHolds >= 1 && row1.held === 0 && row1.open === row1.spacesTotal, row1 && JSON.stringify({ pendingHolds: row1.pendingHolds, held: row1.held, open: row1.open }));
+    check("board: demand heat present as number", row1 && typeof row1.demand === "number");
+    check("board: totals aggregate pending holds", b1.json.totals && b1.json.totals.pendingHolds >= 1, b1.json.totals && JSON.stringify(b1.json.totals));
+
+    // D3: the OWNER approves; admin has no approve route.
+    const appr = await api("POST", `/venues/${SLUG}/holds/${holdId}/approve`, { token });
+    check("board: owner approves the wedsy request -> 200", appr.status === 200, `status ${appr.status}`);
+    const b2 = await api("GET", `/admin/venues/day-board?date=${boardDate}`, { token: adminToken });
+    const row2 = b2.status === 200 && (b2.json.venues || []).find((v) => v.slug === SLUG);
+    check("board: after approval the date shows held space", row2 && row2.held >= 1 && row2.open < row2.spacesTotal && row2.pendingHolds === 0, row2 && JSON.stringify({ held: row2.held, open: row2.open, pendingHolds: row2.pendingHolds }));
+
+    const tracker = await api("GET", `/admin/venues/holds?status=approved&requestedBy=wedsy&slug=${SLUG}`, { token: adminToken });
+    check("board: holds tracker filters + populated venue", tracker.status === 200 && (tracker.json.holds || []).some((h) => h._id === holdId && h.venue && h.venue.slug === SLUG), `status ${tracker.status}`);
+
+    // Owner releases — the admin tracker sees the transition (visibility only).
+    const rel = await api("POST", `/venues/${SLUG}/holds/${holdId}/release`, { token });
+    check("board: owner release -> 200", rel.status === 200, `status ${rel.status}`);
+    const tracker2 = await api("GET", `/admin/venues/holds?status=released&slug=${SLUG}`, { token: adminToken });
+    check("board: released status visible cross-venue", tracker2.status === 200 && (tracker2.json.holds || []).some((h) => h._id === holdId), `status ${tracker2.status}`);
+    const b3 = await api("GET", `/admin/venues/day-board?date=${boardDate}`, { token: adminToken });
+    const row3 = b3.status === 200 && (b3.json.venues || []).find((v) => v.slug === SLUG);
+    check("board: date opens back up after release", row3 && row3.held === 0 && row3.open === row3.spacesTotal, row3 && JSON.stringify({ held: row3.held, open: row3.open }));
+
+    // Validation.
+    const badDate = await api("GET", "/admin/venues/day-board?date=13-2030-99", { token: adminToken });
+    check("board: malformed date -> 400", badDate.status === 400, `status ${badDate.status}`);
+    const noDate = await api("GET", "/admin/venues/day-board", { token: adminToken });
+    check("board: missing date -> 400", noDate.status === 400, `status ${noDate.status}`);
+    const badStatus = await api("GET", "/admin/venues/holds?status=bogus", { token: adminToken });
+    check("board: unknown hold status filter -> 400", badStatus.status === 400, `status ${badStatus.status}`);
+    const badSlug = await api("GET", "/admin/venues/holds?slug=definitely-not-a-venue", { token: adminToken });
+    check("board: unknown venue slug -> 404", badSlug.status === 404, `status ${badSlug.status}`);
+  }
+
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
     // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
     const burst = await Promise.all(Array.from({ length: 75 }, () =>
