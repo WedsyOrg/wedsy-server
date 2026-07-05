@@ -305,7 +305,7 @@ const submitManualClaim = async (req, res) => {
         });
       }
 
-      await VenueClaimRequest.create({
+      const selfClaim = await VenueClaimRequest.create({
         newVenueName,
         newVenueType: newVenueType || "",
         newVenueAddress: newVenueAddress || "",
@@ -317,6 +317,14 @@ const submitManualClaim = async (req, res) => {
         message: message || "",
         tier: "new_venue_signup",
         status: "pending_manual_review",
+      });
+
+      // MB-V2 P3 notification mesh (log-only; no venue yet — new-venue signup).
+      require("../utils/venueNotify").notify({
+        type: "claim_arrived",
+        title: `New venue sign-up — ${newVenueName}`,
+        body: `${name} · ${phone} (new_venue_signup)`,
+        meta: { claimId: selfClaim._id, tier: "new_venue_signup" },
       });
 
       return res.status(201).json({
@@ -335,7 +343,7 @@ const submitManualClaim = async (req, res) => {
       return res.status(200).json({ success: true, message: "Your request is already under review. We'll reach out within 24 hours." });
     }
 
-    await VenueClaimRequest.create({
+    const claim = await VenueClaimRequest.create({
       venueId: venue._id,
       venueName: venue.name,
       venueSlug: slug,
@@ -347,6 +355,15 @@ const submitManualClaim = async (req, res) => {
       message: message || "",
       tier: "phone_mismatch",
       status: "pending_manual_review",
+    });
+
+    // MB-V2 P3 notification mesh (log-only, fire-and-forget).
+    require("../utils/venueNotify").notify({
+      venue: venue._id,
+      type: "claim_arrived",
+      title: `Claim request — ${venue.name}`,
+      body: `${name} · ${designation || "owner"} · ${phone}`,
+      meta: { claimId: claim._id, tier: "phone_mismatch" },
     });
 
     return res.status(201).json({

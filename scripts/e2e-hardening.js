@@ -493,6 +493,7 @@ async function run() {
       "/admin/venues/shortlists",
       "/admin/venues/site-visits",
       "/admin/venues/chats",
+      "/admin/venues/notifications",
     ];
     // Admin WRITE surfaces (S2 queues) — same principals must be denied.
     const WRITES13 = [

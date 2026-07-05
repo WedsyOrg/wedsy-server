@@ -326,4 +326,33 @@ const activityFirehose = async (req, res) => {
   }
 };
 
-module.exports = { directory, venueSummary, listVenueEnquiries, listVenueActivity, activityFirehose };
+// P3 — notification mesh read (the triggers write; this surfaces the table).
+const VenueNotification = require("../models/VenueNotification");
+const listNotifications = async (req, res) => {
+  try {
+    const filter = {};
+    const { type } = req.query;
+    if (type) {
+      if (!VenueNotification.schema.path("type").enumValues.includes(type)) {
+        return res.status(400).json({ message: "Unknown type" });
+      }
+      filter.type = type;
+    }
+    const limit = intParam(req.query.limit, 50, 200);
+    const skip = intParam(req.query.skip, 0);
+    const [notifications, total] = await Promise.all([
+      VenueNotification.find(filter)
+        .sort({ createdAt: -1, _id: 1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("venue", "name slug")
+        .lean(),
+      VenueNotification.countDocuments(filter),
+    ]);
+    return res.status(200).json({ notifications, total });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { directory, venueSummary, listVenueEnquiries, listVenueActivity, activityFirehose, listNotifications };

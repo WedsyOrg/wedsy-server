@@ -176,6 +176,15 @@ const forwardLead = async (req, res) => {
       severity: "normal",
     });
 
+    // MB-V2 P3 notification mesh (log-only, fire-and-forget).
+    require("../utils/venueNotify").notify({
+      venue: enquiry.venueId,
+      type: "lead_forwarded",
+      title: `Lead forwarded to Sales CRM`,
+      body: `${forward.coupleName || "A lead"} forwarded (pending_os)`,
+      meta: { forwardId: forward._id, enquiryRef: enquiry._id },
+    });
+
     return res.status(201).json({ forward: forward.toObject(), duplicate: false });
   } catch (err) {
     return res.status(500).json({ message: err.message });

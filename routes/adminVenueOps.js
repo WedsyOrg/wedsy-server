@@ -41,6 +41,9 @@ router.get("/forwards", CheckAdminLogin, leads.listForwards);
 // P0 S5 (D10) — cross-venue high-severity firehose (severity=all opts out).
 router.get("/activity-feed", CheckAdminLogin, ops.activityFirehose);
 
+// P3 — notification mesh read (hold/forward/claim/onboarding trigger emissions).
+router.get("/notifications", CheckAdminLogin, ops.listNotifications);
+
 // P1 — Lead Planner: shortlists (venue-owned, one per CRM lead), present-link
 // management, one-tap hold + site visit (both run the D2 linkage), and
 // site-visit oversight. Public present-mode reads live under /venues/present.

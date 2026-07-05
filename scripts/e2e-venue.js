@@ -1861,6 +1861,46 @@ async function run() {
     check("chat: interventions + nudge logged to the spine", act.status === 200 && (act.json.activity || []).some((a) => a.action === "chat_intervention_sent") && (act.json.activity || []).some((a) => a.action === "chat_venue_nudged"), `status ${act.status}`);
   }
 
+  // ================= MB-V2 P3: notification mesh triggers (log-only) =================
+  if (process.env.E2E_NOTIFY === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Trigger 1: onboarding arrival (public intake).
+    const onb = await api("POST", "/venues/onboarding-requests", { body: { name: "Notify Ravi", venueName: "Notify Grounds", city: "Pune", phone: "9866001100" } });
+    check("notify: onboarding intake accepted", [200, 201].includes(onb.status), `status ${onb.status}`);
+    // Trigger 2: claim arrival (public).
+    const clm = await api("POST", "/venue-owner/claim/manual", { body: { slug: SLUG, name: "Notify Claimant", designation: "owner", phone: "9866002200", email: "notify@claim.local" } });
+    check("notify: claim intake accepted", clm.status === 201, `status ${clm.status}`);
+    // Trigger 3: hold request (admin) — reuse a far date to avoid collisions.
+    const vDetail = await api("GET", `/venues/${SLUG}`);
+    const sp = ((vDetail.json && vDetail.json.venue && vDetail.json.venue.spaces) || []).find((s) => s.isBookable !== false);
+    const holdDate = new Date(Date.now() + 260 * 86400000).toISOString().slice(0, 10);
+    const hold = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { space: sp && sp._id, dates: [holdDate], notes: "notify probe" } });
+    check("notify: hold request accepted", hold.status === 201, `status ${hold.status}`);
+
+    // The mesh table should now carry the three trigger types (fire-and-forget:
+    // poll briefly for the async inserts).
+    let mesh = null;
+    for (let i = 0; i < 15; i++) {
+      const r = await api("GET", "/admin/venues/notifications?limit=100", { token: adminToken });
+      mesh = r.json && r.json.notifications;
+      const types = new Set((mesh || []).map((n) => n.type));
+      if (types.has("onboarding_arrived") && types.has("claim_arrived") && types.has("hold_requested")) break;
+      await new Promise((res) => setTimeout(res, 150));
+    }
+    const types = new Set((mesh || []).map((n) => n.type));
+    check("notify: mesh table carries onboarding_arrived", types.has("onboarding_arrived"));
+    check("notify: mesh table carries claim_arrived", types.has("claim_arrived"));
+    check("notify: mesh table carries hold_requested", types.has("hold_requested"));
+    check("notify: hold notification is venue-populated", (mesh || []).some((n) => n.type === "hold_requested" && n.venue && n.venue.slug === SLUG));
+    const filtered = await api("GET", "/admin/venues/notifications?type=onboarding_arrived&limit=50", { token: adminToken });
+    check("notify: type filter honored", filtered.status === 200 && (filtered.json.notifications || []).every((n) => n.type === "onboarding_arrived"), `status ${filtered.status}`);
+    const badType = await api("GET", "/admin/venues/notifications?type=bogus", { token: adminToken });
+    check("notify: unknown type -> 400", badType.status === 400, `status ${badType.status}`);
+  }
+
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
     // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
     const burst = await Promise.all(Array.from({ length: 75 }, () =>

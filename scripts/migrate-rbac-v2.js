@@ -9,12 +9,15 @@
  * never re-seeded. Running it is optional: the same seeding/migration happens
  * lazily on first touch of each venue's team/roles surface.
  *
- * SAFETY: refuses to run unless DATABASE_URL points at a local Mongo host
- * (same guard as scripts/seed-test-venue.js).
+ * SAFETY: refuses to run against a non-local Mongo UNLESS the operator
+ * deliberately opts in with BOTH `ALLOW_REMOTE=1` and `--apply` (the guarded
+ * production path — MB-V2 P3). Local hosts (127.0.0.1/localhost) always allowed.
+ * The resolved host is printed prominently on every run.
  *
  * Usage:
- *   node scripts/migrate-rbac-v2.js           # dry-run (default)
- *   node scripts/migrate-rbac-v2.js --apply   # seed + assign roleRefs
+ *   node scripts/migrate-rbac-v2.js                       # local dry-run (default)
+ *   node scripts/migrate-rbac-v2.js --apply               # local seed + assign
+ *   ALLOW_REMOTE=1 node scripts/migrate-rbac-v2.js --apply  # PROD run (both gates required)
  */
 require("dotenv").config();
 const mongoose = require("mongoose");
@@ -25,8 +28,14 @@ const { LEGACY_ROLE_TO_BUNDLE } = require("../utils/venueRoles");
 
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 const APPLY = process.argv.includes("--apply");
+const ALLOW_REMOTE = process.env.ALLOW_REMOTE === "1";
 
-function assertLocalMongo() {
+// Resolve + gate the target host. Local is always fine. A remote host is only
+// permitted when the operator sets BOTH gates (ALLOW_REMOTE=1 AND --apply) — a
+// remote dry-run or a remote run missing either gate is refused. Whatever the
+// outcome, the resolved host is surfaced loudly so a prod target is never a
+// surprise.
+function assertMongoTarget() {
   const url = process.env.DATABASE_URL || "";
   let host;
   try {
@@ -34,17 +43,28 @@ function assertLocalMongo() {
   } catch (e) {
     throw new Error(`Cannot parse DATABASE_URL to verify host: ${e.message}`);
   }
-  if (!LOCAL_HOSTS.has(host)) {
+  const isLocal = LOCAL_HOSTS.has(host);
+  console.log(`[migrate-rbac-v2] ┌───────────────────────────────────────────`);
+  console.log(`[migrate-rbac-v2] │ TARGET HOST: ${host}  (${isLocal ? "local" : "REMOTE"})`);
+  console.log(`[migrate-rbac-v2] │ MODE: ${APPLY ? "APPLY" : "DRY-RUN"}  ALLOW_REMOTE=${ALLOW_REMOTE ? "1" : "0"}`);
+  console.log(`[migrate-rbac-v2] └───────────────────────────────────────────`);
+  if (isLocal) return host;
+  // Non-local: both gates required.
+  if (!ALLOW_REMOTE || !APPLY) {
     throw new Error(
-      `Refusing to run: DATABASE_URL host "${host}" is not local. ` +
-        `This migration only runs against a local dev Mongo (127.0.0.1/localhost).`
+      `Refusing to run: DATABASE_URL host "${host}" is REMOTE. ` +
+        `The guarded production path requires BOTH ALLOW_REMOTE=1 and --apply ` +
+        `(got ALLOW_REMOTE=${ALLOW_REMOTE ? "1" : "0"}, ${APPLY ? "--apply" : "no --apply"}).`
     );
   }
+  console.log(
+    `[migrate-rbac-v2] ⚠  REMOTE APPLY authorized (ALLOW_REMOTE=1 + --apply) — writing to ${host}`
+  );
   return host;
 }
 
 async function run() {
-  const host = assertLocalMongo();
+  const host = assertMongoTarget();
   await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 8000 });
   console.log(`[migrate-rbac-v2] connected to local Mongo @ ${host} (${APPLY ? "APPLY" : "DRY-RUN"})`);
 
