@@ -172,6 +172,31 @@ async function run() {
     console.log(`[seed] reset owner ${owner.phone} (${owner._id})`);
   }
 
+  // 2b. Admin doc for the suites' minted admin JWTs. CheckAdminLogin does a
+  //     DB lookup (401 "invalid user" without a real doc), so the fixed id the
+  //     suites sign with must exist. Upsert keeps reseeds idempotent.
+  try {
+    const Admin = require("../models/Admin");
+    const ADMIN_ID = "000000000000000000000001";
+    await Admin.updateOne(
+      { _id: ADMIN_ID },
+      {
+        $set: {
+          name: "E2E Admin",
+          email: "e2e-admin@test-palace.local",
+          phone: "9000000099",
+          password: "not-a-real-login-password",
+          roles: ["ops"],
+          isDisabled: false,
+        },
+      },
+      { upsert: true }
+    );
+    console.log(`[seed] upserted admin ${ADMIN_ID}`);
+  } catch (e) {
+    console.log(`[seed] admin upsert skipped: ${e.message}`);
+  }
+
   // 3. Reset enquiries + interactions for this venue (idempotent rebuild).
   await VenueLeadInteraction.deleteMany({ venue: venue._id });
   await VenueEnquiry.deleteMany({ venueId: venue._id });

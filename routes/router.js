@@ -72,6 +72,9 @@ router.use("/chat", require("./chat"));
 router.use("/settlements", require("./settlements"));
 router.use("/stats", require("./stats"));
 router.use("/vendor-review", require("./vendor-review"));
+// MB-V2: Wedsy OS venues workspace — mounted ABOVE /admin so /admin/venues/*
+// never leaks into admin.js's PUT /:id param route.
+router.use("/admin/venues", require("./adminVenueOps"));
 router.use("/admin", require("./admin"));
 router.use("/department", require("./department"));
 router.use("/role", require("./role"));

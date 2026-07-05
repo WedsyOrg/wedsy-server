@@ -1489,6 +1489,64 @@ async function run() {
     check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
   }
 
+  // ================= MB-V2 P0 S1: admin venue ops (directory + 360 reads) =================
+  if (process.env.E2E_ADMIN_OPS === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Directory: rows + total, seeded venue present with derived claim state.
+    const dir = await api("GET", "/admin/venues?limit=100", { token: adminToken });
+    check("admin-ops: directory -> 200 with venues+total", dir.status === 200 && Array.isArray(dir.json.venues) && typeof dir.json.total === "number", `status ${dir.status}`);
+    const dirRow = ((dir.json && dir.json.venues) || []).find((v) => v.slug === SLUG);
+    check("admin-ops: seeded venue claimState=claimed (active owner)", Boolean(dirRow) && dirRow.claimState === "claimed", dirRow && dirRow.claimState);
+    check("admin-ops: directory row carries owner snapshot + enquiryCount", Boolean(dirRow) && dirRow.owner && dirRow.owner.phone === OWNER_PHONE && typeof dirRow.enquiryCount === "number", dirRow && JSON.stringify(dirRow.owner));
+    const dirClaimed = await api("GET", "/admin/venues?claimState=claimed&limit=100", { token: adminToken });
+    check("admin-ops: claimState=claimed filter keeps seeded venue", dirClaimed.status === 200 && dirClaimed.json.venues.some((v) => v.slug === SLUG), `status ${dirClaimed.status}`);
+    const dirUnclaimed = await api("GET", "/admin/venues?claimState=unclaimed&limit=100", { token: adminToken });
+    check("admin-ops: claimState=unclaimed filter drops seeded venue", dirUnclaimed.status === 200 && !dirUnclaimed.json.venues.some((v) => v.slug === SLUG), `status ${dirUnclaimed.status}`);
+    const dirBadClaim = await api("GET", "/admin/venues?claimState=bogus", { token: adminToken });
+    check("admin-ops: unknown claimState -> 400", dirBadClaim.status === 400, `status ${dirBadClaim.status}`);
+    const dirBadSort = await api("GET", "/admin/venues?sort=bogus", { token: adminToken });
+    check("admin-ops: unknown sort -> 400", dirBadSort.status === 400, `status ${dirBadSort.status}`);
+    const dirSearch = await api("GET", "/admin/venues?search=Test+Palace&limit=100", { token: adminToken });
+    check("admin-ops: name search finds seeded venue", dirSearch.status === 200 && dirSearch.json.venues.some((v) => v.slug === SLUG), `status ${dirSearch.status}`);
+
+    // 360 summary: profile + counts + owner + claim state.
+    const sum = await api("GET", `/admin/venues/${SLUG}/summary`, { token: adminToken });
+    const counts = (sum.json && sum.json.counts) || {};
+    check("admin-ops: summary -> 200 with venue+counts", sum.status === 200 && sum.json.venue && sum.json.venue.slug === SLUG, `status ${sum.status}`);
+    check("admin-ops: summary counts shape (enquiries/bookings/docs/conversations/holds)", ["enquiries", "bookings", "quotes", "bills", "invoices", "contracts", "conversations"].every((k) => typeof counts[k] === "number") && counts.holds && typeof counts.holds === "object", JSON.stringify(counts));
+    check("admin-ops: summary enquiry count reflects seed", counts.enquiries >= 10, `enquiries ${counts.enquiries}`);
+    check("admin-ops: summary claimState=claimed with owner listed", sum.json.claimState === "claimed" && Array.isArray(sum.json.owners) && sum.json.owners.some((o) => o.phone === OWNER_PHONE), sum.json.claimState);
+    check("admin-ops: summary strips heavy fields (googleReviews/competitiveCache)", !("googleReviews" in (sum.json.venue || {})) && !("competitiveCache" in (sum.json.venue || {})));
+    const sum404 = await api("GET", "/admin/venues/definitely-not-a-venue/summary", { token: adminToken });
+    check("admin-ops: summary unknown slug -> 404", sum404.status === 404, `status ${sum404.status}`);
+
+    // Leads tab (D1 Version A): read-only, labeled source + derived creator.
+    const enq = await api("GET", `/admin/venues/${SLUG}/enquiries?limit=100`, { token: adminToken });
+    check("admin-ops: enquiries -> 200 with rows+total", enq.status === 200 && Array.isArray(enq.json.enquiries) && enq.json.total >= 10, `status ${enq.status}, total ${enq.json && enq.json.total}`);
+    check("admin-ops: every lead labeled with source + createdBy", (enq.json.enquiries || []).every((e) => typeof e.source === "string" && ["venue_team", "couple", "unknown"].includes(e.createdBy)), enq.json.enquiries && JSON.stringify(enq.json.enquiries[0] && { source: enq.json.enquiries[0].source, createdBy: enq.json.enquiries[0].createdBy }));
+    const enqSrc = await api("GET", `/admin/venues/${SLUG}/enquiries?source=instagram&limit=100`, { token: adminToken });
+    check("admin-ops: enquiries source filter honored", enqSrc.status === 200 && (enqSrc.json.enquiries || []).every((e) => e.source === "instagram"), `status ${enqSrc.status}`);
+    const enqBadSrc = await api("GET", `/admin/venues/${SLUG}/enquiries?source=bogus`, { token: adminToken });
+    check("admin-ops: unknown source -> 400", enqBadSrc.status === 400, `status ${enqBadSrc.status}`);
+    const enqBadStage = await api("GET", `/admin/venues/${SLUG}/enquiries?stage=bogus`, { token: adminToken });
+    check("admin-ops: unknown stage -> 400", enqBadStage.status === 400, `status ${enqBadStage.status}`);
+
+    // Activity tab (E6): admin PUT writes a wedsy_team entry; filters narrow to it.
+    const adminPut = await api("PUT", `/venues/${SLUG}`, { token: adminToken, body: { tagline: "mbv2-admin-ops-probe" } });
+    check("admin-ops: admin listing PUT (activity probe) -> 200", adminPut.status === 200, `status ${adminPut.status}`);
+    const act = await api("GET", `/admin/venues/${SLUG}/activity?limit=100`, { token: adminToken });
+    check("admin-ops: activity -> 200 with rows+total", act.status === 200 && Array.isArray(act.json.activity) && typeof act.json.total === "number", `status ${act.status}`);
+    const actWedsy = await api("GET", `/admin/venues/${SLUG}/activity?actorType=wedsy_team&field=tagline&limit=10`, { token: adminToken });
+    check("admin-ops: actorType+field filters isolate the admin tagline write", actWedsy.status === 200 && (actWedsy.json.activity || []).length >= 1 && actWedsy.json.activity.every((a) => a.actorType === "wedsy_team" && a.field === "tagline"), `status ${actWedsy.status}, rows ${actWedsy.json && actWedsy.json.activity && actWedsy.json.activity.length}`);
+    const actBadSev = await api("GET", `/admin/venues/${SLUG}/activity?severity=catastrophic`, { token: adminToken });
+    check("admin-ops: unknown severity -> 400", actBadSev.status === 400, `status ${actBadSev.status}`);
+    const actBadActor = await api("GET", `/admin/venues/${SLUG}/activity?actorType=alien`, { token: adminToken });
+    check("admin-ops: unknown actorType -> 400", actBadActor.status === 400, `status ${actBadActor.status}`);
+  }
+
   finish();
 }
 

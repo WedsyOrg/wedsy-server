@@ -467,6 +467,50 @@ async function run() {
     ok("12 non-boolean per-doc whiteLabel -> 400", badWlDoc.status === 400, `status ${badWlDoc.status}`);
   }
 
+  // ═══════════ 13. MB-V2 ADMIN VENUE OPS (admin-vs-owner-vs-member deny sweep) ═══════════
+  console.log("\n— 13. Admin venue ops —");
+  {
+    // Member token (sales member of venue A via 8888888888's member identity).
+    const multi13 = await api("POST", "/venue-owner/auth", { body: { phone: "8888888888", otp: "000000", referenceId: "dev" } });
+    const memId13 = ((multi13.json && multi13.json.identities) || []).find((i) => i.kind === "member");
+    const selM13 = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: multi13.json && multi13.json.selectionToken, kind: "member", id: memId13 && memId13.id } });
+    const memberToken = selM13.json && selM13.json.token;
+    ok("13 setup: member token minted", Boolean(memberToken));
+
+    const ROUTES13 = [
+      "/admin/venues",
+      `/admin/venues/${A}/summary`,
+      `/admin/venues/${A}/enquiries`,
+      `/admin/venues/${A}/activity`,
+    ];
+    // CheckAdminLogin's legacy codes: 400 no-token/no-isAdmin-claim/bad-sig,
+    // 401 unknown admin _id, 403 disabled — all are hard denials; 2xx is the bug.
+    const denied = (s) => [400, 401, 403].includes(s);
+    for (const path of ROUTES13) {
+      const noTok = await api("GET", path);
+      ok(`13 ${path} no token -> denied`, denied(noTok.status), `status ${noTok.status}`);
+      const asOwner = await api("GET", path, { token: tokenA });
+      ok(`13 ${path} owner token -> denied`, denied(asOwner.status), `status ${asOwner.status}`);
+      const asForeignOwner = await api("GET", path, { token: tokenB });
+      ok(`13 ${path} foreign owner token -> denied`, denied(asForeignOwner.status), `status ${asForeignOwner.status}`);
+      const asMember = await api("GET", path, { token: memberToken });
+      ok(`13 ${path} member token -> denied`, denied(asMember.status), `status ${asMember.status}`);
+    }
+    // Wrong-secret admin token — signature must fail, not just claims.
+    const forged = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, "not-the-real-secret", { expiresIn: "1h" });
+    const forgedRes = await api("GET", "/admin/venues", { token: forged });
+    ok("13 forged-secret admin token -> denied", denied(forgedRes.status), `status ${forgedRes.status}`);
+    // Real-secret isAdmin token whose _id is NOT an Admin doc -> 401 invalid user
+    // (blocks any principal minting themselves isAdmin without a backing admin).
+    const ghostAdmin = jwt.sign({ _id: "0000000000000000000000aa", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const ghostRes = await api("GET", "/admin/venues", { token: ghostAdmin });
+    ok("13 isAdmin token with no Admin doc -> 401", ghostRes.status === 401, `status ${ghostRes.status}`);
+    // ReDoS/hostile search input on the directory regex must not 500.
+    const adminTok13 = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const hostileSearch = await api("GET", `/admin/venues?search=${encodeURIComponent("(((((((a+)+)+)+)+$^\\")}`, { token: adminTok13 });
+    ok("13 hostile regex search -> not 500", hostileSearch.status !== 500, `status ${hostileSearch.status}`);
+  }
+
   finish();
 }
 
