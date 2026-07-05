@@ -102,6 +102,15 @@ const createHold = async (req, res) => {
     // Owner gets a WhatsApp ping for wedsy-side requests (log-only default).
     if (req.admin) notifyHoldRequested(venue, hold).catch((e) => console.warn(`[holdAlert] ${e.message}`));
 
+    // MB-V2 P3 notification mesh (log-only, fire-and-forget).
+    require("../utils/venueNotify").notify({
+      venue: venue._id,
+      type: "hold_requested",
+      title: `Hold requested — ${venue.name}`,
+      body: `${hold.requestedBy === "wedsy" ? "Wedsy concierge" : "Owner"} requested ${hold.dates.length} date(s)`,
+      meta: { holdId: hold._id, requestedBy: hold.requestedBy },
+    });
+
     return res.status(201).json({ hold });
   } catch (err) {
     return res.status(500).json({ message: err.message });

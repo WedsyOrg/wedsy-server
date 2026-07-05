@@ -172,6 +172,31 @@ async function run() {
     console.log(`[seed] reset owner ${owner.phone} (${owner._id})`);
   }
 
+  // 2b. Admin doc for the suites' minted admin JWTs. CheckAdminLogin does a
+  //     DB lookup (401 "invalid user" without a real doc), so the fixed id the
+  //     suites sign with must exist. Upsert keeps reseeds idempotent.
+  try {
+    const Admin = require("../models/Admin");
+    const ADMIN_ID = "000000000000000000000001";
+    await Admin.updateOne(
+      { _id: ADMIN_ID },
+      {
+        $set: {
+          name: "E2E Admin",
+          email: "e2e-admin@test-palace.local",
+          phone: "9000000099",
+          password: "not-a-real-login-password",
+          roles: ["ops"],
+          isDisabled: false,
+        },
+      },
+      { upsert: true }
+    );
+    console.log(`[seed] upserted admin ${ADMIN_ID}`);
+  } catch (e) {
+    console.log(`[seed] admin upsert skipped: ${e.message}`);
+  }
+
   // 3. Reset enquiries + interactions for this venue (idempotent rebuild).
   await VenueLeadInteraction.deleteMany({ venue: venue._id });
   await VenueEnquiry.deleteMany({ venueId: venue._id });
@@ -224,6 +249,51 @@ async function run() {
     });
   }
   console.log(`[seed] created ${interactionSeeds.length} interactions`);
+
+  // 4b. MB-V2 D4 — a couple↔venue conversation for chat-oversight suites.
+  //     A couple User + an OPEN conversation on the first enquiry, seeded with
+  //     one OLD couple message so the venue-silence SLA breach is deterministic.
+  try {
+    const User = require("../models/User");
+    const VenueConversation = require("../models/VenueConversation");
+    const VenueMessage = require("../models/VenueMessage");
+    const COUPLE_PHONE = "9820000777";
+    let coupleUser = await User.findOne({ phone: COUPLE_PHONE });
+    const coupleDefaults = { name: "Aarav Test", phone: COUPLE_PHONE };
+    if (!coupleUser) coupleUser = await User.create(coupleDefaults);
+    else { Object.assign(coupleUser, coupleDefaults); await coupleUser.save(); }
+
+    const convEnquiry = enquiries[0];
+    await VenueConversation.deleteMany({ venueId: venue._id });
+    await VenueMessage.deleteMany({ conversationId: { $exists: true } }).catch(() => {});
+    const twoDaysAgo = new Date(now.getTime() - 2 * DAY);
+    const conversation = await VenueConversation.create({
+      venueId: venue._id,
+      enquiryId: convEnquiry._id,
+      userId: coupleUser._id,
+      status: "open",
+      lastMessageAt: twoDaysAgo,
+      lastCoupleMessageAt: twoDaysAgo,
+      unreadCountVenue: 1,
+    });
+    const coupleMsg = await VenueMessage.create({
+      conversationId: conversation._id,
+      senderId: coupleUser._id,
+      senderType: "couple",
+      messageType: "text",
+      content: { text: "Hi! Is the Grand Lawn free on our date? Really keen." },
+      isRead: false,
+    });
+    // Mongoose timestamps stamp createdAt=now on create; force it old via the
+    // native driver so the venue-silence SLA breach is deterministic.
+    await VenueMessage.collection.updateOne(
+      { _id: coupleMsg._id },
+      { $set: { createdAt: twoDaysAgo } }
+    );
+    console.log(`[seed] chat: couple user ${coupleUser._id} + open conversation ${conversation._id} (2d-old couple msg)`);
+  } catch (e) {
+    console.log(`[seed] chat conversation skipped: ${e.message}`);
+  }
 
   // 5. Templates (Test Palace) — safe for the e2e (it creates/deletes its own).
   if (VenueMessageTemplate) {

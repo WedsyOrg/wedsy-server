@@ -1474,6 +1474,433 @@ async function run() {
   // availability) also use.
   // ================= Public-route rate limiting (callback + generate-location) =================
   // Run on a freshly-started server (publicReadLimiter counters reset on restart).
+  // ================= MB-V2 P0 S2: admin queues (claims, onboarding, partner board) =================
+  // Runs BEFORE the public-ratelimit section — it seeds fixtures through the
+  // public onboarding/claim intakes, which that section rate-exhausts.
+  if (process.env.E2E_ADMIN_QUEUES === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Fixture A: a fresh unclaimed venue + a manual claim on it (clean approve).
+    const freshVenue = await api("POST", "/venues", { token: adminToken, body: { name: "Queue Test Manor", venueType: "resort", city: "Bangalore" } });
+    const freshSlug = freshVenue.json && freshVenue.json.venue && freshVenue.json.venue.slug;
+    check("queues: fixture venue created", freshVenue.status === 201 && Boolean(freshSlug), `status ${freshVenue.status}`);
+    const claimA = await api("POST", "/venue-owner/claim/manual", { body: { slug: freshSlug, name: "Fresh Owner", designation: "owner", phone: "9811111111", email: "fresh@qtm.local" } });
+    check("queues: manual claim submitted on fixture venue", claimA.status === 201, `status ${claimA.status}`);
+    // Fixture B: a new_venue_signup claim (no slug).
+    const claimB = await api("POST", "/venue-owner/claim/manual", { body: { name: "Signup Owner", designation: "manager", phone: "9822222222", email: "signup@qtm.local", newVenueName: "Signup Palace", newVenueType: "weird-type", newVenueAddress: "12 Test Road" } });
+    check("queues: new-venue signup claim submitted", claimB.status === 201, `status ${claimB.status}`);
+    // Fixture C: a manual claim against test-palace (conflicting active owner).
+    const claimC = await api("POST", "/venue-owner/claim/manual", { body: { slug: SLUG, name: "Impostor", designation: "owner", phone: "9833333333", email: "impostor@qtm.local" } });
+    check("queues: conflicting claim submitted on seeded venue", claimC.status === 201, `status ${claimC.status}`);
+
+    // Queue list + detail.
+    const claims = await api("GET", "/admin/venues/claims?status=pending_manual_review&limit=100", { token: adminToken });
+    check("queues: claims list -> 200 with pending requests", claims.status === 200 && claims.json.total >= 3, `status ${claims.status}, total ${claims.json && claims.json.total}`);
+    const rows = (claims.json && claims.json.requests) || [];
+    const reqA = rows.find((r) => r.venueSlug === freshSlug);
+    const reqB = rows.find((r) => r.tier === "new_venue_signup" && r.phone === "9822222222");
+    const reqC = rows.find((r) => r.venueSlug === SLUG && r.phone === "9833333333");
+    check("queues: all three fixtures visible in queue", Boolean(reqA && reqB && reqC));
+    const claimsBadTier = await api("GET", "/admin/venues/claims?tier=bogus", { token: adminToken });
+    check("queues: unknown tier filter -> 400", claimsBadTier.status === 400, `status ${claimsBadTier.status}`);
+    const detailC = await api("GET", `/admin/venues/claims/${reqC && reqC._id}`, { token: adminToken });
+    check("queues: claim detail surfaces current-owner conflict", detailC.status === 200 && detailC.json.currentOwner && detailC.json.currentOwner.phone === OWNER_PHONE, `status ${detailC.status}`);
+
+    // Approve A: creates a verified owner on the fixture venue.
+    const approveA = await api("POST", `/admin/venues/claims/${reqA && reqA._id}/approve`, { token: adminToken, body: { reviewNote: "checks out" } });
+    check("queues: approve existing-venue claim -> 200 verified owner", approveA.status === 200 && approveA.json.owner && approveA.json.owner.verificationStatus === "verified" && approveA.json.owner.phone === "9811111111", `status ${approveA.status}`);
+    const approveAgain = await api("POST", `/admin/venues/claims/${reqA && reqA._id}/approve`, { token: adminToken });
+    check("queues: double approve -> 409", approveAgain.status === 409, `status ${approveAgain.status}`);
+    const sumAfterA = await api("GET", `/admin/venues/${freshSlug}/summary`, { token: adminToken });
+    check("queues: fixture venue now claimState=claimed", sumAfterA.status === 200 && sumAfterA.json.claimState === "claimed", sumAfterA.json && sumAfterA.json.claimState);
+    const actAfterA = await api("GET", `/admin/venues/${freshSlug}/activity?actorType=wedsy_team&limit=20`, { token: adminToken });
+    check("queues: approval logged to activity spine (high)", actAfterA.status === 200 && (actAfterA.json.activity || []).some((a) => a.action === "claim_approved" && a.severity === "high"), `rows ${actAfterA.json && actAfterA.json.total}`);
+
+    // Approve B: creates the venue (draft, type mapped to enum) + owner.
+    const approveB = await api("POST", `/admin/venues/claims/${reqB && reqB._id}/approve`, { token: adminToken });
+    check("queues: approve new-venue signup -> 200 with created venue", approveB.status === 200 && approveB.json.venue && approveB.json.venue.slug, `status ${approveB.status}`);
+    const createdSlug = approveB.json && approveB.json.venue && approveB.json.venue.slug;
+    const createdSum = await api("GET", `/admin/venues/${createdSlug}/summary`, { token: adminToken });
+    check("queues: signup venue is draft + claimed + type coerced to enum", createdSum.status === 200 && createdSum.json.venue.status === "draft" && createdSum.json.venue.venueType === "other" && createdSum.json.claimState === "claimed", createdSum.json && createdSum.json.venue && createdSum.json.venue.venueType);
+
+    // Approve C must 409 (active owner with different phone), then reject it.
+    const approveC = await api("POST", `/admin/venues/claims/${reqC && reqC._id}/approve`, { token: adminToken });
+    check("queues: conflicting approve -> 409 (owner phone mismatch)", approveC.status === 409, `status ${approveC.status}`);
+    const rejectC = await api("POST", `/admin/venues/claims/${reqC && reqC._id}/reject`, { token: adminToken, body: { reviewNote: "not the owner" } });
+    check("queues: reject -> 200 with reviewer stamp", rejectC.status === 200 && rejectC.json.request.status === "rejected" && Boolean(rejectC.json.request.reviewedAt), `status ${rejectC.status}`);
+    const rejectAgain = await api("POST", `/admin/venues/claims/${reqC && reqC._id}/reject`, { token: adminToken });
+    check("queues: double reject -> 409", rejectAgain.status === 409, `status ${rejectAgain.status}`);
+
+    // Onboarding queue: public intake -> guarded transitions.
+    const onb1 = await api("POST", "/venues/onboarding-requests", { body: { name: "Ravi", venueName: "Lakeside Grounds", city: "Mysore", phone: "9844444444" } });
+    const onb2 = await api("POST", "/venues/onboarding-requests", { body: { name: "Meera", venueName: "Hilltop Farms", city: "Coorg", phone: "9855555555" } });
+    check("queues: onboarding intakes accepted", [200, 201].includes(onb1.status) && [200, 201].includes(onb2.status), `statuses ${onb1.status},${onb2.status}`);
+    const onbList = await api("GET", "/admin/venues/onboarding-requests?status=new&limit=100", { token: adminToken });
+    check("queues: onboarding list -> 200 with new requests", onbList.status === 200 && onbList.json.total >= 2, `status ${onbList.status}, total ${onbList.json && onbList.json.total}`);
+    const onbRows = (onbList.json && onbList.json.requests) || [];
+    const r1 = onbRows.find((r) => r.phone === "9844444444");
+    const r2 = onbRows.find((r) => r.phone === "9855555555");
+    const move1 = await api("PATCH", `/admin/venues/onboarding-requests/${r1 && r1._id}`, { token: adminToken, body: { status: "contacted" } });
+    check("queues: onboarding new -> contacted", move1.status === 200 && move1.json.request.status === "contacted", `status ${move1.status}`);
+    const moveBack = await api("PATCH", `/admin/venues/onboarding-requests/${r1 && r1._id}`, { token: adminToken, body: { status: "new" } });
+    check("queues: backwards transition -> 400 (not an allowed target)", moveBack.status === 400 || moveBack.status === 409, `status ${moveBack.status}`);
+    const move2 = await api("PATCH", `/admin/venues/onboarding-requests/${r2 && r2._id}`, { token: adminToken, body: { status: "converted" } });
+    check("queues: onboarding new -> converted", move2.status === 200, `status ${move2.status}`);
+    const moveTerminal = await api("PATCH", `/admin/venues/onboarding-requests/${r2 && r2._id}`, { token: adminToken, body: { status: "dropped" } });
+    check("queues: converted is terminal -> 409", moveTerminal.status === 409, `status ${moveTerminal.status}`);
+    const moveBogus = await api("PATCH", `/admin/venues/onboarding-requests/${r1 && r1._id}`, { token: adminToken, body: { status: "abducted" } });
+    check("queues: unknown onboarding status -> 400", moveBogus.status === 400, `status ${moveBogus.status}`);
+
+    // Partner board: derived columns fed by both queues.
+    const board = await api("GET", "/admin/venues/partner-board", { token: adminToken });
+    const cols = (board.json && board.json.columns) || {};
+    check("queues: partner board -> 200 with 4 columns", board.status === 200 && ["prospect", "contacted", "onboarded", "live"].every((k) => Array.isArray(cols[k])), `status ${board.status}`);
+    check("queues: contacted onboarding request on board", (cols.contacted || []).some((c) => c.kind === "onboarding_request" && c.phone === "9844444444"));
+    check("queues: seeded venue (claimed+published) in live column", (cols.live || []).some((c) => c.kind === "venue" && c.slug === SLUG));
+    check("queues: signup-created venue (claimed+draft) in onboarded column", (cols.onboarded || []).some((c) => c.kind === "venue" && c.slug === createdSlug));
+    check("queues: approved fixture venue in onboarded column", (cols.onboarded || []).some((c) => c.kind === "venue" && c.slug === freshSlug));
+  }
+
+  // ================= MB-V2 P0 S3: admin day-board + cross-venue hold tracker =================
+  if (process.env.E2E_ADMIN_BOARD === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    // Far-future date so no other section's holds/bookings collide.
+    const boardDate = new Date(Date.now() + 200 * 86400000).toISOString().slice(0, 10);
+
+    const vDetail = await api("GET", `/venues/${SLUG}`);
+    const spaces = ((vDetail.json && vDetail.json.venue && vDetail.json.venue.spaces) || []).filter((s) => s.isBookable !== false);
+    const spaceId = spaces[0] && spaces[0]._id;
+    check("board: seeded venue has a bookable space", Boolean(spaceId));
+
+    // Wedsy-side hold REQUEST through the EXISTING route (admin token).
+    const holdReq = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { space: spaceId, dates: [boardDate], notes: "day-board probe" } });
+    check("board: wedsy hold request via existing route -> 201 requestedBy=wedsy", holdReq.status === 201 && holdReq.json.hold && holdReq.json.hold.requestedBy === "wedsy", `status ${holdReq.status}`);
+    const holdId = holdReq.json.hold && holdReq.json.hold._id;
+
+    const b1 = await api("GET", `/admin/venues/day-board?date=${boardDate}`, { token: adminToken });
+    const row1 = b1.status === 200 && (b1.json.venues || []).find((v) => v.slug === SLUG);
+    check("board: day-board -> 200 with seeded venue row", Boolean(row1), `status ${b1.status}`);
+    check("board: pending hold counted, no space claimed yet", row1 && row1.pendingHolds >= 1 && row1.held === 0 && row1.open === row1.spacesTotal, row1 && JSON.stringify({ pendingHolds: row1.pendingHolds, held: row1.held, open: row1.open }));
+    check("board: demand heat present as number", row1 && typeof row1.demand === "number");
+    check("board: totals aggregate pending holds", b1.json.totals && b1.json.totals.pendingHolds >= 1, b1.json.totals && JSON.stringify(b1.json.totals));
+
+    // D3: the OWNER approves; admin has no approve route.
+    const appr = await api("POST", `/venues/${SLUG}/holds/${holdId}/approve`, { token });
+    check("board: owner approves the wedsy request -> 200", appr.status === 200, `status ${appr.status}`);
+    const b2 = await api("GET", `/admin/venues/day-board?date=${boardDate}`, { token: adminToken });
+    const row2 = b2.status === 200 && (b2.json.venues || []).find((v) => v.slug === SLUG);
+    check("board: after approval the date shows held space", row2 && row2.held >= 1 && row2.open < row2.spacesTotal && row2.pendingHolds === 0, row2 && JSON.stringify({ held: row2.held, open: row2.open, pendingHolds: row2.pendingHolds }));
+
+    const tracker = await api("GET", `/admin/venues/holds?status=approved&requestedBy=wedsy&slug=${SLUG}`, { token: adminToken });
+    check("board: holds tracker filters + populated venue", tracker.status === 200 && (tracker.json.holds || []).some((h) => h._id === holdId && h.venue && h.venue.slug === SLUG), `status ${tracker.status}`);
+
+    // Owner releases — the admin tracker sees the transition (visibility only).
+    const rel = await api("POST", `/venues/${SLUG}/holds/${holdId}/release`, { token });
+    check("board: owner release -> 200", rel.status === 200, `status ${rel.status}`);
+    const tracker2 = await api("GET", `/admin/venues/holds?status=released&slug=${SLUG}`, { token: adminToken });
+    check("board: released status visible cross-venue", tracker2.status === 200 && (tracker2.json.holds || []).some((h) => h._id === holdId), `status ${tracker2.status}`);
+    const b3 = await api("GET", `/admin/venues/day-board?date=${boardDate}`, { token: adminToken });
+    const row3 = b3.status === 200 && (b3.json.venues || []).find((v) => v.slug === SLUG);
+    check("board: date opens back up after release", row3 && row3.held === 0 && row3.open === row3.spacesTotal, row3 && JSON.stringify({ held: row3.held, open: row3.open }));
+
+    // Validation.
+    const badDate = await api("GET", "/admin/venues/day-board?date=13-2030-99", { token: adminToken });
+    check("board: malformed date -> 400", badDate.status === 400, `status ${badDate.status}`);
+    const noDate = await api("GET", "/admin/venues/day-board", { token: adminToken });
+    check("board: missing date -> 400", noDate.status === 400, `status ${noDate.status}`);
+    const badStatus = await api("GET", "/admin/venues/holds?status=bogus", { token: adminToken });
+    check("board: unknown hold status filter -> 400", badStatus.status === 400, `status ${badStatus.status}`);
+    const badSlug = await api("GET", "/admin/venues/holds?slug=definitely-not-a-venue", { token: adminToken });
+    check("board: unknown venue slug -> 404", badSlug.status === 404, `status ${badSlug.status}`);
+  }
+
+  // ================= MB-V2 P0 S4+S5: leads oversight + forward bridge + firehose =================
+  if (process.env.E2E_ADMIN_LEADS === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Cross-venue list with venue populated + creator labels.
+    const all = await api("GET", "/admin/venues/leads?limit=100", { token: adminToken });
+    check("leads-oversight: cross-venue list -> 200 rows+total", all.status === 200 && Array.isArray(all.json.leads) && all.json.total >= 10, `status ${all.status}, total ${all.json && all.json.total}`);
+    check("leads-oversight: rows carry venue + source + createdBy", (all.json.leads || []).every((l) => l.venue && l.venue.slug && typeof l.source === "string" && ["venue_team", "couple", "unknown"].includes(l.createdBy)));
+    const bySlug = await api("GET", `/admin/venues/leads?slug=${SLUG}&limit=100`, { token: adminToken });
+    check("leads-oversight: venue filter scopes rows", bySlug.status === 200 && (bySlug.json.leads || []).every((l) => l.venue.slug === SLUG) && bySlug.json.total >= 10, `status ${bySlug.status}`);
+    const byStage = await api("GET", "/admin/venues/leads?stage=booked&limit=100", { token: adminToken });
+    check("leads-oversight: stage filter honored", byStage.status === 200 && (byStage.json.leads || []).every((l) => l.stage === "booked"), `status ${byStage.status}`);
+    const badStage = await api("GET", "/admin/venues/leads?stage=bogus", { token: adminToken });
+    check("leads-oversight: unknown stage -> 400", badStage.status === 400, `status ${badStage.status}`);
+    const badSlug = await api("GET", "/admin/venues/leads?slug=definitely-not-a-venue", { token: adminToken });
+    check("leads-oversight: unknown venue -> 404", badSlug.status === 404, `status ${badSlug.status}`);
+
+    // The D1 bridge: forward one lead, idempotently.
+    const target = (bySlug.json.leads || []).find((l) => !l.forward);
+    check("leads-oversight: an unforwarded lead exists to bridge", Boolean(target));
+    const fwd = await api("POST", `/admin/venues/leads/${target && target._id}/forward`, { token: adminToken, body: { notes: "hot lead — wants a Dec date" } });
+    check("forward: first forward -> 201 pending_os with snapshots", fwd.status === 201 && fwd.json.forward && fwd.json.forward.status === "pending_os" && fwd.json.duplicate === false && typeof fwd.json.forward.couplePhone === "string", `status ${fwd.status}`);
+    const fwdAgain = await api("POST", `/admin/venues/leads/${target && target._id}/forward`, { token: adminToken, body: { notes: "resubmitted" } });
+    check("forward: repeat forward idempotent -> 200 duplicate, same row", fwdAgain.status === 200 && fwdAgain.json.duplicate === true && String(fwdAgain.json.forward._id) === String(fwd.json.forward._id), `status ${fwdAgain.status}`);
+    const fwd404 = await api("POST", "/admin/venues/leads/000000000000000000000000/forward", { token: adminToken });
+    check("forward: unknown enquiry -> 404", fwd404.status === 404, `status ${fwd404.status}`);
+    const fwdBadId = await api("POST", "/admin/venues/leads/not-an-id/forward", { token: adminToken });
+    check("forward: malformed id -> 400", fwdBadId.status === 400, `status ${fwdBadId.status}`);
+    const fwdBadNotes = await api("POST", `/admin/venues/leads/${target && target._id}/forward`, { token: adminToken, body: { notes: 42 } });
+    check("forward: non-string notes -> 400 (validation precedes idempotency)", fwdBadNotes.status === 400, `status ${fwdBadNotes.status}`);
+
+    // Forwarded marker shows up in the oversight list.
+    const marked = await api("GET", `/admin/venues/leads?slug=${SLUG}&forwarded=true&limit=100`, { token: adminToken });
+    check("leads-oversight: forwarded=true filter finds the bridged lead", marked.status === 200 && (marked.json.leads || []).some((l) => String(l._id) === String(target._id) && l.forward && l.forward.status === "pending_os"), `status ${marked.status}`);
+
+    // The bridge queue endpoint (what the OS receive side consumes).
+    const queue = await api("GET", "/admin/venues/forwards?status=pending_os", { token: adminToken });
+    check("forward: pending_os queue lists the row with venue+enquiry populated", queue.status === 200 && (queue.json.forwards || []).some((f) => String(f.enquiryRef && f.enquiryRef._id || f.enquiryRef) === String(target._id) && f.venue && f.venue.slug === SLUG), `status ${queue.status}`);
+    const queueBad = await api("GET", "/admin/venues/forwards?status=bogus", { token: adminToken });
+    check("forward: unknown queue status -> 400", queueBad.status === 400, `status ${queueBad.status}`);
+
+    // Activity spine recorded the bridge action.
+    const act = await api("GET", `/admin/venues/${SLUG}/activity?actorType=wedsy_team&limit=50`, { token: adminToken });
+    check("forward: bridge logged on the venue's trail", act.status === 200 && (act.json.activity || []).some((a) => a.action === "lead_forwarded_to_crm"), `status ${act.status}`);
+
+    // ---- S5: cross-venue firehose ----
+    const fire = await api("GET", "/admin/venues/activity-feed?limit=100", { token: adminToken });
+    check("firehose: default feed -> 200, high-severity only, venue populated", fire.status === 200 && Array.isArray(fire.json.activity) && (fire.json.activity || []).every((a) => a.severity === "high" && a.venue && a.venue.slug), `status ${fire.status}, rows ${fire.json && fire.json.activity && fire.json.activity.length}`);
+    check("firehose: has cross-venue high entries (claim approvals etc.)", (fire.json.activity || []).length >= 1);
+    const fireAll = await api("GET", "/admin/venues/activity-feed?severity=all&actorType=wedsy_team&limit=100", { token: adminToken });
+    check("firehose: severity=all + actorType filter", fireAll.status === 200 && (fireAll.json.activity || []).some((a) => a.severity !== "high") && (fireAll.json.activity || []).every((a) => a.actorType === "wedsy_team"), `status ${fireAll.status}`);
+    const fireSlug = await api("GET", `/admin/venues/activity-feed?severity=all&slug=${SLUG}&limit=100`, { token: adminToken });
+    check("firehose: slug filter scopes to one venue", fireSlug.status === 200 && (fireSlug.json.activity || []).every((a) => a.venue && a.venue.slug === SLUG), `status ${fireSlug.status}`);
+    const fireBad = await api("GET", "/admin/venues/activity-feed?severity=catastrophic", { token: adminToken });
+    check("firehose: unknown severity -> 400", fireBad.status === 400, `status ${fireBad.status}`);
+  }
+
+  // ================= MB-V2 P1: lead planner — shortlists, present mode, D2 linkage =================
+  if (process.env.E2E_PLANNER === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const CRM_ID = "crm-lead-e2e-0001";
+    const PLANNER_PHONE = "9877001122";
+
+    // Shortlist create (idempotent per CRM lead) + validation.
+    const noId = await api("POST", "/admin/venues/shortlists", { token: adminToken, body: { coupleName: "No Id" } });
+    check("planner: shortlist without crmEnquiryId -> 400", noId.status === 400, `status ${noId.status}`);
+    const sl = await api("POST", "/admin/venues/shortlists", { token: adminToken, body: { crmEnquiryId: CRM_ID, coupleName: "Aarohi & Vikram", couplePhone: PLANNER_PHONE } });
+    check("planner: shortlist created", sl.status === 201 && sl.json.shortlist && sl.json.duplicate === false, `status ${sl.status}`);
+    const slId = sl.json.shortlist && sl.json.shortlist._id;
+    const slDup = await api("POST", "/admin/venues/shortlists", { token: adminToken, body: { crmEnquiryId: CRM_ID } });
+    check("planner: duplicate crmEnquiryId -> 200 existing", slDup.status === 200 && slDup.json.duplicate === true && String(slDup.json.shortlist._id) === String(slId), `status ${slDup.status}`);
+
+    // Items: add (dedupe 409), unknown venue 404, notes patch.
+    const add1 = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: SLUG, notes: "Great lawn for 450 pax" } });
+    check("planner: add venue A -> 201", add1.status === 201, `status ${add1.status}`);
+    const add1Dup = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: SLUG } });
+    check("planner: duplicate venue on shortlist -> 409", add1Dup.status === 409, `status ${add1Dup.status}`);
+    const add2 = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: "test-palace-two" } });
+    check("planner: add venue B -> 201", add2.status === 201, `status ${add2.status}`);
+    const addGhost = await api("POST", `/admin/venues/shortlists/${slId}/items`, { token: adminToken, body: { venueSlug: "no-such-venue" } });
+    check("planner: unknown venue -> 404", addGhost.status === 404, `status ${addGhost.status}`);
+    const items = add2.json.shortlist.items;
+    const itemA = items.find((i) => i.venue && i.venue.slug === SLUG);
+    const itemB = items.find((i) => i.venue && i.venue.slug === "test-palace-two");
+    check("planner: detail items carry venue cards", Boolean(itemA && itemB && itemA.venue.name), itemA && itemA.venue && itemA.venue.name);
+    const patchNote = await api("PATCH", `/admin/venues/shortlists/${slId}/items/${itemA._id}`, { token: adminToken, body: { notes: "Owner quotes ₹1500/plate veg" } });
+    check("planner: item notes patched", patchNote.status === 200, `status ${patchNote.status}`);
+    const patchBadStatus = await api("PATCH", `/admin/venues/shortlists/${slId}/items/${itemA._id}`, { token: adminToken, body: { status: "reacted" } });
+    check("planner: admin cannot force status=reacted -> 400", patchBadStatus.status === 400, `status ${patchBadStatus.status}`);
+
+    // Present link + PUBLIC present mode.
+    const link1 = await api("POST", `/admin/venues/shortlists/${slId}/present-link`, { token: adminToken });
+    check("planner: present link -> 48-hex token", link1.status === 200 && /^[a-f0-9]{48}$/.test(link1.json.presentToken || ""), `status ${link1.status}`);
+    const token1 = link1.json.presentToken;
+    const pub1 = await api("GET", `/venues/present/${token1}`);
+    check("present: public read -> 200 with venue cards", pub1.status === 200 && Array.isArray(pub1.json.items) && pub1.json.items.length === 2 && pub1.json.items.every((i) => i.venue && i.venue.name), `status ${pub1.status}`);
+    check("present: no phone/CRM leakage in public payload", !JSON.stringify(pub1.json).includes(PLANNER_PHONE) && !JSON.stringify(pub1.json).includes(CRM_ID));
+    const pubItemA = pub1.json.items.find((i) => i.venue.name === "Test Palace");
+    const reactOk = await api("POST", `/venues/present/${token1}/react`, { body: { itemId: pubItemA.itemId, reaction: "love" } });
+    check("present: couple reaction accepted", reactOk.status === 200 && reactOk.json.reaction === "love", `status ${reactOk.status}`);
+    const reactBad = await api("POST", `/venues/present/${token1}/react`, { body: { itemId: pubItemA.itemId, reaction: "meh" } });
+    check("present: unknown reaction -> 400", reactBad.status === 400, `status ${reactBad.status}`);
+    const reactGhost = await api("POST", `/venues/present/${token1}/react`, { body: { itemId: "000000000000000000000000", reaction: "no" } });
+    check("present: unknown item -> 404", reactGhost.status === 404, `status ${reactGhost.status}`);
+    const afterReact = await api("GET", `/admin/venues/shortlists/${slId}`, { token: adminToken });
+    const reactedItem = afterReact.json.shortlist.items.find((i) => String(i._id) === String(pubItemA.itemId));
+    check("planner: reaction lands in admin view (status reacted)", reactedItem && reactedItem.reaction === "love" && reactedItem.status === "reacted", reactedItem && reactedItem.status);
+
+    // Token typing + replay-after-rotation.
+    const malformed = await api("GET", "/venues/present/not-a-token");
+    check("present: malformed token -> 400", malformed.status === 400, `status ${malformed.status}`);
+    const unknownTok = await api("GET", `/venues/present/${"ab".repeat(24)}`);
+    check("present: well-formed unknown token -> 404", unknownTok.status === 404, `status ${unknownTok.status}`);
+    const link2 = await api("POST", `/admin/venues/shortlists/${slId}/present-link`, { token: adminToken });
+    const replay = await api("GET", `/venues/present/${token1}`);
+    check("present: rotated link kills the old token (replay -> 404)", link2.status === 200 && replay.status === 404, `replay ${replay.status}`);
+
+    // One-tap hold: D2 linkage creates the owner-visible lead (source wedsy + crmLeadRef).
+    const holdDate = new Date(Date.now() + 220 * 86400000).toISOString().slice(0, 10);
+    const tapHold = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemA._id}/hold`, { token: adminToken, body: { dates: [holdDate] } });
+    check("planner: one-tap hold -> 201 wedsy request + linked enquiry", tapHold.status === 201 && tapHold.json.hold.requestedBy === "wedsy" && Boolean(tapHold.json.enquiryId), `status ${tapHold.status}`);
+    const linkedEnqId = tapHold.json.enquiryId;
+    const enqList = await api("GET", `/admin/venues/${SLUG}/enquiries?source=wedsy&limit=100`, { token: adminToken });
+    const linkedEnq = (enqList.json.enquiries || []).find((e) => String(e._id) === String(linkedEnqId));
+    check("planner: D2 lead is owner-visible with source=wedsy + crmLeadRef", Boolean(linkedEnq) && linkedEnq.crmLeadRef === CRM_ID, linkedEnq && linkedEnq.crmLeadRef);
+    const tapHoldAgain = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemA._id}/hold`, { token: adminToken, body: { dates: [holdDate] } });
+    check("planner: second hold while active -> 409", tapHoldAgain.status === 409, `status ${tapHoldAgain.status}`);
+    const badDates = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemB._id}/hold`, { token: adminToken, body: { dates: ["soon"] } });
+    check("planner: malformed hold dates -> 400", badDates.status === 400, `status ${badDates.status}`);
+
+    // Site visit on the SAME couple+venue reuses the D2 lead (phone dedup).
+    const visitAt = new Date(Date.now() + 12 * 86400000).toISOString();
+    const visit = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemA._id}/visit`, { token: adminToken, body: { scheduledAt: visitAt, notes: "Bring decor lookbook" } });
+    check("planner: visit scheduled -> 201", visit.status === 201, `status ${visit.status}`);
+    check("planner: D2 dedup — visit reuses the hold's enquiry", visit.status === 201 && String(visit.json.enquiryId) === String(linkedEnqId), `enq ${visit.json && visit.json.enquiryId}`);
+    const visitId = visit.json.visit && visit.json.visit._id;
+    const visitBad = await api("POST", `/admin/venues/shortlists/${slId}/items/${itemB._id}/visit`, { token: adminToken, body: { scheduledAt: "whenever" } });
+    check("planner: malformed visit datetime -> 400", visitBad.status === 400, `status ${visitBad.status}`);
+
+    // Owner side: sees + progresses the walk-through.
+    const ownerVisits = await api("GET", `/venues/${SLUG}/site-visits`, { token });
+    check("planner: owner sees the visit with couple attached", ownerVisits.status === 200 && (ownerVisits.json.visits || []).some((v) => String(v._id) === String(visitId) && v.enquiryRef && v.enquiryRef.coupleName), `status ${ownerVisits.status}`);
+    const ownerConfirm = await api("PATCH", `/venues/${SLUG}/site-visits/${visitId}`, { token, body: { status: "confirmed" } });
+    check("planner: owner confirms visit -> 200", ownerConfirm.status === 200 && ownerConfirm.json.visit.status === "confirmed", `status ${ownerConfirm.status}`);
+    const adminVisits = await api("GET", `/admin/venues/site-visits?status=confirmed`, { token: adminToken });
+    check("planner: admin visit oversight reflects owner's confirm", adminVisits.status === 200 && (adminVisits.json.visits || []).some((v) => String(v._id) === String(visitId) && v.venue && v.venue.slug === SLUG), `status ${adminVisits.status}`);
+    const adminVisitBad = await api("GET", "/admin/venues/site-visits?status=bogus", { token: adminToken });
+    check("planner: unknown visit status filter -> 400", adminVisitBad.status === 400, `status ${adminVisitBad.status}`);
+
+    // Item removal keeps the shortlist consistent.
+    const rm = await api("DELETE", `/admin/venues/shortlists/${slId}/items/${itemB._id}`, { token: adminToken });
+    check("planner: item removal -> 200, one item left", rm.status === 200 && rm.json.shortlist.items.length === 1, `status ${rm.status}`);
+
+    // Planner list rollup.
+    const lists = await api("GET", "/admin/venues/shortlists?limit=50", { token: adminToken });
+    const listRow = (lists.json.shortlists || []).find((s) => s.crmEnquiryId === CRM_ID);
+    check("planner: list rollup (counts + link flag)", lists.status === 200 && listRow && listRow.itemCount === 1 && listRow.reactedCount === 1 && listRow.hasPresentLink === true, listRow && JSON.stringify({ itemCount: listRow.itemCount, reactedCount: listRow.reactedCount }));
+  }
+
+  // ================= MB-V2 P2: chat oversight (D4) =================
+  if (process.env.E2E_CHAT === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Admin thread list — the seeded conversation shows up with couple + venue.
+    const threads = await api("GET", `/admin/venues/chats?slug=${SLUG}`, { token: adminToken });
+    const thread = threads.status === 200 && (threads.json.threads || [])[0];
+    check("chat: admin thread list -> 200 with the seeded conversation", Boolean(thread) && thread.venue && thread.venue.slug === SLUG && thread.couple, `status ${threads.status}`);
+    const convId = thread && thread._id;
+    const coupleUserId = thread && thread.couple && thread.couple._id;
+    check("chat: SLA breach surfaced (venue silent > window on 2d-old couple msg)", thread && thread.slaBreached === true && thread.hoursSinceCouple >= 24, thread && JSON.stringify({ sla: thread.slaBreached, hrs: thread.hoursSinceCouple }));
+    check("chat: response advertises slaHours + flagTerms config", typeof threads.json.slaHours === "number" && Array.isArray(threads.json.flagTerms));
+
+    // Couple + venue tokens for targeting checks.
+    const coupleToken = jwt.sign({ _id: coupleUserId }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Admin reads the full thread (both targeting halves later).
+    const readThread = await api("GET", `/admin/venues/chats/${convId}`, { token: adminToken });
+    check("chat: admin thread read -> 200 with the couple's opener", readThread.status === 200 && (readThread.json.messages || []).some((m) => m.senderType === "couple"), `status ${readThread.status}`);
+
+    // Intervention: target BOTH — visible to couple AND venue.
+    const both = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "Wedsy here — happy to help you both close this!", target: "both" } });
+    check("chat: intervention (both) -> 201 senderType wedsy", both.status === 201 && both.json.message.senderType === "wedsy" && both.json.message.target === "both", `status ${both.status}`);
+    // Intervention: COUPLE_ONLY — couple sees it, venue must NOT.
+    const coupleOnly = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "Psst couple — this venue often flexes on pax.", target: "couple_only" } });
+    check("chat: intervention (couple_only) -> 201", coupleOnly.status === 201, `status ${coupleOnly.status}`);
+    // Intervention: VENUE_ONLY — venue sees it, couple must NOT.
+    const venueOnly = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "Venue — please reply, this couple is hot.", target: "venue_only" } });
+    check("chat: intervention (venue_only) -> 201", venueOnly.status === 201, `status ${venueOnly.status}`);
+
+    // Structured offer.
+    const offer = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { kind: "offer", title: "Wedsy Assured: 5% off", body: "Book this week and Wedsy covers 5%.", validUntil: "2027-12-31", target: "both" } });
+    check("chat: offer message -> 201 with offer payload", offer.status === 201 && offer.json.message.messageType === "offer" && offer.json.message.offer.title === "Wedsy Assured: 5% off", `status ${offer.status}`);
+    const offerNoTitle = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { kind: "offer", body: "no title" } });
+    check("chat: offer without title -> 400", offerNoTitle.status === 400, `status ${offerNoTitle.status}`);
+    const badTarget = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "x", target: "everyone" } });
+    check("chat: unknown target -> 400", badTarget.status === 400, `status ${badTarget.status}`);
+    const emptyText = await api("POST", `/admin/venues/chats/${convId}/intervene`, { token: adminToken, body: { text: "   " } });
+    check("chat: empty intervention text -> 400", emptyText.status === 400, `status ${emptyText.status}`);
+
+    // ── Targeting enforcement across the three perspectives ──
+    // Couple view: sees both + couple_only + the offer; NOT venue_only.
+    const coupleView = await api("GET", `/conversations/${convId}/messages`, { token: coupleToken });
+    const coupleTexts = (coupleView.json.messages || []).map((m) => m.content && m.content.text);
+    check("chat: couple sees 'both' + 'couple_only' interventions", coupleView.status === 200 && coupleTexts.some((t) => /help you both close/.test(t)) && coupleTexts.some((t) => /flexes on pax/.test(t)), `status ${coupleView.status}`);
+    check("chat: couple does NOT see 'venue_only'", !coupleTexts.some((t) => /this couple is hot/.test(t)));
+    check("chat: couple sees the offer", (coupleView.json.messages || []).some((m) => m.messageType === "offer"));
+    // Venue (owner) view: sees both + venue_only + offer; NOT couple_only.
+    const venueView = await api("GET", `/conversations/${convId}/messages`, { token });
+    const venueTexts = (venueView.json.messages || []).map((m) => m.content && m.content.text);
+    check("chat: venue sees 'both' + 'venue_only' interventions", venueView.status === 200 && venueTexts.some((t) => /help you both close/.test(t)) && venueTexts.some((t) => /this couple is hot/.test(t)), `status ${venueView.status}`);
+    check("chat: venue does NOT see 'couple_only'", !venueTexts.some((t) => /flexes on pax/.test(t)));
+    // Admin sees ALL four interventions.
+    const adminRead2 = await api("GET", `/admin/venues/chats/${convId}`, { token: adminToken });
+    const adminTexts = (adminRead2.json.messages || []).map((m) => m.content && m.content.text);
+    check("chat: admin sees every targeting half", ["help you both close", "flexes on pax", "this couple is hot"].every((frag) => adminTexts.some((t) => t && t.includes(frag))));
+    check("chat: wedsy interventions carry senderType wedsy (distinct render signal)", (adminRead2.json.messages || []).filter((m) => m.senderType === "wedsy").length >= 4);
+
+    // ── Keyword-flag routing (env terms include "cash" & "offline" for the run) ──
+    const flagMsg = await api("POST", `/conversations/${convId}/messages`, { token, body: { text: "We can do a better rate if you pay cash offline.", senderType: "venue" } });
+    check("chat: venue message with flagged terms accepted", flagMsg.status === 201, `status ${flagMsg.status}`);
+    const flaggedList = await api("GET", "/admin/venues/chats?view=flagged", { token: adminToken });
+    const flaggedThread = (flaggedList.json.threads || []).find((t) => String(t._id) === String(convId));
+    check("chat: flagged view surfaces the thread with matched terms", flaggedList.status === 200 && flaggedThread && flaggedThread.flagged === true && flaggedThread.flaggedTerms.includes("cash"), flaggedThread && JSON.stringify(flaggedThread.flaggedTerms));
+    const triageList = await api("GET", "/admin/venues/chats?view=triage", { token: adminToken });
+    check("chat: triage view includes flagged/SLA-breached thread", triageList.status === 200 && (triageList.json.threads || []).some((t) => String(t._id) === String(convId)), `status ${triageList.status}`);
+    const badView = await api("GET", "/admin/venues/chats?view=bogus", { token: adminToken });
+    check("chat: unknown view -> 400", badView.status === 400, `status ${badView.status}`);
+
+    // ── Log-only WhatsApp nudge ──
+    const nudge = await api("POST", `/admin/venues/chats/${convId}/nudge`, { token: adminToken });
+    check("chat: nudge -> 200 log-only", nudge.status === 200 && nudge.json.logOnly === true, `status ${nudge.status}`);
+
+    // Activity spine recorded interventions + nudge.
+    const act = await api("GET", `/admin/venues/${SLUG}/activity?actorType=wedsy_team&limit=50`, { token: adminToken });
+    check("chat: interventions + nudge logged to the spine", act.status === 200 && (act.json.activity || []).some((a) => a.action === "chat_intervention_sent") && (act.json.activity || []).some((a) => a.action === "chat_venue_nudged"), `status ${act.status}`);
+  }
+
+  // ================= MB-V2 P3: notification mesh triggers (log-only) =================
+  if (process.env.E2E_NOTIFY === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Trigger 1: onboarding arrival (public intake).
+    const onb = await api("POST", "/venues/onboarding-requests", { body: { name: "Notify Ravi", venueName: "Notify Grounds", city: "Pune", phone: "9866001100" } });
+    check("notify: onboarding intake accepted", [200, 201].includes(onb.status), `status ${onb.status}`);
+    // Trigger 2: claim arrival (public).
+    const clm = await api("POST", "/venue-owner/claim/manual", { body: { slug: SLUG, name: "Notify Claimant", designation: "owner", phone: "9866002200", email: "notify@claim.local" } });
+    check("notify: claim intake accepted", clm.status === 201, `status ${clm.status}`);
+    // Trigger 3: hold request (admin) — reuse a far date to avoid collisions.
+    const vDetail = await api("GET", `/venues/${SLUG}`);
+    const sp = ((vDetail.json && vDetail.json.venue && vDetail.json.venue.spaces) || []).find((s) => s.isBookable !== false);
+    const holdDate = new Date(Date.now() + 260 * 86400000).toISOString().slice(0, 10);
+    const hold = await api("POST", `/venues/${SLUG}/holds`, { token: adminToken, body: { space: sp && sp._id, dates: [holdDate], notes: "notify probe" } });
+    check("notify: hold request accepted", hold.status === 201, `status ${hold.status}`);
+
+    // The mesh table should now carry the three trigger types (fire-and-forget:
+    // poll briefly for the async inserts).
+    let mesh = null;
+    for (let i = 0; i < 15; i++) {
+      const r = await api("GET", "/admin/venues/notifications?limit=100", { token: adminToken });
+      mesh = r.json && r.json.notifications;
+      const types = new Set((mesh || []).map((n) => n.type));
+      if (types.has("onboarding_arrived") && types.has("claim_arrived") && types.has("hold_requested")) break;
+      await new Promise((res) => setTimeout(res, 150));
+    }
+    const types = new Set((mesh || []).map((n) => n.type));
+    check("notify: mesh table carries onboarding_arrived", types.has("onboarding_arrived"));
+    check("notify: mesh table carries claim_arrived", types.has("claim_arrived"));
+    check("notify: mesh table carries hold_requested", types.has("hold_requested"));
+    check("notify: hold notification is venue-populated", (mesh || []).some((n) => n.type === "hold_requested" && n.venue && n.venue.slug === SLUG));
+    const filtered = await api("GET", "/admin/venues/notifications?type=onboarding_arrived&limit=50", { token: adminToken });
+    check("notify: type filter honored", filtered.status === 200 && (filtered.json.notifications || []).every((n) => n.type === "onboarding_arrived"), `status ${filtered.status}`);
+    const badType = await api("GET", "/admin/venues/notifications?type=bogus", { token: adminToken });
+    check("notify: unknown type -> 400", badType.status === 400, `status ${badType.status}`);
+  }
+
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
     // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
     const burst = await Promise.all(Array.from({ length: 75 }, () =>
@@ -1487,6 +1914,64 @@ async function run() {
     // Shared bucket exhausted -> onboarding 429s at the limiter (no record created).
     const onbOver = await api("POST", `/venues/onboarding-requests`, { body: { name: "R", venueName: "V", phone: "9876543210" } });
     check("public-ratelimit: onboarding over-limit -> 429 (no record created)", onbOver.status === 429, `status ${onbOver.status}`);
+  }
+
+  // ================= MB-V2 P0 S1: admin venue ops (directory + 360 reads) =================
+  if (process.env.E2E_ADMIN_OPS === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Directory: rows + total, seeded venue present with derived claim state.
+    const dir = await api("GET", "/admin/venues?limit=100", { token: adminToken });
+    check("admin-ops: directory -> 200 with venues+total", dir.status === 200 && Array.isArray(dir.json.venues) && typeof dir.json.total === "number", `status ${dir.status}`);
+    const dirRow = ((dir.json && dir.json.venues) || []).find((v) => v.slug === SLUG);
+    check("admin-ops: seeded venue claimState=claimed (active owner)", Boolean(dirRow) && dirRow.claimState === "claimed", dirRow && dirRow.claimState);
+    check("admin-ops: directory row carries owner snapshot + enquiryCount", Boolean(dirRow) && dirRow.owner && dirRow.owner.phone === OWNER_PHONE && typeof dirRow.enquiryCount === "number", dirRow && JSON.stringify(dirRow.owner));
+    const dirClaimed = await api("GET", "/admin/venues?claimState=claimed&limit=100", { token: adminToken });
+    check("admin-ops: claimState=claimed filter keeps seeded venue", dirClaimed.status === 200 && dirClaimed.json.venues.some((v) => v.slug === SLUG), `status ${dirClaimed.status}`);
+    const dirUnclaimed = await api("GET", "/admin/venues?claimState=unclaimed&limit=100", { token: adminToken });
+    check("admin-ops: claimState=unclaimed filter drops seeded venue", dirUnclaimed.status === 200 && !dirUnclaimed.json.venues.some((v) => v.slug === SLUG), `status ${dirUnclaimed.status}`);
+    const dirBadClaim = await api("GET", "/admin/venues?claimState=bogus", { token: adminToken });
+    check("admin-ops: unknown claimState -> 400", dirBadClaim.status === 400, `status ${dirBadClaim.status}`);
+    const dirBadSort = await api("GET", "/admin/venues?sort=bogus", { token: adminToken });
+    check("admin-ops: unknown sort -> 400", dirBadSort.status === 400, `status ${dirBadSort.status}`);
+    const dirSearch = await api("GET", "/admin/venues?search=Test+Palace&limit=100", { token: adminToken });
+    check("admin-ops: name search finds seeded venue", dirSearch.status === 200 && dirSearch.json.venues.some((v) => v.slug === SLUG), `status ${dirSearch.status}`);
+
+    // 360 summary: profile + counts + owner + claim state.
+    const sum = await api("GET", `/admin/venues/${SLUG}/summary`, { token: adminToken });
+    const counts = (sum.json && sum.json.counts) || {};
+    check("admin-ops: summary -> 200 with venue+counts", sum.status === 200 && sum.json.venue && sum.json.venue.slug === SLUG, `status ${sum.status}`);
+    check("admin-ops: summary counts shape (enquiries/bookings/docs/conversations/holds)", ["enquiries", "bookings", "quotes", "bills", "invoices", "contracts", "conversations"].every((k) => typeof counts[k] === "number") && counts.holds && typeof counts.holds === "object", JSON.stringify(counts));
+    check("admin-ops: summary enquiry count reflects seed", counts.enquiries >= 10, `enquiries ${counts.enquiries}`);
+    check("admin-ops: summary claimState=claimed with owner listed", sum.json.claimState === "claimed" && Array.isArray(sum.json.owners) && sum.json.owners.some((o) => o.phone === OWNER_PHONE), sum.json.claimState);
+    check("admin-ops: summary strips heavy fields (googleReviews/competitiveCache)", !("googleReviews" in (sum.json.venue || {})) && !("competitiveCache" in (sum.json.venue || {})));
+    const sum404 = await api("GET", "/admin/venues/definitely-not-a-venue/summary", { token: adminToken });
+    check("admin-ops: summary unknown slug -> 404", sum404.status === 404, `status ${sum404.status}`);
+
+    // Leads tab (D1 Version A): read-only, labeled source + derived creator.
+    const enq = await api("GET", `/admin/venues/${SLUG}/enquiries?limit=100`, { token: adminToken });
+    check("admin-ops: enquiries -> 200 with rows+total", enq.status === 200 && Array.isArray(enq.json.enquiries) && enq.json.total >= 10, `status ${enq.status}, total ${enq.json && enq.json.total}`);
+    check("admin-ops: every lead labeled with source + createdBy", (enq.json.enquiries || []).every((e) => typeof e.source === "string" && ["venue_team", "couple", "unknown"].includes(e.createdBy)), enq.json.enquiries && JSON.stringify(enq.json.enquiries[0] && { source: enq.json.enquiries[0].source, createdBy: enq.json.enquiries[0].createdBy }));
+    const enqSrc = await api("GET", `/admin/venues/${SLUG}/enquiries?source=instagram&limit=100`, { token: adminToken });
+    check("admin-ops: enquiries source filter honored", enqSrc.status === 200 && (enqSrc.json.enquiries || []).every((e) => e.source === "instagram"), `status ${enqSrc.status}`);
+    const enqBadSrc = await api("GET", `/admin/venues/${SLUG}/enquiries?source=bogus`, { token: adminToken });
+    check("admin-ops: unknown source -> 400", enqBadSrc.status === 400, `status ${enqBadSrc.status}`);
+    const enqBadStage = await api("GET", `/admin/venues/${SLUG}/enquiries?stage=bogus`, { token: adminToken });
+    check("admin-ops: unknown stage -> 400", enqBadStage.status === 400, `status ${enqBadStage.status}`);
+
+    // Activity tab (E6): admin PUT writes a wedsy_team entry; filters narrow to it.
+    const adminPut = await api("PUT", `/venues/${SLUG}`, { token: adminToken, body: { tagline: "mbv2-admin-ops-probe" } });
+    check("admin-ops: admin listing PUT (activity probe) -> 200", adminPut.status === 200, `status ${adminPut.status}`);
+    const act = await api("GET", `/admin/venues/${SLUG}/activity?limit=100`, { token: adminToken });
+    check("admin-ops: activity -> 200 with rows+total", act.status === 200 && Array.isArray(act.json.activity) && typeof act.json.total === "number", `status ${act.status}`);
+    const actWedsy = await api("GET", `/admin/venues/${SLUG}/activity?actorType=wedsy_team&field=tagline&limit=10`, { token: adminToken });
+    check("admin-ops: actorType+field filters isolate the admin tagline write", actWedsy.status === 200 && (actWedsy.json.activity || []).length >= 1 && actWedsy.json.activity.every((a) => a.actorType === "wedsy_team" && a.field === "tagline"), `status ${actWedsy.status}, rows ${actWedsy.json && actWedsy.json.activity && actWedsy.json.activity.length}`);
+    const actBadSev = await api("GET", `/admin/venues/${SLUG}/activity?severity=catastrophic`, { token: adminToken });
+    check("admin-ops: unknown severity -> 400", actBadSev.status === 400, `status ${actBadSev.status}`);
+    const actBadActor = await api("GET", `/admin/venues/${SLUG}/activity?actorType=alien`, { token: adminToken });
+    check("admin-ops: unknown actorType -> 400", actBadActor.status === 400, `status ${actBadActor.status}`);
   }
 
   finish();

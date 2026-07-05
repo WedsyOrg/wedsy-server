@@ -467,6 +467,113 @@ async function run() {
     ok("12 non-boolean per-doc whiteLabel -> 400", badWlDoc.status === 400, `status ${badWlDoc.status}`);
   }
 
+  // ═══════════ 13. MB-V2 ADMIN VENUE OPS (admin-vs-owner-vs-member deny sweep) ═══════════
+  console.log("\n— 13. Admin venue ops —");
+  {
+    // Member token (sales member of venue A via 8888888888's member identity).
+    const multi13 = await api("POST", "/venue-owner/auth", { body: { phone: "8888888888", otp: "000000", referenceId: "dev" } });
+    const memId13 = ((multi13.json && multi13.json.identities) || []).find((i) => i.kind === "member");
+    const selM13 = await api("POST", "/venue-owner/auth/select-identity", { body: { selectionToken: multi13.json && multi13.json.selectionToken, kind: "member", id: memId13 && memId13.id } });
+    const memberToken = selM13.json && selM13.json.token;
+    ok("13 setup: member token minted", Boolean(memberToken));
+
+    const ROUTES13 = [
+      "/admin/venues",
+      `/admin/venues/${A}/summary`,
+      `/admin/venues/${A}/enquiries`,
+      `/admin/venues/${A}/activity`,
+      "/admin/venues/claims",
+      "/admin/venues/onboarding-requests",
+      "/admin/venues/partner-board",
+      "/admin/venues/day-board?date=2030-01-01",
+      "/admin/venues/holds",
+      "/admin/venues/leads",
+      "/admin/venues/forwards",
+      "/admin/venues/activity-feed",
+      "/admin/venues/shortlists",
+      "/admin/venues/shortlists/000000000000000000000000",
+      "/admin/venues/site-visits",
+      "/admin/venues/chats",
+      "/admin/venues/chats/000000000000000000000000",
+      "/admin/venues/claims/000000000000000000000000",
+      "/admin/venues/notifications",
+    ];
+    // Admin WRITE surfaces (S2 queues) — same principals must be denied.
+    const WRITES13 = [
+      ["POST", "/admin/venues/claims/000000000000000000000000/approve"],
+      ["POST", "/admin/venues/claims/000000000000000000000000/reject"],
+      ["PATCH", "/admin/venues/onboarding-requests/000000000000000000000000"],
+      ["POST", "/admin/venues/leads/000000000000000000000000/forward"],
+      ["POST", "/admin/venues/shortlists"],
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/present-link"],
+      // Shortlist-item write sub-routes — throwaway shortlist/item ids so the
+      // assertion exercises the GATE (denied before any id lookup), not the handler.
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/items"],
+      ["PATCH", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001"],
+      ["DELETE", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001"],
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001/hold"],
+      ["POST", "/admin/venues/shortlists/000000000000000000000000/items/000000000000000000000001/visit"],
+      ["PATCH", "/admin/venues/site-visits/000000000000000000000000"],
+      ["POST", "/admin/venues/chats/000000000000000000000000/intervene"],
+      ["POST", "/admin/venues/chats/000000000000000000000000/nudge"],
+    ];
+    // CheckAdminLogin's legacy codes: 400 no-token/no-isAdmin-claim/bad-sig,
+    // 401 unknown admin _id, 403 disabled — all are hard denials; 2xx is the bug.
+    const denied = (s) => [400, 401, 403].includes(s);
+    for (const path of ROUTES13) {
+      const noTok = await api("GET", path);
+      ok(`13 ${path} no token -> denied`, denied(noTok.status), `status ${noTok.status}`);
+      const asOwner = await api("GET", path, { token: tokenA });
+      ok(`13 ${path} owner token -> denied`, denied(asOwner.status), `status ${asOwner.status}`);
+      const asForeignOwner = await api("GET", path, { token: tokenB });
+      ok(`13 ${path} foreign owner token -> denied`, denied(asForeignOwner.status), `status ${asForeignOwner.status}`);
+      const asMember = await api("GET", path, { token: memberToken });
+      ok(`13 ${path} member token -> denied`, denied(asMember.status), `status ${asMember.status}`);
+    }
+    for (const [method, path] of WRITES13) {
+      const noTok = await api(method, path, { body: { status: "contacted" } });
+      ok(`13 ${method} ${path} no token -> denied`, denied(noTok.status), `status ${noTok.status}`);
+      const asOwner = await api(method, path, { token: tokenA, body: { status: "contacted" } });
+      ok(`13 ${method} ${path} owner token -> denied`, denied(asOwner.status), `status ${asOwner.status}`);
+      const asMember = await api(method, path, { token: memberToken, body: { status: "contacted" } });
+      ok(`13 ${method} ${path} member token -> denied`, denied(asMember.status), `status ${asMember.status}`);
+    }
+    // Wrong-secret admin token — signature must fail, not just claims.
+    const forged = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, "not-the-real-secret", { expiresIn: "1h" });
+    const forgedRes = await api("GET", "/admin/venues", { token: forged });
+    ok("13 forged-secret admin token -> denied", denied(forgedRes.status), `status ${forgedRes.status}`);
+    // Real-secret isAdmin token whose _id is NOT an Admin doc -> 401 invalid user
+    // (blocks any principal minting themselves isAdmin without a backing admin).
+    const ghostAdmin = jwt.sign({ _id: "0000000000000000000000aa", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const ghostRes = await api("GET", "/admin/venues", { token: ghostAdmin });
+    ok("13 isAdmin token with no Admin doc -> 401", ghostRes.status === 401, `status ${ghostRes.status}`);
+    // ReDoS/hostile search input on the directory regex must not 500.
+    const adminTok13 = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const hostileSearch = await api("GET", `/admin/venues?search=${encodeURIComponent("(((((((a+)+)+)+)+$^\\")}`, { token: adminTok13 });
+    ok("13 hostile regex search -> not 500", hostileSearch.status !== 500, `status ${hostileSearch.status}`);
+
+    // P1 planner tenancy: a FOREIGN owner cannot read another venue's visits.
+    const foreignVisits = await api("GET", `/venues/${A}/site-visits`, { token: tokenB });
+    ok("13 cross-venue site-visits read -> 403", foreignVisits.status === 403, `status ${foreignVisits.status}`);
+    const foreignVisitWrite = await api("PATCH", `/venues/${A}/site-visits/000000000000000000000000`, { token: tokenB, body: { status: "cancelled" } });
+    ok("13 cross-venue site-visit write -> 403", foreignVisitWrite.status === 403, `status ${foreignVisitWrite.status}`);
+
+    // P1 present-token TYPING: the public surface must hard-reject junk
+    // (400 for malformed, 404 for well-formed-unknown, 429 if the shared
+    // public bucket is already dry this deep into the suite — never 2xx/500).
+    const presDenied = (s) => [400, 404, 429].includes(s);
+    const presMalformed = await api("GET", "/venues/present/../../etc/passwd");
+    ok("13 present traversal-ish token rejected", presDenied(presMalformed.status), `status ${presMalformed.status}`);
+    const presShort = await api("GET", "/venues/present/abc123");
+    ok("13 present short token rejected", presDenied(presShort.status) && presShort.status !== 404, `status ${presShort.status}`);
+    const presLong = await api("GET", `/venues/present/${"a".repeat(96)}`);
+    ok("13 present oversized token rejected", presDenied(presLong.status) && presLong.status !== 404, `status ${presLong.status}`);
+    const presUpper = await api("GET", `/venues/present/${"AB".repeat(24)}`);
+    ok("13 present non-lowercase-hex token rejected (typed, not looked up)", presDenied(presUpper.status) && presUpper.status !== 404, `status ${presUpper.status}`);
+    const presReactJunk = await api("POST", `/venues/present/${"ab".repeat(24)}/react`, { rawBody: '"hax"' });
+    ok("13 present react hostile body -> not 500", presReactJunk.status !== 500 && presReactJunk.status !== 200, `status ${presReactJunk.status}`);
+  }
+
   finish();
 }
 

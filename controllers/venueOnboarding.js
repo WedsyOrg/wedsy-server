@@ -29,6 +29,13 @@ const createOnboardingRequest = async (req, res) => {
     // Fire-and-forget ops alert — env-gated, log-only by default, and a
     // delivery failure must never affect the 201 we owe the requester.
     notifyOnboardingRequest({ name: doc.name, venueName: doc.venueName, city: doc.city, phone: doc.phone }).catch(() => {});
+    // MB-V2 P3 notification mesh (log-only, fire-and-forget; no venue yet).
+    require("../utils/venueNotify").notify({
+      type: "onboarding_arrived",
+      title: `New onboarding request — ${doc.venueName}`,
+      body: `${doc.name} · ${doc.city || "—"} · ${doc.phone}`,
+      meta: { onboardingId: doc._id },
+    });
     return res.status(201).json({ success: true, id: doc._id });
   } catch (err) {
     return res.status(500).json({ message: err.message });

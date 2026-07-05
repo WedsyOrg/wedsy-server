@@ -43,6 +43,10 @@ const VenueEnquirySchema = new mongoose.Schema(
     },
     followUpDate: { type: Date },
     assignedTo: { type: String, default: "" },
+    // MB-V2 P1 (D2, additive): when the Wedsy planner's first venue-touching
+    // action creates this owner-visible lead, this carries the CRM lead's id
+    // (plain string — the CRM engine is a separate model space).
+    crmLeadRef: { type: String, default: "" },
     notes: [{ text: String, addedAt: { type: Date, default: Date.now } }],
     activities: [{ type: { type: String }, description: String, timestamp: { type: Date, default: Date.now } }],
     status: {
