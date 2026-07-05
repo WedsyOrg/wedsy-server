@@ -1618,6 +1618,65 @@ async function run() {
     check("board: unknown venue slug -> 404", badSlug.status === 404, `status ${badSlug.status}`);
   }
 
+  // ================= MB-V2 P0 S4+S5: leads oversight + forward bridge + firehose =================
+  if (process.env.E2E_ADMIN_LEADS === "1") {
+    const jwt = require("jsonwebtoken");
+    require("dotenv").config();
+    const adminToken = jwt.sign({ _id: "000000000000000000000001", isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+
+    // Cross-venue list with venue populated + creator labels.
+    const all = await api("GET", "/admin/venues/leads?limit=100", { token: adminToken });
+    check("leads-oversight: cross-venue list -> 200 rows+total", all.status === 200 && Array.isArray(all.json.leads) && all.json.total >= 10, `status ${all.status}, total ${all.json && all.json.total}`);
+    check("leads-oversight: rows carry venue + source + createdBy", (all.json.leads || []).every((l) => l.venue && l.venue.slug && typeof l.source === "string" && ["venue_team", "couple", "unknown"].includes(l.createdBy)));
+    const bySlug = await api("GET", `/admin/venues/leads?slug=${SLUG}&limit=100`, { token: adminToken });
+    check("leads-oversight: venue filter scopes rows", bySlug.status === 200 && (bySlug.json.leads || []).every((l) => l.venue.slug === SLUG) && bySlug.json.total >= 10, `status ${bySlug.status}`);
+    const byStage = await api("GET", "/admin/venues/leads?stage=booked&limit=100", { token: adminToken });
+    check("leads-oversight: stage filter honored", byStage.status === 200 && (byStage.json.leads || []).every((l) => l.stage === "booked"), `status ${byStage.status}`);
+    const badStage = await api("GET", "/admin/venues/leads?stage=bogus", { token: adminToken });
+    check("leads-oversight: unknown stage -> 400", badStage.status === 400, `status ${badStage.status}`);
+    const badSlug = await api("GET", "/admin/venues/leads?slug=definitely-not-a-venue", { token: adminToken });
+    check("leads-oversight: unknown venue -> 404", badSlug.status === 404, `status ${badSlug.status}`);
+
+    // The D1 bridge: forward one lead, idempotently.
+    const target = (bySlug.json.leads || []).find((l) => !l.forward);
+    check("leads-oversight: an unforwarded lead exists to bridge", Boolean(target));
+    const fwd = await api("POST", `/admin/venues/leads/${target && target._id}/forward`, { token: adminToken, body: { notes: "hot lead — wants a Dec date" } });
+    check("forward: first forward -> 201 pending_os with snapshots", fwd.status === 201 && fwd.json.forward && fwd.json.forward.status === "pending_os" && fwd.json.duplicate === false && typeof fwd.json.forward.couplePhone === "string", `status ${fwd.status}`);
+    const fwdAgain = await api("POST", `/admin/venues/leads/${target && target._id}/forward`, { token: adminToken, body: { notes: "resubmitted" } });
+    check("forward: repeat forward idempotent -> 200 duplicate, same row", fwdAgain.status === 200 && fwdAgain.json.duplicate === true && String(fwdAgain.json.forward._id) === String(fwd.json.forward._id), `status ${fwdAgain.status}`);
+    const fwd404 = await api("POST", "/admin/venues/leads/000000000000000000000000/forward", { token: adminToken });
+    check("forward: unknown enquiry -> 404", fwd404.status === 404, `status ${fwd404.status}`);
+    const fwdBadId = await api("POST", "/admin/venues/leads/not-an-id/forward", { token: adminToken });
+    check("forward: malformed id -> 400", fwdBadId.status === 400, `status ${fwdBadId.status}`);
+    const fwdBadNotes = await api("POST", `/admin/venues/leads/${target && target._id}/forward`, { token: adminToken, body: { notes: 42 } });
+    check("forward: non-string notes -> 400 (validation precedes idempotency)", fwdBadNotes.status === 400, `status ${fwdBadNotes.status}`);
+
+    // Forwarded marker shows up in the oversight list.
+    const marked = await api("GET", `/admin/venues/leads?slug=${SLUG}&forwarded=true&limit=100`, { token: adminToken });
+    check("leads-oversight: forwarded=true filter finds the bridged lead", marked.status === 200 && (marked.json.leads || []).some((l) => String(l._id) === String(target._id) && l.forward && l.forward.status === "pending_os"), `status ${marked.status}`);
+
+    // The bridge queue endpoint (what the OS receive side consumes).
+    const queue = await api("GET", "/admin/venues/forwards?status=pending_os", { token: adminToken });
+    check("forward: pending_os queue lists the row with venue+enquiry populated", queue.status === 200 && (queue.json.forwards || []).some((f) => String(f.enquiryRef && f.enquiryRef._id || f.enquiryRef) === String(target._id) && f.venue && f.venue.slug === SLUG), `status ${queue.status}`);
+    const queueBad = await api("GET", "/admin/venues/forwards?status=bogus", { token: adminToken });
+    check("forward: unknown queue status -> 400", queueBad.status === 400, `status ${queueBad.status}`);
+
+    // Activity spine recorded the bridge action.
+    const act = await api("GET", `/admin/venues/${SLUG}/activity?actorType=wedsy_team&limit=50`, { token: adminToken });
+    check("forward: bridge logged on the venue's trail", act.status === 200 && (act.json.activity || []).some((a) => a.action === "lead_forwarded_to_crm"), `status ${act.status}`);
+
+    // ---- S5: cross-venue firehose ----
+    const fire = await api("GET", "/admin/venues/activity-feed?limit=100", { token: adminToken });
+    check("firehose: default feed -> 200, high-severity only, venue populated", fire.status === 200 && Array.isArray(fire.json.activity) && (fire.json.activity || []).every((a) => a.severity === "high" && a.venue && a.venue.slug), `status ${fire.status}, rows ${fire.json && fire.json.activity && fire.json.activity.length}`);
+    check("firehose: has cross-venue high entries (claim approvals etc.)", (fire.json.activity || []).length >= 1);
+    const fireAll = await api("GET", "/admin/venues/activity-feed?severity=all&actorType=wedsy_team&limit=100", { token: adminToken });
+    check("firehose: severity=all + actorType filter", fireAll.status === 200 && (fireAll.json.activity || []).some((a) => a.severity !== "high") && (fireAll.json.activity || []).every((a) => a.actorType === "wedsy_team"), `status ${fireAll.status}`);
+    const fireSlug = await api("GET", `/admin/venues/activity-feed?severity=all&slug=${SLUG}&limit=100`, { token: adminToken });
+    check("firehose: slug filter scopes to one venue", fireSlug.status === 200 && (fireSlug.json.activity || []).every((a) => a.venue && a.venue.slug === SLUG), `status ${fireSlug.status}`);
+    const fireBad = await api("GET", "/admin/venues/activity-feed?severity=catastrophic", { token: adminToken });
+    check("firehose: unknown severity -> 400", fireBad.status === 400, `status ${fireBad.status}`);
+  }
+
   if (process.env.E2E_PUBLIC_RATELIMIT === "1") {
     // Burst the public sheets OAuth callback past the per-IP publicReadLimiter.
     const burst = await Promise.all(Array.from({ length: 75 }, () =>

@@ -272,4 +272,58 @@ const listVenueActivity = async (req, res) => {
   }
 };
 
-module.exports = { directory, venueSummary, listVenueEnquiries, listVenueActivity };
+// P0 S5 (D10) — cross-venue firehose. Same filter contract as the per-venue
+// feed, venue-populated; defaults to severity=high (that's the firehose's
+// job — the full trail lives on each venue's Activity tab).
+const activityFirehose = async (req, res) => {
+  try {
+    const filter = {};
+    const { severity, entity, actorType, field, from, to, slug } = req.query;
+    if (slug) {
+      const venue = await Venue.findOne({ slug: String(slug) }).select("_id").lean();
+      if (!venue) return res.status(404).json({ message: "Venue not found" });
+      filter.venue = venue._id;
+    }
+    const sev = severity === undefined || severity === "" ? "high" : String(severity);
+    if (sev !== "all") {
+      const list = sev.split(",").filter(Boolean);
+      if (list.some((s) => !["high", "normal", "low"].includes(s))) return res.status(400).json({ message: "Unknown severity" });
+      filter.severity = { $in: list };
+    }
+    if (entity) filter.entity = String(entity).slice(0, 100);
+    if (field) filter.field = String(field).slice(0, 200);
+    if (actorType) {
+      if (!["venue_team", "wedsy_team", "system"].includes(actorType)) return res.status(400).json({ message: "Unknown actorType" });
+      filter.actorType = actorType;
+    }
+    if (from || to) {
+      filter.at = {};
+      if (from) {
+        const d = new Date(from);
+        if (Number.isNaN(d.getTime())) return res.status(400).json({ message: "from is not a valid date" });
+        filter.at.$gte = d;
+      }
+      if (to) {
+        const d = new Date(to);
+        if (Number.isNaN(d.getTime())) return res.status(400).json({ message: "to is not a valid date" });
+        filter.at.$lte = d;
+      }
+    }
+    const limit = intParam(req.query.limit, 100, 500);
+    const skip = intParam(req.query.skip, 0);
+    const [activity, total] = await Promise.all([
+      VenueActivity.find(filter)
+        .sort({ at: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("venue", "name slug zone")
+        .lean(),
+      VenueActivity.countDocuments(filter),
+    ]);
+    return res.status(200).json({ activity, total });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { directory, venueSummary, listVenueEnquiries, listVenueActivity, activityFirehose };

@@ -4,6 +4,7 @@ const router = express.Router();
 const ops = require("../controllers/adminVenueOps");
 const queues = require("../controllers/adminVenueQueues");
 const availability = require("../controllers/adminVenueAvailability");
+const leads = require("../controllers/adminVenueLeads");
 const { CheckAdminLogin } = require("../middlewares/auth");
 
 // MB-V2 P0 — Wedsy-internal venue workspace (Wedsy OS "Venues" module).
@@ -27,6 +28,16 @@ router.get("/partner-board", CheckAdminLogin, queues.partnerBoard);
 // token); approve/decline/release/convert stay owner-only per D3.
 router.get("/day-board", CheckAdminLogin, availability.dayBoard);
 router.get("/holds", CheckAdminLogin, availability.listHoldsAdmin);
+
+// P0 S4 (D1 bridge) — cross-venue leads oversight (read-only) + the explicit
+// "Forward to Sales CRM" action (venue-owned VenueForwardRequest; the CRM
+// receive side is OS's build).
+router.get("/leads", CheckAdminLogin, leads.listLeads);
+router.post("/leads/:enquiryId/forward", CheckAdminLogin, leads.forwardLead);
+router.get("/forwards", CheckAdminLogin, leads.listForwards);
+
+// P0 S5 (D10) — cross-venue high-severity firehose (severity=all opts out).
+router.get("/activity-feed", CheckAdminLogin, ops.activityFirehose);
 
 router.get("/:slug/summary", CheckAdminLogin, ops.venueSummary);
 router.get("/:slug/enquiries", CheckAdminLogin, ops.listVenueEnquiries);
