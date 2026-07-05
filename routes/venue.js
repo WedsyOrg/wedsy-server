@@ -12,7 +12,7 @@ const { addInteraction, getInteractions } = require("../controllers/venueLeadInt
 const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
-const { createQuote, listQuotes, getQuote, updateQuote, quotePdf } = require("../controllers/venueQuote");
+const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
@@ -101,6 +101,8 @@ router.post("/:slug/quotes", venueOwnerAuth, requireCapability("leads"), createQ
 router.get("/:slug/quotes/:quoteId/pdf", venueOwnerAuth, quotePdf);
 router.get("/:slug/quotes/:quoteId", venueOwnerAuth, getQuote);
 router.patch("/:slug/quotes/:quoteId", venueOwnerAuth, requireCapability("leads"), updateQuote);
+// "Quote accepted -> confirm booking" owner action (D8 review add).
+router.post("/:slug/quotes/:quoteId/confirm-booking", venueOwnerAuth, requireCapability("leads"), confirmBookingFromQuote);
 
 // ── Phase 3: invoices (3.3) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/invoices", venueOwnerAuth, listInvoices);

@@ -392,6 +392,14 @@ const acceptDoc = async (req, res) => {
     d.acceptance = { name: nameV.value, phone: phoneV.value, at: new Date(), channel };
     d.status = "accepted";
     await d.save();
+
+    // Quote acceptance is an OWNER ACTION waiting to happen (no auto-booking,
+    // D5) — ping the owner so the confirm-booking card is unmissable.
+    if (loaded.kind === "quote") {
+      const { notifyQuoteAccepted } = require("../utils/venueDocAlert");
+      const venueFull = await Venue.findById(d.venue).select("name contact phone").lean();
+      if (venueFull) notifyQuoteAccepted(venueFull, d, loaded.partyName).catch(() => {});
+    }
     return res.status(200).json({ success: true, acceptedAt: d.acceptance.at });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };

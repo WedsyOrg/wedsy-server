@@ -135,6 +135,27 @@ const updateQuote = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+// POST /venues/:slug/quotes/:quoteId/confirm-booking — the owner action behind
+// the "Quote accepted — confirm booking" card. Public acceptance never
+// auto-creates the booking (D5); this converts an accepted quote into the
+// draft booking exactly like the owner-marked acceptance path (idempotent:
+// one booking per enquiry).
+const confirmBookingFromQuote = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id });
+    if (!quote) return res.status(404).json({ message: "Quote not found" });
+    if (quote.status !== "accepted") return res.status(409).json({ message: `Quote is ${quote.status}, not accepted` });
+    const enquiry = await VenueEnquiry.findOne({ _id: quote.enquiry, venueId: venue._id });
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found for this venue" });
+    const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
+    booking.totalValue = quote.totals.grandTotal;
+    await booking.save();
+    return res.status(200).json({ quote, booking });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 // GET /venues/:slug/quotes/:quoteId/pdf
 const quotePdf = async (req, res) => {
   try {
@@ -147,4 +168,4 @@ const quotePdf = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { createQuote, listQuotes, getQuote, updateQuote, quotePdf };
+module.exports = { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf };

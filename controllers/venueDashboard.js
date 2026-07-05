@@ -97,6 +97,31 @@ const getDashboardOverview = async (req, res) => {
     // UTC day window to match the allotment/runsheet day quantisation.
     const utcDayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const utcDayEnd = new Date(utcDayStart.getTime() + 86400000);
+    // "Quote accepted — confirm booking" (D8 review add): accepted quotes
+    // whose enquiry has no booking yet. Public acceptance never auto-books,
+    // so this card is the owner's unmissable next action.
+    const VenueQuote = require("../models/VenueQuote");
+    const acceptedQuotes = await VenueQuote.find({ venue: venueId, status: "accepted" })
+      .sort({ updatedAt: -1 })
+      .limit(50)
+      .populate("enquiry", "coupleName couplePhone")
+      .lean();
+    const enquiryIds = acceptedQuotes.map((q) => q.enquiry && q.enquiry._id).filter(Boolean);
+    const bookedEnquiries = new Set(
+      (await VenueBooking.find({ venue: venueId, enquiry: { $in: enquiryIds } }).select("enquiry").lean())
+        .map((b) => String(b.enquiry))
+    );
+    const quotesAwaitingBooking = acceptedQuotes
+      .filter((q) => q.enquiry && !bookedEnquiries.has(String(q.enquiry._id)))
+      .map((q) => ({
+        quoteId: q._id,
+        enquiryId: q.enquiry._id,
+        coupleName: q.enquiry.coupleName || "",
+        grandTotal: (q.totals && q.totals.grandTotal) || 0,
+        acceptedAt: (q.acceptance && q.acceptance.at) || q.updatedAt,
+        acceptedBy: (q.acceptance && q.acceptance.name) || "",
+      }));
+
     const [checkInsToday, checkOutsToday, runsheetDueToday] = await Promise.all([
       VenueRoomAllotment.countDocuments({
         venue: venueId,
@@ -121,6 +146,7 @@ const getDashboardOverview = async (req, res) => {
       followUps: { dueToday, overdue },
       revenue,
       today: { checkIns: checkInsToday, checkOuts: checkOutsToday, runsheetDue: runsheetDueToday },
+      actionNeeded: { quotesAwaitingBooking, quotesAwaitingBookingCount: quotesAwaitingBooking.length },
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });

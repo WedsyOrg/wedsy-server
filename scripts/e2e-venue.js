@@ -707,6 +707,21 @@ async function run() {
     // template delete
     const tplDel = await api("DELETE", `/venues/${SLUG}/doc-templates/${tplId}`, { token });
     check("docs: delete template -> 200", tplDel.status === 200, `status ${tplDel.status}`);
+
+    // "Quote accepted -> confirm booking" (review add): the publicly-accepted
+    // quote surfaces on the dashboard until the owner confirms the booking.
+    const dash1 = await api("GET", "/venues/dashboard/overview", { token });
+    const cardItem = (dash1.json.actionNeeded && dash1.json.actionNeeded.quotesAwaitingBooking || []).find((i) => String(i.quoteId) === String(q.json.quote._id));
+    check("docs: accepted quote surfaces on dashboard card", dash1.status === 200 && cardItem && cardItem.coupleName === "Quote Ack Couple" && cardItem.acceptedBy === "Quote Ack Couple", JSON.stringify(cardItem));
+    const notAccepted = await api("POST", `/venues/${SLUG}/quotes/${bEx.json.bill._id}/confirm-booking`, { token });
+    check("docs: confirm-booking on non-quote id -> 404", notAccepted.status === 404, `status ${notAccepted.status}`);
+    const confirm = await api("POST", `/venues/${SLUG}/quotes/${q.json.quote._id}/confirm-booking`, { token });
+    check("docs: confirm-booking creates the draft booking with quote total", confirm.status === 200 && confirm.json.booking && confirm.json.booking.totalValue === 50000, `status ${confirm.status} total=${confirm.json.booking && confirm.json.booking.totalValue}`);
+    const confirmAgain = await api("POST", `/venues/${SLUG}/quotes/${q.json.quote._id}/confirm-booking`, { token });
+    check("docs: confirm-booking idempotent (one booking per enquiry)", confirmAgain.status === 200 && String(confirmAgain.json.booking._id) === String(confirm.json.booking._id), `ids match=${String(confirmAgain.json.booking && confirmAgain.json.booking._id) === String(confirm.json.booking._id)}`);
+    const dash2 = await api("GET", "/venues/dashboard/overview", { token });
+    const stillThere = (dash2.json.actionNeeded.quotesAwaitingBooking || []).some((i) => String(i.quoteId) === String(q.json.quote._id));
+    check("docs: card clears once the booking exists", !stillThere, `still=${stillThere}`);
   }
 
   // ================= D7: payments approval — pending, owner labels, rollups =================
