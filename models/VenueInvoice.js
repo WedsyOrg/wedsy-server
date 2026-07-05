@@ -24,6 +24,10 @@ const VenueInvoiceSchema = new mongoose.Schema(
     // D8 (additive): how GST was applied. Pre-existing invoices read as
     // "exclusive" — exactly the math they were created with.
     gstMode: { type: String, enum: ["exclusive", "inclusive", "none"], default: "exclusive" },
+    // E3x white-label: true → PDF renders venue-branding-only (small
+    // "Powered by Wedsy" footer, no system line). Defaults per venue setting;
+    // bill conversion carries the bill's flag.
+    whiteLabel: { type: Boolean, default: false },
     discount: { type: Number, default: 0 },
     totals: {
       subtotal: { type: Number, default: 0 },

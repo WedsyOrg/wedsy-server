@@ -127,6 +127,8 @@ router.patch("/:slug/bills/:billId", venueOwnerAuth, requireCapability("document
 router.post("/:slug/bills/:billId/send", venueOwnerAuth, requireCapability("documents"), docs.sendBill);
 router.post("/:slug/bills/:billId/convert", venueOwnerAuth, requireCapability("documents"), docs.convertBill);
 router.post("/:slug/quotes/:quoteId/send-ack", venueOwnerAuth, requireCapability("documents"), docs.sendQuoteAck);
+// E3x: venue-level default for the per-document whiteLabel flag.
+router.patch("/:slug/documents/settings", venueOwnerAuth, requireCapability("documents"), docs.updateDocSettings);
 
 // ── Phase 3.4: payments summary + Phase 4.1: analytics — open reads ──
 router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);

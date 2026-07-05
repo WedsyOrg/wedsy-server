@@ -52,6 +52,40 @@ async function apiBinary(path, { token } = {}) {
   return { status: res.status, contentType: res.headers.get("content-type") || "", bytes: buf.length, head: buf.slice(0, 5).toString("latin1"), body: buf.toString("latin1") };
 }
 
+// E3x: pdfkit compresses content streams (FlateDecode) and shows text as
+// HEX-encoded kerned TJ arrays ([<50> 50 <6f> …] TJ). To grep for a footer or
+// system line: inflate every stream…endstream chunk, then hex-decode all
+// <…> show strings in order — kerning splits mid-word, so concatenating the
+// decoded segments reassembles the original line ("Powered by Wedsy").
+function pdfText(latin1Body) {
+  const zlib = require("zlib");
+  const buf = Buffer.from(latin1Body, "latin1");
+  let raw = "";
+  let idx = 0;
+  for (;;) {
+    const s = buf.indexOf("stream", idx);
+    if (s === -1) break;
+    let start = s + 6;
+    if (buf[start] === 0x0d) start++;
+    if (buf[start] === 0x0a) start++;
+    const e = buf.indexOf("endstream", start);
+    if (e === -1) break;
+    const chunk = buf.slice(start, e);
+    try { raw += zlib.inflateSync(chunk).toString("latin1"); }
+    catch { raw += chunk.toString("latin1"); } // uncompressed stream
+    idx = e + 9;
+  }
+  let out = "";
+  for (const m of raw.matchAll(/<([0-9a-fA-F]+)>/g)) {
+    out += Buffer.from(m[1], "hex").toString("latin1");
+  }
+  // Literal-paren show strings too (uncompressed/simple writers).
+  for (const m of raw.matchAll(/\(((?:\\.|[^\\)])*)\)\s*Tj/g)) {
+    out += "\n" + m[1];
+  }
+  return out;
+}
+
 async function login() {
   // Dev OTP bypass: login accepts otp "000000" with any non-empty referenceId
   // when NODE_ENV !== "production". Avoids hitting external OTP senders.
@@ -694,6 +728,64 @@ async function run() {
     await api("PUT", `/venues/${SLUG}`, { token, body: { logo: "" } });
     const bpdf2 = await apiBinary(`/venues/${SLUG}/bills/${bIn.json.bill._id}/pdf`, { token });
     check("docs: bill PDF graceful without logo", bpdf2.status === 200 && bpdf2.head.startsWith("%PDF") && !bpdf2.body.includes("/XObject"), `bytes=${bpdf2.bytes}`);
+
+    // ── E3x white-label persistence: per-doc flag + venue default + renders ──
+    {
+      const SYS_BILL = "This is a working bill";
+      const SYS_INV = "This is a system-generated tax invoice";
+      const SYS_QUOTE = "This is a system-generated quotation";
+      const FOOTER = "Powered by Wedsy";
+
+      // Default-false bill (bIn, created before any default change): co-branded.
+      check("e3x: legacy/default bill is co-branded (whiteLabel false)", bIn.json.bill.whiteLabel === false, `wl=${bIn.json.bill.whiteLabel}`);
+      const coText = pdfText(bpdf2.body);
+      check("e3x: co-branded bill PDF has system line + footer", coText.includes(SYS_BILL) && coText.includes(FOOTER), `sys=${coText.includes(SYS_BILL)} foot=${coText.includes(FOOTER)}`);
+
+      // Setting is validated and documents-gated (capability sweep lives in hardening).
+      const badSet = await api("PATCH", `/venues/${SLUG}/documents/settings`, { token, body: { documentsWhiteLabelDefault: "yes" } });
+      check("e3x: non-boolean default -> 400", badSet.status === 400, `status ${badSet.status}`);
+      const setOn = await api("PATCH", `/venues/${SLUG}/documents/settings`, { token, body: { documentsWhiteLabelDefault: true } });
+      check("e3x: set documentsWhiteLabelDefault true -> 200", setOn.status === 200 && setOn.json.documentsWhiteLabelDefault === true, `status ${setOn.status}`);
+
+      // New bill inherits the venue default; PDF drops the system line, keeps footer.
+      const wlBill = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, lineItems: [{ label: "White-label package", qty: 1, unitPrice: 200000 }], gstMode: "exclusive", gstPercent: 18 } });
+      check("e3x: new bill inherits whiteLabel default", wlBill.status === 201 && wlBill.json.bill.whiteLabel === true, `wl=${wlBill.json.bill && wlBill.json.bill.whiteLabel}`);
+      const wlPdf = await apiBinary(`/venues/${SLUG}/bills/${wlBill.json.bill._id}/pdf`, { token });
+      const wlText = pdfText(wlPdf.body);
+      check("e3x: white-label bill PDF venue-only + small footer", wlPdf.status === 200 && !wlText.includes(SYS_BILL) && wlText.includes(FOOTER), `sys=${wlText.includes(SYS_BILL)} foot=${wlText.includes(FOOTER)}`);
+
+      // Per-doc override beats the default, both directions; PATCH toggles live.
+      const coBill = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, whiteLabel: false, lineItems: [{ label: "Co-branded line", qty: 1, unitPrice: 1000 }] } });
+      check("e3x: explicit whiteLabel:false overrides true default", coBill.json.bill.whiteLabel === false, `wl=${coBill.json.bill.whiteLabel}`);
+      const flip = await api("PATCH", `/venues/${SLUG}/bills/${coBill.json.bill._id}`, { token, body: { whiteLabel: true } });
+      check("e3x: bill whiteLabel PATCHes", flip.status === 200 && flip.json.bill.whiteLabel === true, `wl=${flip.json.bill && flip.json.bill.whiteLabel}`);
+      const badWl = await api("POST", `/venues/${SLUG}/bills`, { token, body: { booking: dbkId, whiteLabel: "yes" } });
+      check("e3x: non-boolean per-doc whiteLabel -> 400", badWl.status === 400, `status ${badWl.status}`);
+
+      // Conversion carries the flag; invoice PDF renders white-label.
+      const wlConv = await api("POST", `/venues/${SLUG}/bills/${wlBill.json.bill._id}/convert`, { token });
+      check("e3x: conversion carries whiteLabel to invoice", wlConv.status === 201 && wlConv.json.invoice.whiteLabel === true, `wl=${wlConv.json.invoice && wlConv.json.invoice.whiteLabel}`);
+      const wlInvPdf = await apiBinary(`/venues/${SLUG}/invoices/${wlConv.json.invoice._id}/pdf`, { token });
+      const wlInvText = pdfText(wlInvPdf.body);
+      check("e3x: white-label invoice PDF venue-only + small footer", !wlInvText.includes(SYS_INV) && wlInvText.includes(FOOTER), `sys=${wlInvText.includes(SYS_INV)} foot=${wlInvText.includes(FOOTER)}`);
+
+      // Quote lane: explicit flag persists and renders; co-branded stays intact.
+      const wlEnq = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "WL Quote Couple", couplePhone: "9555500003" } });
+      const wlEnqId = wlEnq.json.enquiryId || (wlEnq.json.enquiry && wlEnq.json.enquiry._id);
+      const wlQuote = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: wlEnqId, whiteLabel: true, lineItems: [{ label: "Hall", qty: 1, unitPrice: 90000 }] } });
+      check("e3x: quote persists whiteLabel", wlQuote.status === 201 && wlQuote.json.quote.whiteLabel === true, `wl=${wlQuote.json.quote && wlQuote.json.quote.whiteLabel}`);
+      const wlQPdf = await apiBinary(`/venues/${SLUG}/quotes/${wlQuote.json.quote._id}/pdf`, { token });
+      const wlQText = pdfText(wlQPdf.body);
+      check("e3x: white-label quote PDF venue-only + small footer", !wlQText.includes(SYS_QUOTE) && wlQText.includes(FOOTER), `sys=${wlQText.includes(SYS_QUOTE)} foot=${wlQText.includes(FOOTER)}`);
+      const coQuote = await api("POST", `/venues/${SLUG}/quotes`, { token, body: { enquiry: wlEnqId, whiteLabel: false, lineItems: [{ label: "Hall", qty: 1, unitPrice: 90000 }] } });
+      const coQPdf = await apiBinary(`/venues/${SLUG}/quotes/${coQuote.json.quote._id}/pdf`, { token });
+      const coQText = pdfText(coQPdf.body);
+      check("e3x: co-branded quote PDF keeps system line", coQText.includes(SYS_QUOTE) && coQText.includes(FOOTER), `sys=${coQText.includes(SYS_QUOTE)}`);
+
+      // Leave the venue default as found (false) for the rest of the suite.
+      const setOff = await api("PATCH", `/venues/${SLUG}/documents/settings`, { token, body: { documentsWhiteLabelDefault: false } });
+      check("e3x: reset default -> 200", setOff.status === 200 && setOff.json.documentsWhiteLabelDefault === false, `status ${setOff.status}`);
+    }
 
     // quote ack path (same engine)
     const qEnq = await api("POST", `/venues/${SLUG}/enquiries/manual`, { token, body: { coupleName: "Quote Ack Couple", couplePhone: "9555500002" } });

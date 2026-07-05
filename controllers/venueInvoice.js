@@ -56,10 +56,13 @@ async function allocateInvoice(venue, fields) {
 // POST /venues/:slug/invoices — create-from-booking.
 const createFromBooking = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id invoicePrefix");
+    const venue = await resolveOwnedVenue(req, res, "_id invoicePrefix settings");
     if (!venue) return;
-    const { booking, kind, lineItems, gstPercent, gstMode, discount, terms } = req.body || {};
+    const { booking, kind, lineItems, gstPercent, gstMode, discount, terms, whiteLabel } = req.body || {};
     if (!booking) return res.status(400).json({ message: "booking is required" });
+    if (whiteLabel !== undefined && typeof whiteLabel !== "boolean") {
+      return res.status(400).json({ message: "whiteLabel must be a boolean" });
+    }
     const bookingDoc = await VenueBooking.findOne({ _id: booking, venue: venue._id }).lean();
     if (!bookingDoc) return res.status(404).json({ message: "Booking not found for this venue" });
     if (gstMode !== undefined && !GST_MODES.includes(gstMode)) {
@@ -74,10 +77,16 @@ const createFromBooking = async (req, res) => {
     let pct = gstPercent !== undefined ? Number(gstPercent) : 18;
     let disc = Number(discount) || 0;
     let mode = gstMode || "exclusive";
+    // E3x: explicit per-doc flag > source quote's flag > venue-level default.
+    let wl = whiteLabel !== undefined ? whiteLabel : !!(venue.settings && venue.settings.documentsWhiteLabelDefault);
     if (!items && bookingDoc.enquiry) {
       const quote = await VenueQuote.findOne({ enquiry: bookingDoc.enquiry, status: "accepted" }).sort({ version: -1 }).lean()
         || await VenueQuote.findOne({ enquiry: bookingDoc.enquiry }).sort({ version: -1 }).lean();
-      if (quote) { items = quote.lineItems; pct = quote.gstPercent; disc = quote.discount; if (!gstMode && quote.gstMode) mode = quote.gstMode; }
+      if (quote) {
+        items = quote.lineItems; pct = quote.gstPercent; disc = quote.discount;
+        if (!gstMode && quote.gstMode) mode = quote.gstMode;
+        if (whiteLabel === undefined && quote.whiteLabel !== undefined) wl = !!quote.whiteLabel;
+      }
     }
     if (!items) items = [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: bookingDoc.totalValue || 0 }];
     const totals = computeTotals(items, pct, disc, mode);
@@ -89,6 +98,7 @@ const createFromBooking = async (req, res) => {
       lineItems: items,
       gstPercent: pct,
       gstMode: mode,
+      whiteLabel: wl,
       discount: disc,
       totals,
       terms: Array.isArray(terms) ? terms : [],

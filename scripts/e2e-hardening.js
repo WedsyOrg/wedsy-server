@@ -455,6 +455,16 @@ async function run() {
     // asserted with fresh budget in e2e-venue's E2E_DOCS section.
     const tamperedAck = await api("POST", "/venues/doc-ack/evil.token.here", { body: { name: "X", phone: "9000000000" } });
     ok("12 tampered doc-ack token rejected (401/429)", [401, 429].includes(tamperedAck.status), `status ${tamperedAck.status}`);
+
+    // E3x white-label write surfaces
+    const noTokWl = await api("PATCH", `/venues/${A}/documents/settings`, { body: { documentsWhiteLabelDefault: true } });
+    ok("12 doc-settings without token -> 401", noTokWl.status === 401, `status ${noTokWl.status}`);
+    const idorWl = await api("PATCH", `/venues/${A}/documents/settings`, { token: tokenB, body: { documentsWhiteLabelDefault: true } });
+    ok("12 cross-venue doc-settings -> 403", idorWl.status === 403, `status ${idorWl.status}`);
+    const badWlType = await api("PATCH", `/venues/${A}/documents/settings`, { token: tokenA, body: { documentsWhiteLabelDefault: "yes" } });
+    ok("12 non-boolean doc-settings -> 400", badWlType.status === 400, `status ${badWlType.status}`);
+    const badWlDoc = await api("POST", `/venues/${A}/bills`, { token: tokenA, body: { booking: bId12, whiteLabel: 1 } });
+    ok("12 non-boolean per-doc whiteLabel -> 400", badWlDoc.status === 400, `status ${badWlDoc.status}`);
   }
 
   finish();

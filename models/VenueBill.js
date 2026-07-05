@@ -25,6 +25,9 @@ const VenueBillSchema = new mongoose.Schema(
       },
     ],
     gstMode: { type: String, enum: GST_MODES, default: "exclusive" },
+    // E3x white-label: true → PDF renders venue-branding-only (small
+    // "Powered by Wedsy" footer, no system line). Defaults per venue setting.
+    whiteLabel: { type: Boolean, default: false },
     gstPercent: { type: Number, default: 18 },
     discount: { type: Number, default: 0 },
     totals: {

@@ -160,10 +160,13 @@ const deleteTemplate = async (req, res) => {
 // supplementary bills. Terms fall back template → policyDoc.
 const createBill = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id policyDoc");
+    const venue = await resolveOwnedVenue(req, res, "_id policyDoc settings");
     if (!venue) return;
     const body = req.body || {};
     if (!body.booking) return res.status(400).json({ message: "booking is required" });
+    if (body.whiteLabel !== undefined && typeof body.whiteLabel !== "boolean") {
+      return res.status(400).json({ message: "whiteLabel must be a boolean" });
+    }
     const booking = await VenueBooking.findOne({ _id: body.booking, venue: venue._id }).select("_id totalValue").lean();
     if (!booking) return res.status(404).json({ message: "Booking not found for this venue" });
 
@@ -195,6 +198,8 @@ const createBill = async (req, res) => {
       isAddon: body.isAddon === true,
       lineItems: items,
       gstMode: mode,
+      // E3x: explicit per-doc flag wins; otherwise the venue-level default.
+      whiteLabel: body.whiteLabel !== undefined ? body.whiteLabel : !!(venue.settings && venue.settings.documentsWhiteLabelDefault),
       gstPercent: pct,
       discount: disc,
       totals: computeTotals(items, pct, disc, mode),
@@ -231,6 +236,9 @@ const updateBill = async (req, res) => {
     const termsV = validTerms(body.terms);
     if (!termsV.ok) return res.status(400).json({ message: termsV.message });
     if (body.gstMode !== undefined && !GST_MODES.includes(body.gstMode)) return res.status(400).json({ message: `gstMode must be one of ${GST_MODES.join(", ")}` });
+    if (body.whiteLabel !== undefined && typeof body.whiteLabel !== "boolean") {
+      return res.status(400).json({ message: "whiteLabel must be a boolean" });
+    }
     if (body.gstPercent !== undefined) {
       const pct = Number(body.gstPercent);
       if (!Number.isFinite(pct) || pct < 0 || pct > 100) return res.status(400).json({ message: "gstPercent must be 0..100" });
@@ -244,6 +252,7 @@ const updateBill = async (req, res) => {
     if (itemsV.value !== undefined) bill.lineItems = itemsV.value;
     if (termsV.value !== undefined) bill.terms = termsV.value;
     if (body.gstMode !== undefined) bill.gstMode = body.gstMode;
+    if (body.whiteLabel !== undefined) bill.whiteLabel = body.whiteLabel;
     if (typeof body.notes === "string") bill.notes = body.notes.slice(0, 2000);
     bill.totals = computeTotals(bill.lineItems, bill.gstPercent, bill.discount, bill.gstMode);
     await bill.save();
@@ -285,6 +294,7 @@ const convertBill = async (req, res) => {
       lineItems: bill.lineItems,
       gstPercent: bill.gstPercent,
       gstMode: bill.gstMode,
+      whiteLabel: bill.whiteLabel, // E3x: the flag rides the conversion
       discount: bill.discount,
       totals: bill.totals,
       terms: bill.terms,
@@ -404,6 +414,28 @@ const acceptDoc = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+// PATCH /venues/:slug/documents/settings — {documentsWhiteLabelDefault}
+// (documents capability). E3x: the venue-level default for the per-doc
+// whiteLabel flag; existing docs are never rewritten.
+const updateDocSettings = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res, "_id settings");
+    if (!venue) return;
+    const { documentsWhiteLabelDefault } = req.body || {};
+    if (typeof documentsWhiteLabelDefault !== "boolean") {
+      return res.status(400).json({ message: "documentsWhiteLabelDefault must be a boolean" });
+    }
+    await Venue.updateOne({ _id: venue._id }, { $set: { "settings.documentsWhiteLabelDefault": documentsWhiteLabelDefault } });
+    // D10: settings changes accrue on the activity spine (fire-and-forget).
+    try {
+      const { actorFromReq, logActivity, entriesForVenueUpdate } = require("../utils/venueActivity");
+      const actor = await actorFromReq(req);
+      logActivity(entriesForVenueUpdate(venue._id, venue, { "settings.documentsWhiteLabelDefault": documentsWhiteLabelDefault }, actor));
+    } catch (_) { /* never blocks the mutation */ }
+    return res.status(200).json({ success: true, documentsWhiteLabelDefault });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 // POST /venues/:slug/quotes/:quoteId/send-ack — mint an acceptance token for a
 // quote (quotes keep their existing status flow; this only issues the link).
 const sendQuoteAck = async (req, res) => {
@@ -434,4 +466,5 @@ module.exports = {
   getAckDoc,
   acceptDoc,
   sendQuoteAck,
+  updateDocSettings,
 };

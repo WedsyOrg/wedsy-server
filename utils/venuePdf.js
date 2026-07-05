@@ -143,9 +143,12 @@ function acceptanceLine(doc, acceptance) {
 }
 
 // D8 white-label footer: the document is the VENUE's; Wedsy stays small print.
-function poweredByFooter(doc, systemLine) {
+// E3x: whiteLabel=true drops the system-voice line entirely — venue branding
+// only, with just the subtle attribution. whiteLabel=false (default) keeps the
+// historical co-branded render (system line + footer) byte-for-byte.
+function poweredByFooter(doc, systemLine, whiteLabel) {
   doc.moveDown(1.5).fillColor(GREY).fontSize(8);
-  if (systemLine) doc.text(systemLine, 50, doc.y, { align: "center", width: 495 });
+  if (systemLine && !whiteLabel) doc.text(systemLine, 50, doc.y, { align: "center", width: 495 });
   doc.fillColor("#999999").fontSize(7).text("Powered by Wedsy", 50, doc.y + 2, { align: "center", width: 495 });
 }
 
@@ -163,7 +166,7 @@ async function streamQuotePdf(res, { venue, enquiry, quote }) {
   totalsBlock(doc, quote.totals || {}, quote.gstPercent, quote.discount, quote.gstMode);
   termsBlock(doc, quote.terms);
   acceptanceLine(doc, quote.acceptance);
-  poweredByFooter(doc, "This is a system-generated quotation.");
+  poweredByFooter(doc, "This is a system-generated quotation.", quote.whiteLabel);
   doc.end();
 }
 
@@ -193,7 +196,7 @@ async function streamInvoicePdf(res, { venue, booking, invoice }) {
   doc.text(formatINR(balance), 450, doc.y - 12, { width: 95, align: "right" });
   termsBlock(doc, invoice.terms);
   acceptanceLine(doc, invoice.acceptance);
-  poweredByFooter(doc, "This is a system-generated tax invoice.");
+  poweredByFooter(doc, "This is a system-generated tax invoice.", invoice.whiteLabel);
   doc.end();
 }
 
@@ -215,7 +218,7 @@ async function streamBillPdf(res, { venue, booking, bill }) {
   totalsBlock(doc, bill.totals || {}, bill.gstPercent, bill.discount, bill.gstMode);
   termsBlock(doc, bill.terms);
   acceptanceLine(doc, bill.acceptance);
-  poweredByFooter(doc, "This is a working bill — the tax invoice is issued on conversion.");
+  poweredByFooter(doc, "This is a working bill — the tax invoice is issued on conversion.", bill.whiteLabel);
   doc.end();
 }
 

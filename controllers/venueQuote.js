@@ -19,10 +19,13 @@ async function resolveOwnedVenue(req, res, select = "_id") {
 // POST /venues/:slug/quotes — create a new quote version for an enquiry.
 const createQuote = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
+    const venue = await resolveOwnedVenue(req, res, "_id settings");
     if (!venue) return;
-    const { enquiry, lineItems, gstPercent, gstMode, discount, terms } = req.body || {};
+    const { enquiry, lineItems, gstPercent, gstMode, discount, terms, whiteLabel } = req.body || {};
     if (!enquiry) return res.status(400).json({ message: "enquiry is required" });
+    if (whiteLabel !== undefined && typeof whiteLabel !== "boolean") {
+      return res.status(400).json({ message: "whiteLabel must be a boolean" });
+    }
     const enquiryDoc = await VenueEnquiry.findOne({ _id: enquiry, venueId: venue._id }).select("_id").lean();
     if (!enquiryDoc) return res.status(404).json({ message: "Enquiry not found for this venue" });
 
@@ -52,6 +55,8 @@ const createQuote = async (req, res) => {
       lineItems: Array.isArray(lineItems) ? lineItems : [],
       gstPercent: pct,
       gstMode: mode,
+      // E3x: explicit per-doc flag wins; otherwise the venue-level default.
+      whiteLabel: whiteLabel !== undefined ? whiteLabel : !!(venue.settings && venue.settings.documentsWhiteLabelDefault),
       discount: disc,
       totals,
       terms: Array.isArray(terms) ? terms : [],
@@ -91,8 +96,11 @@ const updateQuote = async (req, res) => {
     if (!venue) return;
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id });
     if (!quote) return res.status(404).json({ message: "Quote not found" });
-    const { lineItems, gstPercent, gstMode, discount, status, terms } = req.body || {};
+    const { lineItems, gstPercent, gstMode, discount, status, terms, whiteLabel } = req.body || {};
     if (gstMode !== undefined && !GST_MODES.includes(gstMode)) return res.status(400).json({ message: `gstMode must be one of ${GST_MODES.join(", ")}` });
+    if (whiteLabel !== undefined && typeof whiteLabel !== "boolean") {
+      return res.status(400).json({ message: "whiteLabel must be a boolean" });
+    }
     if (terms !== undefined && (!Array.isArray(terms) || terms.some((t) => typeof t !== "string" || t.length > 2000) || terms.length > 50)) {
       return res.status(400).json({ message: "terms must be an array of strings (max 50 × 2000 chars)" });
     }
@@ -116,6 +124,7 @@ const updateQuote = async (req, res) => {
     if (gstMode !== undefined) quote.gstMode = gstMode;
     if (discount !== undefined) quote.discount = Number(discount) || 0;
     if (terms !== undefined) quote.terms = terms;
+    if (whiteLabel !== undefined) quote.whiteLabel = whiteLabel;
     if (lineItems !== undefined || gstPercent !== undefined || discount !== undefined || gstMode !== undefined) {
       quote.totals = computeTotals(quote.lineItems, quote.gstPercent, quote.discount, quote.gstMode);
     }
