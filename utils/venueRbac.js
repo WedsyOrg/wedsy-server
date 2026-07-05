@@ -90,6 +90,14 @@ async function hasCapability(reqVenueOwner, capability, venueMember) {
 // for members holding the legacy "owner" role or the system Owner bundle.
 async function isOwnerActor(reqVenueOwner, venueMember) {
   if (!reqVenueOwner) return false;
+  // Guard against the misuse class behind the Jul 2026 escalation bug:
+  // passing the Express req instead of req.venueOwner. A req has no .memberId,
+  // which used to fall through to the owner-token branch and grant EVERYONE.
+  // Fail closed (deny) rather than throw so legit requests 403 instead of 500.
+  if (reqVenueOwner.headers !== undefined || reqVenueOwner.params !== undefined) {
+    console.warn("[venueRbac] isOwnerActor called with an Express req — pass req.venueOwner (denying)");
+    return false;
+  }
   if (!reqVenueOwner.memberId) return true; // owner token
   if (reqVenueOwner.role === "owner") return true;
   let member = venueMember;

@@ -552,6 +552,49 @@ async function run() {
     // (owner-only), and a deactivated member's live token dies per-request.
     const ritaReset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token: newLogin.json.token, body: {} });
     check("rbac: member password reset -> 403 (owner-only)", ritaReset.status === 403, `status ${ritaReset.status}`);
+
+    // ── Owner-actor escalation guard (Jul 2026 security fix) ──
+    // A member holding a CUSTOM role WITH the team capability reaches the
+    // controller-level owner guards (the route only gates on `team`). Before
+    // the fix, isOwnerActor(req) fell through to the owner branch and let this
+    // member escalate. Assert the owner-only guards now hold — AND that a
+    // team-capability member can still do legitimate, non-owner team ops.
+    const tmRole = await api("POST", `/venues/${SLUG}/roles`, { token, body: { name: "Team Lead", capabilities: ["team", "leads"] } });
+    check("rbac(esc): create team-capability custom role -> 201", tmRole.status === 201, `status ${tmRole.status}`);
+    const tmRoleId = tmRole.json.role && tmRole.json.role._id;
+    const tmInv = await api("POST", `/venues/${SLUG}/team`, { token, body: { name: "Tara Lead", phone: "9333300009", email: "tara@test-palace.local", roleId: tmRoleId, withPassword: true } });
+    check("rbac(esc): invite team-capability member -> 201", tmInv.status === 201 && tmInv.json.tempPassword, `status ${tmInv.status}`);
+    const taraId = tmInv.json.member && tmInv.json.member._id;
+    const tmLogin = await api("POST", "/venue-owner/member-auth", { body: { email: "tara@test-palace.local", password: tmInv.json.tempPassword } });
+    check("rbac(esc): team-capability member logs in", tmLogin.status === 200 && tmLogin.json.token, `status ${tmLogin.status}`);
+    const taraToken = tmLogin.json.token;
+
+    // (a) setMemberPassword on another member -> 403 (owner-only, not team)
+    const escReset = await api("POST", `/venues/${SLUG}/team/${ritaId}/password`, { token: taraToken, body: {} });
+    check("rbac(esc): team-cap member resets another's password -> 403", escReset.status === 403, `status ${escReset.status}`);
+    // (b) assign the system Owner bundle to ANOTHER member -> 403 (the
+    // owner-bundle guard; self-grant is separately blocked 400 by self-modify).
+    const escOwn = await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token: taraToken, body: { roleId: ownerRole._id } });
+    check("rbac(esc): team-cap member grants another the Owner bundle -> 403", escOwn.status === 403, `status ${escOwn.status}`);
+    const escSelf = await api("PATCH", `/venues/${SLUG}/team/${taraId}`, { token: taraToken, body: { roleId: ownerRole._id } });
+    check("rbac(esc): team-cap member self-grant Owner bundle -> 400 (self-modify)", escSelf.status === 400, `status ${escSelf.status}`);
+    // (b') grant Owner bundle at invite time -> 403
+    const escInvOwn = await api("POST", `/venues/${SLUG}/team`, { token: taraToken, body: { name: "Puppet", phone: "9333300010", email: "puppet@test-palace.local", roleId: ownerRole._id } });
+    check("rbac(esc): team-cap member invites onto Owner bundle -> 403", escInvOwn.status === 403, `status ${escInvOwn.status}`);
+    // (c) owner does the same two ops -> success (guard doesn't over-block owner)
+    const ownReset = await api("POST", `/venues/${SLUG}/team/${taraId}/password`, { token, body: {} });
+    check("rbac(esc): owner resets member password -> 200", ownReset.status === 200 && ownReset.json.tempPassword, `status ${ownReset.status}`);
+    const ownGrantsOwner = await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { roleId: ownerRole._id } });
+    check("rbac(esc): owner assigns Owner bundle -> 200", ownGrantsOwner.status === 200, `status ${ownGrantsOwner.status}`);
+    // reassign Rita back off the Owner bundle so later checks are unaffected
+    await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { roleId: salesRole._id } });
+    // (legit) team-capability member CAN do non-owner team ops: invite a
+    // plain member and edit a non-system role — the fix doesn't over-block.
+    const tmLegitInv = await api("POST", `/venues/${SLUG}/team`, { token: taraToken, body: { name: "Vik Helper", phone: "9333300011", email: "vik@test-palace.local", roleId: salesRole._id } });
+    check("rbac(esc): team-cap member invites non-owner member -> 201", tmLegitInv.status === 201, `status ${tmLegitInv.status}`);
+    const tmLegitEdit = await api("PATCH", `/venues/${SLUG}/roles/${tmRoleId}`, { token: taraToken, body: { capabilities: ["team", "leads", "chats"] } });
+    check("rbac(esc): team-cap member edits non-system role -> 200", tmLegitEdit.status === 200, `status ${tmLegitEdit.status}`);
+
     await api("PATCH", `/venues/${SLUG}/team/${ritaId}`, { token, body: { isActive: false } });
     const deadToken = await api("GET", `/venues/${SLUG}/enquiries`, { token: newLogin.json.token });
     check("rbac: deactivated member live token -> 401", deadToken.status === 401, `status ${deadToken.status}`);
