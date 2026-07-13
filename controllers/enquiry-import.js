@@ -17,7 +17,7 @@ const Preview = async (req, res) => {
   } catch (error) {
     const status = error.status || 500;
     if (status === 500) console.error("[import:preview]", error);
-    res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+    res.status(status).json({ message: status === 500 ? "Something went wrong with this import — please retry." : error.message });
   }
 };
 
@@ -48,7 +48,7 @@ const Commit = async (req, res) => {
   } catch (error) {
     const status = error.status || 500;
     if (status === 500) console.error("[import:commit]", error);
-    res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+    res.status(status).json({ message: status === 500 ? "Something went wrong with this import — please retry." : error.message });
   }
 };
 
@@ -62,7 +62,7 @@ const Sample = async (req, res) => {
   } catch (error) {
     const status = error.status || 500;
     if (status === 500) console.error("[import:sample]", error);
-    res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+    res.status(status).json({ message: status === 500 ? "Something went wrong with this import — please retry." : error.message });
   }
 };
 

@@ -45,7 +45,12 @@ const TRIGGERS = {
   mua_review_app:             { whatsapp: { campaign: "mua_review_app" } },
   cx_pkg_review:              { whatsapp: { campaign: "cx_pkg_review" } },
   mua_cx_pmnt_rmnd_prsnl:     { whatsapp: { campaign: "mua_cx_pmnt_rmnd_prsnl" } },
-  user_signup_greet:          { whatsapp: { campaign: "user_signup_greet_wedsy" }, email: { templateId: 6637167 } },
+  // user_signup_greet: the AiSensy campaign leg 400'd on every signup (provider
+  // misconfiguration — same class as the disabled new_lead ping). Now sends via
+  // the Meta WhatsApp Cloud API directly (utils/whatsapp.js), template
+  // "user_signup_greet" with ONE body variable ({{1}} = the user's name).
+  // ⚠️ The template must exist (approved, lang en) under that name in the WABA.
+  user_signup_greet:          { metaTemplate: { name: "user_signup_greet" }, email: { templateId: 6637167 } },
   cust_booking_rmnd:          { sms: { templateId: "178508" }, whatsapp: { campaign: "cust_booking_rmnd" }, email: { templateId: 6637515 } },
 
   // Legacy — old DLT template IDs / AiSensy campaigns used by utils/update.js before template migration
@@ -136,6 +141,15 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
     sends.push(sendWhatsApp(phone, config.whatsapp.campaign, variables, name));
   }
 
+  // Meta WhatsApp Cloud API leg (Graph, not AiSensy): utils/whatsapp.js builds
+  // the template payload per Meta's contract (body component only when there
+  // are variables). It retries + FailureLogs internally and resolves null on
+  // final failure, so it never rejects this Promise.allSettled.
+  if (config.metaTemplate && phone) {
+    const { sendWhatsApp: sendMetaTemplate } = require("../utils/whatsapp");
+    sends.push(sendMetaTemplate(phone, config.metaTemplate.name, variables));
+  }
+
   if (config.email && email) {
     sends.push(sendEmail(email, config.email.templateId, emailVariables, name));
   }
@@ -143,7 +157,8 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
   if (sends.length === 0) return;
 
   Promise.allSettled(sends).then((results) => {
-    const channels = ["sms", "whatsapp", "email"].filter((c) => config[c]);
+    // Order mirrors the push order above (sms, whatsapp, metaTemplate, email).
+    const channels = ["sms", "whatsapp", "metaTemplate", "email"].filter((c) => config[c]);
     results.forEach((result, i) => {
       if (result.status === "rejected") {
         console.error(

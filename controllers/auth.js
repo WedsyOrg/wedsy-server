@@ -109,19 +109,19 @@ const Login = (req, res) => {
                     });
                   })
                   .catch((error) => {
-                    res.status(400).send({ message: "error", error });
+                    res.status(500).send({ message: "Something went wrong with this account action — please retry." });
                   });
               }
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              res.status(500).send({ message: "Something went wrong with this account action — please retry." });
             });
         } else {
           res.status(400).send({ message: "Invalid OTP" });
         }
       })
       .catch((err) => {
-        res.status(400).send({ message: "error", error: err });
+        res.status(500).send({ message: "Something went wrong with this account action — please retry." });
       });
   }
 };
@@ -151,7 +151,7 @@ const BlockUser = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      res.status(500).send({ message: "Something went wrong with this account action — please retry." });
     });
 };
 
@@ -216,7 +216,7 @@ const DeleteUserAccount = async (req, res) => {
     console.error("DeleteUserAccount error:", error);
     return res
       .status(400)
-      .send({ message: "error", error: error.message || error });
+      .send({ message: "Something went wrong with this account action — please retry." });
   }
 };
 
@@ -280,7 +280,7 @@ const RestoreUserAccount = async (req, res) => {
     console.error("RestoreUserAccount error:", error);
     return res
       .status(400)
-      .send({ message: "error", error: error.message || error });
+      .send({ message: "Something went wrong with this account action — please retry." });
   }
 };
 
@@ -336,12 +336,12 @@ const VendorLogin = (req, res) => {
                 });
               })
               .catch((error) => {
-                res.status(400).send({ message: "error", error });
+                res.status(500).send({ message: "Something went wrong with this account action — please retry." });
               });
           }
         })
         .catch((error) => {
-          res.status(400).send({ message: "error", error });
+          res.status(500).send({ message: "Something went wrong with this account action — please retry." });
         });
       return; // Exit early, don't proceed with normal OTP verification
     }
@@ -373,14 +373,14 @@ const VendorLogin = (req, res) => {
               }
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              res.status(500).send({ message: "Something went wrong with this account action — please retry." });
             });
         } else {
           res.status(400).send({ message: "Invalid OTP" });
         }
       })
       .catch((err) => {
-        res.status(400).send({ message: "error", error: err });
+        res.status(500).send({ message: "Something went wrong with this account action — please retry." });
       });
   }
 };
@@ -435,7 +435,7 @@ const DeleteVendorAccount = async (req, res) => {
     console.error("DeleteVendorAccount error:", error);
     return res
       .status(400)
-      .send({ message: "error", error: error.message || error });
+      .send({ message: "Something went wrong with this account action — please retry." });
   }
 };
 
@@ -497,7 +497,7 @@ const RestoreVendorAccount = async (req, res) => {
     console.error("RestoreVendorAccount error:", error);
     return res
       .status(400)
-      .send({ message: "error", error: error.message || error });
+      .send({ message: "Something went wrong with this account action — please retry." });
   }
 };
 
@@ -558,14 +558,14 @@ const AdminLogin = (req, res) => {
               });
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              res.status(500).send({ message: "Something went wrong with this account action — please retry." });
             });
         } else {
           res.status(404).send({ message: "User not found" });
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        res.status(500).send({ message: "Something went wrong with this account action — please retry." });
       });
   }
 };
@@ -669,7 +669,7 @@ const GetOTP = (req, res) => {
         });
       })
       .catch((err) => {
-        res.status(400).send({ message: "error", error: err });
+        res.status(500).send({ message: "Something went wrong with this account action — please retry." });
       });
   }
 };
@@ -696,9 +696,13 @@ const ForgotPassword = async (req, res) => {
       return res.status(200).send(generic);
     }
     const token = crypto.randomBytes(32).toString("hex");
-    admin.resetToken = sha256(token);
-    admin.resetTokenExpiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
-    await admin.save();
+    // Whitelisted update (set-password bug class): a reset must never be blocked
+    // by an unrelated dirty legacy field failing full-doc validation on save().
+    await Admin.findByIdAndUpdate(
+      admin._id,
+      { $set: { resetToken: sha256(token), resetTokenExpiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS) } },
+      { runValidators: false }
+    );
 
     const templateId = process.env.MAILJET_TEMPLATE_RESET;
     if (!templateId) {
@@ -749,10 +753,13 @@ const ResetPassword = async (req, res) => {
     ) {
       return fail();
     }
-    admin.password = await CreateHash(newPassword);
-    admin.resetToken = null;
-    admin.resetTokenExpiresAt = null;
-    await admin.save();
+    // Whitelisted update (set-password bug class): never blocked by an
+    // unrelated dirty legacy field failing full-doc validation.
+    await Admin.findByIdAndUpdate(
+      admin._id,
+      { $set: { password: await CreateHash(newPassword), resetToken: null, resetTokenExpiresAt: null } },
+      { runValidators: false }
+    );
     console.log(`[auth] Password reset completed for admin ${admin._id}`);
     return res.status(200).send({ message: "Password updated. You can log in now." });
   } catch (error) {
@@ -775,14 +782,17 @@ const FirstResetPassword = async (req, res) => {
     if (await CheckHash(newPassword, admin.password)) {
       return res.status(400).send({ message: "New password cannot be the same as the current one" });
     }
-    admin.password = await CreateHash(newPassword);
-    admin.mustResetPassword = false;
-    await admin.save();
+    // Whitelisted update (set-password bug class).
+    await Admin.findByIdAndUpdate(
+      admin._id,
+      { $set: { password: await CreateHash(newPassword), mustResetPassword: false } },
+      { runValidators: false }
+    );
     console.log(`[auth] First-login password set for admin ${admin._id}`);
     return res.status(200).send({ message: "Password updated" });
   } catch (error) {
     console.error("[auth] FirstResetPassword error:", error.message);
-    return res.status(500).send({ message: "Server error" });
+    return res.status(500).send({ message: "Something went wrong signing you in — please retry." });
   }
 };
 
@@ -807,14 +817,17 @@ const ChangeOwnPassword = async (req, res) => {
     if (await CheckHash(newPassword, admin.password)) {
       return res.status(400).send({ message: "New password cannot be the same as the current one" });
     }
-    admin.password = await CreateHash(newPassword);
-    admin.mustResetPassword = false;
-    await admin.save();
+    // Whitelisted update (set-password bug class).
+    await Admin.findByIdAndUpdate(
+      admin._id,
+      { $set: { password: await CreateHash(newPassword), mustResetPassword: false } },
+      { runValidators: false }
+    );
     console.log(`[auth] Password changed by admin ${admin._id}`);
     return res.status(200).send({ message: "Password updated" });
   } catch (error) {
     console.error("[auth] ChangeOwnPassword error:", error.message);
-    return res.status(500).send({ message: "Server error" });
+    return res.status(500).send({ message: "Something went wrong signing you in — please retry." });
   }
 };
 
@@ -841,7 +854,7 @@ const GetPermissions = async (req, res) => {
       roleName: roleNames[0] || null, // back-compat
     });
   } catch (error) {
-    res.status(500).send({ message: "Server error" });
+    res.status(500).send({ message: "Something went wrong signing you in — please retry." });
   }
 };
 

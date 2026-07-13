@@ -14,12 +14,16 @@ const sendWhatsApp = async (phone, templateName, parameters = [], buttonParamete
     ? process.env.META_WA_AGENT_ACCESS_TOKEN
     : process.env.META_WA_ACCESS_TOKEN;
 
-  const components = [
-    {
+  // Meta payload contract: a body component with an EMPTY parameters array is
+  // rejected (400 #132000 "number of parameters does not match") for templates
+  // with no body variables — include the component only when there ARE params.
+  const components = [];
+  if (parameters && parameters.length) {
+    components.push({
       type: 'body',
       parameters: parameters.map(p => ({ type: 'text', text: String(p) }))
-    }
-  ];
+    });
+  }
 
   if (buttonParameters) {
     components.push({
@@ -53,7 +57,13 @@ const sendWhatsApp = async (phone, templateName, parameters = [], buttonParamete
         }
       );
 
-      if (!response.ok) throw new Error(`WhatsApp API error: ${response.status}`);
+      if (!response.ok) {
+        // Surface Meta's actual error body (e.g. #132000 param-count mismatch)
+        // instead of a bare status — this is what makes template/payload
+        // mismatches diagnosable from the FailureLog.
+        const errBody = await response.text().catch(() => '');
+        throw new Error(`WhatsApp API error: ${response.status} ${errBody.slice(0, 300)}`);
+      }
       return await response.json();
 
     } catch (error) {

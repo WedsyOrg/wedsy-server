@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const CalendarEvent = require("../models/CalendarEvent");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
+const { assignableFilter } = require("../utils/assignable");
 const SettingsService = require("./SettingsService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const AdminNotificationService = require("./AdminNotificationService");
@@ -330,7 +331,7 @@ const completeHuddle = async (huddleId, actorId, { attendeeIds = [], eventTeam =
 // Visible admin ids under a lead-scope filter keyed on ownerId (same trick as attendance).
 const visibleAdminIds = async (scopeFilter = {}) => {
   if (!scopeFilter || Object.keys(scopeFilter).length === 0) {
-    const all = await Admin.find({ status: "active" }, { _id: 1 }).lean();
+    const all = await Admin.find(assignableFilter(), { _id: 1 }).lean();
     return all.map((a) => a._id);
   }
   const v = scopeFilter.ownerId;
@@ -346,7 +347,7 @@ const teamCalendar = async ({ from, to } = {}, scopeFilter = {}) => {
   const ids = await visibleAdminIds(scopeFilter);
   const AttendanceService = require("./AttendanceService");
   const [admins, events, liveIds] = await Promise.all([
-    Admin.find({ _id: { $in: ids }, status: "active" }, { name: 1 }).lean(),
+    Admin.find(assignableFilter({ _id: { $in: ids } }), { name: 1 }).lean(),
     CalendarEvent.find({
       ownerId: { $in: ids },
       status: { $ne: "cancelled" },

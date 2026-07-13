@@ -7,7 +7,7 @@ const LeadTaskService = require("../services/LeadTaskService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[leadStep]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong with this step — please retry." : error.message });
 };
 
 // Lead-scope guard (mirrors leadTeam/leadChat): the lead must satisfy the

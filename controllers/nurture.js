@@ -4,7 +4,7 @@ const NurtureService = require("../services/NurtureService");
 
 const respond = (res, error) => {
   const status = error.status || 500;
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong with nurture — please retry." : error.message });
 };
 
 const assertInScope = async (id, scopeFilter = {}) => {

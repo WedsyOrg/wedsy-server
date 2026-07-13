@@ -123,7 +123,19 @@ const touchLastActivity = async (_id, at) => {
   );
 };
 
+// All leads currently awaiting a disqualification decision (lostStatus "pending").
+// Owner (assignee) and requester are populated for the Approvals list; the caller
+// filters by approval eligibility. Newest request first. Lean — read-only.
+const findPendingDisqualifications = async () => {
+  return await Enquiry.find({ lostStatus: "pending" })
+    .populate("assignedTo", "name email phone reportingManagerId")
+    .populate("lostRequestedBy", "name email")
+    .sort({ lostRequestedAt: -1 })
+    .lean();
+};
+
 module.exports = {
+  findPendingDisqualifications,
   findById,
   updateStageById,
   updateAssignedToById,

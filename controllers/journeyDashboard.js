@@ -3,7 +3,7 @@ const JourneyDashboardService = require("../services/JourneyDashboardService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[journeyDashboard]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong loading the journey board — please retry." : error.message });
 };
 
 // GET /enquiry/steps/my-work — the caller's steps across all their leads.

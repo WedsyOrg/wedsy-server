@@ -106,9 +106,15 @@ function CheckToken(req, res, next) {
           if (!vendor) {
             res.status(401).send({ message: "invalid user" });
           } else {
-            // Update lastActive field
-            vendor.lastActive = Date.now();
-            await vendor.save(); // Save updated vendor
+            // Heartbeat via whitelisted update (save fragility class): a full-doc
+            // save() here re-validates the whole legacy Vendor schema on EVERY
+            // authenticated request — one dirty field would block all their calls.
+            await Vendor.findByIdAndUpdate(
+              _id,
+              { $set: { lastActive: Date.now() } },
+              { runValidators: false }
+            );
+            vendor.lastActive = Date.now(); // keep the in-memory copy consistent
 
             req.auth = {
               user_id: _id,
@@ -119,7 +125,7 @@ function CheckToken(req, res, next) {
             next();
           }
         } catch (error) {
-          res.status(400).send({ message: "error", error });
+          res.status(401).send({ message: "Session invalid — please log in again." });
         }
       } else if (_id) {
         User.findById({ _id })
@@ -185,7 +191,7 @@ function CheckLogin(req, res, next) {
   console.log("CheckLogin: Token present, verifying...");
   jwt.verify(token, process.env.JWT_SECRET, async function (err, result) {
     if (err) {
-      res.status(400).send({ message: "error", error: err });
+      res.status(401).send({ message: "Your session expired — please log in again." });
     } else {
       const { _id, isAdmin, isVendor } = result;
       if (_id && isAdmin) {
@@ -209,7 +215,7 @@ function CheckLogin(req, res, next) {
             }
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            res.status(401).send({ message: "Session invalid — please log in again." });
           });
       } else if (_id && isVendor) {
         // Vendor.findById({ _id })
@@ -227,16 +233,22 @@ function CheckLogin(req, res, next) {
         //     }
         //   })
         //   .catch((error) => {
-        //     res.status(400).send({ message: "error", error });
+        //     res.status(401).send({ message: "Session invalid — please log in again." });
         //   });
         try {
           const vendor = await Vendor.findById(_id);
           if (!vendor) {
             res.status(401).send({ message: "invalid user" });
           } else {
-            // Update lastActive field
-            vendor.lastActive = Date.now();
-            await vendor.save(); // Save updated vendor
+            // Heartbeat via whitelisted update (save fragility class): a full-doc
+            // save() here re-validates the whole legacy Vendor schema on EVERY
+            // authenticated request — one dirty field would block all their calls.
+            await Vendor.findByIdAndUpdate(
+              _id,
+              { $set: { lastActive: Date.now() } },
+              { runValidators: false }
+            );
+            vendor.lastActive = Date.now(); // keep the in-memory copy consistent
 
             req.auth = {
               user_id: _id,
@@ -247,7 +259,7 @@ function CheckLogin(req, res, next) {
             next();
           }
         } catch (error) {
-          res.status(400).send({ message: "error", error });
+          res.status(401).send({ message: "Session invalid — please log in again." });
         }
       } else if (_id) {
         User.findById({ _id })
@@ -265,10 +277,10 @@ function CheckLogin(req, res, next) {
             }
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            res.status(401).send({ message: "Session invalid — please log in again." });
           });
       } else {
-        res.status(400).send({ message: "unknown error" });
+        res.status(401).send({ message: "Session invalid — please log in again." });
       }
     }
   });
@@ -286,7 +298,7 @@ function CheckAdminLogin(req, res, next) {
   }
   jwt.verify(token, process.env.JWT_SECRET, function (err, result) {
     if (err) {
-      res.status(400).send({ message: "error", error: err });
+      res.status(401).send({ message: "Your session expired — please log in again." });
     } else {
       const { _id, isAdmin } = result;
       if (_id && isAdmin) {
@@ -310,10 +322,10 @@ function CheckAdminLogin(req, res, next) {
             }
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            res.status(401).send({ message: "Session invalid — please log in again." });
           });
       } else {
-        res.status(400).send({ message: "unknown error" });
+        res.status(401).send({ message: "Session invalid — please log in again." });
       }
     }
   });
@@ -331,7 +343,7 @@ function CheckVendorLogin(req, res, next) {
   }
   jwt.verify(token, process.env.JWT_SECRET, async function (err, result) {
     if (err) {
-      res.status(400).send({ message: "error", error: err });
+      res.status(401).send({ message: "Your session expired — please log in again." });
     } else {
       const { _id, isVendor } = result;
       if (_id && isVendor) {
@@ -350,16 +362,22 @@ function CheckVendorLogin(req, res, next) {
         //     }
         //   })
         //   .catch((error) => {
-        //     res.status(400).send({ message: "error", error });
+        //     res.status(401).send({ message: "Session invalid — please log in again." });
         //   });
         try {
           const vendor = await Vendor.findById(_id);
           if (!vendor) {
             res.status(401).send({ message: "invalid user" });
           } else {
-            // Update lastActive field
-            vendor.lastActive = Date.now();
-            await vendor.save(); // Save updated vendor
+            // Heartbeat via whitelisted update (save fragility class): a full-doc
+            // save() here re-validates the whole legacy Vendor schema on EVERY
+            // authenticated request — one dirty field would block all their calls.
+            await Vendor.findByIdAndUpdate(
+              _id,
+              { $set: { lastActive: Date.now() } },
+              { runValidators: false }
+            );
+            vendor.lastActive = Date.now(); // keep the in-memory copy consistent
 
             req.auth = {
               user_id: _id,
@@ -370,10 +388,10 @@ function CheckVendorLogin(req, res, next) {
             next();
           }
         } catch (error) {
-          res.status(400).send({ message: "error", error });
+          res.status(401).send({ message: "Session invalid — please log in again." });
         }
       } else {
-        res.status(400).send({ message: "unknown error" });
+        res.status(401).send({ message: "Session invalid — please log in again." });
       }
     }
   });

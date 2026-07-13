@@ -55,7 +55,10 @@ const rescueQueue = async (adminId, scope, now = new Date()) => {
     leadFilter.assignedTo = { $in: others.map((id) => new mongoose.Types.ObjectId(id)) };
   }
 
-  const leads = await Enquiry.find(leadFilter, {
+  // Slice A2 — parked (snoozed) leads are not rescues: the client asked for a
+  // later callback (e.g. responded on WhatsApp, so firstCalledAt can be null).
+  const snoozeExcl = await require("./SnoozeService").snoozeExclusion(now);
+  const leads = await Enquiry.find({ $and: [leadFilter, snoozeExcl] }, {
     name: 1, phone: 1, source: 1, marketingSource: 1, assignedTo: 1, createdAt: 1, firstCalledAt: 1, qualified: 1, isLost: 1, recycled: 1,
   }).lean();
   const t = await GoldenWindowService.thresholds();

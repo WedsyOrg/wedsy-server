@@ -9,16 +9,19 @@ const AdminNotificationService = require("./AdminNotificationService");
 const LeadChatService = require("./LeadChatService");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
+const { assignableFilter } = require("../utils/assignable");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
-// Active admins holding a named role (RBAC v2: roleId OR roleIds[]).
+// ASSIGNABLE admins holding a named role (RBAC v2: roleId OR roleIds[]).
+// assignableFilter = status active AND not disabled — a disabled admin must
+// never land in a task-assignee/notification pool.
 const idsByRoleName = async (name) => {
   const role = await Role.findOne({ name, deletedAt: null }, { _id: 1 }).lean();
   if (!role) return [];
   const admins = await Admin.find(
-    { status: "active", $or: [{ roleId: role._id }, { roleIds: role._id }] },
+    assignableFilter({ $or: [{ roleId: role._id }, { roleIds: role._id }] }),
     { _id: 1 }
   ).lean();
   return admins.map((a) => a._id);

@@ -11,6 +11,7 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const AdminNotificationService = require("./AdminNotificationService");
 const { permissionSatisfies } = require("../middlewares/requirePermission");
 const { goldenWindowFor, toIstWallClock } = require("../utils/goldenWindow");
+const { assignableFilter } = require("../utils/assignable");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
@@ -26,7 +27,7 @@ const triageHolderIds = async () => {
     .map((r) => r._id);
   const holders = holderRoleIds.length
     // RBAC v2: match the role on roleId OR any of roleIds[] (multi-role).
-    ? await Admin.find({ status: "active", $or: [{ roleId: { $in: holderRoleIds } }, { roleIds: { $in: holderRoleIds } }] }, { _id: 1 }).lean()
+    ? await Admin.find(assignableFilter({ $or: [{ roleId: { $in: holderRoleIds } }, { roleIds: { $in: holderRoleIds } }] }), { _id: 1 }).lean()
     : [];
   const ids = holders.map((h) => h._id);
   holderCache = { ids, expires: Date.now() + HOLDER_CACHE_TTL_MS };
@@ -39,7 +40,7 @@ const internsWithStatus = async () => {
   const roles = await Role.find({ name: { $in: poolRoles }, deletedAt: null }, { _id: 1 }).lean();
   const roleIds = roles.map((r) => r._id);
   const interns = await Admin.find(
-    { status: "active", $or: [{ roleId: { $in: roleIds } }, { roleIds: { $in: roleIds } }] },
+    assignableFilter({ $or: [{ roleId: { $in: roleIds } }, { roleIds: { $in: roleIds } }] }),
     { name: 1, reportingManagerId: 1, lastAssignedAt: 1 }
   ).lean();
   const CalendarEventService = require("./CalendarEventService");
@@ -118,7 +119,10 @@ const listTriage = async () => {
 const assign = async (leadId, toAdminId, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(leadId)) throw httpError(400, "Invalid lead id");
   if (!mongoose.Types.ObjectId.isValid(toAdminId)) throw httpError(400, "Invalid admin id");
-  const target = await Admin.findOne({ _id: toAdminId, status: "active" }, { name: 1 }).lean();
+  // Assignable predicate (status active AND not disabled): the Disable button
+  // leaves status "active", so a status-only check let disabled admins receive
+  // triage assignments.
+  const target = await Admin.findOne(assignableFilter({ _id: toAdminId }), { name: 1 }).lean();
   if (!target) throw httpError(404, "Assignee not found or inactive");
   const lead = await Enquiry.findOneAndUpdate(
     { _id: leadId, triagePending: true },
@@ -163,7 +167,7 @@ const inWorkingHours = async (now = new Date()) => {
 const revenueHeadIds = async () => {
   const role = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
   if (!role) return [];
-  const heads = await Admin.find({ status: "active", $or: [{ roleId: role._id }, { roleIds: role._id }] }, { _id: 1 }).lean();
+  const heads = await Admin.find(assignableFilter({ $or: [{ roleId: role._id }, { roleIds: role._id }] }), { _id: 1 }).lean();
   return heads.map((h) => h._id);
 };
 

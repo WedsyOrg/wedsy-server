@@ -6,7 +6,7 @@ const Chart = async (req, res) => {
     const result = await OrgService.chart();
     res.status(200).json(result);
   } catch (error) {
-    res.status(error.status || 500).json({ message: error.status ? error.message : "Server error" });
+    res.status(error.status || 500).json({ message: error.status ? error.message : "Something went wrong loading the org chart — please retry." });
   }
 };
 
@@ -17,7 +17,7 @@ const PermissionMatrix = async (req, res) => {
     const result = await OrgService.permissionMatrix(req.auth.user_id);
     res.status(200).json(result);
   } catch (error) {
-    res.status(error.status || 500).json({ message: error.status ? error.message : "Server error" });
+    res.status(error.status || 500).json({ message: error.status ? error.message : "Something went wrong loading the org chart — please retry." });
   }
 };
 

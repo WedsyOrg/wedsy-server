@@ -82,19 +82,29 @@ const sendToClaude = async (history) => {
 
 const checkQualified = async (history) => {
   const MAX_RETRIES = 2;
+  // Empty-content responses are DETERMINISTIC, not transient: the history ends
+  // with Kiara's own assistant reply, and without the closing user turn below
+  // the API treats the call as a prefill continuation — same input, same empty
+  // result. One retry max for that class (network/5xx errors keep the full 2).
+  const MAX_NO_TEXT_RETRIES = 1;
   let attempt = 0;
+  let noTextAttempts = 0;
 
   while (attempt <= MAX_RETRIES) {
     try {
       // MB6 Slice 11: through the shared in-process queue (429 backoff inside).
       const response = await callAnthropic({
         model: 'claude-sonnet-4-5',
-        max_tokens: 400,
+        // 400 truncated filled-out extractions mid-JSON (parse failures).
+        max_tokens: 800,
         system: EXTRACTOR_SYSTEM_PROMPT,
-        messages: history
+        // THE FIX: history ends with Kiara's assistant reply, which the API
+        // treats as a prefill to continue (→ empty content or prose, never the
+        // extractor JSON). A closing user turn forces a fresh assistant answer.
+        messages: [...history, { role: 'user', content: 'Extract now. Respond with the JSON object only.' }]
       });
       const text = firstTextBlock(response);
-      if (text === null) throw new Error('Anthropic response had no text block');
+      if (text === null) throw Object.assign(new Error('Anthropic response had no text block'), { noText: true });
       // Fence-tolerant: strip a ```json fence / surrounding prose before parsing.
       const parsed = parseModelJson(text);
       if (parsed !== null) return parsed;
@@ -102,10 +112,12 @@ const checkQualified = async (history) => {
       // Log a truncated raw snippet so we can see what the model actually sent.
       const snippet = String(text).replace(/\s+/g, ' ').slice(0, 300);
       console.error('[WhatsAppAgent] extractor JSON parse failed:', `raw="${snippet}"`);
-      return { qualified: false };
+      return { qualified: false, extractorFailed: true };
     } catch (error) {
       attempt++;
-      if (attempt > MAX_RETRIES) {
+      if (error && error.noText) noTextAttempts++;
+      const exhausted = attempt > MAX_RETRIES || noTextAttempts > MAX_NO_TEXT_RETRIES;
+      if (exhausted) {
         await NotificationFailureLog.create({
           service: 'Anthropic',
           error: error.message,
@@ -113,7 +125,9 @@ const checkQualified = async (history) => {
           createdAt: new Date()
         });
         console.error(`[WhatsAppAgent] Qualification check failed after ${attempt} attempts:`, error.message);
-        return { qualified: false };
+        // extractorFailed → the caller flags the lead for HUMAN qualification;
+        // never silently unqualified.
+        return { qualified: false, extractorFailed: true };
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
@@ -293,6 +307,35 @@ const receiveMessage = async (phone, message, meta = {}) => {
     if (userMessages < 3) return;
 
     const qualification = await checkQualified(updatedHistory);
+
+    // Extractor terminally failed → the lead must NOT sit silently unqualified.
+    // Flag it for a human qualification pass and tell the owner (or the Revenue
+    // Heads when unassigned). Fire-safe: routing/sync below still runs.
+    if (qualification && qualification.extractorFailed && conversation.enquiryId) {
+      try {
+        const Enquiry = require('../models/Enquiry');
+        const flagged = await Enquiry.findByIdAndUpdate(
+          conversation.enquiryId,
+          { $set: { needsHumanQualification: true } },
+          { new: true, runValidators: false, projection: { name: 1, assignedTo: 1 } }
+        );
+        if (flagged) {
+          const AdminNotificationService = require('./AdminNotificationService');
+          const recipients = flagged.assignedTo
+            ? [flagged.assignedTo]
+            : await require('./TriageService').revenueHeadIds();
+          await AdminNotificationService.notify(recipients, {
+            type: 'needs_human_qualification',
+            title: `Kiara couldn't qualify ${flagged.name || phone} — review manually`,
+            message: 'The AI qualification check failed. Open the conversation and qualify the lead yourself.',
+            leadId: flagged._id,
+            payload: { phone, channel: 'whatsapp' },
+          });
+        }
+      } catch (e) {
+        console.error('[WhatsAppAgent] needs-human flag failed:', e.message);
+      }
+    }
 
     // HOOK 2: escalation + classification routing (vendor/birthday/corporate
     // close out, destination escalates, qualified always escalates).

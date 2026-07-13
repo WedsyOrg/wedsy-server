@@ -6,7 +6,7 @@ const { permissionSatisfies, permissionsForAdmin } = require("../middlewares/req
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[settings]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong saving settings — please retry." : error.message });
 };
 
 // Caller's resolved permission strings — RBAC v2 union across all roles.

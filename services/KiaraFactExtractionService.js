@@ -100,14 +100,19 @@ const extractFactsForLead = async (leadId, conversationPhone) => {
       const v = facts && facts[k];
       if (v && String(v).trim() && !merged[k]) merged[k] = String(v).slice(0, 2000);
     }
-    lead.additionalInfo = {
+    // Whitelisted update (save fragility class): writing ONE mixed field must
+    // never be blocked by an unrelated dirty legacy field on the Enquiry doc.
+    const nextAdditionalInfo = {
       ...ai,
       adFormAnswers: merged,
       factsExtractedAt: new Date(),
       ...(facts && facts.summary ? { kiaraFactSummary: String(facts.summary).slice(0, 1000) } : {}),
     };
-    lead.markModified("additionalInfo");
-    await lead.save();
+    await Enquiry.findByIdAndUpdate(
+      lead._id,
+      { $set: { additionalInfo: nextAdditionalInfo } },
+      { runValidators: false }
+    );
     return merged;
   } catch (e) {
     console.error("[KiaraFactExtraction] extractFactsForLead failed:", e.message);

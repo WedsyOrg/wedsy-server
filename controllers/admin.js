@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const AdminService = require("../services/AdminService");
 const Admin = require("../models/Admin");
+const Enquiry = require("../models/Enquiry");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
 const { CreateHash } = require("../utils/password");
@@ -32,10 +33,13 @@ const legacyRolesForRole = async (role) => {
 // The route deliberately stays CheckAdminLogin-only (no 403 for normal pages).
 const GetAll = async (req, res) => {
   try {
-    const admins = await AdminService.listAdmins(req.auth.user_id);
+    // Assignee dropdowns pass ?assignable=true to exclude disabled/inactive admins.
+    // The management list omits it and still sees disabled admins (to re-enable them).
+    const assignableOnly = req.query.assignable === "true";
+    const admins = await AdminService.listAdmins(req.auth.user_id, { assignableOnly });
     res.status(200).json(admins);
   } catch (error) {
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -106,7 +110,7 @@ const CreateAdmin = async (req, res) => {
     return res.status(201).json(safe);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ message: error.message });
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -230,7 +234,7 @@ const UpdateAdmin = async (req, res) => {
     return res.status(200).json(updated);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ message: error.message });
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -246,26 +250,38 @@ const SetMemberPassword = async (req, res) => {
     if (typeof newPassword !== "string" || newPassword.length < 8) {
       return res.status(400).json({ message: "Password must be at least 8 characters" });
     }
-    const target = await Admin.findById(targetAdminId);
+    const hashed = await CreateHash(newPassword);
+    // Whitelisted update: a password reset must NEVER be blocked by an unrelated
+    // dirty/invalid legacy field on the doc. We write ONLY password + the forced-
+    // reset flag, with runValidators:false so a pre-existing bad field elsewhere on
+    // the document can't fail the reset (target.save() would re-validate the whole doc).
+    const target = await Admin.findByIdAndUpdate(
+      targetAdminId,
+      { $set: { password: hashed, mustResetPassword: false } },
+      { new: true, runValidators: false }
+    );
     if (!target) return res.status(404).json({ message: "Target admin not found." });
 
-    target.password = await CreateHash(newPassword);
-    // The member now has a known password — clear any forced-reset flag.
-    target.mustResetPassword = false;
-    await target.save();
-
-    await ActivityLogService.record({
-      actorId: req.auth.user_id,
-      action: "admin.password_set",
-      entityType: "admin",
-      entityId: String(target._id),
-      summary: `Set a new password for ${target.name}`,
-      meta: { targetAdminId: String(target._id), targetName: target.name }, // NO password
-    });
+    // Audit is best-effort: an ActivityLog failure must never 500 the reset itself.
+    try {
+      await ActivityLogService.record({
+        actorId: req.auth.user_id,
+        action: "admin.password_set",
+        entityType: "admin",
+        entityId: String(target._id),
+        summary: `Set a new password for ${target.name}`,
+        meta: { targetAdminId: String(target._id), targetName: target.name }, // NO password
+      });
+    } catch (auditErr) {
+      console.error(`[admin] password_set audit failed for ${target._id}:`, auditErr.message);
+    }
     console.log(`[admin] Password set for ${target._id} by ${req.auth.user_id}`);
     return res.status(200).json({ message: "Password set" });
   } catch (error) {
-    return res.status(500).json({ message: "Server error" });
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ message: error.message });
+    }
+    return res.status(500).json({ message: "Could not set the password. Please try again." });
   }
 };
 
@@ -303,8 +319,23 @@ const SetMemberAccess = async (req, res) => {
       }
     }
 
-    target.isDisabled = disabled;
-    await target.save();
+    // Whitelisted update (set-password bug class): disabling access must never
+    // be blocked by an unrelated dirty legacy field failing full-doc validation.
+    await Admin.findByIdAndUpdate(
+      target._id,
+      { $set: { isDisabled: disabled } },
+      { runValidators: false }
+    );
+
+    // Slice A3 — when disabling, report the admin's open book split
+    // { active, snoozed, total } (open = not won/lost) so the FE can prompt the
+    // founder to run the offboard sweep. We deliberately do NOT auto-reassign —
+    // the leads surface as dashboard orphans and the founder decides where they
+    // go (POST /admin/:_id/offboard-leads).
+    let openLeadCounts = { active: 0, snoozed: 0, total: 0 };
+    if (disabled) {
+      openLeadCounts = await require("../services/OffboardService").openLeadCounts(target._id);
+    }
 
     await ActivityLogService.record({
       actorId: req.auth.user_id,
@@ -312,11 +343,47 @@ const SetMemberAccess = async (req, res) => {
       entityType: "admin",
       entityId: String(target._id),
       summary: `${disabled ? "Disabled" : "Re-enabled"} access for ${target.name}`,
-      meta: { targetAdminId: String(target._id), targetName: target.name, disabled },
+      meta: {
+        targetAdminId: String(target._id),
+        targetName: target.name,
+        disabled,
+        ...(disabled ? { openLeadCounts } : {}),
+      },
     });
-    return res.status(200).json({ message: disabled ? "Access disabled" : "Access enabled", isDisabled: disabled });
+    // FE contract: the open-book split rides TOP-LEVEL as { active, snoozed, total }.
+    return res.status(200).json({
+      message: disabled ? "Access disabled" : "Access enabled",
+      isDisabled: disabled,
+      ...openLeadCounts,
+    });
   } catch (error) {
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
+  }
+};
+
+// POST /admin/:_id/offboard-leads (Slice A3) — move a DISABLED admin's whole
+// working set in one founder action. { mode: "reassign"|"triage", targetAdminId? }.
+// Gated at the route by team:manage_access:all (same as disable itself).
+const OffboardLeads = async (req, res) => {
+  try {
+    const OffboardService = require("../services/OffboardService");
+    const result = await OffboardService.offboardLeads(
+      req.params._id,
+      { mode: req.body?.mode, targetAdminId: req.body?.targetAdminId },
+      req.auth.user_id
+    );
+    await ActivityLogService.record({
+      actorId: req.auth.user_id,
+      action: "admin.offboard_leads",
+      entityType: "admin",
+      entityId: String(req.params._id),
+      summary: `Offboarded working set (${result.mode}): ${result.moved} leads, ${result.lanes} lanes, ${result.tasks} tasks`,
+      meta: result,
+    }).catch((e) => console.error("[admin] offboard audit failed:", e.message));
+    return res.status(200).json(result);
+  } catch (error) {
+    const status = error.status || 500;
+    return res.status(status).json({ message: status === 500 ? "Something went wrong with this admin action — please retry." : error.message });
   }
 };
 
@@ -326,4 +393,5 @@ module.exports = {
   UpdateAdmin,
   SetMemberPassword,
   SetMemberAccess,
+  OffboardLeads,
 };

@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const GoogleAccount = require("../models/GoogleAccount");
 const Admin = require("../models/Admin");
+const { assignableFilter } = require("../utils/assignable");
 const Role = require("../models/Role");
 const Enquiry = require("../models/Enquiry");
 const CalendarEvent = require("../models/CalendarEvent");
@@ -155,7 +156,7 @@ const meetingAttendees = async (lead) => {
   let revenueHead = null;
   const rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
   if (rhRole) {
-    revenueHead = await Admin.findOne({ status: "active", $or: [{ roleId: rhRole._id }, { roleIds: rhRole._id }] }, { name: 1, email: 1 }).lean();
+    revenueHead = await Admin.findOne(assignableFilter({ $or: [{ roleId: rhRole._id }, { roleIds: rhRole._id }] }), { name: 1, email: 1 }).lean();
   }
   return { salesLeadAdmin, revenueHead };
 };

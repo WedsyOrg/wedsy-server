@@ -11,7 +11,7 @@ const LogCall = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -27,7 +27,7 @@ const AddFollowUp = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -44,7 +44,7 @@ const WhatsappActivity = async (req, res) => {
     res.status(200).json(event);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -60,7 +60,7 @@ const UpdateQualification = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -72,7 +72,7 @@ const MeetRefused = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -88,7 +88,7 @@ const CompleteCall = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -100,7 +100,7 @@ const GetInternalEvents = async (req, res) => {
     res.status(200).json(events);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong in the call cockpit — please retry." : error.message;
     res.status(status).json({ message });
   }
 };

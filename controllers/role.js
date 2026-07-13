@@ -27,7 +27,7 @@ const Create = async (req, res) => {
     const created = await RoleService.createRole(req.body || {}, req.auth.user_id);
     res.status(201).json(created);
   } catch (error) {
-    res.status(error.status || 500).json({ message: error.status ? error.message : "Server error" });
+    res.status(error.status || 500).json({ message: error.status ? error.message : "Something went wrong with this role — please retry." });
   }
 };
 
@@ -37,7 +37,7 @@ const Delete = async (req, res) => {
     const result = await RoleService.deleteRole(req.params.id, req.auth.user_id);
     res.status(200).json(result);
   } catch (error) {
-    res.status(error.status || 500).json({ message: error.status ? error.message : "Server error" });
+    res.status(error.status || 500).json({ message: error.status ? error.message : "Something went wrong with this role — please retry." });
   }
 };
 

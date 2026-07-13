@@ -11,7 +11,7 @@ const UpdateStage = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong updating this lead — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -27,7 +27,7 @@ const UpdateAssignedTo = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong updating this lead — please retry." : error.message;
     res.status(status).json({ message });
   }
 };

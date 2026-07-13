@@ -4,6 +4,7 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const EnquiryService = require("./EnquiryService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const Admin = require("../models/Admin");
+const { assignableFilter } = require("../utils/assignable");
 const Role = require("../models/Role");
 const User = require("../models/User");
 const Event = require("../models/Event");
@@ -20,7 +21,7 @@ const httpError = (status, message) => {
 const defaultCsOwner = async () => {
   const role = await Role.findOne({ name: CS_ROLE_NAME, deletedAt: null }).lean();
   if (!role) return null;
-  return await Admin.findOne({ roleId: role._id, status: "active" }).lean();
+  return await Admin.findOne(assignableFilter({ roleId: role._id })).lean();
 };
 
 // Convert a Meeting-Scheduled lead into a Project (Slice D). The lead moves to the

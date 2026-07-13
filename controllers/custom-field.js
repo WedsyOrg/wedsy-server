@@ -3,7 +3,7 @@ const CustomFieldService = require("../services/CustomFieldService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[custom-field]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong with this custom field — please retry." : error.message });
 };
 
 // GET /custom-field?active=true — readable by any logged-in admin (the cockpit needs defs).
