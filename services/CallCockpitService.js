@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { computeDiscovery } = require("./DiscoveryService");
+const { assignableFilter } = require("../utils/assignable");
 
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
 const CALL_PURPOSES = ["", "discovery", "follow_up"];
@@ -380,6 +381,10 @@ const addFollowUp = async (
   // Signal spine: booking a next step is employee activity (not a response).
   await EnquiryRepository.touchLastActivity(enquiryId);
 
+  // Slice A2 — a cadence follow-up write changes the earliest-open date:
+  // recompute the lead's snooze state (fire-safe inside; never blocks booking).
+  await require("./SnoozeService").recompute(enquiryId, actorId);
+
   return updated;
 };
 
@@ -579,7 +584,7 @@ const meetRefused = async (enquiryId, actorId) => {
   // Notify the Revenue Head(s).
   const rhRole = await Role.findOne({ name: "Revenue Head", deletedAt: null }, { _id: 1 }).lean();
   if (rhRole) {
-    const heads = await Admin.find({ roleId: rhRole._id, status: "active" }, { _id: 1 }).lean();
+    const heads = await Admin.find(assignableFilter({ roleId: rhRole._id }), { _id: 1 }).lean();
     await AdminNotificationService.notify(
       heads.map((h) => h._id),
       {

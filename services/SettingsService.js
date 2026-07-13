@@ -97,6 +97,12 @@ const DEFAULTS = {
   // The command-center banner, the chat follow-up cards, and the Pipeline
   // "stuck" flag ALL derive from this single value (default 3 days).
   "accountability.staleDays": 3,
+  // Slice A2 — SNOOZE ENGINE. A responded lead whose earliest open follow-up is
+  // more than thresholdDays out is parked (snoozedUntil = that follow-up's date;
+  // queues quiet, clocks pause). Within wakeWarnDays of the wake date the lead
+  // re-enters every queue and the owner gets a once-per-episode lead_waking nudge.
+  "snooze.thresholdDays": 30,
+  "snooze.wakeWarnDays": 3,
   // MB9a-2 — speed-to-lead SLA. The golden-window clock duration (minutes from
   // "human needed" to first human contact) + the rescue-escalation thresholds.
   // Distinct from the legacy MB5 golden.windowMinutes (the cockpit/safety-net
@@ -164,6 +170,9 @@ const KEY_CATEGORY = {
   "nurture.cadenceDays": "settings_nurture",
   // Accountability threshold rides the SLA settings category.
   "accountability.staleDays": "settings_sla",
+  // Snooze engine thresholds ride the SLA settings category too.
+  "snooze.thresholdDays": "settings_sla",
+  "snooze.wakeWarnDays": "settings_sla",
   "sla.goldenWindowMinutes": "settings_sla",
   "sla.rescueTier1Minutes": "settings_sla",
   "sla.rescueTier2Minutes": "settings_sla",
@@ -230,6 +239,12 @@ const validateValue = (key, value) => {
       return value;
     case "accountability.staleDays":
       if (!isIntInRange(value, 1, 30)) throw err(400, "accountability.staleDays must be an integer 1–30");
+      return value;
+    case "snooze.thresholdDays":
+      if (!isIntInRange(value, 7, 365)) throw err(400, "snooze.thresholdDays must be an integer 7–365");
+      return value;
+    case "snooze.wakeWarnDays":
+      if (!isIntInRange(value, 0, 30)) throw err(400, "snooze.wakeWarnDays must be an integer 0–30");
       return value;
     case "sla.goldenWindowMinutes":
       if (!isIntInRange(value, 5, 480)) throw err(400, "sla.goldenWindowMinutes must be an integer 5–480");

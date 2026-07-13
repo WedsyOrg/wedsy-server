@@ -119,6 +119,9 @@ const create = async (leadId, { title, dueAt, ownerId } = {}, createdBy) => {
   await require("./CallCockpitService").setNoFurtherAction(leadId, false, createdBy);
   // Signal spine: scheduling a journey follow-up is employee activity.
   await EnquiryRepository.touchLastActivity(leadId);
+  // Slice A2 — a follow-up write changes the earliest-open date: recompute the
+  // lead's snooze state (fire-safe inside; never blocks the create).
+  await require("./SnoozeService").recompute(leadId, createdBy);
   return (await decorate([f.toObject()]))[0];
 };
 
@@ -135,6 +138,8 @@ const complete = async (followupId, actorId) => {
   });
   // Signal spine: completing a journey follow-up is employee activity.
   await EnquiryRepository.touchLastActivity(f.leadId);
+  // Slice A2 — completing removes an open row: recompute the lead's snooze state.
+  await require("./SnoozeService").recompute(f.leadId, actorId);
   return (await decorate([f.toObject()]))[0];
 };
 
@@ -148,6 +153,9 @@ const snooze = async (followupId, { until } = {}, actorId) => {
   f.status = "snoozed"; f.snoozedUntil = u;
   f.dueCardPostedAt = null; // it can surface a fresh due card when it re-opens
   await f.save();
+  // Slice A2 — a per-followup snooze is a reschedule (its effective due moved):
+  // recompute the lead's snooze state.
+  await require("./SnoozeService").recompute(f.leadId, actorId);
   return (await decorate([f.toObject()]))[0];
 };
 

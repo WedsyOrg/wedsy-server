@@ -1,4 +1,5 @@
 // Core models and utilities used throughout the Enquiry controller
+const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
 const Admin = require("../models/Admin");
@@ -984,6 +985,13 @@ const Delete = (req, res) => {
 // - statusSummary (NEW) derived from Orders + Biddings, used by the "Makeup Report" UI boxes.
 const Get = (req, res) => {
   const { _id } = req.params;
+  // Defensive: reject a non-ObjectId id with a clean 400 BEFORE querying, rather
+  // than letting Mongoose throw a CastError that the terminal catch masks as an
+  // opaque 400 {message:"error"}. This also stops a literal path that fell through
+  // to /:_id (e.g. a missing sibling route) from surfacing as a cryptic cast error.
+  if (!mongoose.isValidObjectId(_id)) {
+    return res.status(400).send({ message: "Invalid lead id" });
+  }
   // RBAC scope: the doc must also satisfy req.scopeFilter. An out-of-scope id simply
   // yields no match -> the same 404 as a missing enquiry (does not reveal it exists).
   // Slice B1 (qualify continuity): a CURRENT roster member may READ the lead even
@@ -1052,6 +1060,11 @@ const Get = (req, res) => {
           // Mid-qualify slice — canonical channel from the messy stored source
           // (derive-on-read; stored text never rewritten).
           finalResultObj.sourceChannel = sourceChannelOf(finalResultObj.source, finalResultObj.marketingSource);
+
+          // Slice A2 — snooze decoration: { until, source, waking } when the
+          // lead is parked, null otherwise. Fire-safe (decoration returns null
+          // on any internal failure — the GET must never break on snooze).
+          finalResultObj.snooze = await require("../services/SnoozeService").decoration(finalResultObj);
 
           // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
           // (discoveryComplete + discovery.missing + discovery.state). Computed,

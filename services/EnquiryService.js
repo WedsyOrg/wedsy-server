@@ -5,6 +5,7 @@ const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
 const AdminNotificationService = require("./AdminNotificationService");
 const Admin = require("../models/Admin");
+const { filterAssignableIds } = require("../utils/assignable");
 
 // Default disqualification reasons. Runtime list comes from SettingsService
 // ("lost.reasons"), which defaults to exactly this constant.
@@ -35,14 +36,17 @@ const notifyManagerOfDisqualification = async (enquiry, { type, title, message, 
     const TriageService = require("./TriageService");
     for (const id of await TriageService.revenueHeadIds()) recipients.add(String(id));
     if (actorId) recipients.delete(String(actorId));
-    if (!recipients.size) {
+    // Never notify a disabled/inactive manager — filter the resolved set through
+    // the shared assignability predicate (revenue heads are already assignable).
+    const liveRecipients = await filterAssignableIds([...recipients]);
+    if (!liveRecipients.length) {
       console.warn(
-        `notifyManagerOfDisqualification: NO recipients for lead ${enquiry._id} — ` +
-          "owner has no reportingManagerId and no active Revenue Head exists"
+        `notifyManagerOfDisqualification: NO live recipients for lead ${enquiry._id} — ` +
+          "owner has no active reportingManager and no active Revenue Head exists"
       );
       return;
     }
-    await AdminNotificationService.notify([...recipients], {
+    await AdminNotificationService.notify(liveRecipients, {
       type,
       title,
       message: message || "",
@@ -87,7 +91,9 @@ const notifyOfRecovery = async (enquiry, { type, title, message }) => {
     }
     const TriageService = require("./TriageService");
     recipients.push(...(await TriageService.revenueHeadIds()));
-    await AdminNotificationService.notify(recipients, {
+    // Drop any disabled/inactive recipient (e.g. a since-disabled manager).
+    const liveRecipients = await filterAssignableIds(recipients);
+    await AdminNotificationService.notify(liveRecipients, {
       type,
       title,
       message: message || "",
@@ -404,6 +410,15 @@ const updateAssignedTo = async (enquiryId, assignedTo, updatedBy) => {
     if (!admin) {
       const err = new Error("Admin not found");
       err.status = 404;
+      throw err;
+    }
+    // Re-fetch guard: a stale dropdown must not be able to assign a lead to an
+    // admin who has since been disabled or deactivated.
+    if (admin.status !== "active" || admin.isDisabled) {
+      const err = new Error(
+        "Target admin cannot receive leads (inactive or disabled)"
+      );
+      err.status = 422;
       throw err;
     }
   }

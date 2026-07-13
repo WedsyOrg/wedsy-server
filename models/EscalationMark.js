@@ -10,7 +10,7 @@ const EscalationMarkSchema = new mongoose.Schema(
   {
     key: { type: String, required: true, unique: true },
     leadId: { type: ObjectId, ref: "Enquiry", required: true, index: true },
-    kind: { type: String, enum: ["lane", "deal"], required: true },
+    kind: { type: String, enum: ["lane", "deal", "snooze"], required: true },
     rung: { type: Number, required: true },
     firedAt: { type: Date, default: Date.now },
   },

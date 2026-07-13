@@ -42,6 +42,8 @@ const leadRow = (lead) => ({
   maskedPhone: maskPhone(lead.phone),
   stage: lead.stage,
   healthLabel: computeLeadHealth(lead, []).label,
+  // Slice A2 (FE contract) — the snooze chip on every lead row (ISO or null).
+  snoozedUntil: lead.snoozedUntil ? new Date(lead.snoozedUntil).toISOString() : null,
 });
 
 // IST day key for sparkline bucketing.
@@ -73,6 +75,11 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   // Lead visibility cutoff: mandatory listing filter on EVERY lead query below
   // ({} when the feature is off). Never applied to writes or direct fetches.
   const visibility = await currentVisibilityFilter();
+
+  // Slice A2 — parked (snoozed) leads leave the mission/attention queues below
+  // (they surface in the `parked` section instead). Composed via $and so it can
+  // never collide with an existing $or.
+  const snoozeExcl = await require("./SnoozeService").snoozeExclusion(now);
 
   // Lazy resurface (Slice E): recycled leads past revisitAt come back before we read.
   await LeadLifecycleService.resurfaceDueLeads(scopeFilter);
@@ -117,8 +124,14 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   const kiaraQuiet = kiaraQuietIds.length ? { _id: { $nin: kiaraQuietIds } } : {};
 
   // Hardening: admins who can no longer work leads — their open leads are orphans.
+  // "Cannot work leads" = inactive/on_leave OR access-disabled. The Disable button
+  // writes only isDisabled (status stays "active"), so a status-only check misses
+  // disabled owners and their leads would sit invisible — hence the $or.
   const inactiveAdminIds = (
-    await Admin.find({ status: { $ne: "active" } }, { _id: 1 }).lean()
+    await Admin.find(
+      { $or: [{ status: { $ne: "active" } }, { isDisabled: true }] },
+      { _id: 1 }
+    ).lean()
   ).map((a) => a._id);
 
   const [
@@ -135,18 +148,19 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
     returnedLeadDocs,
     journeyFuDocs,
   ] = await Promise.all([
-    // Open follow-ups due today or overdue.
+    // Open follow-ups due today or overdue. (Snoozed leads excluded — Slice A2.)
     Enquiry.find({
       $and: [
         { ...scopeFilter, ...ACTIVE, followUps: { $elemMatch: { completedAt: null, scheduledAt: { $lte: todayEnd } } } },
         visibility,
+        snoozeExcl,
       ],
     }).lean(),
-    // Unresponsive — decide rows.
-    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, unresponsiveFlaggedAt: { $ne: null } }, visibility] }).lean(),
+    // Unresponsive — decide rows. (Snoozed excluded — the client asked for later.)
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, unresponsiveFlaggedAt: { $ne: null } }, visibility, snoozeExcl] }).lean(),
     // New & untouched (no call yet), oldest first. Kiara-quiet leads excluded —
     // the AI agent is mid-conversation with them.
-    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, ...kiaraQuiet, stage: "new", "callLog.0": { $exists: false } }, visibility] })
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, ...kiaraQuiet, stage: "new", "callLog.0": { $exists: false } }, visibility, snoozeExcl] })
       .sort({ createdAt: 1 })
       .lean(),
     // At-risk A: New, no call, older than the SLA. Imported historical leads are
@@ -156,10 +170,11 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
       $and: [
         { ...scopeFilter, ...ACTIVE, ...kiaraQuiet, stage: "new", "callLog.0": { $exists: false }, createdAt: { $lt: dayAgo }, importedAt: null },
         visibility,
+        snoozeExcl,
       ],
     }).lean(),
     // At-risk B candidates: Contacted (silence checked against the event stream below).
-    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "contacted" }, visibility] }).lean(),
+    Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "contacted" }, visibility, snoozeExcl] }).lean(),
     // Hot: meetings on the books.
     Enquiry.find({ $and: [{ ...scopeFilter, ...ACTIVE, stage: "meeting_scheduled" }, visibility] }).lean(),
     // Resurfaced today (isRecycled already cleared by the lazy pass).
@@ -207,7 +222,7 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   if (journeyFuDocs.length) {
     const fuLeadIds = [...new Set(journeyFuDocs.map((f) => String(f.leadId)))];
     const fuLeads = await Enquiry.find({
-      $and: [{ _id: { $in: fuLeadIds } }, scopeFilter, ACTIVE, visibility],
+      $and: [{ _id: { $in: fuLeadIds } }, scopeFilter, ACTIVE, visibility, snoozeExcl],
     }).lean();
     fuLeadById = new Map(fuLeads.map((l) => [String(l._id), l]));
   }
@@ -572,7 +587,36 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
     breaches,
   };
 
-  return { teamRollup, approvalQueue, recentTeamActivity, goldenWindowHealth };
+  // Slice A2 — PARKED: the scope's snoozed leads grouped by wake month, so a
+  // manager sees what's sleeping under them (RH/founder: org-wide via their
+  // all-scope filter). ownerDisabled flags a parked lead whose owner can no
+  // longer work it (fails the shared assignable predicate) — those need a
+  // handover before the wake date.
+  const parkedDocs = await Enquiry.find(
+    { $and: [{ ...scopeFilter, ...ACTIVE, snoozedUntil: { $ne: null } }, visibility] },
+    { name: 1, assignedTo: 1, snoozedUntil: 1 }
+  )
+    .sort({ snoozedUntil: 1 })
+    .lean();
+  const parkedOwnerIds = [...new Set(parkedDocs.map((l) => l.assignedTo).filter(Boolean).map(String))];
+  const { filterAssignableIds } = require("../utils/assignable");
+  const [parkedOwners, assignableOwnerIds] = await Promise.all([
+    parkedOwnerIds.length ? Admin.find({ _id: { $in: parkedOwnerIds } }, { name: 1 }).lean() : [],
+    filterAssignableIds(parkedOwnerIds),
+  ]);
+  const parkedOwnerName = new Map(parkedOwners.map((a) => [String(a._id), a.name]));
+  const assignableSet = new Set(assignableOwnerIds.map(String));
+  // FE contract: a FLAT array sorted by wake date (the FE groups by month
+  // itself): [{ leadId, name, ownerName, ownerDisabled, wakeAt }].
+  const parked = parkedDocs.map((lead) => ({
+    leadId: String(lead._id),
+    name: lead.name,
+    ownerName: lead.assignedTo ? parkedOwnerName.get(String(lead.assignedTo)) || "—" : "—",
+    ownerDisabled: !!lead.assignedTo && !assignableSet.has(String(lead.assignedTo)),
+    wakeAt: new Date(lead.snoozedUntil).toISOString(),
+  }));
+
+  return { teamRollup, approvalQueue, recentTeamActivity, goldenWindowHealth, parked };
 };
 
 module.exports = { buildDashboard, maskPhone, ACTIVE };

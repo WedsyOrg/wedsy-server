@@ -49,6 +49,54 @@ const RequestDisqualify = async (req, res) => {
   }
 };
 
+// GET /enquiry/pending-disqualifications
+// The Approvals page: every pending disqualification request awaiting THIS caller's
+// decision. Eligibility is computed here (no requirePermission gate on the route) —
+// EXACTLY mirroring DecideDisqualify, so who can SEE a request == who can DECIDE it:
+//   canApprove = actorHasApprovePermission(actor)   → a Revenue Head / Founder sees ALL
+//              OR isManagerOfAssigned(actor, owner)  → a manager sees their team's
+// This matches who actually gets NOTIFIED (owner's reporting manager + Revenue Heads
+// in notifyManagerOfDisqualification). Crucially it does NOT assume a manager exists:
+// 9/13 admins historically had reportingManagerId null, so a manager-only query would
+// silently hide their requests — the approve-permission branch (Revenue Head/Founder)
+// is the safety net that guarantees those still surface. A caller with neither path
+// gets an empty list (200, not 403), consistent with the un-gated decision route.
+const PendingDisqualifications = async (req, res) => {
+  try {
+    const actorId = req.auth.user_id;
+    const canApproveAll = await actorHasApprovePermission(actorId);
+    const pending = await EnquiryRepository.findPendingDisqualifications();
+
+    const items = [];
+    for (const lead of pending) {
+      const ownerId = lead.assignedTo?._id || lead.assignedTo;
+      const eligible =
+        canApproveAll || (await isManagerOfAssigned(actorId, ownerId));
+      if (!eligible) continue;
+      items.push({
+        lead: {
+          _id: lead._id,
+          name: lead.name,
+          phone: lead.phone,
+          email: lead.email,
+          stage: lead.stage,
+          assignedTo: lead.assignedTo || null,
+        },
+        requester: lead.lostRequestedBy || null,
+        reason: lead.lostReason || "",
+        note: lead.lostNote || "",
+        requestedAt: lead.lostRequestedAt || null,
+      });
+    }
+
+    res.status(200).json({ items, total: items.length });
+  } catch (error) {
+    const status = error.status || 500;
+    const message = status === 500 ? "Server error" : error.message;
+    res.status(status).json({ message });
+  }
+};
+
 // PUT /enquiry/:_id/disqualify-decision
 // Eligibility is computed here (no requirePermission gate on the route) so the assigned
 // person's MANAGER can approve even without a broad leads:approve permission.
@@ -84,6 +132,7 @@ const DecideDisqualify = async (req, res) => {
 module.exports = {
   RequestDisqualify,
   DecideDisqualify,
+  PendingDisqualifications,
   isManagerOfAssigned,
   actorHasApprovePermission,
 };

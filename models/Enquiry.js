@@ -86,6 +86,15 @@ const EnquirySchema = new mongoose.Schema(
     // lastActivityAt: monotonic ($max) stamp of ANY employee action on the lead
     // (call, either follow-up store, task, note, WhatsApp, internal chat).
     lastActivityAt: { type: Date, default: null, index: true },
+    // Slice A2 — SNOOZE ENGINE. Derived, never hand-maintained: recomputed on
+    // every follow-up write. Set when the lead's EARLIEST open follow-up (either
+    // store) is > snooze.thresholdDays out AND the lead has responded
+    // (firstRespondedAt set). snoozedUntil = that follow-up's date (the single
+    // source of truth); snoozeSource = the follow-up's _id (cadence subdoc or
+    // Followup doc). Cleared by the wake sweep, by unsnooze, or by any recompute
+    // that pulls the earliest date back in.
+    snoozedUntil: { type: Date, default: null, index: true },
+    snoozeSource: { type: ObjectId, default: null },
     // Slice B2 — the deal spine's "proposal" station. Set-once via
     // POST /enquiry/:_id/proposal-sent (409 on a second attempt); amount
     // optional (rupees). The station itself is derived on read.

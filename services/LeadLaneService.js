@@ -11,6 +11,7 @@ const Department = require("../models/Department");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
+const { filterAssignableIds, isAssignableAdmin } = require("../utils/assignable");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
@@ -65,8 +66,18 @@ const suggestFor = async (leadId, laneName) => {
       const dn = String(d.name || "").toLowerCase();
       return dn.includes(lc) || lc.includes(dn);
     }) || null;
+  // Only suggest a roster member who can actually receive work — a disabled
+  // admin must never be offered as a lane owner.
+  const assignableRoster = new Set(
+    (await filterAssignableIds(roster.map((r) => r.personId))).map(String)
+  );
   const member = dept
-    ? roster.find((r) => r.departmentId && String(r.departmentId) === String(dept._id)) || null
+    ? roster.find(
+        (r) =>
+          r.departmentId &&
+          String(r.departmentId) === String(dept._id) &&
+          assignableRoster.has(String(r.personId))
+      ) || null
     : null;
   return {
     departmentId: dept ? String(dept._id) : null,
@@ -166,12 +177,19 @@ const assemble = async (leadId, { lanes } = {}, actorId) => {
     if (!name) throw err(400, `Lane ${key} needs a name`);
     const state = spec.state && LANE_STATES.includes(spec.state) ? spec.state : "active";
     const wake = state === "queued" ? normalizeWake(spec.wake) : null;
-    const ownerId =
+    // lead_comms owner is FORCED to the lead owner (never client-chosen). For
+    // other lanes, a client-chosen owner must be a live, assignable admin — a
+    // disabled pick is dropped to null (the lane stays unowned and surfaces via
+    // lane escalation) rather than silently handing work to a disabled admin.
+    let ownerId =
       key === "lead_comms"
-        ? lead.assignedTo || null // the single voice — never client-chosen
+        ? lead.assignedTo || null
         : spec.ownerId && isId(spec.ownerId)
           ? spec.ownerId
           : null;
+    if (key !== "lead_comms" && ownerId && !(await isAssignableAdmin(ownerId))) {
+      ownerId = null;
+    }
     const lane = await LeadLane.create({
       leadId,
       key,

@@ -10,6 +10,7 @@
  *     + locking reuse RoleService.getAll (no duplicated policy).
  */
 const Admin = require("../models/Admin");
+const { assignableFilter } = require("../utils/assignable");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
 const RoleService = require("./RoleService");
@@ -33,7 +34,7 @@ const hatsOf = (admin) => {
 // GET /org/chart — the org tree. Active admins only (status !== inactive, not disabled).
 const chart = async () => {
   const [admins, roles, departments] = await Promise.all([
-    Admin.find({ isDisabled: { $ne: true } })
+    Admin.find(assignableFilter())
       .select("name email roleId roleIds departmentId reportingManagerId hats status meta")
       .lean(),
     Role.find({ deletedAt: null }).select("name departmentId").lean(),

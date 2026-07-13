@@ -50,8 +50,11 @@ const sweepLanes = async (now, leadFilter, ctx) => {
   const lanes = await LeadLane.find({ state: "active" }).lean();
   const leadIds = [...new Set(lanes.map((l) => String(l.leadId)))];
   if (!leadIds.length) return 0;
+  // Slice A2 — parked (snoozed) leads pause the silence ladder: their lanes
+  // drop out of the sweep query entirely (ctx.snoozeExcl). The wake pass below
+  // is deliberately NOT filtered — queued lanes still wake on their own rules.
   const leads = await Enquiry.find(
-    { _id: { $in: leadIds }, stage: { $nin: ["won", "lost"] }, ...(leadFilter || {}) },
+    { $and: [{ _id: { $in: leadIds }, stage: { $nin: ["won", "lost"] }, ...(leadFilter || {}) }, ctx.snoozeExcl] },
     { name: 1, assignedTo: 1 }
   ).lean();
   const leadById = new Map(leads.map((l) => [String(l._id), l]));
@@ -100,13 +103,19 @@ const STATION_SLA_KEY = {
 
 const sweepDealClock = async (now, leadFilter, ctx) => {
   const slas = await SettingsService.getMany(Object.values(STATION_SLA_KEY));
+  // Slice A2 — the deal clock pauses while a lead is parked (snoozed).
   const leads = await Enquiry.find(
     {
-      qualified: true,
-      stage: { $nin: ["won", "lost"] },
-      "recycled.isRecycled": { $ne: true },
-      lostStatus: { $nin: ["pending", "approved"] },
-      ...(leadFilter || {}),
+      $and: [
+        {
+          qualified: true,
+          stage: { $nin: ["won", "lost"] },
+          "recycled.isRecycled": { $ne: true },
+          lostStatus: { $nin: ["pending", "approved"] },
+          ...(leadFilter || {}),
+        },
+        ctx.snoozeExcl,
+      ],
     },
     { name: 1, assignedTo: 1, qualified: 1, qualifiedAt: 1, stage: 1, followUps: 1, proposalSentAt: 1, isLost: 1, recycled: 1, createdAt: 1 }
   ).lean();
@@ -210,14 +219,22 @@ const sweepWake = async (now, leadFilter) => {
 // in tests (production runs unfiltered).
 const runSweep = async (now = new Date(), opts = {}) => {
   const leadFilter = opts.leadFilter || null;
+  const SnoozeService = require("./SnoozeService");
   const ctx = {
     revenueHeads: await TriageService.revenueHeadIds(),
     founders: await idsByRoleName("Founder"),
+    // Slice A2 — one exclusion for both clocks (lane ladder + deal clock).
+    snoozeExcl: await SnoozeService.snoozeExclusion(now),
   };
+  // Slice A2 wake pass FIRST: a lead past its wake date re-enters this very
+  // sweep's clocks (its snoozedUntil is cleared before the exclusion applies...
+  // ctx.snoozeExcl was computed above, but the $lte-now leg of the exclusion
+  // already re-admits due leads, so ordering only affects the warn nudge).
+  const snooze = await SnoozeService.wakeSweep(now, leadFilter);
   const laneSilent = await sweepLanes(now, leadFilter, ctx);
   const dealStalled = await sweepDealClock(now, leadFilter, ctx);
   const woken = await sweepWake(now, leadFilter);
-  return { laneSilent, dealStalled, woken };
+  return { laneSilent, dealStalled, woken, snoozeWoken: snooze.woken, snoozeWarned: snooze.warned };
 };
 
 module.exports = { runSweep };

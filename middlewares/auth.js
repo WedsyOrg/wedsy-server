@@ -286,7 +286,7 @@ function CheckAdminLogin(req, res, next) {
   }
   jwt.verify(token, process.env.JWT_SECRET, function (err, result) {
     if (err) {
-      res.status(400).send({ message: "error", error: err });
+      res.status(401).send({ message: "Your session expired — please log in again." });
     } else {
       const { _id, isAdmin } = result;
       if (_id && isAdmin) {
@@ -310,7 +310,7 @@ function CheckAdminLogin(req, res, next) {
             }
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            res.status(401).send({ message: "Session invalid — please log in again." });
           });
       } else {
         res.status(400).send({ message: "unknown error" });

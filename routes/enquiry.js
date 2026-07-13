@@ -189,6 +189,17 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   funnelMetrics.Funnel
 );
+// Approvals page: pending disqualification requests awaiting the caller's decision.
+// Literal path — MUST stay above /:_id (else "pending-disqualifications" is cast as
+// an Enquiry _id and 500s as a CastError). No requirePermission gate: eligibility
+// (leads:approve OR the assignee's manager) is computed in the controller, EXACTLY
+// like the disqualify-decision route below, so a manager without a broad grant still
+// sees their team's requests and a caller with neither path gets an empty list.
+router.get(
+  "/pending-disqualifications",
+  CheckAdminLogin,
+  disqualify.PendingDisqualifications
+);
 router.get("/:_id", CheckAdminLogin, requirePermission("leads:view:own", { ownerField: "assignedTo" }), enquiry.Get);
 router.post("/:_id/user", CheckAdminLogin, enquiry.CreateUser);
 router.post("/:_id/conversations", CheckAdminLogin, enquiry.AddConversation);
@@ -614,6 +625,8 @@ router.post(
 // Recover a lost lead back into the pipeline — same scope gate as the stage move
 // it mirrors (LEADS_EDIT_SCOPED: leads:edit:own + ownerField + enforceLeadScope).
 router.post("/:_id/recover", CheckAdminLogin, ...LEADS_EDIT_SCOPED, lifecycle.Recover);
+// Slice A2 — clear a lead's snooze park (owner/manager). The follow-up stays.
+router.post("/:_id/unsnooze", CheckAdminLogin, ...LEADS_EDIT_SCOPED, lifecycle.Unsnooze);
 // MB10 Slice 4 — stage + assign were CheckAdminLogin-only; now scope-gated.
 router.put("/:_id/stage", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateStage);
 router.put("/:_id/assign", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateAssignedTo);

@@ -236,4 +236,16 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent, DealTotal, Onboard };
+// POST /enquiry/:_id/unsnooze (Slice A2) — clears the park; the follow-up stays
+// (it's just no longer parking the lead). Owner/manager scope at the route.
+const Unsnooze = async (req, res) => {
+  try {
+    const SnoozeService = require("../services/SnoozeService");
+    const result = await SnoozeService.unsnooze(req.params._id, req.auth.user_id);
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent, DealTotal, Onboard, Unsnooze };

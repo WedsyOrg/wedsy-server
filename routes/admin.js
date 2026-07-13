@@ -20,6 +20,9 @@ router.get("/venue-conversations/:conversationId/messages", CheckAdminLogin, ven
 // above the PUT /:id param route.
 router.post("/set-password", CheckAdminLogin, requirePermission("team:manage_access:all"), admin.SetMemberPassword);
 router.post("/access", CheckAdminLogin, requirePermission("team:manage_access:all"), admin.SetMemberAccess);
+// Slice A3 — offboard a DISABLED admin's working set (open leads + lane
+// ownerships + open tasks) in one action. Same gate as disable itself.
+router.post("/:_id/offboard-leads", CheckAdminLogin, requirePermission("team:manage_access:all"), admin.OffboardLeads);
 // PUT /:id is method-distinct from the GETs above, but kept last so any future
 // param routes stay below the literal paths.
 router.put("/:id", CheckAdminLogin, requirePermission("users:edit:all"), admin.UpdateAdmin);

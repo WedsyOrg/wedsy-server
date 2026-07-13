@@ -1,5 +1,6 @@
 const Attendance = require("../models/Attendance");
 const Admin = require("../models/Admin");
+const { assignableFilter } = require("../utils/assignable");
 
 // Idle = no heartbeat for > 5 minutes while checked in. The frontend pings
 // every 60s from an active tab, so a 5-min gap means the OS genuinely wasn't
@@ -96,7 +97,7 @@ const me = async (adminId, liveMeetingIds = new Set()) => {
 // {} (all) → every active admin; {adminId: X} → [X]; {adminId:{$in:[..]}} → those.
 const visibleAdminIds = async (scopeFilter = {}) => {
   if (!scopeFilter || Object.keys(scopeFilter).length === 0) {
-    const all = await Admin.find({ status: "active" }, { _id: 1 }).lean();
+    const all = await Admin.find(assignableFilter(), { _id: 1 }).lean();
     return all.map((a) => a._id);
   }
   const v = scopeFilter.adminId;
@@ -110,7 +111,7 @@ const team = async ({ date } = {}, scopeFilter = {}, liveMeetingIds = new Set())
   const day = date || dayKey();
   const ids = await visibleAdminIds(scopeFilter);
   const [admins, rows] = await Promise.all([
-    Admin.find({ _id: { $in: ids }, status: "active" }, { name: 1, email: 1 }).lean(),
+    Admin.find(assignableFilter({ _id: { $in: ids } }), { name: 1, email: 1 }).lean(),
     Attendance.find({ adminId: { $in: ids }, date: day }).lean(),
   ]);
   const byAdmin = new Map(rows.map((r) => [String(r.adminId), r]));

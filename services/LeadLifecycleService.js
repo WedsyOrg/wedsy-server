@@ -16,6 +16,7 @@ const RECYCLE_REASONS = [
   "other",
 ];
 const SettingsService = require("./SettingsService");
+const { assignableFilter, isAssignableAdmin } = require("../utils/assignable");
 const COMPLETION_OUTCOMES = ["connected", "busy", "no_answer", "done"];
 
 const httpError = (status, message) => {
@@ -107,7 +108,10 @@ const resurfaceDueLeads = async (scopeFilter = {}) => {
     const originalOwner = lead.recycled.originalOwnerId
       ? await Admin.findById(lead.recycled.originalOwnerId).lean()
       : null;
-    if (originalOwner && originalOwner.status === "active") {
+    // Only hand a recycled lead back to its original owner if that admin can still
+    // receive work (active AND not disabled) — otherwise it falls through to the
+    // pool below rather than landing on a disabled owner.
+    if (originalOwner && originalOwner.status === "active" && !originalOwner.isDisabled) {
       await Enquiry.findByIdAndUpdate(lead._id, {
         $set: { assignedTo: originalOwner._id },
       });
@@ -307,6 +311,10 @@ const completeFollowUp = async (enquiryId, followUpId, body = {}, actorId) => {
   // call-shaped branch above already stamped firstRespondedAt inside logCall).
   await EnquiryRepository.touchLastActivity(enquiryId);
 
+  // Slice A2 — completing removes an open cadence row (and any nextFollowUp
+  // branch above added one): recompute the lead's snooze state (fire-safe).
+  await require("./SnoozeService").recompute(enquiryId, actorId);
+
   const fresh = await EnquiryRepository.findById(enquiryId);
   const obj = fresh.toObject();
   if (cadence) obj.cadence = cadence;
@@ -385,13 +393,13 @@ const broadcastWin = async (lead, actorId) => {
       const roles = await Role.find({ name: { $in: names }, deletedAt: null }, { _id: 1 }).lean();
       const roleIds = roles.map((r) => r._id);
       const admins = await Admin.find(
-        { status: "active", $or: [{ roleId: { $in: roleIds } }, { roleIds: { $in: roleIds } }] },
+        assignableFilter({ $or: [{ roleId: { $in: roleIds } }, { roleIds: { $in: roleIds } }] }),
         { _id: 1 }
       ).lean();
       recipients = admins.map((a) => a._id);
       if (lead.assignedTo) recipients.push(lead.assignedTo);
     } else {
-      const admins = await Admin.find({ status: "active" }, { _id: 1 }).lean();
+      const admins = await Admin.find(assignableFilter(), { _id: 1 }).lean();
       recipients = admins.map((a) => a._id);
     }
     const ownerDoc = lead.assignedTo ? await Admin.findById(lead.assignedTo, { name: 1 }).lean() : null;
@@ -540,7 +548,10 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
 
   const target = await Admin.findById(toAdminId).lean();
   if (!target) throw httpError(400, "Target admin not found");
-  if (target.status !== "active") throw httpError(422, "Target admin is not active");
+  // Re-fetch guarantees a stale dropdown can't route leads to a disabled admin.
+  if (target.status !== "active" || target.isDisabled) {
+    throw httpError(422, "Target admin cannot receive leads (inactive or disabled)");
+  }
 
   const inScope = await Enquiry.find(
     { $and: [{ _id: { $in: leadIds } }, scopeFilter] },

@@ -1,6 +1,7 @@
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 const Enquiry = require("../models/Enquiry");
+const { assignableFilter } = require("../utils/assignable");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { istDayStart } = require("../utils/goldenWindow");
 
@@ -26,7 +27,7 @@ const pickAssignee = async () => {
   for (const roleName of poolRoleNames) {
     const role = await Role.findOne({ name: roleName, deletedAt: null }).lean();
     if (!role) continue;
-    const pool = await Admin.find({ roleId: role._id, status: "active" })
+    const pool = await Admin.find(assignableFilter({ roleId: role._id }))
       .sort({ lastAssignedAt: 1 })
       .lean();
     for (const admin of pool) {

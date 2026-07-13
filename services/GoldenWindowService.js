@@ -165,15 +165,24 @@ const respondNow = async (adminId, now = new Date()) => {
   // Bound to recent leads — speed-to-lead is a fresh-lead concern (a window from
   // weeks ago is stale, not a live "respond now").
   const RESPOND_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
+  // Slice A2 — parked (snoozed) leads leave the queue. Structurally redundant
+  // today (snoozing requires firstRespondedAt, this queue requires it null) but
+  // explicit so a future rule change can't silently re-admit parked leads.
+  const snoozeExcl = await require("./SnoozeService").snoozeExclusion(now);
   const leads = await Enquiry.find(
     {
-      assignedTo: adminId,
-      firstRespondedAt: null,
-      qualified: { $ne: true },
-      isLost: { $ne: true },
-      "recycled.isRecycled": { $ne: true },
-      archivedAt: null,
-      createdAt: { $gte: new Date(+now - RESPOND_HORIZON_MS) },
+      $and: [
+        {
+          assignedTo: adminId,
+          firstRespondedAt: null,
+          qualified: { $ne: true },
+          isLost: { $ne: true },
+          "recycled.isRecycled": { $ne: true },
+          archivedAt: null,
+          createdAt: { $gte: new Date(+now - RESPOND_HORIZON_MS) },
+        },
+        snoozeExcl,
+      ],
     },
     { name: 1, phone: 1, source: 1, marketingSource: 1, createdAt: 1, firstCalledAt: 1, firstRespondedAt: 1, qualified: 1, isLost: 1, recycled: 1 }
   ).lean();
