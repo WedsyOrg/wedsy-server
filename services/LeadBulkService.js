@@ -37,12 +37,23 @@ const bulkTag = async ({ leadIds, tag, mode = "add" } = {}, actorId, scopeFilter
   return { updated: leadIds.length, tag: clean, mode };
 };
 
-// Move the selection to a stage.
+// Move the selection to a stage. Terminal stages are REJECTED: a bulk write to
+// "won"/"lost" bypasses the whole state machine (qualified/isLost/Project/
+// Onboarding never get touched), manufacturing divergent-truth leads that show
+// in the Won tab but vanish from every funnel metric.
 const bulkStage = async ({ leadIds, stage } = {}, actorId, scopeFilter) => {
   const clean = String(stage || "").trim();
   if (!clean) throw httpError(400, "A stage is required");
+  if (["won", "lost"].includes(clean)) {
+    throw httpError(422, "Terminal stages can't be set in bulk — use the lead's own onboard/disqualify flow");
+  }
   await assertScopedIds(leadIds, scopeFilter);
-  await Enquiry.updateMany({ _id: { $in: leadIds } }, { $set: { stage: clean, updatedBy: actorId || null } });
+  // Signal spine: a bulk stage move is employee activity on each lead ($max
+  // keeps the stamp monotonic, matching touchLastActivity's semantics).
+  await Enquiry.updateMany(
+    { _id: { $in: leadIds } },
+    { $set: { stage: clean, updatedBy: actorId || null }, $max: { lastActivityAt: new Date() } }
+  );
   for (const id of leadIds) {
     await LeadInternalEventService.record({ leadId: id, type: "stage_changed", actorId, payload: { stage: clean, bulk: true } });
   }

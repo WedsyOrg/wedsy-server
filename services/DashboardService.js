@@ -487,6 +487,33 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
     return istDayKey(d);
   });
 
+  // Divergent-truth fix: the per-member dueToday/overdue counts read ONLY the
+  // embedded cadence store while the personal mission counts BOTH stores — a
+  // manager's rollup disagreed with the member's own dashboard. Bridge: one
+  // batched Followup query for the whole pool (attributed by the row's ownerId),
+  // narrowed to ACTIVE + visible leads exactly like the mission's journey leg.
+  const journeyPoolRows = await Followup.find(
+    {
+      ownerId: { $in: poolIds },
+      dueAt: { $lte: todayEnd },
+      $or: [{ status: "open" }, { status: "snoozed", snoozedUntil: { $lte: now } }],
+    },
+    { ownerId: 1, dueAt: 1, leadId: 1 }
+  ).lean();
+  const jLeadIds = [...new Set(journeyPoolRows.map((r) => String(r.leadId)))];
+  const jLiveLeads = jLeadIds.length
+    ? await Enquiry.find({ $and: [{ _id: { $in: jLeadIds } }, ACTIVE, visibility] }, { _id: 1 }).lean()
+    : [];
+  const jLeadSet = new Set(jLiveLeads.map((l) => String(l._id)));
+  const journeyDueByOwner = new Map();
+  for (const r of journeyPoolRows) {
+    if (!r.ownerId || !jLeadSet.has(String(r.leadId))) continue;
+    const key = String(r.ownerId);
+    if (!journeyDueByOwner.has(key)) journeyDueByOwner.set(key, { dueToday: 0, overdue: 0 });
+    if (new Date(r.dueAt) < todayStart) journeyDueByOwner.get(key).overdue += 1;
+    else journeyDueByOwner.get(key).dueToday += 1;
+  }
+
   const teamRollup = await Promise.all(
     pool.map(async (member) => {
       const own = { assignedTo: member._id };
@@ -512,11 +539,13 @@ const buildManagerSections = async (adminId, scope, scopeFilter, { now, todaySta
         }),
       ]);
       const byDay = activityByActor.get(String(member._id)) || {};
+      // BOTH follow-up stores: embedded counts above + this member's journey rows.
+      const jd = journeyDueByOwner.get(String(member._id)) || { dueToday: 0, overdue: 0 };
       return {
         adminId: member._id,
         name: member.name,
-        dueToday,
-        overdue,
+        dueToday: dueToday + jd.dueToday,
+        overdue: overdue + jd.overdue,
         untouched,
         atRisk: atRiskCount,
         sparkline: last7Days.map((day) => byDay[day] || 0),

@@ -6,7 +6,7 @@ const { assertInScopeOrRoster } = require("../utils/leadScope");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[followup]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong with this follow-up — please retry." : error.message });
 };
 
 const assertInScope = async (id, scopeFilter = {}) => {

@@ -115,13 +115,19 @@ const sendToClaude = async (history) => {
 
 const checkQualified = async (history) => {
   const MAX_RETRIES = 2;
+  // Empty-content responses are DETERMINISTIC (prefill continuation of Kiara's
+  // own trailing assistant reply) — one retry max for that class; the closing
+  // user turn below is the actual fix. Network/5xx errors keep the full 2.
+  const MAX_NO_TEXT_RETRIES = 1;
   let attempt = 0;
+  let noTextAttempts = 0;
 
   while (attempt <= MAX_RETRIES) {
     try {
       const response = await callAnthropic({
         model: 'claude-sonnet-4-5',
-        max_tokens: 400,
+        // 400 truncated filled-out extractions mid-JSON (parse failures).
+        max_tokens: 800,
         // MB6 Slice 7: the WA extractor's routing contract (escalate +
         // classification), keeping IG's phone-collection mission —
         // qualification still requires the phone number.
@@ -129,10 +135,17 @@ const checkQualified = async (history) => {
           'Also decide two routing signals. (1) "escalate": set true when the customer explicitly asks for a human, shows frustration or anger, pushes pricing/negotiation beyond rapport, or the conversation is stuck (3+ exchanges without progress) — and ALWAYS when qualified is true (use escalateReason "Qualified — ready for your call"). Give a short escalateReason whenever escalate is true. ' +
           '(2) "classification": classify the contact as one of "lead" (a genuine wedding/engagement customer), "vendor" (a vendor/photographer/supplier pitching their services), "birthday" (a birthday inquiry), "corporate" (a corporate-event inquiry), or "destination" (a confirmed destination wedding outside Bengaluru). ' +
           'Respond ONLY with valid JSON, no markdown, no explanation. Format: {"qualified": true/false, "escalate": true/false, "escalateReason": "", "classification": "lead", "data": {"name": "", "phoneNumber": "", "eventType": "", "city": "", "eventDate": "", "numberOfEvents": "", "venueStatus": "", "venueName": "", "servicesRequired": "", "budget": "", "weddingStyle": ""}}',
-        messages: history
+        // THE FIX: history ends with Kiara's assistant reply — a closing user
+        // turn forces a fresh assistant answer instead of a prefill continuation.
+        messages: [...history, { role: 'user', content: 'Extract now. Respond with the JSON object only.' }]
       });
       const text = firstTextBlock(response);
-      if (text === null) return { qualified: false };
+      // Was a SILENT `return { qualified: false }` — now logged and retried
+      // (once) through the same path as WhatsApp, then terminally flagged.
+      if (text === null) {
+        console.error('[InstagramAgent] extractor returned no text block');
+        throw Object.assign(new Error('Anthropic response had no text block'), { noText: true });
+      }
       // Fence-tolerant: strips a ```json fence / surrounding prose before parsing
       // so a wrapped-but-valid object still yields classification (→ lead created).
       const parsed = parseModelJson(text);
@@ -149,10 +162,12 @@ const checkQualified = async (history) => {
         attempts: 1,
         createdAt: new Date(),
       }).catch(() => {});
-      return { qualified: false };
+      return { qualified: false, extractorFailed: true };
     } catch (error) {
       attempt++;
-      if (attempt > MAX_RETRIES) {
+      if (error && error.noText) noTextAttempts++;
+      const exhausted = attempt > MAX_RETRIES || noTextAttempts > MAX_NO_TEXT_RETRIES;
+      if (exhausted) {
         await NotificationFailureLog.create({
           service: 'Anthropic',
           error: error.message,
@@ -160,7 +175,9 @@ const checkQualified = async (history) => {
           createdAt: new Date()
         });
         console.error(`[InstagramAgent] Qualification check failed after ${attempt} attempts:`, error.message);
-        return { qualified: false };
+        // extractorFailed → the caller notifies a human (no lead auto-create
+        // for an unclassified DM); never a silent drop.
+        return { qualified: false, extractorFailed: true };
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
@@ -561,6 +578,34 @@ const receiveMessage = async (instagramId, message) => {
     if (userMessages < 3) return;
 
     const qualification = await checkQualified(updatedHistory);
+
+    // Extractor terminally failed → a human must review the DM. Do NOT
+    // auto-create a lead for an unclassified conversation (no junk); notify
+    // the Revenue Heads with the IG handle so someone reads the thread.
+    if (qualification && qualification.extractorFailed) {
+      try {
+        const AdminNotificationService = require('./AdminNotificationService');
+        const handle = conversation.profileName || instagramId;
+        const recipients = await require('./TriageService').revenueHeadIds();
+        await AdminNotificationService.notify(recipients, {
+          type: 'needs_human_qualification',
+          title: `Kiara couldn't qualify @${handle} — review manually`,
+          message: 'The IG qualification check failed. Open the DM thread and classify/qualify it yourself.',
+          leadId: conversation.enquiryId || null,
+          payload: { instagramId, handle, channel: 'instagram' },
+        });
+        // If a lead was already created earlier for this thread, flag it too.
+        if (conversation.enquiryId) {
+          await require('../models/Enquiry').findByIdAndUpdate(
+            conversation.enquiryId,
+            { $set: { needsHumanQualification: true } },
+            { runValidators: false }
+          );
+        }
+      } catch (e) {
+        console.error('[InstagramAgent] needs-human notify failed:', e.message);
+      }
+    }
 
     // GATE: wedding intent (Kiara's existing classification), NOT phone presence.
     // classification === 'lead' means a genuine wedding/engagement customer — so

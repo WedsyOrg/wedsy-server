@@ -5,7 +5,7 @@ const GoldenWindowService = require("../services/GoldenWindowService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[goldenWindow]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong loading the response clock — please retry." : error.message });
 };
 
 const assertInScope = async (id, scopeFilter = {}) => {

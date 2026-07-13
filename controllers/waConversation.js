@@ -6,7 +6,7 @@ const WAConversationService = require("../services/WAConversationService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[waConversation]", error);
-  const body = { message: status === 500 ? "Server error" : error.message };
+  const body = { message: status === 500 ? "Something went wrong in WhatsApp conversations — please retry." : error.message };
   if (error.windowClosed) {
     body.windowClosed = true;
     body.windowClosesAt = error.windowClosesAt || null;

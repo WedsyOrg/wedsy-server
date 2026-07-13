@@ -11,7 +11,7 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const respondError = (res, error) => {
   const status = error.status || 500;
-  const message = status === 500 ? "Server error" : error.message;
+  const message = status === 500 ? "Something went wrong with this lead action — please retry." : error.message;
   if (status === 500) console.error("[lifecycle]", error);
   res.status(status).json({ message });
 };

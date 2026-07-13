@@ -95,6 +95,11 @@ const EnquirySchema = new mongoose.Schema(
     // that pulls the earliest date back in.
     snoozedUntil: { type: Date, default: null, index: true },
     snoozeSource: { type: ObjectId, default: null },
+    // Kiara hardening — set when the extractor terminally failed for this lead
+    // (Anthropic no-text/parse failure after retries): the lead needs a HUMAN
+    // qualification pass instead of silently staying unqualified. Cleared by
+    // nothing automatic; the owner works the lead and qualifies it manually.
+    needsHumanQualification: { type: Boolean, default: false },
     // Slice B2 — the deal spine's "proposal" station. Set-once via
     // POST /enquiry/:_id/proposal-sent (409 on a second attempt); amount
     // optional (rupees). The station itself is derived on read.

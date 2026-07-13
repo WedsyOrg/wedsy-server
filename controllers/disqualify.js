@@ -44,7 +44,7 @@ const RequestDisqualify = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong processing this disqualification — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -92,7 +92,7 @@ const PendingDisqualifications = async (req, res) => {
     res.status(200).json({ items, total: items.length });
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong processing this disqualification — please retry." : error.message;
     res.status(status).json({ message });
   }
 };
@@ -124,7 +124,7 @@ const DecideDisqualify = async (req, res) => {
     res.status(200).json(updated);
   } catch (error) {
     const status = error.status || 500;
-    const message = status === 500 ? "Server error" : error.message;
+    const message = status === 500 ? "Something went wrong processing this disqualification — please retry." : error.message;
     res.status(status).json({ message });
   }
 };

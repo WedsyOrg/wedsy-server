@@ -3,7 +3,7 @@ const StepDefinitionService = require("../services/StepDefinitionService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[stepDefinition]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong with this step definition — please retry." : error.message });
 };
 
 // GET /step-definition — list (any admin; the lead page + instantiation read it).

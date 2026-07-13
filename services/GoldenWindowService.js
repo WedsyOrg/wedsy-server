@@ -88,7 +88,7 @@ const clockFor = (lead, handoffAt, t, now) => {
 // backfilled). The banner and the respond-now queue now read the SAME field, so
 // they can never disagree. Tasks/chat never stamp it (internal ≠ response); the
 // timestampless updates.notes blob still only counts toward hasActivity.
-const bannerFields = (lead, clock, now) => {
+const bannerFields = (lead, clock, now, journeyFollowups = []) => {
   try {
     const nowMs = +now;
     const deadlineMs = clock && clock.deadlineAt ? +new Date(clock.deadlineAt) : null;
@@ -97,7 +97,10 @@ const bannerFields = (lead, clock, now) => {
     const responded = respondedAtMs != null;
     const respondedWithinWindow = responded && deadlineMs != null && respondedAtMs <= deadlineMs;
 
-    // nextAction = earliest FUTURE, not-yet-completed follow-up (call|meet|visit).
+    // nextAction = earliest FUTURE, open follow-up across BOTH stores
+    // (divergent-truth fix: embedded cadence rows AND journey Followup rows —
+    // a lead whose only open step lives in the journey collection previously
+    // showed no next action).
     const followUps = Array.isArray(lead.followUps) ? lead.followUps : [];
     let next = null;
     let nextMs = null;
@@ -108,6 +111,19 @@ const bannerFields = (lead, clock, now) => {
       if (nextMs == null || ms < nextMs) {
         nextMs = ms;
         next = { type: f.type, scheduledAt: new Date(ms).toISOString() };
+      }
+    }
+    for (const f of journeyFollowups || []) {
+      if (!f || f.status === "done" || !f.dueAt) continue;
+      // A per-followup snooze pushes its effective due to snoozedUntil.
+      const at = f.status === "snoozed" && f.snoozedUntil && +new Date(f.snoozedUntil) > nowMs
+        ? f.snoozedUntil
+        : f.dueAt;
+      const ms = +new Date(at);
+      if (Number.isNaN(ms) || ms <= nowMs) continue;
+      if (nextMs == null || ms < nextMs) {
+        nextMs = ms;
+        next = { type: "journey", title: f.title || "", scheduledAt: new Date(ms).toISOString() };
       }
     }
     const nextAction = next;
@@ -147,11 +163,16 @@ const leadClock = async (leadId) => {
     qualified: 1, isLost: 1, recycled: 1, followUps: 1,
   }).lean();
   if (!lead) throw err(404, "Lead not found");
-  const [t, hm] = await Promise.all([thresholds(), handoffMap([lead._id])]);
+  const [t, hm, journeyRows] = await Promise.all([
+    thresholds(),
+    handoffMap([lead._id]),
+    // Both follow-up stores feed the banner's nextAction (fire-safe: [] on error).
+    require("../repositories/FollowupRepository").findByLead(leadId).catch(() => []),
+  ]);
   const now = new Date();
   const clock = clockFor(lead, hm.get(idStr(lead._id)), t, now);
   // ADDITIVE: merge the new banner fields alongside the verbatim clock fields.
-  return { ...clock, ...bannerFields(lead, clock, now) };
+  return { ...clock, ...bannerFields(lead, clock, now, journeyRows) };
 };
 
 // SLICE 2 — the caller's "Respond now" queue: their UNRESPONDED, active (in-window

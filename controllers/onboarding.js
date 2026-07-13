@@ -3,7 +3,7 @@ const OnboardingService = require("../services/OnboardingService");
 const SettingsService = require("../services/SettingsService");
 
 const respond = (res, error) =>
-  res.status(error.status || 500).json({ message: error.message || "Server error" });
+  res.status(error.status || 500).json({ message: error.message || "Something went wrong with onboarding — please retry." });
 
 // GET /onboarding/milestones — current milestone settings (defaults when unset).
 // Readable by any admin (operational — payment links + onboard read it).

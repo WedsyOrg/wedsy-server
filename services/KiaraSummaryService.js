@@ -109,8 +109,12 @@ const generate = async (lead) => {
   if (!text) throw httpError(502, "Kiara couldn't compose a summary — try again");
 
   const generatedAt = new Date();
-  lead.kiaraSummary = { text, generatedAt };
-  await lead.save();
+  // Whitelisted update (save fragility class) — one field, no full-doc revalidation.
+  await Enquiry.findByIdAndUpdate(
+    lead._id,
+    { $set: { kiaraSummary: { text, generatedAt } } },
+    { runValidators: false }
+  );
   return { text, generatedAt, cached: false };
 };
 

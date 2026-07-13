@@ -119,7 +119,10 @@ const listTriage = async () => {
 const assign = async (leadId, toAdminId, actorId) => {
   if (!mongoose.Types.ObjectId.isValid(leadId)) throw httpError(400, "Invalid lead id");
   if (!mongoose.Types.ObjectId.isValid(toAdminId)) throw httpError(400, "Invalid admin id");
-  const target = await Admin.findOne({ _id: toAdminId, status: "active" }, { name: 1 }).lean();
+  // Assignable predicate (status active AND not disabled): the Disable button
+  // leaves status "active", so a status-only check let disabled admins receive
+  // triage assignments.
+  const target = await Admin.findOne(assignableFilter({ _id: toAdminId }), { name: 1 }).lean();
   if (!target) throw httpError(404, "Assignee not found or inactive");
   const lead = await Enquiry.findOneAndUpdate(
     { _id: leadId, triagePending: true },

@@ -5,7 +5,7 @@ const { assertInScopeOrRoster } = require("../utils/leadScope");
 
 const respond = (res, error) => {
   const status = error.status || 500;
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong in the lead chat — please retry." : error.message });
 };
 
 // Lead-scope: the lead must satisfy the caller's scope filter (built by

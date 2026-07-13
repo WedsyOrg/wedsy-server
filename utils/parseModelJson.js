@@ -43,6 +43,38 @@ const parseModelJson = (text) => {
     if (parsed !== null) return parsed;
   }
 
+  // 4. TRUNCATED output (max_tokens cut mid-object): balance-close the open
+  //    braces/brackets; if the tail is a dangling fragment (half a key, a key
+  //    with no value, a cut string), back off to the previous comma and retry —
+  //    each backoff drops one incomplete pair. Best-effort; null if hopeless.
+  if (first !== -1) {
+    const balanceClose = (s) => {
+      const stack = [];
+      let inString = false;
+      let escaped = false;
+      for (const ch of s) {
+        if (escaped) { escaped = false; continue; }
+        if (ch === "\\") { escaped = true; continue; }
+        if (ch === '"') { inString = !inString; continue; }
+        if (inString) continue;
+        if (ch === "{" || ch === "[") stack.push(ch);
+        else if (ch === "}" || ch === "]") stack.pop();
+      }
+      let out = s;
+      if (inString) out += '"';
+      while (stack.length) out += stack.pop() === "{" ? "}" : "]";
+      return out;
+    };
+    let body = trimmed.slice(first).replace(/,\s*$/, "");
+    for (let i = 0; i < 8 && body.length > 1; i++) {
+      parsed = tryParse(balanceClose(body));
+      if (parsed !== null) return parsed;
+      const lastComma = body.lastIndexOf(",");
+      if (lastComma <= 0) break;
+      body = body.slice(0, lastComma);
+    }
+  }
+
   return null;
 };
 

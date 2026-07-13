@@ -5,7 +5,7 @@ const BillingDocService = require("../services/BillingDocService");
 const respond = (res, error) => {
   const status = error.status || 500;
   if (status === 500) console.error("[billingDoc]", error);
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong generating this document — please retry." : error.message });
 };
 
 // Owner/manager scope — documents carry money, so NO roster fallback here.

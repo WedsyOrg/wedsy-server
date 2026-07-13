@@ -37,6 +37,23 @@ const { SOURCE_PATTERNS, sourceChannelOf } = require("../utils/leadSource");
 const { isCurrentRosterMember } = require("../utils/leadScope");
 const DealSpineService = require("../services/DealSpineService");
 
+// Opaque-error hardening: every terminal catch in this controller used to
+// return a literal 400 {message:"error"} (plus the raw error object), which the
+// FE rendered verbatim as "error" (the Approvals-class symptom) and which
+// leaked internals. Known client mistakes (bad ids / validation) → 400 with the
+// real reason; everything else → 500 with a distinct, human message. The raw
+// error goes to the server log only. Grep-verified: no FE or BE code parses the
+// old "error" literal.
+const respondCatch = (res, error) => {
+  if (error && (error.name === "CastError" || error.name === "ValidationError")) {
+    return res.status(400).send({ message: error.message });
+  }
+  console.error("[enquiry]", error);
+  return res
+    .status(500)
+    .send({ message: "Something went wrong loading this lead data — please retry." });
+};
+
 // Signal Matrix Slice 3 — opt-in roster widening. ?includeTeam=1 ORs the leads
 // the caller is CURRENTLY rostered on (LeadTeamMember, activeTo null) into
 // their ownership scope, so a team member can see roster leads in the normal
@@ -116,16 +133,16 @@ const CreateNew = (req, res) => {
                               });
                             })
                             .catch((error) => {
-                              res.status(400).send({ message: "error", error });
+                              respondCatch(res, error);
                             });
                         }
                       })
                       .catch((error) => {
-                        res.status(400).send({ message: "error", error });
+                        respondCatch(res, error);
                       });
                   })
                   .catch((error) => {
-                    res.status(400).send({ message: "error", error });
+                    respondCatch(res, error);
                   });
               } else {
                 // No existing enquiry, proceed with original logic
@@ -160,7 +177,7 @@ const CreateNew = (req, res) => {
                           });
                         })
                         .catch((error) => {
-                          res.status(400).send({ message: "error", error });
+                          respondCatch(res, error);
                         });
                     } else {
                       new User({
@@ -197,28 +214,28 @@ const CreateNew = (req, res) => {
                               });
                             })
                             .catch((error) => {
-                              res.status(400).send({ message: "error", error });
+                              respondCatch(res, error);
                             });
                         })
                         .catch((error) => {
-                          res.status(400).send({ message: "error", error });
+                          respondCatch(res, error);
                         });
                     }
                   })
                   .catch((error) => {
-                    res.status(400).send({ message: "error", error });
+                    respondCatch(res, error);
                   });
               }
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              respondCatch(res, error);
             });
         } else {
           res.status(400).send({ message: "Invalid OTP" });
         }
       })
       .catch((err) => {
-        res.status(400).send({ message: "error", error: err });
+        respondCatch(res, err);
       });
   } else {
     // For unverified enquiries, also check for duplicates
@@ -246,7 +263,7 @@ const CreateNew = (req, res) => {
               res.status(200).send({ message: "Enquiry Updated Successfully" });
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              respondCatch(res, error);
             });
         } else {
           // Lifecycle intake hook (additive): the exact-match check above misses
@@ -282,16 +299,16 @@ const CreateNew = (req, res) => {
                   res.status(201).send({ message: "Enquiry Added Successfully" });
                 })
                 .catch((error) => {
-                  res.status(400).send({ message: "error", error });
+                  respondCatch(res, error);
                 });
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              respondCatch(res, error);
             });
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        respondCatch(res, error);
       });
   }
 };
@@ -493,8 +510,13 @@ const GetAll = async (req, res) => {
         query.triagePending = true;
         query["recycled.isRecycled"] = { $ne: true };
       } else if (view === "qualified") {
-        // MB9c — the Qualified saved-view segment.
+        // MB9c — the Qualified saved-view segment. Divergent-truth fix (view
+        // level only): disqualify sets stage "lost" but deliberately KEEPS the
+        // qualified flag (permanent qualifiedBy credit — InternMetrics reads it),
+        // so this view must exclude lost leads itself, mirroring "golden" below.
         query.qualified = true;
+        query.stage = { $ne: "lost" };
+        query.isLost = { $ne: true };
         query["recycled.isRecycled"] = { $ne: true };
       } else if (view === "golden") {
         // MB9c — the Golden-window segment: uncontacted, active leads (the same
@@ -683,17 +705,11 @@ const GetAll = async (req, res) => {
               res.send({ list, total, totalPages, page, limit });
             })
             .catch((error) => {
-              res.status(400).send({
-                message: "error",
-                error,
-              });
+              respondCatch(res, error);
             });
         })
         .catch((error) => {
-          res.status(400).send({
-            message: "error",
-            error,
-          });
+          respondCatch(res, error);
         });
     } else {
       // Hot, Potential, Cold
@@ -811,17 +827,11 @@ const GetAll = async (req, res) => {
               res.send({ list, totalPages, page, limit });
             })
             .catch((error) => {
-              res.status(400).send({
-                message: "error",
-                error,
-              });
+              respondCatch(res, error);
             });
         })
         .catch((error) => {
-          res.status(400).send({
-            message: "error",
-            error,
-          });
+          respondCatch(res, error);
         });
     }
   }
@@ -842,7 +852,7 @@ const Update = (req, res) => {
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        respondCatch(res, error);
       });
   } else if (action === "MarkLost") {
     Enquiry.updateMany(
@@ -857,7 +867,7 @@ const Update = (req, res) => {
         }
       })
       .catch((error) => {
-        res.status(400).send({ message: "error", error });
+        respondCatch(res, error);
       });
   }
 };
@@ -902,10 +912,7 @@ const UpdateLead = async (req, res) => {
         });
       }
     } catch (err) {
-      return res.status(500).send({
-        message: "error",
-        error: err.message,
-      });
+      return respondCatch(res, err);
     }
   }
 
@@ -958,10 +965,7 @@ const UpdateLead = async (req, res) => {
         });
         return;
       }
-      res.status(400).send({
-        message: "error",
-        error,
-      });
+      respondCatch(res, error);
     });
 };
 
@@ -976,7 +980,7 @@ const Delete = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1216,30 +1220,28 @@ const Get = (req, res) => {
                                   });
                                 })
                                 .catch((error) => {
-                                  res
-                                    .status(400)
-                                    .send({ message: "error", error });
+                                  respondCatch(res, error);
                                 });
                             })
                             .catch((error) => {
-                              res.status(400).send({ message: "error", error });
+                              respondCatch(res, error);
                             });
                         })
                         .catch((error) => {
-                          res.status(400).send({ message: "error", error });
+                          respondCatch(res, error);
                         });
                       })
                       .catch((error) => {
-                        res.status(400).send({ message: "error", error });
+                        respondCatch(res, error);
                       });
                   })
                   .catch((error) => {
-                    res.status(400).send({ message: "error", error });
+                    respondCatch(res, error);
                   });
               }
             })
             .catch((error) => {
-              res.status(400).send({ message: "error", error });
+              respondCatch(res, error);
             });
         };
 
@@ -1266,7 +1268,7 @@ const Get = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1305,7 +1307,7 @@ const UpdateConversation = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1325,12 +1327,12 @@ const CreateUser = (req, res) => {
             res.send({ message: "success" });
           })
           .catch((error) => {
-            res.status(400).send({ message: "error", error });
+            respondCatch(res, error);
           });
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1361,7 +1363,7 @@ const AddConversation = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1383,7 +1385,7 @@ const DeleteConversation = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1402,7 +1404,7 @@ const UpdateNotes = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1421,7 +1423,7 @@ const UpdateCallSchedule = (req, res) => {
       }
     })
     .catch((error) => {
-      res.status(400).send({ message: "error", error });
+      respondCatch(res, error);
     });
 };
 
@@ -1443,7 +1445,7 @@ const SetFirstCall = async (req, res) => {
     }
     res.send(result);
   } catch (error) {
-    res.status(500).send({ message: "error", error });
+    respondCatch(res, error);
   }
 };
 
@@ -1505,7 +1507,7 @@ const LifecycleCounts = async (req, res) => {
     });
   } catch (error) {
     console.error("[lifecycle-counts]", error);
-    res.status(500).send({ message: "error", error: error.message });
+    respondCatch(res, error);
   }
 };
 

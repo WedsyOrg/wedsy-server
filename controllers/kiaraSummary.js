@@ -4,7 +4,7 @@ const KiaraSummaryService = require("../services/KiaraSummaryService");
 
 const respond = (res, error) => {
   const status = error.status || 500;
-  res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+  res.status(status).json({ message: status === 500 ? "Something went wrong generating the Kiara summary — please retry." : error.message });
 };
 
 // Enforce lead-scope: the lead must satisfy the caller's scope filter (built by

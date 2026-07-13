@@ -39,7 +39,7 @@ const GetAll = async (req, res) => {
     const admins = await AdminService.listAdmins(req.auth.user_id, { assignableOnly });
     res.status(200).json(admins);
   } catch (error) {
-    res.status(500).json({ message: "Server error" });
+    res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -110,7 +110,7 @@ const CreateAdmin = async (req, res) => {
     return res.status(201).json(safe);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ message: error.message });
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -234,7 +234,7 @@ const UpdateAdmin = async (req, res) => {
     return res.status(200).json(updated);
   } catch (error) {
     if (error.status) return res.status(error.status).json({ message: error.message });
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -319,8 +319,13 @@ const SetMemberAccess = async (req, res) => {
       }
     }
 
-    target.isDisabled = disabled;
-    await target.save();
+    // Whitelisted update (set-password bug class): disabling access must never
+    // be blocked by an unrelated dirty legacy field failing full-doc validation.
+    await Admin.findByIdAndUpdate(
+      target._id,
+      { $set: { isDisabled: disabled } },
+      { runValidators: false }
+    );
 
     // Slice A3 — when disabling, report the admin's open book split
     // { active, snoozed, total } (open = not won/lost) so the FE can prompt the
@@ -352,7 +357,7 @@ const SetMemberAccess = async (req, res) => {
       ...openLeadCounts,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({ message: "Something went wrong with this admin action — please retry." });
   }
 };
 
@@ -378,7 +383,7 @@ const OffboardLeads = async (req, res) => {
     return res.status(200).json(result);
   } catch (error) {
     const status = error.status || 500;
-    return res.status(status).json({ message: status === 500 ? "Server error" : error.message });
+    return res.status(status).json({ message: status === 500 ? "Something went wrong with this admin action — please retry." : error.message });
   }
 };
 
