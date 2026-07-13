@@ -236,6 +236,46 @@ const BulkTransfer = async (req, res) => {
   }
 };
 
+// ── Journey v2 (V6) — the proposal ritual + THE value share ─────────────────
+// POST /enquiry/:_id/proposal-shared { amount, notes? } — amount REQUIRED (422).
+// /proposal-sent is now an ALIAS of this handler (same required-amount rule).
+const ProposalShared = async (req, res) => {
+  try {
+    const result = await LeadLifecycleService.proposalShared(
+      req.params._id,
+      { amount: req.body?.amount, notes: req.body?.notes },
+      req.auth.user_id
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// PATCH /enquiry/:_id/proposal { status?, notes? } — the ritual state.
+const ProposalRitual = async (req, res) => {
+  try {
+    const result = await LeadLifecycleService.setProposalRitual(
+      req.params._id,
+      { status: req.body?.status, notes: req.body?.notes },
+      req.auth.user_id
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
+// PUT /enquiry/:_id/agreement/sent (Journey v2 V7) — the manual checkbox.
+const AgreementSent = async (req, res) => {
+  try {
+    const result = await LeadLifecycleService.markAgreementSent(req.params._id, req.auth.user_id);
+    res.status(200).json(result);
+  } catch (error) {
+    respondError(res, error);
+  }
+};
+
 // POST /enquiry/:_id/unsnooze (Slice A2) — clears the park; the follow-up stays
 // (it's just no longer parking the lead). Owner/manager scope at the route.
 const Unsnooze = async (req, res) => {
@@ -248,4 +288,4 @@ const Unsnooze = async (req, res) => {
   }
 };
 
-module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent, DealTotal, Onboard, Unsnooze };
+module.exports = { Dashboard, CompleteFollowUp, Recycle, Recover, Convert, Journey, SetCustomFields, SetTags, BulkTransfer, AddNote, Qualify, Unqualify, ProposalSent, DealTotal, Onboard, Unsnooze, ProposalShared, ProposalRitual, AgreementSent };

@@ -23,10 +23,56 @@ const CalendarEventSchema = new mongoose.Schema(
     end: { type: Date, required: true },
     participantIds: { type: [{ type: ObjectId, ref: "Admin" }], default: [] },
     googleEventId: { type: String, default: "" },
+    // Journey v2 addendum: the Meet link, persisted at creation so the history
+    // list renders it without re-deriving from Google.
+    meetLink: { type: String, default: "" },
+    // Journey v2 (V2): who the Google event was created AS (their linked
+    // account patches/cancels it later). Null on OS-only meetings.
+    organizerAdminId: { type: ObjectId, ref: "Admin", default: null },
+    // Journey v2 (V2): the FULL invitee list (client emails + team). adminId
+    // set for internal attendees; email-only rows are clients/externals.
+    attendees: {
+      type: [
+        {
+          email: { type: String, required: true },
+          name: { type: String, default: "" },
+          adminId: { type: ObjectId, ref: "Admin", default: null },
+        },
+      ],
+      default: [],
+    },
     status: {
       type: String,
-      enum: ["scheduled", "closed", "cancelled"],
+      // "postponed" (Journey v2): parked without a new date — leaves the
+      // unclosed-meeting gate and the deal clock exactly like cancelled.
+      enum: ["scheduled", "closed", "cancelled", "postponed"],
       default: "scheduled",
+    },
+    // Journey v2 (V2): why a meeting was postponed/cancelled.
+    statusReason: { type: String, default: "" },
+    // Journey v2 (V2): minutes of meeting — saved deliberately at meeting end.
+    mom: {
+      type: new mongoose.Schema(
+        {
+          text: { type: String, default: "" },
+          savedBy: { type: ObjectId, ref: "Admin", default: null },
+          savedAt: { type: Date, default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+    // Journey v2 (V2): the manual "sent to client" tick — a deliberate human
+    // act AFTER actually sending; never stamped automatically.
+    momSentToClient: {
+      type: new mongoose.Schema(
+        {
+          at: { type: Date, default: null },
+          by: { type: ObjectId, ref: "Admin", default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
     },
     // Mirror linkage: the followUp subdoc id this event was created from.
     followUpId: { type: ObjectId, default: null },

@@ -11,6 +11,10 @@ router.get("/public", CheckAdminLogin, settings.GetPublic);
 // via settings_billing:edit:all inside the controller).
 router.get("/billing", CheckAdminLogin, settings.GetBilling);
 router.put("/billing", CheckAdminLogin, settings.PutBilling);
+// Journey v2 (V5) — the engagement content library (settings_engagement gate
+// inside the controller, same shape as billing).
+router.get("/engagement", CheckAdminLogin, settings.GetEngagement);
+router.put("/engagement", CheckAdminLogin, settings.PutEngagement);
 router.get("/", CheckAdminLogin, settings.GetCategory);
 router.put("/", CheckAdminLogin, settings.Put);
 

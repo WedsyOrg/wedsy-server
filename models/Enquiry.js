@@ -95,6 +95,64 @@ const EnquirySchema = new mongoose.Schema(
     // that pulls the earliest date back in.
     snoozedUntil: { type: Date, default: null, index: true },
     snoozeSource: { type: ObjectId, default: null },
+    // Journey v2 (V6) — the proposal RITUAL state (null until the team opens the
+    // station) + free-text working notes for the negotiation.
+    proposalStatus: {
+      type: String,
+      enum: ["started", "awaiting_client", "negotiation", "done", null],
+      default: null,
+    },
+    proposalNotes: { type: String, default: "" },
+    // Journey v2 (V6) — THE VALUE: one evolving number with its full story.
+    // quoted (first share) → renegotiated (re-shares/edits) → final (onboard;
+    // post-onboard ledger edits stay in phase "final"). dealTotal remains the
+    // post-onboard mutable ledger total; dealValue.amount mirrors the latest
+    // truth. Old leads stay null until touched — NO migration.
+    dealValue: {
+      type: new mongoose.Schema(
+        {
+          amount: { type: Number, default: null },
+          history: {
+            type: [
+              {
+                amount: { type: Number, required: true },
+                at: { type: Date, required: true },
+                by: { type: ObjectId, ref: "Admin", default: null },
+                phase: { type: String, enum: ["quoted", "renegotiated", "final"], required: true },
+              },
+            ],
+            default: [],
+          },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+    // Journey v2 (V7) — the manual "agreement sent" checkbox { at, by }.
+    agreementSentAt: {
+      type: new mongoose.Schema(
+        {
+          at: { type: Date, default: null },
+          by: { type: ObjectId, ref: "Admin", default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
+    // Journey v2 (V1) — THE canonical lead brief: one pinned paragraph the whole
+    // team reads before touching the lead. Saved deliberately (never AI-auto-
+    // saved); null until first save.
+    leadBrief: {
+      type: new mongoose.Schema(
+        {
+          text: { type: String, default: "" },
+          savedBy: { type: ObjectId, ref: "Admin", default: null },
+          savedAt: { type: Date, default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
     // Kiara hardening — set when the extractor terminally failed for this lead
     // (Anthropic no-text/parse failure after retries): the lead needs a HUMAN
     // qualification pass instead of silently staying unqualified. Cleared by
