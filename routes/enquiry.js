@@ -488,13 +488,44 @@ router.post(
   CheckAdminLogin,
   lifecycle.Unqualify
 );
-// Slice B2 — set-once "proposal sent" marker (deal spine). Owner/manager
-// WRITE gate (per-doc scope enforced); no roster fallback on writes.
+// Journey v2 (V6) — THE proposal share (amount REQUIRED; first share stamps
+// proposalSentAt, re-shares append the renegotiated value chain). Owner/manager
+// write gate. /proposal-sent (Slice B2's route) is kept as an ALIAS of the same
+// handler — the FE amount-modal already sends amount (CommandCenter.tsx:193).
+router.post(
+  "/:_id/proposal-shared",
+  CheckAdminLogin,
+  ...LEADS_EDIT_SCOPED,
+  lifecycle.ProposalShared
+);
 router.post(
   "/:_id/proposal-sent",
   CheckAdminLogin,
   ...LEADS_EDIT_SCOPED,
-  lifecycle.ProposalSent
+  lifecycle.ProposalShared
+);
+// PATCH /enquiry/:_id/proposal — the ritual state { status?, notes? }.
+router.patch(
+  "/:_id/proposal",
+  CheckAdminLogin,
+  ...LEADS_EDIT_SCOPED,
+  lifecycle.ProposalRitual
+);
+// Journey v2 (V7) — the manual "agreement sent" checkbox (owner/manager).
+router.put(
+  "/:_id/agreement/sent",
+  CheckAdminLogin,
+  ...LEADS_EDIT_SCOPED,
+  lifecycle.AgreementSent
+);
+// Journey v2 (V8) — the lead's commitments (tasks + BOTH follow-up stores,
+// flat, due-first). Roster-aware read.
+const commitment = require("../controllers/commitment");
+router.get(
+  "/:_id/commitments",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  commitment.List
 );
 
 // ── Slice B5a — deal total, money ledger, the onboard hinge ──────────────────
@@ -583,6 +614,43 @@ router.post(
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   leadLane.AddEntry
 );
+// Journey v2 (V3) — per-lane money. Same gate shape as lane writes: the edit
+// permission sets req.scopeFilter; propose additionally admits the LANE owner
+// (checked in the controller/service), confirm is lead owner/manager only.
+router.put(
+  "/:_id/lanes/:laneId/price",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.ProposePrice
+);
+router.put(
+  "/:_id/lanes/:laneId/price/confirm",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.ConfirmPrice
+);
+// Journey v2 (V5) — the engagement pulse: mark a library item sent (lane owner
+// or lead owner; checked in the controller) + the sent log (roster read).
+router.post(
+  "/:_id/lanes/:laneId/engagement-sent",
+  CheckAdminLogin,
+  requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
+  leadLane.EngagementSent
+);
+router.get(
+  "/:_id/lanes/:laneId/engagement-log",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadLane.EngagementLog
+);
+// Addendum — the ACTIVE content library for senders (lane owner or lead
+// scope/roster; checked in the controller). Settings GET/PUT stays the editor.
+router.get(
+  "/:_id/lanes/:laneId/engagement-items",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadLane.EngagementItems
+);
 // ── MB9a-2 — per-lead golden-window clock + rescue actions. Claim/reassign/
 // dismiss gate leads:edit + ownerField, so only a manager/RevHead whose scope
 // covers the breached lead can rescue it (an own-scope IC is out of scope).
@@ -627,6 +695,43 @@ router.post(
 router.post("/:_id/recover", CheckAdminLogin, ...LEADS_EDIT_SCOPED, lifecycle.Recover);
 // Slice A2 — clear a lead's snooze park (owner/manager). The follow-up stays.
 router.post("/:_id/unsnooze", CheckAdminLogin, ...LEADS_EDIT_SCOPED, lifecycle.Unsnooze);
+// ── Journey v2 (V1) — the canonical lead brief. Save = owner/manager write;
+// the AI draft is return-only (never persisted) but rides the same write gate
+// (drafting is part of the save ritual).
+const leadBrief = require("../controllers/leadBrief");
+router.put("/:_id/lead-brief", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadBrief.Save);
+router.post("/:_id/lead-brief/ai", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadBrief.AiSuggest);
+// ── Journey v2 (V2) — the meetings engine. Create/postpone/cancel keep the
+// owner/manager write gate; reads + MOM ritual are roster-aware (the gate sets
+// req.scopeFilter, the controller ORs the current roster in — a team member
+// serving the meeting can read it and capture the MOM).
+const meeting = require("../controllers/meeting");
+router.post("/:_id/meetings", CheckAdminLogin, ...LEADS_EDIT_SCOPED, meeting.Create);
+router.get(
+  "/:_id/meetings",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  meeting.List
+);
+router.patch("/:_id/meetings/:eventId", CheckAdminLogin, ...LEADS_EDIT_SCOPED, meeting.Update);
+router.put(
+  "/:_id/meetings/:eventId/mom",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  meeting.SaveMom
+);
+router.post(
+  "/:_id/meetings/:eventId/mom/ai",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  meeting.AiClientBrief
+);
+router.put(
+  "/:_id/meetings/:eventId/mom/sent",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  meeting.MarkMomSent
+);
 // MB10 Slice 4 — stage + assign were CheckAdminLogin-only; now scope-gated.
 router.put("/:_id/stage", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateStage);
 router.put("/:_id/assign", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiryPipeline.UpdateAssignedTo);

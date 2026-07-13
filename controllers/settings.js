@@ -118,4 +118,41 @@ const GetPublic = async (req, res) => {
   }
 };
 
-module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling };
+// ── Journey v2 (V5) — the engagement content library (whole-category surface,
+// same shape as billing: gated by settings_engagement:edit:all).
+const ENGAGEMENT = "settings_engagement";
+
+const GetEngagement = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, ENGAGEMENT)) {
+      return res.status(403).json({ message: "Forbidden", required: `${ENGAGEMENT}:edit:all` });
+    }
+    res.status(200).json({ values: await SettingsService.getCategory(ENGAGEMENT) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+const PutEngagement = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, ENGAGEMENT)) {
+      return res.status(403).json({ message: "Forbidden", required: `${ENGAGEMENT}:edit:all` });
+    }
+    const body = req.body || {};
+    const keys = Object.keys(body);
+    if (!keys.length) return res.status(400).json({ message: "No settings in body" });
+    for (const key of keys) {
+      if (SettingsService.categoryForKey(key) !== ENGAGEMENT) {
+        return res.status(400).json({ message: `${key} is not an engagement setting` });
+      }
+    }
+    for (const key of keys) await SettingsService.set(key, body[key], req.auth.user_id);
+    res.status(200).json({ values: await SettingsService.getCategory(ENGAGEMENT) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement };

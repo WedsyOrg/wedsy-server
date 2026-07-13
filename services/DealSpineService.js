@@ -13,6 +13,7 @@
 const CalendarEvent = require("../models/CalendarEvent");
 const Onboarding = require("../models/Onboarding");
 const Project = require("../models/Project");
+const LeadPayment = require("../models/LeadPayment");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ts = (v) => {
@@ -23,19 +24,21 @@ const ts = (v) => {
 
 // Batched inputs for one lead — one query per collection (no N+1).
 const spineInputs = async (leadId) => {
-  const [calendarEvents, onboarding, project] = await Promise.all([
+  const [calendarEvents, onboarding, project, firstPayment] = await Promise.all([
     CalendarEvent.find(
       { leadId, type: { $in: ["gmeet", "visit"] } },
       { status: 1, closedAt: 1, start: 1 }
     ).lean(),
     Onboarding.findOne({ leadId }).lean(),
     Project.findOne({ leadId }, { createdAt: 1 }).lean(),
+    // Journey v2 (V7): the agreement station's second fact — money moved.
+    LeadPayment.findOne({ leadId }, { createdAt: 1 }).sort({ createdAt: 1 }).lean(),
   ]);
-  return { calendarEvents, onboarding, project };
+  return { calendarEvents, onboarding, project, firstPayment };
 };
 
 // PURE — lead doc (plain/lean) + pre-fetched inputs → the six stations.
-const computeDealSpine = (lead, { calendarEvents = [], onboarding = null, project = null } = {}) => {
+const computeDealSpine = (lead, { calendarEvents = [], onboarding = null, project = null, firstPayment = null } = {}) => {
   const l = lead || {};
 
   const qualifiedAt = ts(l.qualifiedAt) || null;
@@ -55,10 +58,19 @@ const computeDealSpine = (lead, { calendarEvents = [], onboarding = null, projec
   const proposalAt = ts(l.proposalSentAt);
 
   const ob = onboarding || {};
+  // Journey v2 (V7): the agreement ritual completes on BOTH facts — the manual
+  // "agreement sent" tick AND at least one recorded LeadPayment. The legacy
+  // completions (onboarding acceptance / fee / onboarded) remain — old leads'
+  // spines never regress.
+  const v2AgreementAt =
+    l.agreementSentAt && l.agreementSentAt.at && firstPayment
+      ? Math.max(ts(l.agreementSentAt.at) || 0, ts(firstPayment.createdAt) || 0) || null
+      : null;
   const agreementDone = !!(
-    (ob.agreement && ob.agreement.accepted) || ob.onboardingPaymentId || ob.onboardedAt
+    (ob.agreement && ob.agreement.accepted) || ob.onboardingPaymentId || ob.onboardedAt || v2AgreementAt
   );
-  const agreementAt = ts(ob.agreement && ob.agreement.acceptedAt) || ts(ob.onboardedAt) || null;
+  const agreementAt =
+    ts(ob.agreement && ob.agreement.acceptedAt) || ts(ob.onboardedAt) || v2AgreementAt || null;
 
   const onboardedDone = l.stage === "won" || !!project;
   const onboardedAt = project ? ts(project.createdAt) : null;

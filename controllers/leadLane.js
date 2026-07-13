@@ -89,4 +89,92 @@ const AddEntry = async (req, res) => {
   }
 };
 
-module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry };
+// ── Journey v2 (V3) — per-lane money ─────────────────────────────────────────
+// scopeOk (lead owner/manager) is computed HERE from req.scopeFilter and passed
+// down: propose = lane owner OR scopeOk; confirm = scopeOk ONLY.
+const scopeCovers = async (leadId, scopeFilter) =>
+  !!(await Enquiry.findOne({ $and: [{ _id: leadId }, scopeFilter || {}] }, { _id: 1 }).lean());
+
+// PUT /enquiry/:_id/lanes/:laneId/price { amount }
+const ProposePrice = async (req, res) => {
+  try {
+    const scopeOk = await scopeCovers(req.params._id, req.scopeFilter);
+    const result = await LeadLaneService.proposePrice(
+      req.params._id,
+      req.params.laneId,
+      req.body && req.body.amount,
+      req.auth.user_id,
+      scopeOk
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// PUT /enquiry/:_id/lanes/:laneId/price/confirm
+const ConfirmPrice = async (req, res) => {
+  try {
+    const scopeOk = await scopeCovers(req.params._id, req.scopeFilter);
+    const result = await LeadLaneService.confirmPrice(
+      req.params._id,
+      req.params.laneId,
+      req.auth.user_id,
+      scopeOk
+    );
+    res.status(200).json(result);
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// ── Journey v2 (V5) — the engagement pulse ────────────────────────────────────
+// POST /enquiry/:_id/lanes/:laneId/engagement-sent { itemId }
+const EngagementSent = async (req, res) => {
+  try {
+    const scopeOk = await scopeCovers(req.params._id, req.scopeFilter);
+    const result = await LeadLaneService.markEngagementSent(
+      req.params._id,
+      req.params.laneId,
+      req.body && req.body.itemId,
+      req.auth.user_id,
+      scopeOk
+    );
+    res.status(201).json(result);
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// GET /enquiry/:_id/lanes/:laneId/engagement-log — roster-aware read.
+const EngagementLog = async (req, res) => {
+  try {
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    res.status(200).json({ log: await LeadLaneService.engagementLog(req.params._id, req.params.laneId) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+// GET /enquiry/:_id/lanes/:laneId/engagement-items — the ACTIVE library for the
+// people who send it: lead scope/roster OR the lane's own owner (a lane owner
+// outside the lead's roster must still see what they can send).
+const EngagementItems = async (req, res) => {
+  try {
+    try {
+      await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    } catch (scopeErr) {
+      const lane = await LeadLane.findOne(
+        { _id: req.params.laneId, leadId: req.params._id },
+        { ownerId: 1 }
+      ).lean();
+      const isLaneOwner = lane && lane.ownerId && String(lane.ownerId) === String(req.auth.user_id);
+      if (!isLaneOwner) throw scopeErr;
+    }
+    res.status(200).json({ items: await LeadLaneService.engagementItems(req.params._id, req.params.laneId) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry, ProposePrice, ConfirmPrice, EngagementSent, EngagementLog, EngagementItems };

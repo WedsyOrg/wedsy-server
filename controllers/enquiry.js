@@ -677,7 +677,20 @@ const GetAll = async (req, res) => {
             .skip(skip)
             .limit(limit)
             .exec()
-            .then((result) => {
+            .then(async (result) => {
+              // Journey v2 (V8) — per-row commitment marks, batched: exactly
+              // TWO extra queries for the whole page (embedded rows come off
+              // the docs already in memory). Scoped: own-scope callers count
+              // only their own commitments; snoozed leads read zeros.
+              let rowMarksMap = new Map();
+              try {
+                rowMarksMap = await require("../services/CommitmentService").rowMarks(result, {
+                  scope: req.scope,
+                  callerId: req.auth.user_id,
+                });
+              } catch (e) {
+                console.error("[enquiry.GetAll] rowMarks failed:", e.message);
+              }
               // Additive: decorate each row (on the toObject COPY — never a DB
               // write) with its `lifecycle` bucket + event-date `temperature`.
               // `lifecycle` uses the same per-request `today` as temperature, and
@@ -699,6 +712,17 @@ const GetAll = async (req, res) => {
                 o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
                   o.qualificationData.eventDays.some((d) => d && d.tentative);
                 o.sourceChannel = sourceChannelOf(o.source, o.marketingSource);
+                // Journey v2 (V6): deal value is MANAGER+ information — own-
+                // scope callers get null; broader scopes see { amount } only
+                // (the full history never rides list rows).
+                o.dealValue =
+                  req.scope && req.scope !== "own" && o.dealValue && o.dealValue.amount != null
+                    ? { amount: o.dealValue.amount }
+                    : null;
+                // Journey v2 (V8): the row marks (dueToday/overdue).
+                const rm = rowMarksMap.get(String(o._id)) || { dueToday: 0, overdue: 0 };
+                o.dueToday = rm.dueToday;
+                o.overdue = rm.overdue;
                 return o;
               });
               // MB9c-fix — include `total` so the list footer can show "X of Y".
@@ -822,6 +846,13 @@ const GetAll = async (req, res) => {
                 o.datesTentative = Array.isArray(o.qualificationData?.eventDays) &&
                   o.qualificationData.eventDays.some((d) => d && d.tentative);
                 o.sourceChannel = sourceChannelOf(o.source, o.marketingSource);
+                // Journey v2 (V6): deal value is MANAGER+ information — own-
+                // scope callers get null; broader scopes see { amount } only
+                // (the full history never rides list rows).
+                o.dealValue =
+                  req.scope && req.scope !== "own" && o.dealValue && o.dealValue.amount != null
+                    ? { amount: o.dealValue.amount }
+                    : null;
                 return o;
               });
               res.send({ list, totalPages, page, limit });
@@ -1069,6 +1100,23 @@ const Get = (req, res) => {
           // lead is parked, null otherwise. Fire-safe (decoration returns null
           // on any internal failure — the GET must never break on snooze).
           finalResultObj.snooze = await require("../services/SnoozeService").decoration(finalResultObj);
+
+          // Journey v2 (V1) — the raw material behind the canonical brief:
+          // every pre-qualification note {text, author, when, source}. Named
+          // qualifierNoteFeed because `qualifierNotes` is ALREADY the legacy
+          // string field (still rides toObject unchanged — additive only).
+          // leadBrief itself is a schema field and rides toObject.
+          try {
+            finalResultObj.qualifierNoteFeed =
+              await require("../services/LeadBriefService").qualifierNoteFeed(finalResultObj._id);
+          } catch (e) {
+            finalResultObj.qualifierNoteFeed = [];
+          }
+
+          // Journey v2 (V6) — the deal-clock hero { days, tone, blocker } —
+          // null when un-qualified / terminal / snoozed. Fire-safe.
+          finalResultObj.dealClock =
+            await require("../services/LeadLifecycleService").dealClockDecoration(finalResultObj);
 
           // SEQ-1 — enrich every GET branch with the COMPUTED discovery snapshot
           // (discoveryComplete + discovery.missing + discovery.state). Computed,

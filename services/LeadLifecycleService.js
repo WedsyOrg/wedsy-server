@@ -363,6 +363,201 @@ const markProposalSent = async (enquiryId, { amount } = {}, actorId) => {
   return updated;
 };
 
+// ── Journey v2 (V6) — THE VALUE CHAIN ────────────────────────────────────────
+// One evolving number with its full story: quoted → renegotiated → final.
+// Whitelisted write: $set the current amount, $push the history row.
+const appendDealValue = async (enquiryId, amount, phase, actorId) => {
+  const row = { amount: Number(amount), at: new Date(), by: actorId || null, phase };
+  // dealValue defaults to NULL (no migration) — a dotted $set can't create
+  // paths inside null, so the whole object is written each time.
+  const lead = await Enquiry.findById(enquiryId, { dealValue: 1 }).lean();
+  const history = (lead && lead.dealValue && lead.dealValue.history) || [];
+  await Enquiry.updateOne(
+    { _id: enquiryId },
+    { $set: { dealValue: { amount: row.amount, history: [...history, row] } } }
+  );
+  return row;
+};
+
+// POST /enquiry/:_id/proposal-shared { amount, notes? } — amount REQUIRED.
+// First share stamps proposalSentAt (set-once, atomic) and writes phase
+// "quoted"; every re-share appends "renegotiated". /proposal-sent is an alias.
+const proposalShared = async (enquiryId, { amount, notes } = {}, actorId) => {
+  assertValidId(enquiryId);
+  if (amount === undefined || amount === null || amount === "") {
+    throw httpError(422, "amount is required — a proposal share always carries the number");
+  }
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) throw httpError(422, "amount must be a positive number");
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+
+  const firstShare = !lead.proposalSentAt;
+  const phase = firstShare ? "quoted" : "renegotiated";
+
+  const set = { proposalAmount: amt };
+  if (firstShare) set.proposalSentAt = new Date();
+  if (notes !== undefined && notes !== null) set.proposalNotes = String(notes).slice(0, 4000);
+  if (firstShare) {
+    // Atomic set-once: a concurrent first share loses cleanly to "renegotiated".
+    const won = await Enquiry.findOneAndUpdate(
+      { _id: enquiryId, proposalSentAt: null },
+      { $set: set },
+      { new: true }
+    );
+    if (!won) return proposalShared(enquiryId, { amount, notes }, actorId); // raced — re-run as re-share
+  } else {
+    await Enquiry.updateOne({ _id: enquiryId }, { $set: set });
+  }
+
+  await appendDealValue(enquiryId, amt, phase, actorId);
+  await EnquiryRepository.touchLastActivity(enquiryId);
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "proposal_shared",
+    actorId: actorId || null,
+    payload: { amount: amt, phase, firstShare },
+  });
+  await require("./LeadLaneService").autoEntry(
+    enquiryId,
+    "lead_comms",
+    "proposal_sent",
+    `${firstShare ? "Proposal shared" : "Proposal re-shared"} · ₹${amt.toLocaleString("en-IN")}`
+  );
+  const fresh = await Enquiry.findById(enquiryId, {
+    proposalSentAt: 1, proposalAmount: 1, proposalNotes: 1, proposalStatus: 1, dealValue: 1,
+  }).lean();
+  return { ...fresh, phase, firstShare };
+};
+
+// PATCH /enquiry/:_id/proposal { status?, notes? } — the ritual state.
+const PROPOSAL_STATUSES = ["started", "awaiting_client", "negotiation", "done"];
+const setProposalRitual = async (enquiryId, { status, notes } = {}, actorId) => {
+  assertValidId(enquiryId);
+  const set = {};
+  if (status !== undefined) {
+    if (!PROPOSAL_STATUSES.includes(status)) {
+      throw httpError(400, `status must be one of: ${PROPOSAL_STATUSES.join(", ")}`);
+    }
+    set.proposalStatus = status;
+  }
+  if (notes !== undefined) {
+    if (typeof notes !== "string" || notes.length > 4000) throw httpError(400, "Invalid notes");
+    set.proposalNotes = notes;
+  }
+  if (!Object.keys(set).length) throw httpError(400, "Nothing to update");
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  await Enquiry.updateOne({ _id: enquiryId }, { $set: set });
+  if (set.proposalStatus && set.proposalStatus !== lead.proposalStatus) {
+    await LeadInternalEventService.record({
+      leadId: enquiryId,
+      type: "proposal_status_changed",
+      actorId: actorId || null,
+      payload: { from: lead.proposalStatus || null, to: set.proposalStatus },
+    });
+  }
+  return { proposalStatus: set.proposalStatus ?? lead.proposalStatus, proposalNotes: set.proposalNotes ?? lead.proposalNotes };
+};
+
+// ── Journey v2 (V6) — the deal-clock HERO decoration ─────────────────────────
+// { days since qualifiedAt, tone calm|amber|red (settings thresholds), blocker:
+// the current station's gap + the most-silent active lane }. Null when the
+// lead is un-qualified, terminal, or parked (snoozed).
+const STATION_GAP = {
+  qualified: "team not in motion yet",
+  meeting_set: "no meeting booked yet",
+  meeting_held: "meeting not held yet",
+  proposal: "no proposal yet",
+  agreement: "agreement not closed yet",
+  onboarded: "not onboarded yet",
+};
+const dealClockDecoration = async (leadObj) => {
+  try {
+    if (!leadObj || !leadObj.qualified || !leadObj.qualifiedAt) return null;
+    if (["won", "lost"].includes(leadObj.stage) || leadObj.isLost || leadObj.snoozedUntil) return null;
+    const cfg = await SettingsService.getMany(["dealClock.warnDays", "dealClock.agingDays"]);
+    const warn = cfg["dealClock.warnDays"];
+    const aging = cfg["dealClock.agingDays"];
+    const days = Math.max(0, Math.floor((Date.now() - +new Date(leadObj.qualifiedAt)) / (24 * 3600 * 1000)));
+    const tone = days > aging ? "red" : days >= warn ? "amber" : "calm";
+
+    // Station gap.
+    const DealSpineService = require("./DealSpineService");
+    let gap = "";
+    try {
+      const spine = DealSpineService.computeDealSpine(leadObj, await DealSpineService.spineInputs(leadObj._id));
+      gap = STATION_GAP[spine.current] || "";
+    } catch (_) { /* spine optional */ }
+
+    // Most-silent ACTIVE lane (with owner name + silence days).
+    let laneBit = "";
+    try {
+      const LeadLane = require("../models/LeadLane");
+      const lanes = await LeadLane.find(
+        { leadId: leadObj._id, state: "active" },
+        { name: 1, ownerId: 1, lastUpdateAt: 1, price: 1 }
+      ).lean();
+      if (lanes.length) {
+        const now = Date.now();
+        const silentest = lanes.reduce((a, b) =>
+          (now - +new Date(a.lastUpdateAt || 0)) >= (now - +new Date(b.lastUpdateAt || 0)) ? a : b
+        );
+        const silentDays = Math.floor((now - +new Date(silentest.lastUpdateAt || now)) / (24 * 3600 * 1000));
+        if (silentDays >= 1) {
+          const ownerName = silentest.ownerId
+            ? ((await Admin.findById(silentest.ownerId, { name: 1 }).lean()) || {}).name || "unassigned"
+            : "unassigned";
+          const what = silentest.price && silentest.price.amount != null ? "update" : "pricing";
+          laneBit = `waiting on ${silentest.name} ${what} (${ownerName}, ${silentDays}d silent)`;
+        }
+      }
+    } catch (_) { /* lanes optional */ }
+
+    const blocker = gap && laneBit ? `${gap} — ${laneBit}` : gap || laneBit || "";
+    return { days, tone, blocker };
+  } catch (e) {
+    return null;
+  }
+};
+
+// ── Journey v2 (V7) — the agreement ritual: the manual "sent" checkbox ───────
+// Set-once (atomic): the first deliberate tick wins; re-ticks are no-ops that
+// return the original stamp. The spine's agreement station completes on THIS
+// stamp AND the first LeadPayment (DealSpineService).
+const markAgreementSent = async (enquiryId, actorId) => {
+  assertValidId(enquiryId);
+  const lead = await EnquiryRepository.findById(enquiryId);
+  if (!lead) throw httpError(404, "Enquiry not found");
+  if (lead.agreementSentAt && lead.agreementSentAt.at) {
+    return { agreementSentAt: lead.agreementSentAt, alreadyStamped: true };
+  }
+  const stamp = { at: new Date(), by: actorId || null };
+  const won = await Enquiry.findOneAndUpdate(
+    { _id: enquiryId, $or: [{ agreementSentAt: null }, { "agreementSentAt.at": null }] },
+    { $set: { agreementSentAt: stamp } },
+    { new: true, projection: { agreementSentAt: 1 } }
+  );
+  if (!won) {
+    const fresh = await Enquiry.findById(enquiryId, { agreementSentAt: 1 }).lean();
+    return { agreementSentAt: fresh.agreementSentAt, alreadyStamped: true };
+  }
+  await EnquiryRepository.touchLastActivity(enquiryId);
+  await LeadInternalEventService.record({
+    leadId: enquiryId,
+    type: "agreement_sent",
+    actorId: actorId || null,
+    payload: {},
+  });
+  await require("./LeadLaneService").autoEntry(
+    enquiryId,
+    "lead_comms",
+    "agreement",
+    "Agreement sent to client"
+  );
+  return { agreementSentAt: stamp };
+};
+
 // ── Slice B5a — deal total + THE ONBOARD HINGE ────────────────────────────────
 const setDealTotal = async (enquiryId, amount, actorId) => {
   assertValidId(enquiryId);
@@ -378,6 +573,13 @@ const setDealTotal = async (enquiryId, amount, actorId) => {
     actorId: actorId || null,
     payload: { from, to: amt },
   });
+  // Journey v2 (V6): POST-onboard ledger edits keep the value chain honest —
+  // dealValue.amount follows the ledger total, history appends in phase
+  // "final". Pre-onboard direct edits don't touch dealValue (the chain is
+  // written by share/renegotiate/onboard).
+  if (lead.stage === "won" && amt !== from) {
+    await appendDealValue(enquiryId, amt, "final", actorId);
+  }
   return updated;
 };
 
@@ -474,6 +676,11 @@ const onboardClient = async (enquiryId, { feeAmount, dealTotal, mode, note } = {
     "Client onboarded 🏆 — agreement & fee in"
   );
   await broadcastWin(lead, actorId);
+
+  // Journey v2 (V6): the onboard writes the FINAL phase of the value chain.
+  if (Number.isFinite(effectiveTotal) && effectiveTotal > 0) {
+    await appendDealValue(enquiryId, effectiveTotal, "final", actorId);
+  }
 
   const fresh = await Enquiry.findById(enquiryId).lean();
   return { lead: fresh, project, payment };
@@ -839,6 +1046,12 @@ module.exports = {
   markProposalSent,
   setDealTotal,
   onboardClient,
+  // Journey v2 (V6/V7)
+  proposalShared,
+  setProposalRitual,
+  appendDealValue,
+  dealClockDecoration,
+  markAgreementSent,
   RECYCLE_REASONS,
   COMPLETION_OUTCOMES,
 };

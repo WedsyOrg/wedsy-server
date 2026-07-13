@@ -245,10 +245,17 @@ const availability = async (leadId, { from, days = 5 } = {}) => {
   };
 };
 
-// Create the Google Calendar event WITH a Meet link, client + internal
-// attendees invited. Returns { googleEventId, meetLink } or null when no
-// linked organizer exists (the caller falls back to OS-only).
-const createMeetEvent = async (lead, start, end) => {
+// Create the Google Calendar event WITH a Meet link. Returns { googleEventId,
+// meetLink, organizerAdminId, invited } or null when no linked organizer exists
+// (the caller falls back to OS-only).
+//
+// Journey v2 (V2) refactor — ADDITIVE opts:
+//   opts.attendees : [{ email }] — an ARBITRARY invitee list (client emails +
+//                    each selected team member). Absent → the legacy computed
+//                    set (sales lead + one RH + known client emails), so
+//                    bookMeet stays byte-identical.
+//   opts.title     : the event summary. Absent → the legacy summary.
+const createMeetEvent = async (lead, start, end, opts = {}) => {
   if (!isConfigured()) return null;
   const { salesLeadAdmin, revenueHead } = await meetingAttendees(lead);
   // Organizer preference: the sales lead's linked account, else the Revenue Head's.
@@ -264,22 +271,28 @@ const createMeetEvent = async (lead, start, end) => {
   }
   if (!account) return null;
 
-  const clientEmails = [
-    (lead.qualificationData && lead.qualificationData.email) || lead.email || "",
-    ...((lead.qualificationData && lead.qualificationData.additionalEmails) || []),
-  ].filter(Boolean);
-  const internalEmails = [salesLeadAdmin, revenueHead]
-    .filter(Boolean)
-    .map((a) => a.email)
-    .filter(Boolean);
-  const attendees = [...new Set([...clientEmails, ...internalEmails])].map((email) => ({ email }));
+  let attendees;
+  if (Array.isArray(opts.attendees) && opts.attendees.length) {
+    attendees = [...new Set(opts.attendees.map((a) => (a && a.email ? String(a.email) : "")).filter(Boolean))]
+      .map((email) => ({ email }));
+  } else {
+    const clientEmails = [
+      (lead.qualificationData && lead.qualificationData.email) || lead.email || "",
+      ...((lead.qualificationData && lead.qualificationData.additionalEmails) || []),
+    ].filter(Boolean);
+    const internalEmails = [salesLeadAdmin, revenueHead]
+      .filter(Boolean)
+      .map((a) => a.email)
+      .filter(Boolean);
+    attendees = [...new Set([...clientEmails, ...internalEmails])].map((email) => ({ email }));
+  }
 
   const token = await accessTokenFor(account);
   const res = await fetch(`${CALENDAR_URL}/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      summary: `Wedsy — ${lead.name}'s wedding meet`,
+      summary: opts.title || `Wedsy — ${lead.name}'s wedding meet`,
       description: "Scheduled from Wedsy OS.",
       start: { dateTime: new Date(start).toISOString() },
       end: { dateTime: new Date(end).toISOString() },
@@ -297,6 +310,41 @@ const createMeetEvent = async (lead, start, end) => {
     organizerAdminId: organizer._id,
     invited: attendees.map((a) => a.email),
   };
+};
+
+// Journey v2 (V2) — postpone/cancel plumbing for a linked Google event, acting
+// as the stored organizer. FIRE-SAFE at every call site (the OS event is the
+// source of truth; a Google hiccup must never block the ritual).
+const patchGoogleEvent = async (organizerAdminId, googleEventId, { start, end } = {}) => {
+  if (!isConfigured() || !organizerAdminId || !googleEventId) return null;
+  const account = await GoogleAccount.findOne({ adminId: organizerAdminId }).lean();
+  if (!account) return null;
+  const token = await accessTokenFor(account);
+  const res = await fetch(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(googleEventId)}?sendUpdates=all`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...(start ? { start: { dateTime: new Date(start).toISOString() } } : {}),
+      ...(end ? { end: { dateTime: new Date(end).toISOString() } } : {}),
+    }),
+  });
+  if (!res.ok) throw httpError(502, `Google event patch failed (${res.status})`);
+  return await res.json();
+};
+
+const cancelGoogleEvent = async (organizerAdminId, googleEventId) => {
+  if (!isConfigured() || !organizerAdminId || !googleEventId) return null;
+  const account = await GoogleAccount.findOne({ adminId: organizerAdminId }).lean();
+  if (!account) return null;
+  const token = await accessTokenFor(account);
+  const res = await fetch(`${CALENDAR_URL}/calendars/primary/events/${encodeURIComponent(googleEventId)}?sendUpdates=all`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 404 && res.status !== 410) {
+    throw httpError(502, `Google event cancel failed (${res.status})`);
+  }
+  return { cancelled: true };
 };
 
 // The cockpit finale's one-call booking: Google event (when wired) + the meet
@@ -331,7 +379,8 @@ const bookMeet = async (leadId, { start, end }, actorId) => {
     .lean();
   if (mirrored && google) {
     await CalendarEvent.findByIdAndUpdate(mirrored._id, {
-      $set: { googleEventId: google.googleEventId, end: e },
+      // Addendum: persist the Meet link alongside the Google linkage.
+      $set: { googleEventId: google.googleEventId, end: e, meetLink: google.meetLink || "" },
     });
   }
 
@@ -353,5 +402,8 @@ module.exports = {
   availability,
   bookMeet,
   meetingAttendees,
+  createMeetEvent,
+  patchGoogleEvent,
+  cancelGoogleEvent,
   REDIRECT_URI,
 };

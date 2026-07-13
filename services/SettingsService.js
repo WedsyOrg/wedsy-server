@@ -103,6 +103,25 @@ const DEFAULTS = {
   // re-enters every queue and the owner gets a once-per-episode lead_waking nudge.
   "snooze.thresholdDays": 30,
   "snooze.wakeWarnDays": 3,
+  // Journey v2 (V5) — the engagement CONTENT LIBRARY: ready-to-send nuggets the
+  // engagement lane's weekly pulse draws from. Editable in Settings; the seeds
+  // below are sensible wedding-content starters, not sacred.
+  "engagement.items": [
+    { id: "decor-reel", caption: "Décor reel — this month's best mandap & floral setups", tone: "inspo", imageUrl: "", active: true },
+    { id: "venue-tour", caption: "60-second venue tour — a garden venue we love", tone: "inspo", imageUrl: "", active: true },
+    { id: "real-wedding", caption: "Real Wedsy wedding — how A&K pulled off a boho-luxe evening", tone: "story", imageUrl: "", active: true },
+    { id: "makeup-transform", caption: "Bridal makeup transformation — before & after", tone: "inspo", imageUrl: "", active: true },
+    { id: "planning-tip", caption: "Planning tip — the 6-month checklist most couples miss", tone: "helpful", imageUrl: "", active: true },
+    { id: "seasonal-florals", caption: "In season now — florals that photograph beautifully this quarter", tone: "helpful", imageUrl: "", active: true },
+    { id: "budget-hack", caption: "Budget hack — where smart couples spend vs save", tone: "helpful", imageUrl: "", active: true },
+    { id: "client-love", caption: "Client love — what our couples say after the big day", tone: "story", imageUrl: "", active: true },
+  ],
+  // How many silent days before the engagement lane's pulse escalates (rung 1).
+  "engagement.pulseDays": 2,
+  // Journey v2 (V6) — the deal-clock hero tones: calm < warnDays ≤ amber ≤
+  // agingDays < red (days since qualification).
+  "dealClock.warnDays": 15,
+  "dealClock.agingDays": 30,
   // MB9a-2 — speed-to-lead SLA. The golden-window clock duration (minutes from
   // "human needed" to first human contact) + the rescue-escalation thresholds.
   // Distinct from the legacy MB5 golden.windowMinutes (the cockpit/safety-net
@@ -173,6 +192,12 @@ const KEY_CATEGORY = {
   // Snooze engine thresholds ride the SLA settings category too.
   "snooze.thresholdDays": "settings_sla",
   "snooze.wakeWarnDays": "settings_sla",
+  // Journey v2 (V5) — the engagement content library (its own category).
+  "engagement.items": "settings_engagement",
+  "engagement.pulseDays": "settings_engagement",
+  // Journey v2 (V6) — deal-clock tones ride the SLA category.
+  "dealClock.warnDays": "settings_sla",
+  "dealClock.agingDays": "settings_sla",
   "sla.goldenWindowMinutes": "settings_sla",
   "sla.rescueTier1Minutes": "settings_sla",
   "sla.rescueTier2Minutes": "settings_sla",
@@ -246,6 +271,34 @@ const validateValue = (key, value) => {
     case "snooze.wakeWarnDays":
       if (!isIntInRange(value, 0, 30)) throw err(400, "snooze.wakeWarnDays must be an integer 0–30");
       return value;
+    case "engagement.pulseDays":
+      if (!isIntInRange(value, 1, 14)) throw err(400, "engagement.pulseDays must be an integer 1–14");
+      return value;
+    case "dealClock.warnDays":
+      if (!isIntInRange(value, 1, 120)) throw err(400, "dealClock.warnDays must be an integer 1–120");
+      return value;
+    case "dealClock.agingDays":
+      if (!isIntInRange(value, 1, 365)) throw err(400, "dealClock.agingDays must be an integer 1–365");
+      return value;
+    case "engagement.items": {
+      if (!Array.isArray(value) || value.length > 100) {
+        throw err(400, "engagement.items must be an array (max 100)");
+      }
+      const seen = new Set();
+      for (const item of value) {
+        if (!item || typeof item !== "object") throw err(400, "Each engagement item must be an object");
+        if (typeof item.id !== "string" || !item.id.trim()) throw err(400, "Each engagement item needs an id");
+        if (seen.has(item.id)) throw err(400, `Duplicate engagement item id: ${item.id}`);
+        seen.add(item.id);
+        if (typeof item.caption !== "string" || !item.caption.trim()) throw err(400, "Each engagement item needs a caption");
+        if (item.tone !== undefined && typeof item.tone !== "string") throw err(400, "tone must be a string");
+        if (item.imageUrl !== undefined && typeof item.imageUrl !== "string") throw err(400, "imageUrl must be a string");
+        if (typeof item.active !== "boolean") throw err(400, "Each engagement item needs active:boolean");
+      }
+      return value.map((i) => ({
+        id: i.id.trim(), caption: i.caption.trim(), tone: i.tone || "", imageUrl: i.imageUrl || "", active: i.active,
+      }));
+    }
     case "sla.goldenWindowMinutes":
       if (!isIntInRange(value, 5, 480)) throw err(400, "sla.goldenWindowMinutes must be an integer 5–480");
       return value;

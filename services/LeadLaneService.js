@@ -29,9 +29,50 @@ const LANE_LIBRARY = {
   lead_comms: "Lead communication",
   kickoff: "Kickoff & alignment",
 };
+// Journey v2 (V4): vendor:{service} sub-lanes — one per non-core service, all
+// grouped under the Vendors header client-side via groupKey (no string parsing).
 const isValidKey = (key) =>
   Object.prototype.hasOwnProperty.call(LANE_LIBRARY, key) ||
-  (/^custom:[a-z0-9-]{1,40}$/.test(String(key)));
+  (/^custom:[a-z0-9-]{1,40}$/.test(String(key))) ||
+  (/^vendor:[a-z0-9-]{1,40}$/.test(String(key)));
+
+const vendorSlug = (service) =>
+  String(service || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
+const vendorNameFromKey = (key) =>
+  String(key)
+    .slice("vendor:".length)
+    .split("-")
+    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : ""))
+    .join(" ")
+    .trim();
+const groupKeyFor = (key) =>
+  String(key).startsWith("vendor:") || key === "vendors" ? "vendors" : null;
+
+// Journey v2 (V3): additive display labels over the EXISTING states — no
+// state-machine changes. paused reads "Awaiting client" only when the pause is
+// client-caused (the canonical pausedReason "client", written by the
+// awaiting_client label below and by /block).
+const displayStatusOf = (lane) => {
+  if (lane.state === "active") return "Started";
+  if (lane.state === "done") return "Done";
+  if (lane.state === "paused") {
+    return /client/i.test(lane.pausedReason || "") ? "Awaiting client" : "On hold";
+  }
+  return "On hold"; // queued
+};
+// The four accepted labels (snake keys or display strings) → state fields.
+const DISPLAY_TO_STATE = {
+  started: { state: "active" },
+  "awaiting client": { state: "paused", pausedReason: "client" },
+  awaiting_client: { state: "paused", pausedReason: "client" },
+  "on hold": { state: "paused" },
+  on_hold: { state: "paused" },
+  done: { state: "done" },
+};
 
 // Valid state transitions: queued→active, active⇄paused, any→done.
 const canTransition = (from, to) => {
@@ -43,14 +84,16 @@ const canTransition = (from, to) => {
   return false;
 };
 
-// Map a discovery service string to a lane key. Unmapped services fold into
-// ONE "vendors" lane.
+// Map a discovery service string to a lane key. Journey v2 (V4): non-core
+// services each get their OWN vendor:{service} sub-lane (was: one folded
+// "vendors" lane) — independent owners, clocks and escalation per service.
 const laneKeyForService = (service) => {
   const s = String(service || "").toLowerCase();
   if (/venue/.test(s)) return "venue";
   if (/d[eé]cor/.test(s)) return "decor";
   if (/makeup|mua|beauty/.test(s)) return "makeup";
-  return "vendors";
+  const slug = vendorSlug(service);
+  return slug ? `vendor:${slug}` : "vendors";
 };
 
 // Suggested department + owner for a lane: a Department whose name contains the
@@ -102,21 +145,45 @@ const listLanes = async (leadId) => {
     ]);
     lastByLane = new Map(latest.map((r) => [String(r._id), r.entry]));
   }
-  const decorated = lanes.map((l) => ({ ...l, lastEntry: lastByLane.get(String(l._id)) || null }));
+  // Journey v2: displayStatus (V3 labels), price + priced (V3 money), and
+  // groupKey (V4 vendor grouping) ride every lane row additively.
+  const decorated = lanes.map((l) => ({
+    ...l,
+    lastEntry: lastByLane.get(String(l._id)) || null,
+    displayStatus: displayStatusOf(l),
+    price: l.price || null,
+    priced: !!(l.price && l.price.amount != null),
+    groupKey: groupKeyFor(l.key),
+  }));
 
   if (lanes.length) return { lanes: decorated, proposal: [] };
 
   // ── Proposal derivation (no lanes yet) ──
   const q = lead.qualificationData || {};
-  const keys = new Set();
-  for (const s of q.servicesRequired || []) keys.add(laneKeyForService(s));
+  // key → the display name (vendor lanes keep the raw service string as name).
+  const keyNames = new Map();
+  for (const s of q.servicesRequired || []) {
+    const key = laneKeyForService(s);
+    if (!keyNames.has(key)) {
+      keyNames.set(
+        key,
+        LANE_LIBRARY[key] || (key.startsWith("vendor:") ? String(s).trim() : String(s).trim())
+      );
+    }
+  }
   // Venue only when the venue is NOT already booked.
-  if (keys.has("venue") && q.venueStatus === "booked") keys.delete("venue");
+  if (keyNames.has("venue") && q.venueStatus === "booked") keyNames.delete("venue");
   const proposal = [];
-  for (const key of keys) {
-    const name = LANE_LIBRARY[key];
+  for (const [key, name] of keyNames) {
     const sug = await suggestFor(leadId, name);
-    proposal.push({ key, name, tag: "from discovery", ...sug, locked: false });
+    proposal.push({
+      key,
+      name,
+      tag: "from discovery",
+      ...sug,
+      locked: false,
+      groupKey: groupKeyFor(key),
+    });
   }
   // Standing lanes: lead_comms (locked to the lead owner) + engagement + kickoff.
   proposal.push({
@@ -173,7 +240,11 @@ const assemble = async (leadId, { lanes } = {}, actorId) => {
     const key = String(spec.key || "");
     if (!isValidKey(key)) throw err(400, `Invalid lane key: ${key}`);
     if (have.has(key)) continue; // idempotent
-    const name = String(spec.name || LANE_LIBRARY[key] || "").trim();
+    const name = String(
+      spec.name ||
+        LANE_LIBRARY[key] ||
+        (key.startsWith("vendor:") ? vendorNameFromKey(key) : "")
+    ).trim();
     if (!name) throw err(400, `Lane ${key} needs a name`);
     const state = spec.state && LANE_STATES.includes(spec.state) ? spec.state : "active";
     const wake = state === "queued" ? normalizeWake(spec.wake) : null;
@@ -227,6 +298,18 @@ const patchLane = async (leadId, laneId, fields = {}, actorId) => {
   if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
   const lane = await LeadLane.findOne({ _id: laneId, leadId });
   if (!lane) throw err(404, "Lane not found");
+
+  // Journey v2 (V3): the four display labels map back onto the EXISTING state
+  // machine (awaiting_client → paused + the canonical "client" reason). Same
+  // canTransition guard as a raw state patch — no new transitions.
+  if (fields.displayStatus !== undefined && fields.state === undefined) {
+    const mapped = DISPLAY_TO_STATE[String(fields.displayStatus || "").trim().toLowerCase()];
+    if (!mapped) {
+      throw err(400, 'displayStatus must be one of: "Started", "Awaiting client", "On hold", "Done"');
+    }
+    fields = { ...fields, state: mapped.state };
+    if (mapped.pausedReason !== undefined) fields.pausedReason = mapped.pausedReason;
+  }
 
   if (fields.ownerId !== undefined) {
     if (lane.key === "lead_comms") throw err(400, "Lead communication stays with the lead owner");
@@ -333,6 +416,132 @@ const autoEntryByLaneId = async (laneId, autoType, text) => {
   }
 };
 
+// ── Journey v2 (V3) — per-lane money ─────────────────────────────────────────
+// scopeOk = "the caller's lead scope covers this lead" (computed by the
+// controller from req.scopeFilter — the lead owner/manager test).
+// Propose: lane OWNER or lead owner/manager. Confirm: lead owner/manager ONLY.
+const fmtAmount = (n) => `₹${Number(n).toLocaleString("en-IN")}`;
+
+const proposePrice = async (leadId, laneId, amount, actorId, scopeOk) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt <= 0) throw err(400, "A positive amount is required");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId }).lean();
+  if (!lane) throw err(404, "Lane not found");
+  const isLaneOwner = lane.ownerId && String(lane.ownerId) === String(actorId);
+  if (!isLaneOwner && !scopeOk) throw err(403, "Only the lane owner or the lead owner/manager can price this lane");
+
+  const price = {
+    amount: amt,
+    status: "proposed",
+    proposedBy: actorId || null,
+    proposedAt: new Date(),
+    confirmedBy: null,
+    confirmedAt: null,
+  };
+  await LeadLane.updateOne({ _id: lane._id }, { $set: { price } });
+  await autoEntryByLaneId(lane._id, "lane_priced", `Priced ${fmtAmount(amt)} — awaiting lead owner`);
+  await LeadInternalEventService.record({
+    leadId,
+    type: "lane_priced",
+    actorId: actorId || null,
+    payload: { laneId: String(lane._id), laneKey: lane.key, amount: amt },
+  });
+  return { price, priced: true, displayStatus: displayStatusOf(lane) };
+};
+
+const confirmPrice = async (leadId, laneId, actorId, scopeOk) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  if (!scopeOk) throw err(403, "Only the lead owner/manager can confirm a lane price");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId }).lean();
+  if (!lane) throw err(404, "Lane not found");
+  if (!lane.price || lane.price.amount == null) throw err(409, "No proposed price to confirm");
+  if (lane.price.status === "confirmed") return { price: lane.price, alreadyConfirmed: true };
+
+  const price = { ...lane.price, status: "confirmed", confirmedBy: actorId || null, confirmedAt: new Date() };
+  await LeadLane.updateOne({ _id: lane._id }, { $set: { price } });
+  await autoEntryByLaneId(lane._id, "lane_priced", `Price confirmed ${fmtAmount(price.amount)}`);
+  await LeadInternalEventService.record({
+    leadId,
+    type: "lane_price_confirmed",
+    actorId: actorId || null,
+    payload: { laneId: String(lane._id), laneKey: lane.key, amount: price.amount },
+  });
+  return { price };
+};
+
+// ── Journey v2 (V5) — the engagement pulse ────────────────────────────────────
+// Marking a library item "sent" is a HUMAN update on the engagement lane: it
+// resets the silence clock (kind "update") and lands in the sent log. autoType
+// "engagement_sent" tags the row so the log read never string-parses.
+const markEngagementSent = async (leadId, laneId, itemId, actorId, scopeOk) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId });
+  if (!lane) throw err(404, "Lane not found");
+  if (lane.key !== "engagement") throw err(400, "engagement-sent applies to the engagement lane only");
+  const isLaneOwner = lane.ownerId && String(lane.ownerId) === String(actorId);
+  if (!isLaneOwner && !scopeOk) throw err(403, "Only the engagement lane owner or the lead owner can mark content sent");
+
+  const SettingsService = require("./SettingsService");
+  const items = (await SettingsService.get("engagement.items")) || [];
+  const item = items.find((i) => i && i.id === String(itemId || ""));
+  if (!item) throw err(404, "Content item not found in the library");
+  if (item.active === false) throw err(422, "This content item is inactive");
+
+  const entry = await LaneEntry.create({
+    laneId: lane._id,
+    leadId,
+    kind: "update", // the heartbeat — resets the silence/pulse clock
+    autoType: "engagement_sent",
+    text: `Sent: ${item.caption}`.slice(0, 500),
+    authorId: actorId || null,
+    at: new Date(),
+  });
+  lane.lastUpdateAt = new Date();
+  await LeadLane.updateOne({ _id: lane._id }, { $set: { lastUpdateAt: lane.lastUpdateAt } });
+  await EnquiryRepository.touchLastActivity(leadId);
+  await LeadInternalEventService.record({
+    leadId,
+    type: "engagement_sent",
+    actorId: actorId || null,
+    payload: { laneId: String(lane._id), itemId: item.id, caption: item.caption },
+  });
+  return { entry: entry.toObject(), item: { id: item.id, caption: item.caption } };
+};
+
+// GET .../engagement-items — the ACTIVE library items, readable by the people
+// who actually send them (lane owner / lead roster — gated at the controller).
+// The settings-gated GET/PUT remains the EDIT surface.
+const engagementItems = async (leadId, laneId) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId }, { key: 1 }).lean();
+  if (!lane) throw err(404, "Lane not found");
+  if (lane.key !== "engagement") throw err(400, "engagement-items applies to the engagement lane only");
+  const SettingsService = require("./SettingsService");
+  const items = (await SettingsService.get("engagement.items")) || [];
+  return items
+    .filter((i) => i && i.active !== false)
+    .map((i) => ({ id: i.id, caption: i.caption, tone: i.tone || "", imageUrl: i.imageUrl || "" }));
+};
+
+// GET .../engagement-log — the lane's sent items, newest first.
+const engagementLog = async (leadId, laneId) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId }, { key: 1 }).lean();
+  if (!lane) throw err(404, "Lane not found");
+  const rows = await LaneEntry.find(
+    { laneId, autoType: "engagement_sent" },
+    { text: 1, authorId: 1, at: 1 }
+  )
+    .sort({ at: -1 })
+    .lean();
+  return rows.map((r) => ({
+    item: String(r.text || "").replace(/^Sent: /, ""),
+    when: r.at,
+    byId: r.authorId ? String(r.authorId) : null,
+  }));
+};
+
 module.exports = {
   LANE_LIBRARY,
   listLanes,
@@ -344,4 +553,13 @@ module.exports = {
   autoEntry,
   autoEntryByLaneId,
   canTransition,
+  proposePrice,
+  confirmPrice,
+  displayStatusOf,
+  laneKeyForService,
+  vendorNameFromKey,
+  groupKeyFor,
+  markEngagementSent,
+  engagementLog,
+  engagementItems,
 };

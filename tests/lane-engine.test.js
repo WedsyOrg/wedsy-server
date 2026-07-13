@@ -70,7 +70,9 @@ const run = (handler, req) =>
     const p1 = await LeadLaneService.listLanes(lead._id);
     const keys1 = p1.proposal.map((p) => p.key);
     ok(p1.lanes.length === 0 && p1.proposal.length > 0, "no lanes yet → proposal returned");
-    ok(keys1.includes("venue") && keys1.includes("decor") && keys1.includes("vendors"), "services map to venue + decor + vendors (photography → vendors)");
+    // Journey v2 (V4): non-core services now propose their OWN vendor:{service}
+    // sub-lane (was: one folded "vendors" lane) — updated to the locked contract.
+    ok(keys1.includes("venue") && keys1.includes("decor") && keys1.includes("vendor:photography"), "services map to venue + decor + vendor:photography (v2 sub-lanes)");
     ok(keys1.includes("lead_comms") && keys1.includes("engagement") && keys1.includes("kickoff"), "standing lanes present");
     const lc = p1.proposal.find((p) => p.key === "lead_comms");
     ok(lc.locked === true && String(lc.suggestedOwnerId) === String(owner._id), "lead_comms locked to the lead owner");

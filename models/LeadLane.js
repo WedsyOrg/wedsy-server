@@ -36,6 +36,24 @@ const LeadLaneSchema = new mongoose.Schema(
     pausedReason: { type: String, default: "" },
     createdBy: { type: ObjectId, ref: "Admin", default: null },
     doneAt: { type: Date, default: null },
+    // Journey v2 (V3) — per-lane money. Proposed by the lane owner (or lead
+    // owner/manager), CONFIRMED by the lead owner/manager only. Null until the
+    // first propose. An unpriced lane past meeting_held is the "₹ TBD blocks
+    // proposal" signal (exposed as priced:false on lane payloads).
+    price: {
+      type: new mongoose.Schema(
+        {
+          amount: { type: Number, default: null },
+          status: { type: String, enum: ["proposed", "confirmed"], default: "proposed" },
+          proposedBy: { type: ObjectId, ref: "Admin", default: null },
+          proposedAt: { type: Date, default: null },
+          confirmedBy: { type: ObjectId, ref: "Admin", default: null },
+          confirmedAt: { type: Date, default: null },
+        },
+        { _id: false }
+      ),
+      default: null,
+    },
   },
   { timestamps: true }
 );

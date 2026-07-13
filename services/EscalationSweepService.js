@@ -67,9 +67,12 @@ const sweepLanes = async (now, leadFilter, ctx) => {
     const silentDays = Math.floor((+now - sinceEpoch) / DAY_MS);
     const unassigned = !lane.ownerId;
 
-    // rung → recipients (per the ladder spec).
+    // rung → recipients (per the ladder spec). Journey v2 (V5): the engagement
+    // lane's rung-1 threshold is the settings-driven pulse (default 2d);
+    // every other lane keeps the fixed 2d.
+    const rung1Days = lane.key === "engagement" ? ctx.pulseDays : 2;
     const rungs = [];
-    if (!unassigned && silentDays >= 2) rungs.push({ rung: 1, to: [lane.ownerId] });
+    if (!unassigned && silentDays >= rung1Days) rungs.push({ rung: 1, to: [lane.ownerId] });
     if (silentDays >= 4 || unassigned) {
       rungs.push({ rung: 2, to: [lead.assignedTo, ...ctx.revenueHeads].filter(Boolean) });
     }
@@ -225,6 +228,8 @@ const runSweep = async (now = new Date(), opts = {}) => {
     founders: await idsByRoleName("Founder"),
     // Slice A2 — one exclusion for both clocks (lane ladder + deal clock).
     snoozeExcl: await SnoozeService.snoozeExclusion(now),
+    // Journey v2 (V5) — the engagement lane's pulse threshold (rung 1).
+    pulseDays: await SettingsService.get("engagement.pulseDays"),
   };
   // Slice A2 wake pass FIRST: a lead past its wake date re-enters this very
   // sweep's clocks (its snoozedUntil is cleared before the exclusion applies...
