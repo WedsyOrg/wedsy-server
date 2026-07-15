@@ -137,4 +137,7 @@ module.exports = {
   createRole,
   deleteRole,
   isFounderRole,
+  // W4/W5/W6 (additive) — caller role context (admin doc + founder fact),
+  // reused by the workspace/escalations/team reads.
+  callerContext,
 };

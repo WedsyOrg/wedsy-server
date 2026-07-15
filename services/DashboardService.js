@@ -453,6 +453,13 @@ const buildDashboard = async (adminId, scope, scopeFilter = {}) => {
   if (["team", "department", "all"].includes(scope)) {
     Object.assign(payload, await buildManagerSections(adminId, scope, scopeFilter, { now, todayStart, todayEnd, weekAgo, goldenCfg, newSlaHours, visibility }));
   }
+  // W4 — workspace sections (valueStrip · escalationsTop ·
+  // awaitingHumanQualification · wins · rescue). Additive: nothing above is
+  // dropped or reshaped.
+  Object.assign(
+    payload,
+    await require("./DashboardSectionsService").buildWorkspaceSections(adminId, scope, scopeFilter)
+  );
   return payload;
 };
 
