@@ -27,8 +27,10 @@ const slugify = (name) =>
     .replace(/^_+|_+$/g, "");
 
 // Idempotent, keyed by slug: for each day-one department — reuse the doc that
-// already carries the slug; else stamp the slug onto an existing same-name
-// department; else create it. Safe to call repeatedly (never duplicates).
+// already carries the slug; else ADOPT an existing same-name department
+// (case-insensitive) by stamping its slug — a whitelisted $set of exactly
+// { slug }, no other field is ever touched; else create it. Safe to call
+// repeatedly (never duplicates).
 const seedDayOneDepartments = async () => {
   const results = [];
   for (const d of DAY_ONE) {
@@ -37,13 +39,12 @@ const seedDayOneDepartments = async () => {
       const byName = await Department.findOne({
         name: new RegExp(`^${d.name}$`, "i"),
         deletedAt: null,
-      });
+      }).lean();
       if (byName) {
         if (!byName.slug) {
-          byName.slug = d.slug;
-          await byName.save();
+          await Department.updateOne({ _id: byName._id }, { $set: { slug: d.slug } });
         }
-        doc = byName.toObject();
+        doc = { ...byName, slug: byName.slug || d.slug };
       } else {
         doc = (await Department.create({ name: d.name, slug: d.slug, isSystem: true })).toObject();
       }
@@ -53,10 +54,19 @@ const seedDayOneDepartments = async () => {
   return results;
 };
 
-// Fresh-DB guard: only auto-seed when there are no departments at all.
-const ensureSeedIfEmpty = async () => {
-  const count = await Department.countDocuments({ deletedAt: null });
-  if (count === 0) await seedDayOneDepartments();
+// PER-DEPARTMENT ensure (dept-seed fix): the old guard only seeded a fully
+// EMPTY collection, so a non-empty prod DB never gained Venues / Client
+// Servicing. Now: one cheap read checks the three day-one slugs; only when
+// one is missing does the per-department adopt-or-create pass run. Existing
+// departments are matched by slug OR case-insensitive name (adopted, never
+// duplicated); only the truly absent ones are created.
+const ensureDayOneDepartments = async () => {
+  const present = await Department.find(
+    { slug: { $in: DAY_ONE.map((d) => d.slug) }, deletedAt: null },
+    { slug: 1 }
+  ).lean();
+  if (new Set(present.map((p) => p.slug)).size === DAY_ONE.length) return; // all live — no-op
+  await seedDayOneDepartments();
 };
 
 // Role facts for the caller: founder (systemKey/`*:*:all`) and Revenue Head
@@ -85,7 +95,7 @@ const workspacesFor = async (callerId) => {
   const admin = await Admin.findById(callerId).lean();
   if (!admin) throw err(404, "Admin not found");
 
-  await ensureSeedIfEmpty();
+  await ensureDayOneDepartments();
 
   const { isFounder, isRevenueHead } = await callerRoleFacts(admin);
 
@@ -134,7 +144,7 @@ const setWorkspace = async (callerId, id) => {
 
 module.exports = {
   seedDayOneDepartments,
-  ensureSeedIfEmpty,
+  ensureDayOneDepartments,
   workspacesFor,
   setWorkspace,
   slugify,
