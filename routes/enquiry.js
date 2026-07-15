@@ -37,6 +37,14 @@ router.get(
   requirePermission("leads:view:own", { ownerField: "assignedTo" }),
   lifecycle.Dashboard
 );
+// W3: the station kanban. Literal path — MUST stay above /:_id.
+const board = require("../controllers/board");
+router.get(
+  "/board",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  board.Board
+);
 // MB5 Slice 4: triage queue (literal paths above /:_id). leads:triage is the
 // new permission — seed-granted to sales-lead-class roles; founder wildcard covers.
 const triage = require("../controllers/triage");

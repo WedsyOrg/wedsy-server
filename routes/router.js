@@ -95,5 +95,9 @@ router.use("/saved-views", require("./savedViews")); // per-user leads filter se
 router.use("/onboarding", require("./onboarding")); // onboarding & money engine (MB7a)
 router.use("/lead-tasks", require("./leadTask")); // collaboration tasks (MB7b Slice 2)
 router.use("/nurture-templates", require("./nurtureTemplate")); // nurture library (MB7b Slice 4)
+router.use("/me", require("./me")); // W1 — workspace switcher (caller-scoped)
+router.use("/my-work", require("./myWork")); // W2 — merged action queue + schedule
+router.use("/escalations", require("./escalations")); // W5 — escalations page read
+router.use("/team", require("./team")); // W6 — team page read
 
 module.exports = router;

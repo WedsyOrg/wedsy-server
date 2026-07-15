@@ -37,6 +37,9 @@ const AdminSchema = new mongoose.Schema(
     joinedAt: { type: Date, default: null },
     // Lifecycle (additive): round-robin auto-assignment cursor (least-recently-assigned wins).
     lastAssignedAt: { type: Date, default: null },
+    // W1 (Workspaces, additive): the department workspace this admin last
+    // entered — persisted by PUT /me/workspace, read back by GET /me/workspaces.
+    lastWorkspaceId: { type: ObjectId, ref: "Department", default: null },
     // Password reset (additive): sha256 hash of the emailed token + its expiry.
     resetToken: { type: String, default: null },
     resetTokenExpiresAt: { type: Date, default: null },

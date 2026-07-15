@@ -105,4 +105,42 @@ const computeDealSpine = (lead, { calendarEvents = [], onboarding = null, projec
   return { stations, current: idx >= 0 ? stations[idx].key : null };
 };
 
-module.exports = { computeDealSpine, spineInputs };
+// W3 (Board) — BULK inputs: the same four collections in exactly four queries
+// for ANY number of leads (query count never scales per lead). Returns a Map
+// keyed by String(leadId) → the same shape spineInputs returns, ready for
+// computeDealSpine.
+const bulkSpineInputs = async (leadIds = []) => {
+  const ids = (leadIds || []).filter(Boolean);
+  const byLead = new Map(
+    ids.map((id) => [String(id), { calendarEvents: [], onboarding: null, project: null, firstPayment: null }])
+  );
+  if (!ids.length) return byLead;
+
+  const [events, onboardings, projects, payments] = await Promise.all([
+    CalendarEvent.find(
+      { leadId: { $in: ids }, type: { $in: ["gmeet", "visit"] } },
+      { leadId: 1, status: 1, closedAt: 1, start: 1 }
+    ).lean(),
+    Onboarding.find({ leadId: { $in: ids } }).lean(),
+    Project.find({ leadId: { $in: ids } }, { leadId: 1, createdAt: 1 }).lean(),
+    // Sorted ascending so the FIRST row seen per lead is its first payment.
+    LeadPayment.find({ leadId: { $in: ids } }, { leadId: 1, createdAt: 1 }).sort({ createdAt: 1 }).lean(),
+  ]);
+
+  for (const e of events) byLead.get(String(e.leadId))?.calendarEvents.push(e);
+  for (const o of onboardings) {
+    const slot = byLead.get(String(o.leadId));
+    if (slot && !slot.onboarding) slot.onboarding = o;
+  }
+  for (const p of projects) {
+    const slot = byLead.get(String(p.leadId));
+    if (slot && !slot.project) slot.project = p;
+  }
+  for (const p of payments) {
+    const slot = byLead.get(String(p.leadId));
+    if (slot && !slot.firstPayment) slot.firstPayment = p;
+  }
+  return byLead;
+};
+
+module.exports = { computeDealSpine, spineInputs, bulkSpineInputs };
