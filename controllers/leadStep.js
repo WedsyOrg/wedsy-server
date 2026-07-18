@@ -23,7 +23,7 @@ const assertInScope = async (id, scopeFilter = {}) => {
 // READ: roster members allowed (Slice B1); mutations keep the strict scope.
 const List = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json({ list: await LeadStepService.listForLead(req.params._id) });
   } catch (error) {
     respond(res, error);
@@ -71,7 +71,7 @@ const AddNote = async (req, res) => {
 // READ: roster members allowed (Slice B1).
 const ListTasks = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json({ list: await LeadTaskService.listForStep(req.params.stepId) });
   } catch (error) {
     respond(res, error);

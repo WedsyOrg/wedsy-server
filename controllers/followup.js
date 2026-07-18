@@ -19,7 +19,7 @@ const assertInScope = async (id, scopeFilter = {}) => {
 // READ: roster members allowed (Slice B1); writes below keep the strict scope.
 const ListForLead = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     await FollowupService.sweepDueCards(req.params._id);
     res.status(200).json({ list: await FollowupService.listForLead(req.params._id) });
   } catch (error) {

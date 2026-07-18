@@ -99,5 +99,6 @@ router.use("/me", require("./me")); // W1 — workspace switcher (caller-scoped)
 router.use("/my-work", require("./myWork")); // W2 — merged action queue + schedule
 router.use("/escalations", require("./escalations")); // W5 — escalations page read
 router.use("/team", require("./team")); // W6 — team page read
+router.use("/cs", require("./cs")); // C2/C4 — CS workspace (dashboard + planner)
 
 module.exports = router;

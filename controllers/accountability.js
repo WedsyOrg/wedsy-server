@@ -19,7 +19,7 @@ const assertInScope = async (id, scopeFilter = {}) => {
 // Per-viewer framing is decided client-side from mostUrgent.responsibleId vs me.
 const Assess = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id); // READ (Slice B1)
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true }); // READ (Slice B1)
     res.status(200).json(await AccountabilityService.assessLead(req.params._id));
   } catch (error) {
     respond(res, error);

@@ -53,7 +53,7 @@ const created = { leads: [], admins: [], roles: [], depts: [], lanes: [], marks:
     const anchorA = new Date(+now - 5 * DAY);
     const laneA = await LeadLane.create({ leadId: A._id, key: "venue", name: "Venue", state: "active", ownerId: seller._id, lastUpdateAt: anchorA });
     for (const rung of [1, 2]) {
-      const m = await EscalationMark.create({ key: `lane:${A._id}:${laneA._id}:${rung}:${+anchorA}`, leadId: A._id, kind: "lane", rung, firedAt: new Date(+now - (3 - rung) * DAY) });
+      const m = await EscalationMark.create({ key: `lane:${A._id}:${laneA.key}:${rung}:${+anchorA}`, leadId: A._id, kind: "lane", rung, firedAt: new Date(+now - (3 - rung) * DAY) });
       created.marks.push(m._id);
     }
     created.lanes.push(laneA._id);
@@ -66,7 +66,7 @@ const created = { leads: [], admins: [], roles: [], depts: [], lanes: [], marks:
     const B = await mkLead("engage");
     const anchorB = new Date(+now - 3 * DAY);
     const laneB = await LeadLane.create({ leadId: B._id, key: "engagement", name: "Client engagement", state: "active", ownerId: seller._id, lastUpdateAt: anchorB });
-    const mB = await EscalationMark.create({ key: `lane:${B._id}:${laneB._id}:1:${+anchorB}`, leadId: B._id, kind: "lane", rung: 1, firedAt: new Date(+now - DAY) });
+    const mB = await EscalationMark.create({ key: `lane:${B._id}:${laneB.key}:1:${+anchorB}`, leadId: B._id, kind: "lane", rung: 1, firedAt: new Date(+now - DAY) });
     created.lanes.push(laneB._id); created.marks.push(mB._id);
 
     // C — deal stalled at meeting_set (fresh qual, spine.current === meeting_set).
@@ -83,14 +83,14 @@ const created = { leads: [], admins: [], roles: [], depts: [], lanes: [], marks:
     const E = await mkLead("closedlane");
     const oldAnchor = new Date(+now - 9 * DAY);
     const laneE = await LeadLane.create({ leadId: E._id, key: "decor", name: "Decor", state: "active", ownerId: seller._id, lastUpdateAt: new Date(+now - 1 * 3600e3) });
-    const mE = await EscalationMark.create({ key: `lane:${E._id}:${laneE._id}:2:${+oldAnchor}`, leadId: E._id, kind: "lane", rung: 2, firedAt: new Date(+now - 8 * DAY) });
+    const mE = await EscalationMark.create({ key: `lane:${E._id}:${laneE.key}:2:${+oldAnchor}`, leadId: E._id, kind: "lane", rung: 2, firedAt: new Date(+now - 8 * DAY) });
     created.lanes.push(laneE._id); created.marks.push(mE._id);
 
     // F — out-of-team lead (outsider's) with a live lane escalation.
     const F = await mkLead("foreign", { assignedTo: outsider._id });
     const anchorF = new Date(+now - 4 * DAY);
     const laneF = await LeadLane.create({ leadId: F._id, key: "venue", name: "Venue", state: "active", ownerId: outsider._id, lastUpdateAt: anchorF });
-    const mF = await EscalationMark.create({ key: `lane:${F._id}:${laneF._id}:1:${+anchorF}`, leadId: F._id, kind: "lane", rung: 1, firedAt: now });
+    const mF = await EscalationMark.create({ key: `lane:${F._id}:${laneF.key}:1:${+anchorF}`, leadId: F._id, kind: "lane", rung: 1, firedAt: now });
     created.lanes.push(laneF._id); created.marks.push(mF._id);
 
     created.leads.push(A._id, B._id, C._id, D._id, E._id, F._id);

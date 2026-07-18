@@ -74,7 +74,7 @@ const created = { leads: [], admins: [], roles: [], depts: [], lanes: [], marks:
     const anchor = new Date(+now - 5 * DAY);
     const lane = await LeadLane.create({ leadId: EL._id, key: "venue", name: "Venue", state: "active", ownerId: seller._id, lastUpdateAt: anchor });
     created.lanes.push(lane._id);
-    created.marks.push((await EscalationMark.create({ key: `lane:${EL._id}:${lane._id}:2:${+anchor}`, leadId: EL._id, kind: "lane", rung: 2, firedAt: now }))._id);
+    created.marks.push((await EscalationMark.create({ key: `lane:${EL._id}:${lane.key}:2:${+anchor}`, leadId: EL._id, kind: "lane", rung: 2, firedAt: now }))._id);
     // rescue fixtures: breached unresponded lead + a snoozed twin.
     const Resc = await mkLead("rescue", { stage: "new", firstRespondedAt: null, firstCalledAt: null, createdAt: new Date(+now - 2 * 3600e3) });
     const RescSnooze = await mkLead("rescue-snoozed", { stage: "new", firstRespondedAt: null, firstCalledAt: null, createdAt: new Date(+now - 2 * 3600e3), snoozedUntil: new Date(+now + 30 * DAY) });

@@ -22,7 +22,17 @@ const isCurrentRosterMember = async (leadId, adminId) => {
 
 // The scoped existence check every per-lead controller uses, widened by roster
 // membership. Throws 400 (bad id) / 403 (neither in scope nor on the roster).
-const assertInScopeOrRoster = async (leadId, scopeFilter = {}, callerId = null) => {
+// C-fix 2 — PARTICIPANT READ GATE. opts.includeParticipants additionally
+// admits lane owners and open-task assignees of the lead (per-lead probe via
+// ParticipantScopeService). DEFAULT OFF: every existing call site — including
+// the write/action ones (roster management, follow-up actions, MOM saves) —
+// keeps its exact prior gate; READ handlers opt in explicitly.
+const assertInScopeOrRoster = async (
+  leadId,
+  scopeFilter = {},
+  callerId = null,
+  { includeParticipants = false } = {}
+) => {
   if (!mongoose.Types.ObjectId.isValid(String(leadId))) throw err(400, "Invalid lead id");
   const inScope = await Enquiry.findOne(
     { $and: [{ _id: leadId }, scopeFilter || {}] },
@@ -30,6 +40,10 @@ const assertInScopeOrRoster = async (leadId, scopeFilter = {}, callerId = null) 
   ).lean();
   if (inScope) return;
   if (await isCurrentRosterMember(leadId, callerId)) return;
+  if (includeParticipants && callerId) {
+    const { isParticipantOnLead } = require("../services/ParticipantScopeService");
+    if (await isParticipantOnLead(leadId, callerId)) return;
+  }
   throw err(403, "Out of your scope");
 };
 

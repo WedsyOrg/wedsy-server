@@ -134,7 +134,9 @@ const created = { leads: [], admins: [], roles: [], depts: [], events: [], payme
     const q2 = queries;
     mongoose.set("debug", false);
     console.log(`    queries: ${q1} → ${q2} (after +4 qualified leads)`);
-    ok(q2 <= q1, `query count does not scale with lead count (${q1} → ${q2})`);
+    // +1 tolerance: the settings cache (5-min TTL) can expire between runs and
+    // add one read — the point is the count not scaling with lead count.
+    ok(q2 <= q1 + 1, `query count does not scale with lead count (${q1} → ${q2})`);
   } catch (e) {
     fail++;
     console.error("UNEXPECTED ERROR:", e);

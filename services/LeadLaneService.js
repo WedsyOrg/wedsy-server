@@ -542,6 +542,88 @@ const engagementLog = async (leadId, laneId) => {
   }));
 };
 
+
+// C3 — NUDGE. Lane owner (or any current roster member / the lead owner)
+// flags an Awaiting-client lane INTERNALLY: an auto lane entry + an
+// AdminNotification to the LEAD OWNER (fallback: the owner's reporting
+// manager, then Revenue Heads — the disqualify-notify ladder). NEVER touches
+// the client-facing channels. Deduped: once per lane per 24h (409).
+const nudge = async (leadId, laneId, actorId) => {
+  if (!isId(leadId) || !isId(laneId)) throw err(400, "Invalid id");
+  const lane = await LeadLane.findOne({ _id: laneId, leadId }).lean();
+  if (!lane) throw err(404, "Lane not found");
+  const Enquiry = require("../models/Enquiry");
+  const lead = await Enquiry.findById(leadId, { name: 1, assignedTo: 1 }).lean();
+  if (!lead) throw err(404, "Lead not found");
+
+  // Actor must be the lane owner, the lead owner, or a current roster member.
+  const { isCurrentRosterMember } = require("../utils/leadScope");
+  const isLaneOwner = lane.ownerId && String(lane.ownerId) === String(actorId);
+  const isLeadOwner = lead.assignedTo && String(lead.assignedTo) === String(actorId);
+  if (!isLaneOwner && !isLeadOwner && !(await isCurrentRosterMember(leadId, actorId))) {
+    throw err(403, "Only the lane owner or the lead's team can nudge.");
+  }
+
+  // Dedupe — one nudge per lane per 24h.
+  const recent = await LaneEntry.findOne({
+    laneId,
+    kind: "auto",
+    autoType: "nudge",
+    at: { $gte: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+  }).lean();
+  if (recent) throw err(409, "Already nudged in the last 24h — give it a beat.");
+
+  const waitingDays = Math.max(0, Math.floor((Date.now() - +new Date(lane.lastUpdateAt)) / (24 * 60 * 60 * 1000)));
+
+  // Recipient ladder: lead owner → their reporting manager → Revenue Heads —
+  // always filtered through the assignable predicate; actor never self-notified.
+  const { filterAssignableIds } = require("../utils/assignable");
+  const Admin = require("../models/Admin");
+  let recipients = [];
+  let flaggedToName = "the lead owner";
+  if (lead.assignedTo) {
+    recipients = await filterAssignableIds([lead.assignedTo]);
+    if (recipients.length) {
+      const ownerDoc = await Admin.findById(lead.assignedTo, { name: 1 }).lean();
+      if (ownerDoc) flaggedToName = ownerDoc.name;
+    }
+  }
+  if (!recipients.length && lead.assignedTo) {
+    const ownerDoc = await Admin.findById(lead.assignedTo, { reportingManagerId: 1 }).lean();
+    if (ownerDoc && ownerDoc.reportingManagerId) {
+      recipients = await filterAssignableIds([ownerDoc.reportingManagerId]);
+      if (recipients.length) flaggedToName = "the reporting manager";
+    }
+  }
+  if (!recipients.length) {
+    recipients = await filterAssignableIds(await require("./TriageService").revenueHeadIds());
+    if (recipients.length) flaggedToName = "the Revenue Head";
+  }
+  recipients = recipients.filter((r) => String(r) !== String(actorId));
+
+  const text = `Nudge: waiting on client ${waitingDays}d — flagged to ${flaggedToName}`;
+  const entry = await LaneEntry.create({
+    laneId,
+    leadId,
+    kind: "auto",
+    text,
+    authorId: actorId || null,
+    autoType: "nudge",
+    at: new Date(),
+  });
+
+  if (recipients.length) {
+    await require("./AdminNotificationService").notify(recipients, {
+      type: "lane_nudge",
+      title: `${lane.name} on ${lead.name}: waiting on client ${waitingDays}d`,
+      message: text,
+      leadId,
+      payload: { laneId: String(laneId), laneKey: lane.key, waitingDays, nudgedBy: String(actorId || "") },
+    });
+  }
+  return { entry: entry.toObject(), waitingDays, notified: recipients.map(String) };
+};
+
 module.exports = {
   LANE_LIBRARY,
   listLanes,
@@ -562,4 +644,5 @@ module.exports = {
   markEngagementSent,
   engagementLog,
   engagementItems,
+  nudge,
 };

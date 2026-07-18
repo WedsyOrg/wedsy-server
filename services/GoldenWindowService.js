@@ -194,10 +194,10 @@ const respondNow = async (adminId, now = new Date()) => {
     {
       $and: [
         {
+          ...require("../utils/lostTerminal").notLostFilter(),
           assignedTo: adminId,
           firstRespondedAt: null,
           qualified: { $ne: true },
-          isLost: { $ne: true },
           "recycled.isRecycled": { $ne: true },
           archivedAt: null,
           createdAt: { $gte: new Date(+now - RESPOND_HORIZON_MS) },

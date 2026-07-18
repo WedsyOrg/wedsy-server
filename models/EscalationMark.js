@@ -9,8 +9,10 @@ const ObjectId = mongoose.Schema.Types.ObjectId;
 const EscalationMarkSchema = new mongoose.Schema(
   {
     key: { type: String, required: true, unique: true },
-    leadId: { type: ObjectId, ref: "Enquiry", required: true, index: true },
-    kind: { type: String, enum: ["lane", "deal", "snooze"], required: true },
+    // C4 (additive relax): content-planner episodes are global — no lead.
+    // Every lead-anchored kind still always writes a leadId.
+    leadId: { type: ObjectId, ref: "Enquiry", default: null, index: true },
+    kind: { type: String, enum: ["lane", "deal", "snooze", "no_task", "content"], required: true },
     rung: { type: Number, required: true },
     firedAt: { type: Date, default: Date.now },
   },

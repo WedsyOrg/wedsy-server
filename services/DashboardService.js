@@ -20,11 +20,13 @@ const SettingsService = require("./SettingsService");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const RE_ENQUIRED_BADGE_DAYS = 7;
 
-// A lead still in play for active dashboard surfaces.
+// A lead still in play for active dashboard surfaces. Lost is terminal —
+// the shared exclusion; a pending-approval lead stays LIVE until approved.
+const { notLostFilter: dashNotLost } = require("../utils/lostTerminal");
 const ACTIVE = {
+  ...dashNotLost(),
   stage: { $nin: ["won", "lost"] },
   "recycled.isRecycled": { $ne: true },
-  lostStatus: { $nin: ["pending", "approved"] },
 };
 
 // first 2 + last 4 of the local number visible, e.g. "+91 98••• •3210".

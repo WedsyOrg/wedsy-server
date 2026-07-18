@@ -77,6 +77,7 @@ const listTriage = async () => {
     workEndHour: goldenCfg["golden.workEndHour"],
   };
   const leads = await Enquiry.find({
+    ...require("../utils/lostTerminal").notLostFilter(),
     triagePending: true,
     assignedTo: null,
     "recycled.isRecycled": { $ne: true },

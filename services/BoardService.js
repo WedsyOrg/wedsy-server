@@ -15,6 +15,7 @@ const { computeDealSpine, bulkSpineInputs } = require("./DealSpineService");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const { sourceChannelOf } = require("../utils/leadSource");
 const { bucketOf, temperatureCutoffs, temperatureOf, temperatureLabelOf } = require("../utils/leadLifecycle");
+const { isTerminalLost } = require("../utils/lostTerminal");
 
 const COLUMN_KEYS = ["new", "working", "qualified", "meeting_set", "meeting_held", "proposal", "agreement", "onboarded", "lost"];
 const INTERN_COLUMN_KEYS = ["new", "working", "qualified", "lost"];
@@ -24,7 +25,9 @@ const MAX_ROWS_PER_COLUMN = 100; // count/value cover the WHOLE column; rows cap
 // arrays. followUps rides along because rowMarks and the spine both need it.
 const PROJECTION = { callLog: 0, conversations: 0, notes: 0 };
 
-const isLostLead = (l) => l.stage === "lost" || l.isLost === true || l.lostStatus === "approved";
+// Lost is terminal — the shared predicate (pending-approval leads stay in
+// their live column; the lost COLUMN itself keeps terminal leads).
+const isLostLead = (l) => isTerminalLost(l);
 
 // Intern = the caller's role name is in the assignment.poolRoles settings list
 // (the same definition TriageService/InternMetrics use).
@@ -42,10 +45,12 @@ const isInternCaller = async (callerId) => {
   return roles.some((r) => pool.has(r.name));
 };
 
-const board = async (callerId, scope, scopeFilter = {}) => {
+const board = async (callerId, scope, scopeFilter = {}, opts = {}) => {
   const now = new Date();
   const visibility = await currentVisibilityFilter();
-  const intern = await isInternCaller(callerId);
+  // C1 — participant scope always ships the FULL column set (worked post-qual
+  // leads); the intern collapse applies only to the default board.
+  const intern = opts.fullColumns ? false : await isInternCaller(callerId);
   const columnKeys = intern ? INTERN_COLUMN_KEYS : COLUMN_KEYS;
 
   // One pass over the caller-scoped leads (won + lost included — they have

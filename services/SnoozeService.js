@@ -184,8 +184,10 @@ const wakeSweep = async (now = new Date(), leadFilter = null) => {
     const { wakeWarnDays } = await cfg();
 
     // WAKE first so a lead past its date never also warns.
+    // Lost is terminal — a snoozed lead that got lost NEVER wakes or warns.
+    const notLost = require("../utils/lostTerminal").notLostFilter();
     const due = await Enquiry.find(
-      { $and: [{ snoozedUntil: { $ne: null, $lte: now } }, leadFilter || {}] },
+      { $and: [{ snoozedUntil: { $ne: null, $lte: now } }, leadFilter || {}, notLost] },
       { name: 1, snoozedUntil: 1 }
     ).lean();
     for (const lead of due) {
@@ -197,7 +199,7 @@ const wakeSweep = async (now = new Date(), leadFilter = null) => {
     if (wakeWarnDays > 0) {
       const warnCutoff = new Date(+now + wakeWarnDays * DAY_MS);
       const waking = await Enquiry.find(
-        { $and: [{ snoozedUntil: { $gt: now, $lte: warnCutoff } }, leadFilter || {}] },
+        { $and: [{ snoozedUntil: { $gt: now, $lte: warnCutoff } }, leadFilter || {}, notLost] },
         { name: 1, assignedTo: 1, snoozedUntil: 1 }
       ).lean();
       for (const lead of waking) {

@@ -622,6 +622,15 @@ router.post(
   requirePermission("leads:edit:own", { ownerField: "assignedTo" }),
   leadLane.AddEntry
 );
+// C3 — internal nudge on an Awaiting-client lane. View-tier gate: the service
+// itself enforces lane-owner / lead-owner / roster membership (a CS lane owner
+// may not hold leads:edit on the lead). Never client-facing.
+router.post(
+  "/:_id/lanes/:laneId/nudge",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadLane.Nudge
+);
 // Journey v2 (V3) — per-lane money. Same gate shape as lane writes: the edit
 // permission sets req.scopeFilter; propose additionally admits the LANE owner
 // (checked in the controller/service), confirm is lead owner/manager only.

@@ -31,7 +31,7 @@ const assertCanWrite = async (leadId, scopeFilter, callerId, laneId = null) => {
 // READ: roster members allowed (Slice B1 guard).
 const List = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json(await LeadLaneService.listLanes(req.params._id));
   } catch (error) {
     respond(res, error);
@@ -42,7 +42,7 @@ const List = async (req, res) => {
 // READ: roster members allowed (Slice B1 guard).
 const ListEntries = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json(await LeadLaneService.listEntries(req.params._id, req.params.laneId, { limit: req.query.limit }));
   } catch (error) {
     respond(res, error);
@@ -149,7 +149,7 @@ const EngagementSent = async (req, res) => {
 // GET /enquiry/:_id/lanes/:laneId/engagement-log — roster-aware read.
 const EngagementLog = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json({ log: await LeadLaneService.engagementLog(req.params._id, req.params.laneId) });
   } catch (error) {
     respond(res, error);
@@ -162,7 +162,7 @@ const EngagementLog = async (req, res) => {
 const EngagementItems = async (req, res) => {
   try {
     try {
-      await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+      await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     } catch (scopeErr) {
       const lane = await LeadLane.findOne(
         { _id: req.params.laneId, leadId: req.params._id },
@@ -177,4 +177,15 @@ const EngagementItems = async (req, res) => {
   }
 };
 
-module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry, ProposePrice, ConfirmPrice, EngagementSent, EngagementLog, EngagementItems };
+// C3 — POST /:_id/lanes/:laneId/nudge (lane owner / lead owner / roster).
+const Nudge = async (req, res) => {
+  try {
+    const out = await LeadLaneService.nudge(req.params._id, req.params.laneId, req.auth.user_id);
+    res.status(200).json(out);
+  } catch (error) {
+    const status = error.status || 500;
+    res.status(status).json({ message: status === 500 ? "Could not nudge — please retry." : error.message });
+  }
+};
+
+module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry, ProposePrice, ConfirmPrice, EngagementSent, EngagementLog, EngagementItems, Nudge };

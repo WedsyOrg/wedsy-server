@@ -53,8 +53,9 @@ const sweepLanes = async (now, leadFilter, ctx) => {
   // Slice A2 — parked (snoozed) leads pause the silence ladder: their lanes
   // drop out of the sweep query entirely (ctx.snoozeExcl). The wake pass below
   // is deliberately NOT filtered — queued lanes still wake on their own rules.
+  const { notLostFilter } = require("../utils/lostTerminal");
   const leads = await Enquiry.find(
-    { $and: [{ _id: { $in: leadIds }, stage: { $nin: ["won", "lost"] }, ...(leadFilter || {}) }, ctx.snoozeExcl] },
+    { $and: [{ ...notLostFilter(), stage: { $nin: ["won", "lost"] }, _id: { $in: leadIds }, ...(leadFilter || {}) }, ctx.snoozeExcl] },
     { name: 1, assignedTo: 1 }
   ).lean();
   const leadById = new Map(leads.map((l) => [String(l._id), l]));
@@ -111,10 +112,10 @@ const sweepDealClock = async (now, leadFilter, ctx) => {
     {
       $and: [
         {
+          ...require("../utils/lostTerminal").notLostFilter(),
           qualified: true,
           stage: { $nin: ["won", "lost"] },
           "recycled.isRecycled": { $ne: true },
-          lostStatus: { $nin: ["pending", "approved"] },
           ...(leadFilter || {}),
         },
         ctx.snoozeExcl,
@@ -239,7 +240,22 @@ const runSweep = async (now = new Date(), opts = {}) => {
   const laneSilent = await sweepLanes(now, leadFilter, ctx);
   const dealStalled = await sweepDealClock(now, leadFilter, ctx);
   const woken = await sweepWake(now, leadFilter);
-  return { laneSilent, dealStalled, woken, snoozeWoken: snooze.woken, snoozeWarned: snooze.warned };
+  // C5 — the no-task rule (every dept): owned active lanes with zero open
+  // task/follow-up by the owner. Fire-safe.
+  const noTask = await require("./NoTaskService").sweepNoTask(now, leadFilter).catch((e) => {
+    console.error("[EscalationSweep] noTask pass failed:", e.message);
+    return { flagged: 0, rung1: 0, rung2: 0 };
+  });
+  // C4 — the content planner passes (Monday roll self-gates on the IST day).
+  const contentRoll = await require("./ContentPostService").mondayRoll(now).catch((e) => {
+    console.error("[EscalationSweep] content roll failed:", e.message);
+    return { rolled: 0, flaggedOverdue: 0 };
+  });
+  const contentStale = await require("./ContentPostService").staleIdeasSweep(now).catch((e) => {
+    console.error("[EscalationSweep] content stale pass failed:", e.message);
+    return { stale: false };
+  });
+  return { laneSilent, dealStalled, woken, snoozeWoken: snooze.woken, snoozeWarned: snooze.warned, noTask, contentRoll, contentStale };
 };
 
 module.exports = { runSweep };

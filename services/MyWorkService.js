@@ -14,16 +14,18 @@ const SnoozeService = require("./SnoozeService");
 const TriageService = require("./TriageService");
 const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const { istDayStart, istDayEnd, toIstWallClock, fromIstParts } = require("../utils/goldenWindow");
+const { notLostFilter } = require("../utils/lostTerminal");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UPCOMING_DAYS = 7; // the "upcoming" tail of the now-queue
 const MAX_SCHEDULE_DAYS = 31;
 
-// Same active predicate the dashboard uses (won/lost/recycled/pending-lost out).
+// Live predicate: won/recycled/archived out + the shared lost-terminal
+// exclusion (a pending-approval lead stays LIVE until approved).
 const ACTIVE = {
+  ...notLostFilter(),
   stage: { $nin: ["won", "lost"] },
   "recycled.isRecycled": { $ne: true },
-  lostStatus: { $nin: ["pending", "approved"] },
   archivedAt: null,
 };
 
@@ -240,6 +242,7 @@ const schedule = async (callerId, { from, to } = {}, at = new Date()) => {
       {
         $and: [
           {
+            ...notLostFilter(),
             assignedTo: callerId,
             archivedAt: null,
             followUps: { $elemMatch: { scheduledAt: { $gte: rangeStart, $lte: rangeEnd } } },
@@ -284,8 +287,10 @@ const schedule = async (callerId, { from, to } = {}, at = new Date()) => {
       [...journeyRows, ...taskRows, ...meetingRows].map((r) => String(r.leadId || "")).filter(Boolean)
     ),
   ];
+  // Lost is terminal: the join carries only live leads, and every lead-anchored
+  // item whose lead dropped out is skipped below.
   const refLeads = refLeadIds.length
-    ? await Enquiry.find({ _id: { $in: refLeadIds } }, { name: 1 }).lean()
+    ? await Enquiry.find({ $and: [{ _id: { $in: refLeadIds } }, notLostFilter()] }, { name: 1 }).lean()
     : [];
   const leadName = new Map(refLeads.map((l) => [String(l._id), l.name]));
 
@@ -311,6 +316,7 @@ const schedule = async (callerId, { from, to } = {}, at = new Date()) => {
   }
 
   for (const f of journeyRows) {
+    if (!leadName.has(String(f.leadId))) continue; // lost/terminal lead
     // Effective date: a snoozed row lives at its snoozedUntil (its wake).
     const eff = f.status === "snoozed" && f.snoozedUntil ? f.snoozedUntil : f.dueAt;
     const t = eff ? +new Date(eff) : null;
@@ -330,6 +336,7 @@ const schedule = async (callerId, { from, to } = {}, at = new Date()) => {
   }
 
   for (const t of taskRows) {
+    if (!leadName.has(String(t.leadId))) continue; // lost/terminal lead
     items.push({
       kind: "task",
       store: null,
@@ -345,6 +352,7 @@ const schedule = async (callerId, { from, to } = {}, at = new Date()) => {
   }
 
   for (const e of meetingRows) {
+    if (e.leadId && !leadName.has(String(e.leadId))) continue; // lost/terminal lead
     items.push({
       kind: "meeting",
       store: null,

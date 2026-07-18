@@ -341,6 +341,14 @@ const decideDisqualification = async (
       isLost: true,
       stage: "lost",
     });
+    // Fix L1 — lost is terminal: close every open escalation episode for the
+    // lead (no lingering marks). Reads already treat the lead terminal; this
+    // is the proactive cleanup. Fire-safe.
+    try {
+      await require("../models/EscalationMark").deleteMany({ leadId: enquiryId });
+    } catch (e) {
+      console.error("escalation cleanup on disqualify-approve failed:", e.message);
+    }
     await ActivityLogService.record({
       actorId,
       action: "lead.disqualify_approved",
