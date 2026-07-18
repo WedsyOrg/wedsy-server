@@ -34,7 +34,7 @@ const Create = async (req, res) => {
 const ListForLead = async (req, res) => {
   try {
     const leadId = req.query.leadId;
-    await assertInScopeOrRoster(leadId, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(leadId, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     const list = await LeadTaskService.listForLead(leadId, { includeDone: req.query.includeDone !== "false" });
     res.status(200).json({ list });
   } catch (error) {

@@ -23,10 +23,11 @@ const { currentVisibilityFilter } = require("../utils/leadVisibility");
 const { sourceChannelOf } = require("../utils/leadSource");
 const { toIstWallClock, fromIstParts } = require("../utils/goldenWindow");
 
+const { notLostFilter } = require("../utils/lostTerminal");
 const ACTIVE = {
+  ...notLostFilter(),
   stage: { $nin: ["won", "lost"] },
   "recycled.isRecycled": { $ne: true },
-  lostStatus: { $nin: ["pending", "approved"] },
   archivedAt: null,
 };
 

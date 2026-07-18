@@ -20,10 +20,11 @@ const { filterAssignableIds } = require("../utils/assignable");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+const { notLostFilter } = require("../utils/lostTerminal");
 const ACTIVE_LEAD = {
+  ...notLostFilter(),
   stage: { $nin: ["won", "lost"] },
   "recycled.isRecycled": { $ne: true },
-  lostStatus: { $nin: ["pending", "approved"] },
   archivedAt: null,
 };
 

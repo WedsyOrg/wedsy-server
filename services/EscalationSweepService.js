@@ -53,8 +53,9 @@ const sweepLanes = async (now, leadFilter, ctx) => {
   // Slice A2 — parked (snoozed) leads pause the silence ladder: their lanes
   // drop out of the sweep query entirely (ctx.snoozeExcl). The wake pass below
   // is deliberately NOT filtered — queued lanes still wake on their own rules.
+  const { notLostFilter } = require("../utils/lostTerminal");
   const leads = await Enquiry.find(
-    { $and: [{ _id: { $in: leadIds }, stage: { $nin: ["won", "lost"] }, ...(leadFilter || {}) }, ctx.snoozeExcl] },
+    { $and: [{ ...notLostFilter(), stage: { $nin: ["won", "lost"] }, _id: { $in: leadIds }, ...(leadFilter || {}) }, ctx.snoozeExcl] },
     { name: 1, assignedTo: 1 }
   ).lean();
   const leadById = new Map(leads.map((l) => [String(l._id), l]));
@@ -111,10 +112,10 @@ const sweepDealClock = async (now, leadFilter, ctx) => {
     {
       $and: [
         {
+          ...require("../utils/lostTerminal").notLostFilter(),
           qualified: true,
           stage: { $nin: ["won", "lost"] },
           "recycled.isRecycled": { $ne: true },
-          lostStatus: { $nin: ["pending", "approved"] },
           ...(leadFilter || {}),
         },
         ctx.snoozeExcl,

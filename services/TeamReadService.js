@@ -21,12 +21,13 @@ const err = (status, message) => Object.assign(new Error(message), { status });
 
 // Same predicates the machinery being mirrored uses (DashboardService.ACTIVE /
 // OffboardService.OPEN_STAGE) — kept verbatim so numbers can never diverge.
+const { notLostFilter } = require("../utils/lostTerminal");
 const ACTIVE = {
+  ...notLostFilter(),
   stage: { $nin: ["won", "lost"] },
   "recycled.isRecycled": { $ne: true },
-  lostStatus: { $nin: ["pending", "approved"] },
 };
-const OPEN_STAGE = { stage: { $nin: ["won", "lost"] } };
+const OPEN_STAGE = { ...notLostFilter(), stage: { $nin: ["won", "lost"] } };
 
 const MEMBER_PROJ = { name: 1, status: 1, isDisabled: 1, roleId: 1, roleIds: 1, hats: 1, departmentId: 1 };
 

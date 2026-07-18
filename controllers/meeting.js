@@ -53,7 +53,7 @@ const Update = async (req, res) => {
 // GET /enquiry/:_id/meetings — roster-aware read.
 const List = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json({ meetings: await MeetingService.listMeetings(req.params._id) });
   } catch (error) {
     respond(res, error);

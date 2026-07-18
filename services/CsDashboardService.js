@@ -25,10 +25,11 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const HANDOFF_DAYS = 14;
 const AT_RISK_SILENT_DAYS = 4; // the lanes' red silence threshold
 
+const { notLostFilter } = require("../utils/lostTerminal");
 const ACTIVE_LEAD = {
+  ...notLostFilter(),
   stage: { $nin: ["won", "lost"] },
   "recycled.isRecycled": { $ne: true },
-  lostStatus: { $nin: ["pending", "approved"] },
   archivedAt: null,
 };
 

@@ -1042,8 +1042,13 @@ const Get = (req, res) => {
   // every write route keeps its owner/manager gate.
   Enquiry.findOne({ $and: [{ _id }, req.scopeFilter || {}] })
     .then(async (result) => {
-      if (!result && (await isCurrentRosterMember(_id, req.auth.user_id))) {
-        result = await Enquiry.findById(_id);
+      // C-fix 2 — participant READ widening: roster, lane owners and open-task
+      // assignees may all open the lead (writes keep their gates).
+      if (!result) {
+        const { isParticipantOnLead } = require("../services/ParticipantScopeService");
+        if (await isParticipantOnLead(_id, req.auth.user_id)) {
+          result = await Enquiry.findById(_id);
+        }
       }
       if (!result) {
         res.status(404).send();

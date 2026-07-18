@@ -20,7 +20,7 @@ const assertInScope = async (id, scopeFilter = {}) => {
 // READ: roster members allowed (Slice B1) — they're chat members post-qual.
 const List = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     const result = await LeadChatService.listMessages(req.params._id, req.auth.user_id, {
       limit: req.query.limit,
       before: req.query.before,
@@ -67,7 +67,7 @@ const Remove = async (req, res) => {
 // READ: roster members allowed (Slice B1).
 const Members = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json({ list: await LeadChatService.chatMembers(req.params._id) });
   } catch (error) {
     respond(res, error);

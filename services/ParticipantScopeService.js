@@ -67,4 +67,18 @@ const resolveParticipantTarget = async (req) => {
   throw err(403, "That teammate is not in your scope.");
 };
 
-module.exports = { participantLeadIds, participantFilter, resolveParticipantTarget };
+// Per-lead membership check (the READ gate's fast path — indexed exists
+// probes, no aggregation). Owner OR current roster OR lane owner OR open-task
+// assignee — the same four legs as participantLeadIds.
+const isParticipantOnLead = async (leadId, adminId) => {
+  if (!adminId || !mongoose.Types.ObjectId.isValid(String(leadId))) return false;
+  const [owner, roster, laneOwn, taskAssn] = await Promise.all([
+    Enquiry.exists({ _id: leadId, assignedTo: adminId }),
+    LeadTeamMember.exists({ leadId, personId: adminId, activeTo: null }),
+    LeadLane.exists({ leadId, ownerId: adminId }),
+    LeadTask.exists({ leadId, assigneeId: adminId, status: "open" }),
+  ]);
+  return !!(owner || roster || laneOwn || taskAssn);
+};
+
+module.exports = { participantLeadIds, participantFilter, resolveParticipantTarget, isParticipantOnLead };

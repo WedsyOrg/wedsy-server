@@ -6,6 +6,7 @@
 //   kinds: lane | engagement (a lane whose key is "engagement") | deal |
 //          snooze-wake (SnoozeService's warn marks, kind "snooze")
 // Scope: manager → their team; RH/founder → all; ?scope honored DOWNWARD only.
+const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadLane = require("../models/LeadLane");
@@ -85,7 +86,10 @@ const list = async ({ callerId, reqScope, reqScopeFilter, requestedScope, page =
       if (+m.firedAt > +ep.firedAt) ep.firedAt = m.firedAt;
     }
   }
-  const eps = [...episodes.values()];
+  // Global (lead-less) episodes — e.g. the content planner's stale marks —
+  // are notification-only; they never join a lead and would cast-error the
+  // $in below. Drop anything whose leadId isn't a real ObjectId.
+  const eps = [...episodes.values()].filter((e) => mongoose.Types.ObjectId.isValid(e.leadId));
   if (!eps.length) return { items: [], total: 0, page, limit, scope };
 
   // 2 · scope + existence join on leads (batched).
@@ -99,12 +103,17 @@ const list = async ({ callerId, reqScope, reqScopeFilter, requestedScope, page =
   ).lean();
   const leadById = new Map(leads.map((l) => [String(l._id), l]));
 
-  // 3 · lane join for lane-kind episodes (slot = laneId).
-  const laneIds = eps.filter((e) => e.kind === "lane").map((e) => e.slot);
-  const lanes = laneIds.length
-    ? await LeadLane.find({ _id: { $in: laneIds } }, { name: 1, key: 1, state: 1, lastUpdateAt: 1 }).lean()
+  // 3 · lane join for lane-kind episodes. The sweep's mark key carries the
+  // lane KEY ("venue", "engagement", …) as the slot — NOT the laneId — so the
+  // join is (leadId, key); a lead has at most one lane per key (unique index).
+  const lanePairs = eps.filter((e) => e.kind === "lane" && leadById.has(e.leadId));
+  const lanes = lanePairs.length
+    ? await LeadLane.find(
+        { $or: lanePairs.map((e) => ({ leadId: e.leadId, key: e.slot })) },
+        { leadId: 1, name: 1, key: 1, state: 1, lastUpdateAt: 1 }
+      ).lean()
     : [];
-  const laneById = new Map(lanes.map((l) => [String(l._id), l]));
+  const laneByPair = new Map(lanes.map((l) => [`${String(l.leadId)}:${l.key}`, l]));
 
   // 4 · bulk spine for deal-kind episodes (openness = still stalled there).
   const dealLeadIds = [
@@ -114,14 +123,15 @@ const list = async ({ callerId, reqScope, reqScopeFilter, requestedScope, page =
   ];
   const spineInputsByLead = await bulkSpineInputs(dealLeadIds);
 
-  const terminal = (l) => l.stage === "won" || l.stage === "lost" || l.isLost === true || l.lostStatus === "approved";
+  const { isTerminalLost } = require("../utils/lostTerminal");
+  const terminal = (l) => l.stage === "won" || isTerminalLost(l);
 
   const open = [];
   for (const ep of eps) {
     const lead = leadById.get(ep.leadId);
     if (!lead) continue; // out of scope / archived
     if (ep.kind === "lane") {
-      const lane = laneById.get(ep.slot);
+      const lane = laneByPair.get(`${ep.leadId}:${ep.slot}`);
       if (!lane || lane.state !== "active" || terminal(lead)) continue;
       // The episode is alive while its silence anchor hasn't moved.
       if (+new Date(lane.lastUpdateAt) !== ep.sinceEpoch) continue;
@@ -129,6 +139,7 @@ const list = async ({ callerId, reqScope, reqScopeFilter, requestedScope, page =
       open.push({
         ep, lead,
         kind: lane.key === "engagement" ? "engagement" : "lane",
+        laneId: String(lane._id),
         laneName: lane.name,
         what: lane.key === "engagement" ? `Engagement pulse silent ${silentDays}d` : `${lane.name} lane silent ${silentDays}d`,
         since: new Date(ep.sinceEpoch),
@@ -168,7 +179,11 @@ const list = async ({ callerId, reqScope, reqScopeFilter, requestedScope, page =
     const wantType = o.kind === "deal" ? "deal_stalled" : o.kind === "snooze-wake" ? "lead_waking" : "lane_silent";
     return notifs.filter((n) => {
       if (String(n.leadId) !== String(o.lead._id) || n.type !== wantType) return false;
-      if (wantType === "lane_silent") return String((n.payload || {}).laneId || "") === o.ep.slot;
+      if (wantType === "lane_silent") {
+        const p = n.payload || {};
+        if (p.laneKey) return String(p.laneKey) === o.ep.slot;
+        return o.laneId != null && String(p.laneId || "") === String(o.laneId);
+      }
       if (wantType === "deal_stalled") return String((n.payload || {}).station || "") === o.ep.slot || !(n.payload || {}).station;
       return true;
     });

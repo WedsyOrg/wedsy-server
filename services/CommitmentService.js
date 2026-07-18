@@ -116,8 +116,13 @@ const rowMarks = async (leadDocs, { scope, callerId } = {}) => {
   const marks = new Map(leadIds.map((id) => [String(id), { dueToday: 0, overdue: 0 }]));
   if (!leadIds.length) return marks;
 
+  // Snoozed rows read zero marks; terminal-lost rows too (lost is terminal —
+  // a lost lead's leftover follow-ups/tasks are not work).
+  const { isTerminalLost } = require("../utils/lostTerminal");
   const snoozedSet = new Set(
-    (leadDocs || []).filter((l) => l.snoozedUntil).map((l) => String(l._id))
+    (leadDocs || [])
+      .filter((l) => l.snoozedUntil || isTerminalLost(l))
+      .map((l) => String(l._id))
   );
   const bump = (leadId, dueAt) => {
     const m = marks.get(String(leadId));

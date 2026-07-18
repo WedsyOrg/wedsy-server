@@ -41,9 +41,9 @@ const rescueQueue = async (adminId, scope, now = new Date()) => {
   if (scope === "own" || !scope) return { rows: [], count: 0 };
 
   let leadFilter = {
+    ...require("../utils/lostTerminal").notLostFilter(),
     firstCalledAt: null,
     qualified: { $ne: true },
-    isLost: { $ne: true },
     "recycled.isRecycled": { $ne: true },
     archivedAt: null,
     createdAt: { $gte: new Date(+now - HORIZON_MS) },

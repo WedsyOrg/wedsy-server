@@ -5,7 +5,7 @@ const { assertInScopeOrRoster } = require("../utils/leadScope");
 // GET /enquiry/:_id/commitments
 const List = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json({ commitments: await CommitmentService.listCommitments(req.params._id) });
   } catch (error) {
     const status = error.status || 500;

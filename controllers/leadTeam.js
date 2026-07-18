@@ -13,7 +13,7 @@ const respond = (res, error) => {
 // GET /enquiry/:_id/team — current roster + full append-only history.
 const Get = async (req, res) => {
   try {
-    await assertInScope(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScope(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json(await LeadTeamService.listRoster(req.params._id));
   } catch (error) {
     respond(res, error);

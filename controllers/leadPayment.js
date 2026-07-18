@@ -25,7 +25,7 @@ const assertCanWrite = async (leadId, scopeFilter, callerId) => {
 // GET /enquiry/:_id/payments — ledger + { total, received, balance }.
 const List = async (req, res) => {
   try {
-    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id);
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
     res.status(200).json(await LeadPaymentService.listForLead(req.params._id));
   } catch (error) {
     respond(res, error);
