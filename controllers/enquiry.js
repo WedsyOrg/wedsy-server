@@ -60,6 +60,14 @@ const respondCatch = (res, error) => {
 // list without a separate surface. OFF by default: no view widens silently.
 // "all" scope ({}) needs no widening and stays {}.
 const effectiveScopeFilter = async (req) => {
+  // C1 — ?scope=participant: "leads I'm on" (owner / roster / lane owner /
+  // open-task assignee). Self for anyone; ?adminId= only inside the caller's
+  // permission scope. Serves the list AND lifecycle-counts (both call here).
+  if (req.query.scope === "participant") {
+    const ParticipantScopeService = require("../services/ParticipantScopeService");
+    const target = await ParticipantScopeService.resolveParticipantTarget(req);
+    return await ParticipantScopeService.participantFilter(target);
+  }
   const scope = req.scopeFilter || {};
   const wanted = req.query.includeTeam === "1" || req.query.includeTeam === "true";
   if (!wanted || !Object.keys(scope).length) return scope;

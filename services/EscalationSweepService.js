@@ -239,7 +239,22 @@ const runSweep = async (now = new Date(), opts = {}) => {
   const laneSilent = await sweepLanes(now, leadFilter, ctx);
   const dealStalled = await sweepDealClock(now, leadFilter, ctx);
   const woken = await sweepWake(now, leadFilter);
-  return { laneSilent, dealStalled, woken, snoozeWoken: snooze.woken, snoozeWarned: snooze.warned };
+  // C5 — the no-task rule (every dept): owned active lanes with zero open
+  // task/follow-up by the owner. Fire-safe.
+  const noTask = await require("./NoTaskService").sweepNoTask(now, leadFilter).catch((e) => {
+    console.error("[EscalationSweep] noTask pass failed:", e.message);
+    return { flagged: 0, rung1: 0, rung2: 0 };
+  });
+  // C4 — the content planner passes (Monday roll self-gates on the IST day).
+  const contentRoll = await require("./ContentPostService").mondayRoll(now).catch((e) => {
+    console.error("[EscalationSweep] content roll failed:", e.message);
+    return { rolled: 0, flaggedOverdue: 0 };
+  });
+  const contentStale = await require("./ContentPostService").staleIdeasSweep(now).catch((e) => {
+    console.error("[EscalationSweep] content stale pass failed:", e.message);
+    return { stale: false };
+  });
+  return { laneSilent, dealStalled, woken, snoozeWoken: snooze.woken, snoozeWarned: snooze.warned, noTask, contentRoll, contentStale };
 };
 
 module.exports = { runSweep };

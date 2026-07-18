@@ -103,6 +103,11 @@ const DEFAULTS = {
   // re-enters every queue and the owner gets a once-per-episode lead_waking nudge.
   "snooze.thresholdDays": 30,
   "snooze.wakeWarnDays": 3,
+  // CS workspace (C2) — workload capacity bands: open steps <= hasRoom →
+  // has_room; <= balanced → balanced; <= nearFull → near_full; else overloaded.
+  "cs.capacity.hasRoom": 4,
+  "cs.capacity.balanced": 7,
+  "cs.capacity.nearFull": 9,
   // Journey v2 (V5) — the engagement CONTENT LIBRARY: ready-to-send nuggets the
   // engagement lane's weekly pulse draws from. Editable in Settings; the seeds
   // below are sensible wedding-content starters, not sacred.
@@ -192,6 +197,10 @@ const KEY_CATEGORY = {
   // Snooze engine thresholds ride the SLA settings category too.
   "snooze.thresholdDays": "settings_sla",
   "snooze.wakeWarnDays": "settings_sla",
+  // CS workload capacity bands ride the SLA settings category too.
+  "cs.capacity.hasRoom": "settings_sla",
+  "cs.capacity.balanced": "settings_sla",
+  "cs.capacity.nearFull": "settings_sla",
   // Journey v2 (V5) — the engagement content library (its own category).
   "engagement.items": "settings_engagement",
   "engagement.pulseDays": "settings_engagement",
@@ -270,6 +279,11 @@ const validateValue = (key, value) => {
       return value;
     case "snooze.wakeWarnDays":
       if (!isIntInRange(value, 0, 30)) throw err(400, "snooze.wakeWarnDays must be an integer 0–30");
+      return value;
+    case "cs.capacity.hasRoom":
+    case "cs.capacity.balanced":
+    case "cs.capacity.nearFull":
+      if (!isIntInRange(value, 1, 100)) throw err(400, `${key} must be an integer 1–100`);
       return value;
     case "engagement.pulseDays":
       if (!isIntInRange(value, 1, 14)) throw err(400, "engagement.pulseDays must be an integer 1–14");

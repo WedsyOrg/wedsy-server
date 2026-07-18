@@ -42,10 +42,12 @@ const isInternCaller = async (callerId) => {
   return roles.some((r) => pool.has(r.name));
 };
 
-const board = async (callerId, scope, scopeFilter = {}) => {
+const board = async (callerId, scope, scopeFilter = {}, opts = {}) => {
   const now = new Date();
   const visibility = await currentVisibilityFilter();
-  const intern = await isInternCaller(callerId);
+  // C1 — participant scope always ships the FULL column set (worked post-qual
+  // leads); the intern collapse applies only to the default board.
+  const intern = opts.fullColumns ? false : await isInternCaller(callerId);
   const columnKeys = intern ? INTERN_COLUMN_KEYS : COLUMN_KEYS;
 
   // One pass over the caller-scoped leads (won + lost included — they have

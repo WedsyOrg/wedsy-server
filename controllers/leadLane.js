@@ -177,4 +177,15 @@ const EngagementItems = async (req, res) => {
   }
 };
 
-module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry, ProposePrice, ConfirmPrice, EngagementSent, EngagementLog, EngagementItems };
+// C3 — POST /:_id/lanes/:laneId/nudge (lane owner / lead owner / roster).
+const Nudge = async (req, res) => {
+  try {
+    const out = await LeadLaneService.nudge(req.params._id, req.params.laneId, req.auth.user_id);
+    res.status(200).json(out);
+  } catch (error) {
+    const status = error.status || 500;
+    res.status(status).json({ message: status === 500 ? "Could not nudge — please retry." : error.message });
+  }
+};
+
+module.exports = { List, ListEntries, Assemble, Add, Patch, AddEntry, ProposePrice, ConfirmPrice, EngagementSent, EngagementLog, EngagementItems, Nudge };
