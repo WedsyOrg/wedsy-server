@@ -568,6 +568,48 @@ router.delete(
   leadPayment.Remove
 );
 
+// ── LEAD-PAGE v3 (L1–L5) ─────────────────────────────────────────────────────
+const leadPageV3 = require("../controllers/leadPageV3");
+// L1 — activity feed (participant read; the controller widens via the gate).
+router.get(
+  "/:_id/activity",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadPageV3.ListActivity
+);
+// L2 — payment schedule: roster/participant read; owner/manager writes.
+router.get(
+  "/:_id/milestones",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadPageV3.ListMilestones
+);
+router.post("/:_id/milestones", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadPageV3.CreateMilestone);
+router.patch("/:_id/milestones/:milestoneId", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadPageV3.PatchMilestone);
+router.delete("/:_id/milestones/:milestoneId", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadPageV3.DeleteMilestone);
+// L3 — the money face (manager+ only; the controller enforces the scope gate).
+router.get(
+  "/:_id/money",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadPageV3.MoneyFace
+);
+// L4 — this lead's quote requests (participant read).
+router.get(
+  "/:_id/quote-requests",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadPageV3.ListLeadQuoteRequests
+);
+// L5 — the couple's timeline tasks (read: participant; PUT: owner/manager).
+router.get(
+  "/:_id/client-tasks",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  leadPageV3.ListClientTasks
+);
+router.put("/:_id/client-tasks", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadPageV3.PutClientTask);
+
 // Slice B5b — money paperwork (owner/manager scoped; NO roster fallback).
 router.get(
   "/:_id/agreement.pdf",

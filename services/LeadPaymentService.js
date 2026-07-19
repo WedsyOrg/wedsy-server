@@ -30,7 +30,7 @@ const listForLead = async (leadId) => {
 
 // POST — record one payment. Echoes into the lead_comms lane + the journey and
 // stamps the activity spine. NO win/broadcast side effects here.
-const record = async (leadId, { amount, mode, proofUrl, receivedAt, note, projectId } = {}, actorId) => {
+const record = async (leadId, { amount, mode, proofUrl, receivedAt, note, projectId, milestoneId } = {}, actorId) => {
   if (!isId(leadId)) throw err(400, "Invalid lead id");
   const amt = Number(amount);
   if (!Number.isFinite(amt) || amt <= 0) throw err(400, "amount must be a positive number");
@@ -44,6 +44,16 @@ const record = async (leadId, { amount, mode, proofUrl, receivedAt, note, projec
   const lead = await Enquiry.findById(leadId, { _id: 1 }).lean();
   if (!lead) throw err(404, "Enquiry not found");
 
+  // L2 — optional milestone tag (must belong to THIS lead).
+  let cleanMilestoneId = null;
+  if (milestoneId !== undefined && milestoneId !== null && milestoneId !== "") {
+    if (!isId(milestoneId)) throw err(400, "Invalid milestoneId");
+    const PaymentMilestone = require("../models/PaymentMilestone");
+    const m = await PaymentMilestone.findOne({ _id: milestoneId, leadId }, { _id: 1 }).lean();
+    if (!m) throw err(404, "That milestone is not on this lead's schedule");
+    cleanMilestoneId = m._id;
+  }
+
   const payment = await LeadPayment.create({
     leadId,
     projectId: projectId && isId(projectId) ? projectId : null,
@@ -53,7 +63,25 @@ const record = async (leadId, { amount, mode, proofUrl, receivedAt, note, projec
     receivedAt: at,
     recordedBy: actorId || null,
     note: String(note || "").slice(0, 1000),
+    milestoneId: cleanMilestoneId,
   });
+
+  // L1 — the activity spine's payment event (fire-safe). Voice: a gateway
+  // (razorpay) payment is the couple acting; everything else is Wedsy-side.
+  try {
+    await require("./LeadActivityService").ingest(
+      {
+        leadId,
+        kind: "payment",
+        meta: { amount: amt, mode: cleanMode, paymentId: null },
+        voice: cleanMode === "razorpay" ? "couple" : "wedsy",
+        at,
+      },
+      { adminId: actorId || null }
+    );
+  } catch (e) {
+    console.error("[LeadPayment] activity echo failed:", e.message);
+  }
 
   await LeadInternalEventService.record({
     leadId,

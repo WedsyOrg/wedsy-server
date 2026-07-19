@@ -100,5 +100,6 @@ router.use("/my-work", require("./myWork")); // W2 — merged action queue + sch
 router.use("/escalations", require("./escalations")); // W5 — escalations page read
 router.use("/team", require("./team")); // W6 — team page read
 router.use("/cs", require("./cs")); // C2/C4 — CS workspace (dashboard + planner)
+router.use("/quote-requests", require("./quoteRequests")); // L4 — quote queue
 
 module.exports = router;

@@ -1148,6 +1148,20 @@ const Get = (req, res) => {
             console.error("[enquiry.Get] dealSpine failed:", e.message);
           }
 
+          // L1 (lead-page v3) — presence + warmth from the activity spine
+          // (couple-voice events + the linked User's lastActive when stamped).
+          // Best-effort: failure leaves the payload without them, never a 500.
+          try {
+            const { presence, warmth } = await require("../services/LeadActivityService").warmthFor(
+              finalResultObj._id,
+              finalResultObj
+            );
+            finalResultObj.presence = presence;
+            finalResultObj.warmth = warmth;
+          } catch (e) {
+            console.error("[enquiry.Get] warmth failed:", e.message);
+          }
+
           // ── State-1 (ADDITIVE, read-only) — surface the lead OWNER'S MANAGER
           // first name: lead.assignedTo → Admin → reportingManagerId → that
           // Admin's first name (assignedToManagerName). Best-effort: any failure

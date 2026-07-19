@@ -17,6 +17,9 @@ const LeadPaymentSchema = new mongoose.Schema(
     // Assigned once at the FIRST GST-invoice generation (billing.invoicePrefix +
     // the atomically incremented billing.invoiceNextNumber) — then permanent.
     invoiceNumber: { type: String, default: "" },
+    // L2 (additive, optional) — links this payment to a PaymentMilestone row;
+    // milestone status derives from the sum of its tagged payments.
+    milestoneId: { type: ObjectId, ref: "PaymentMilestone", default: null, index: true },
     note: { type: String, default: "" },
   },
   { timestamps: true }
