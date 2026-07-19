@@ -206,7 +206,12 @@ const GetAll = (req, res) => {
         });
       });
   } else if (spotlight === "true" && random === "false") {
-    Decor.find({ spotlight: true })
+    Decor.aggregate([
+      { $match: { spotlight: true } },
+      { $addFields: { __curOrd: { $ifNull: ["$spotlightOrder", Number.MAX_SAFE_INTEGER] } } },
+      { $sort: { __curOrd: 1, createdAt: -1 } },
+      { $project: { __curOrd: 0 } },
+    ])
       .then((result) => {
         res.send({ list: result });
       })
@@ -402,11 +407,28 @@ const GetAll = (req, res) => {
           validPage = ((page - 1 + totalPages) % totalPages) + 1;
         }
         let skip = (validPage - 1) * limit;
-        Decor.find(query)
-          .sort(sortQuery)
-          .skip(skip)
-          .limit(limit)
-          .exec()
+        // S3 — curated collections (bestSeller/popular label + spotlight) sort
+        // by their order field when set, createdAt fallback; ordered items
+        // first, unordered after. Only when the caller sent no explicit ?sort.
+        const curatedField =
+          !sort && spotlight === "true"
+            ? "spotlightOrder"
+            : !sort && label === "bestSeller"
+              ? "bestSellerOrder"
+              : !sort && label === "popular"
+                ? "popularOrder"
+                : null;
+        const listQuery = curatedField
+          ? Decor.aggregate([
+              { $match: query },
+              { $addFields: { __curOrd: { $ifNull: [`$${curatedField}`, Number.MAX_SAFE_INTEGER] } } },
+              { $sort: { __curOrd: 1, createdAt: -1 } },
+              { $skip: skip },
+              { $limit: limit },
+              { $project: { __curOrd: 0 } },
+            ])
+          : Decor.find(query).sort(sortQuery).skip(skip).limit(limit).exec();
+        listQuery
           .then((result) => {
             res.send({ list: result, totalPages, page, limit });
           })
@@ -424,6 +446,30 @@ const GetAll = (req, res) => {
         });
       });
   }
+};
+
+// S3 — PUT /decor/reorder { collection: bestSeller|popular|spotlight,
+// ids: [ordered] }: bulk $set of the collection's order field (1-based by
+// array position). Admin-gated at the route. Ids outside the collection still
+// get ranks — harmless, the reads filter by label/spotlight first.
+const Reorder = (req, res) => {
+  const { collection, ids } = req.body || {};
+  const FIELD = { bestSeller: "bestSellerOrder", popular: "popularOrder", spotlight: "spotlightOrder" };
+  const field = FIELD[collection];
+  if (!field || !Array.isArray(ids) || !ids.length) {
+    return res.status(400).send({ message: 'Pass collection ("bestSeller"|"popular"|"spotlight") and a non-empty ids array' });
+  }
+  const mongoose = require("mongoose");
+  if (!ids.every((id) => mongoose.Types.ObjectId.isValid(String(id)))) {
+    return res.status(400).send({ message: "ids must all be valid object ids" });
+  }
+  Decor.bulkWrite(
+    ids.map((id, i) => ({
+      updateOne: { filter: { _id: id }, update: { $set: { [field]: i + 1 } } },
+    }))
+  )
+    .then((r) => res.status(200).send({ message: "success", ordered: ids.length, matched: r.matchedCount }))
+    .catch((error) => res.status(400).send({ message: "error", error }));
 };
 
 const Get = (req, res) => {
@@ -522,13 +568,15 @@ const Update = (req, res) => {
         res.status(400).send({ message: "error", error });
       });
   } else if (addTo === "spotlight") {
-    const { spotlightColor } = req.body;
+    const { spotlightColor, order } = req.body;
     Decor.findByIdAndUpdate(
       { _id },
       {
         $set: {
           spotlight: true,
           spotlightColor,
+          // S3 — optional curation rank inside the spotlight collection.
+          ...(Number.isFinite(Number(order)) ? { spotlightOrder: Number(order) } : {}),
         },
       }
     )
@@ -548,6 +596,7 @@ const Update = (req, res) => {
       {
         $set: {
           spotlight: false,
+          spotlightOrder: null,
         },
       }
     )
@@ -562,11 +611,16 @@ const Update = (req, res) => {
         res.status(400).send({ message: "error", error });
       });
   } else if (addTo === "bestSeller" || addTo === "popular") {
+    const { order } = req.body || {};
     Decor.findByIdAndUpdate(
       { _id },
       {
         $set: {
           label: addTo,
+          // S3 — optional curation rank inside the label collection.
+          ...(Number.isFinite(Number(order))
+            ? { [addTo === "bestSeller" ? "bestSellerOrder" : "popularOrder"]: Number(order) }
+            : {}),
         },
       }
     )
@@ -586,6 +640,7 @@ const Update = (req, res) => {
       {
         $set: {
           label: "",
+          [removeFrom === "bestSeller" ? "bestSellerOrder" : "popularOrder"]: null,
         },
       }
     )
@@ -914,4 +969,4 @@ Return ONLY valid JSON:
   }
 };
 
-module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate };
+module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder };

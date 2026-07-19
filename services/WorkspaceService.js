@@ -17,6 +17,8 @@ const DAY_ONE = [
   { slug: "sales", name: "Sales" },
   { slug: "venues", name: "Venues" },
   { slug: "client_servicing", name: "Client Servicing" },
+  // S1 (store workspace) — the fourth day-one department.
+  { slug: "wedding_store", name: "Wedding Store" },
 ];
 
 const slugify = (name) =>

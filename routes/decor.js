@@ -14,6 +14,8 @@ router.post("/ai-regenerate", CheckAdminLogin, decor.AiRegenerate);
 
 router.post("/", CheckAdminLogin, decor.CreateNew);
 router.get("/", decor.GetAll);
+// S3 — curation reorder (literal path — MUST stay above /:_id).
+router.put("/reorder", CheckAdminLogin, decor.Reorder);
 router.get("/:_id", decor.Get);
 router.put("/:_id", CheckAdminLogin, decor.Update);
 router.delete("/:_id", CheckAdminLogin, decor.Delete);
