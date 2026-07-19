@@ -17,7 +17,7 @@ const Department = require("../models/Department");
 const WorkspaceService = require("../services/WorkspaceService");
 
 const TAG = `deptseed-${Date.now()}`;
-const SLUGS = ["sales", "venues", "client_servicing"];
+const SLUGS = ["sales", "venues", "client_servicing", "wedding_store"];
 let pass = 0, fail = 0;
 const ok = (c, label) => { if (c) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.error(`  ✗ ${label}`); } };
 

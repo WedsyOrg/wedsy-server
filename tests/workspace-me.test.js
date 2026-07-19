@@ -23,8 +23,8 @@ const created = { admins: [], roles: [], depts: [] };
     // ── Idempotent seed (keyed by slug) ──
     const first = await WorkspaceService.seedDayOneDepartments();
     const second = await WorkspaceService.seedDayOneDepartments();
-    ok(first.length === 3 && second.length === 3, "seed returns the three day-one departments");
-    for (const slug of ["sales", "venues", "client_servicing"]) {
+    ok(first.length === 4 && second.length === 4, "seed returns the four day-one departments");
+    for (const slug of ["sales", "venues", "client_servicing", "wedding_store"]) {
       const n = await Department.countDocuments({ slug, deletedAt: null });
       ok(n === 1, `exactly one active department carries slug "${slug}" after double seed`);
     }

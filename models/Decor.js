@@ -18,6 +18,11 @@ const DecorSchema = new mongoose.Schema(
     productAvailability: { type: Boolean, default: false },
     spotlight: { type: Boolean, default: false },
     spotlightColor: { type: String, default: "" },
+    // S3 (store workspace, additive) — curation order inside each collection.
+    // null = unordered (sorts after ordered items, createdAt fallback).
+    bestSellerOrder: { type: Number, default: null },
+    popularOrder: { type: Number, default: null },
+    spotlightOrder: { type: Number, default: null },
     name: { type: String, required: true },
     unit: { type: String, required: true },
     tags: { type: [String], required: true, default: [] },

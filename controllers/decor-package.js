@@ -94,7 +94,10 @@ const Get = (req, res) => {
 const Update = (req, res) => {
   const { _id } = req.params;
   const { name, variant, included, decor, description, seoTags } = req.body;
-  if (!name || !category) {
+  // S2 fix: the old guard referenced an undeclared `category` (packages carry
+  // none) — a ReferenceError 500'd EVERY call to this route. Name is the only
+  // required field.
+  if (!name) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
     DecorPackage.findByIdAndUpdate(

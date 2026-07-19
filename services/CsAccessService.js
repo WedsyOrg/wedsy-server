@@ -64,4 +64,19 @@ const requireCs = async (req, res, next) => {
   }
 };
 
-module.exports = { csContext, requireCs, csDepartment, csMemberIds };
+// S5 (additive) — generic per-dept membership probe (primary departmentId or
+// any hat), by slug. The quote-queue gate uses it for wedding_store.
+const isDeptMember = async (slug, adminId) => {
+  if (!adminId) return false;
+  await require("./WorkspaceService").ensureDayOneDepartments();
+  const dept = await Department.findOne({ slug, deletedAt: null }, { _id: 1 }).lean();
+  if (!dept) return false;
+  const admin = await Admin.findById(adminId, { departmentId: 1, hats: 1 }).lean();
+  if (!admin) return false;
+  const ids = [admin.departmentId, ...(admin.hats || []).map((h) => h.departmentId)]
+    .filter(Boolean)
+    .map(String);
+  return ids.includes(String(dept._id));
+};
+
+module.exports = { csContext, requireCs, csDepartment, csMemberIds, isDeptMember };
