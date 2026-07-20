@@ -164,6 +164,7 @@ const team = async (callerId) => {
     const eligible = canApproveAll || (await isManagerOfAssigned(callerId, ownerId));
     if (!eligible) continue;
     pendingApprovals.push({
+      type: "disqualify", // P5 (additive) — approvals now carry a type
       lead: {
         _id: lead._id,
         name: lead.name,
@@ -177,6 +178,38 @@ const team = async (callerId) => {
       note: lead.lostNote || "",
       requestedAt: lead.lostRequestedAt || null,
     });
+  }
+
+  // P5 (additive) — pending DEAL DISCOUNTS ride the same approvals read with
+  // the same eligibility (approve permission OR manager-of-assignee).
+  try {
+    const DealDiscount = require("../models/DealDiscount");
+    const pendingDiscounts = await DealDiscount.find({ status: "pending" }).sort({ at: -1 }).lean();
+    if (pendingDiscounts.length) {
+      const dLeadIds = [...new Set(pendingDiscounts.map((d) => String(d.leadId)))];
+      const dLeads = await Enquiry.find({ _id: { $in: dLeadIds } }, { name: 1, phone: 1, email: 1, stage: 1, assignedTo: 1 }).lean();
+      const dLeadById = new Map(dLeads.map((l) => [String(l._id), l]));
+      const giverIds = [...new Set(pendingDiscounts.map((d) => String(d.givenBy || "")).filter(Boolean))];
+      const givers = giverIds.length ? await Admin.find({ _id: { $in: giverIds } }, { name: 1, email: 1 }).lean() : [];
+      const giverById = new Map(givers.map((a) => [String(a._id), a]));
+      for (const d of pendingDiscounts) {
+        const lead = dLeadById.get(String(d.leadId));
+        if (!lead) continue;
+        const eligible = canApproveAll || (await isManagerOfAssigned(callerId, lead.assignedTo));
+        if (!eligible) continue;
+        pendingApprovals.push({
+          type: "discount_approval",
+          lead: { _id: lead._id, name: lead.name, phone: lead.phone, email: lead.email, stage: lead.stage, assignedTo: lead.assignedTo || null },
+          requester: d.givenBy ? giverById.get(String(d.givenBy)) || null : null,
+          reason: `₹${(Number(d.amount) || 0).toLocaleString("en-IN")} discount${d.pct ? ` (${d.pct}%)` : ""}`,
+          note: "",
+          requestedAt: d.at || null,
+          discount: { _id: String(d._id), eventId: String(d.eventId), amount: d.amount, pct: d.pct },
+        });
+      }
+    }
+  } catch (e) {
+    console.error("[TeamRead] discount approvals leg failed:", e.message);
   }
 
   return {

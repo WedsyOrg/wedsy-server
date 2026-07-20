@@ -16,6 +16,7 @@ const RESOURCES = [
   // Kiara (WhatsApp AI agent) brain — founder-only by policy (granted via the
   // founder role's *:*:all wildcard; never seeded to other roles).
   "settings_kiara",
+  "settings_moods",
 ];
 const ACTIONS = ["view", "create", "edit", "delete", "assign", "export", "approve"];
 const SCOPES = ["own", "team", "department", "all"];

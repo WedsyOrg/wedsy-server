@@ -610,6 +610,71 @@ router.get(
 );
 router.put("/:_id/client-tasks", CheckAdminLogin, ...LEADS_EDIT_SCOPED, leadPageV3.PutClientTask);
 
+// ── PLANNER P1 (P1–P6) — the plan surface. One view-tier gate; the plan
+// controller enforces read (roster/participant) vs write (owner/manager/
+// lane-owner) per handler. Literal sub-paths under /:_id/plan.
+const plan = require("../controllers/plan");
+router.get("/:_id/plan", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GetPlan);
+router.patch("/:_id/plan", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PatchPlan);
+router.post("/:_id/plan/looks", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddLook);
+router.patch("/:_id/plan/looks/:lookId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PatchLook);
+router.delete("/:_id/plan/looks/:lookId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeleteLook);
+router.post("/:_id/plan/looks/:lookId/react", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ReactLook);
+router.post("/:_id/plan/moods/react", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ReactMood);
+router.post("/:_id/plan/publish", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.Publish);
+router.get("/:_id/plan/snapshots", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListSnapshots);
+router.get("/:_id/plan/snapshots/:snapshotId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GetSnapshot);
+router.post("/:_id/plan/drafts", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.CreateDraft);
+router.get("/:_id/plan/drafts", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListDrafts);
+router.post("/:_id/plan/drafts/:eventId/days", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddDay);
+router.post("/:_id/plan/drafts/:eventId/days/:dayId/items", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddItem);
+router.patch("/:_id/plan/drafts/:eventId/days/:dayId/items/:itemId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PatchItem);
+router.delete("/:_id/plan/drafts/:eventId/days/:dayId/items/:itemId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeleteItem);
+router.put("/:_id/plan/drafts/:eventId/days/:dayId/reorder-items", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ReorderItems);
+router.post("/:_id/plan/drafts/:eventId/days/:dayId/packages", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddPackage);
+router.delete("/:_id/plan/drafts/:eventId/days/:dayId/packages/:rowId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeletePackage);
+router.post("/:_id/plan/drafts/:eventId/days/:dayId/custom-items", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddCustomItem);
+router.patch("/:_id/plan/drafts/:eventId/days/:dayId/custom-items/:itemId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PatchSideItem("custom"));
+router.delete("/:_id/plan/drafts/:eventId/days/:dayId/custom-items/:itemId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeleteSideItem("custom"));
+router.post("/:_id/plan/drafts/:eventId/days/:dayId/mandatory-items", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddMandatoryItem);
+router.patch("/:_id/plan/drafts/:eventId/days/:dayId/mandatory-items/:itemId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PatchSideItem("mandatory"));
+router.delete("/:_id/plan/drafts/:eventId/days/:dayId/mandatory-items/:itemId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeleteSideItem("mandatory"));
+router.post("/:_id/plan/drafts/:eventId/discount", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GrantDiscount);
+router.get("/:_id/plan/drafts/:eventId/discounts", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListDiscounts);
+router.post("/:_id/plan/feed-decor-lane", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.FeedDecorLane);
+router.get("/:_id/plan/moods", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.Moods);
+router.get("/:_id/plan/reveal", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.Reveal);
+
 // Slice B5b — money paperwork (owner/manager scoped; NO roster fallback).
 router.get(
   "/:_id/agreement.pdf",

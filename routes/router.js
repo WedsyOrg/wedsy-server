@@ -101,5 +101,6 @@ router.use("/escalations", require("./escalations")); // W5 — escalations page
 router.use("/team", require("./team")); // W6 — team page read
 router.use("/cs", require("./cs")); // C2/C4 — CS workspace (dashboard + planner)
 router.use("/quote-requests", require("./quoteRequests")); // L4 — quote queue
+router.use("/plan", require("./plan")); // Planner P1 — internal seam + discount decide
 
 module.exports = router;

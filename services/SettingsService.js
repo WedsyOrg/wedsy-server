@@ -108,6 +108,17 @@ const DEFAULTS = {
   "cs.capacity.hasRoom": 4,
   "cs.capacity.balanced": 7,
   "cs.capacity.nearFull": 9,
+  // Planner P1 (P5) — the discount a seller may give WITHOUT approval (%).
+  "dealDiscount.freePct": 5,
+  // Planner P1 (P6) — the mood library the composer + couple app read.
+  "moods.items": [
+    { id: "royal-heritage", name: "Royal Heritage", poem: "Gold on maroon, the old palaces remember —\nevery garland a dynasty.", images: [], active: true },
+    { id: "garden-whisper", name: "Garden Whisper", poem: "Soft greens and first light,\na wedding the morning itself attends.", images: [], active: true },
+    { id: "midnight-jazz", name: "Midnight Jazz", poem: "Deep blues, brass glints —\nthe night leans in to listen.", images: [], active: true },
+    { id: "pastel-daydream", name: "Pastel Daydream", poem: "Blush, powder, cloud —\nthe gentlest possible yes.", images: [], active: true },
+    { id: "temple-dawn", name: "Temple Dawn", poem: "Marigold and bell-sound,\nan auspicious morning wearing saffron.", images: [], active: true },
+    { id: "modern-minimal", name: "Modern Minimal", poem: "White space, one bold bloom —\nlove, undecorated and sure.", images: [], active: true },
+  ],
   // Journey v2 (V5) — the engagement CONTENT LIBRARY: ready-to-send nuggets the
   // engagement lane's weekly pulse draws from. Editable in Settings; the seeds
   // below are sensible wedding-content starters, not sacred.
@@ -201,6 +212,8 @@ const KEY_CATEGORY = {
   "cs.capacity.hasRoom": "settings_sla",
   "cs.capacity.balanced": "settings_sla",
   "cs.capacity.nearFull": "settings_sla",
+  "dealDiscount.freePct": "settings_sla",
+  "moods.items": "settings_moods",
   // Journey v2 (V5) — the engagement content library (its own category).
   "engagement.items": "settings_engagement",
   "engagement.pulseDays": "settings_engagement",
@@ -284,6 +297,20 @@ const validateValue = (key, value) => {
     case "cs.capacity.balanced":
     case "cs.capacity.nearFull":
       if (!isIntInRange(value, 1, 100)) throw err(400, `${key} must be an integer 1–100`);
+      return value;
+    case "dealDiscount.freePct":
+      if (!isIntInRange(value, 0, 100)) throw err(400, "dealDiscount.freePct must be an integer 0–100");
+      return value;
+    case "moods.items": {
+      if (!Array.isArray(value)) throw err(400, "moods.items must be an array");
+      return value.map((m) => ({
+        id: String((m && m.id) || "").trim().slice(0, 60),
+        name: String((m && m.name) || "").slice(0, 120),
+        poem: String((m && m.poem) || "").slice(0, 600),
+        images: Array.isArray(m && m.images) ? m.images.map((u) => String(u).slice(0, 1000)).slice(0, 8) : [],
+        active: (m && m.active) !== false,
+      })).filter((m) => m.id);
+    }
       return value;
     case "engagement.pulseDays":
       if (!isIntInRange(value, 1, 14)) throw err(400, "engagement.pulseDays must be an integer 1–14");
