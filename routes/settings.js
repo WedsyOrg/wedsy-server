@@ -15,6 +15,9 @@ router.put("/billing", CheckAdminLogin, settings.PutBilling);
 // inside the controller, same shape as billing).
 router.get("/engagement", CheckAdminLogin, settings.GetEngagement);
 router.put("/engagement", CheckAdminLogin, settings.PutEngagement);
+// Planner P1 (P6) — the mood library (settings_moods gate).
+router.get("/moods", CheckAdminLogin, settings.GetMoods);
+router.put("/moods", CheckAdminLogin, settings.PutMoods);
 router.get("/", CheckAdminLogin, settings.GetCategory);
 router.put("/", CheckAdminLogin, settings.Put);
 

@@ -155,4 +155,38 @@ const PutEngagement = async (req, res) => {
   }
 };
 
-module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement };
+// Planner P1 (P6) — the mood library, same whole-category surface as engagement.
+const MOODS = "settings_moods";
+const GetMoods = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, MOODS)) {
+      return res.status(403).json({ message: "Forbidden", required: `${MOODS}:edit:all` });
+    }
+    res.status(200).json({ values: await SettingsService.getCategory(MOODS) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+const PutMoods = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, MOODS)) {
+      return res.status(403).json({ message: "Forbidden", required: `${MOODS}:edit:all` });
+    }
+    const body = req.body || {};
+    const keys = Object.keys(body);
+    if (!keys.length) return res.status(400).json({ message: "No settings in body" });
+    for (const key of keys) {
+      if (SettingsService.categoryForKey(key) !== MOODS) {
+        return res.status(400).json({ message: `${key} is not a moods setting` });
+      }
+    }
+    for (const key of keys) await SettingsService.set(key, body[key], req.auth.user_id);
+    res.status(200).json({ values: await SettingsService.getCategory(MOODS) });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement, GetMoods, PutMoods };

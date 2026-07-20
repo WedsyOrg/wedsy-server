@@ -3,7 +3,12 @@ const ObjectId = mongoose.Schema.Types.ObjectId;
 
 const EventSchema = new mongoose.Schema(
   {
-    user: {type: ObjectId, ref: "User", required: true},
+    // P3 (planner): OS DRAFT events may exist before any consumer account —
+    // user relaxed to optional (every couple-facing create still passes it;
+    // existing docs unaffected). leadId/draftName mark an OS draft.
+    user: {type: ObjectId, ref: "User", required: false, default: null},
+    leadId: {type: ObjectId, ref: "Enquiry", default: null, index: true},
+    draftName: {type: String, default: null},
     eventAccess: {type: [String], default: []},
     name: {type: String, required: true},
     brideName: {type: String, default: null},
