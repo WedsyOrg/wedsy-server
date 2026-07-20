@@ -21,15 +21,27 @@ const pickAssignee = async () => {
     "assignment.poolRoles",
     "assignment.overflowRoles",
     "assignment.dailyCap",
+    "assignment.excludedAdminIds",
   ]);
   const poolRoleNames = [...cfg["assignment.poolRoles"], ...cfg["assignment.overflowRoles"]];
   const dailyCap = cfg["assignment.dailyCap"];
+  const excluded = new Set((cfg["assignment.excludedAdminIds"] || []).map(String));
   for (const roleName of poolRoleNames) {
     const role = await Role.findOne({ name: roleName, deletedAt: null }).lean();
     if (!role) continue;
-    const pool = await Admin.find(assignableFilter({ roleId: role._id }))
+    const assignable = await Admin.find(assignableFilter({ roleId: role._id }))
       .sort({ lastAssignedAt: 1 })
       .lean();
+    // Per-member exclusions — but exclusions may never silently kill intake:
+    // an emptied (non-empty) pool falls back to the unexcluded members.
+    let pool = assignable.filter((a) => !excluded.has(String(a._id)));
+    if (!pool.length && assignable.length) {
+      console.warn(
+        `[LeadAssignment] assignment.excludedAdminIds empties the "${roleName}" pool — ` +
+          "falling back to the full assignable pool so intake keeps flowing."
+      );
+      pool = assignable;
+    }
     for (const admin of pool) {
       const assignedToday = await Enquiry.countDocuments({
         assignedTo: admin._id,

@@ -17,6 +17,8 @@ router.get("/engagement", CheckAdminLogin, settings.GetEngagement);
 router.put("/engagement", CheckAdminLogin, settings.PutEngagement);
 // Planner P1 (P6) — the mood library (settings_moods gate).
 router.get("/moods", CheckAdminLogin, settings.GetMoods);
+// Auto-assign exclusions — the pool read (settings_assignment gate).
+router.get("/auto-assign-pool", CheckAdminLogin, settings.GetAutoAssignPool);
 router.put("/moods", CheckAdminLogin, settings.PutMoods);
 router.get("/", CheckAdminLogin, settings.GetCategory);
 router.put("/", CheckAdminLogin, settings.Put);
