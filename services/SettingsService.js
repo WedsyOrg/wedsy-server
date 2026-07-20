@@ -6,6 +6,9 @@ const { KIARA_DEFAULT_SYSTEM_PROMPT } = require("./kiaraDefaultPrompt");
 // the cockpit frontend with {{name}}/{{caller}}/{{time}} placeholders. ───────────
 const DEFAULTS = {
   "assignment.poolRoles": ["Sales Intern"],
+  // Auto-assign exclusions: pool members who never receive round-robin leads
+  // (long leave, ramp-down) without being disabled.
+  "assignment.excludedAdminIds": [],
   "assignment.overflowRoles": ["Sales Executive"],
   "assignment.dailyCap": 15,
   "assignment.autoAssignEnabled": true,
@@ -169,6 +172,7 @@ const DEFAULTS = {
 // key → settings permission category. Every write is gated by ITS category.
 const KEY_CATEGORY = {
   "assignment.poolRoles": "settings_assignment",
+  "assignment.excludedAdminIds": "settings_assignment",
   "assignment.overflowRoles": "settings_assignment",
   "assignment.dailyCap": "settings_assignment",
   "assignment.autoAssignEnabled": "settings_assignment",
@@ -246,6 +250,15 @@ const isIntInRange = (v, min, max) => Number.isInteger(v) && v >= min && v <= ma
 // Strict per-key validation. Throws 400 on anything off.
 const validateValue = (key, value) => {
   switch (key) {
+    case "assignment.excludedAdminIds": {
+      if (!Array.isArray(value)) throw err(400, "assignment.excludedAdminIds must be an array of admin ids");
+      const mongooseLib = require("mongoose");
+      const ids = value.map((v) => String(v).trim()).filter(Boolean);
+      if (!ids.every((id) => mongooseLib.Types.ObjectId.isValid(id))) {
+        throw err(400, "assignment.excludedAdminIds must contain valid admin ids");
+      }
+      return [...new Set(ids)];
+    }
     case "assignment.poolRoles":
     case "assignment.overflowRoles":
     case "lost.reasons":

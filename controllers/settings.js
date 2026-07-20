@@ -189,4 +189,48 @@ const PutMoods = async (req, res) => {
   }
 };
 
-module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement, GetMoods, PutMoods };
+// Auto-assign exclusions — the pool read the Settings FE renders: every
+// member of every pool/overflow role (disabled INCLUDED, flagged) with their
+// exclusion state. Same gate as the assignment settings.
+const ASSIGNMENT = "settings_assignment";
+const GetAutoAssignPool = async (req, res) => {
+  try {
+    const perms = await callerPermissions(req.auth.user_id);
+    if (!canEditCategory(perms, ASSIGNMENT)) {
+      return res.status(403).json({ message: "Forbidden", required: `${ASSIGNMENT}:edit:all` });
+    }
+    const Role = require("../models/Role");
+    const Admin = require("../models/Admin");
+    const cfg = await SettingsService.getMany([
+      "assignment.poolRoles",
+      "assignment.overflowRoles",
+      "assignment.excludedAdminIds",
+    ]);
+    const roleNames = [...cfg["assignment.poolRoles"], ...cfg["assignment.overflowRoles"]];
+    const excluded = new Set((cfg["assignment.excludedAdminIds"] || []).map(String));
+    const roles = await Role.find({ name: { $in: roleNames }, deletedAt: null }, { name: 1 }).lean();
+    const roleById = new Map(roles.map((r) => [String(r._id), r.name]));
+    const members = roles.length
+      ? await Admin.find(
+          { $or: [{ roleId: { $in: roles.map((r) => r._id) } }, { roleIds: { $in: roles.map((r) => r._id) } }] },
+          { name: 1, status: 1, isDisabled: 1, roleId: 1 }
+        ).sort({ name: 1 }).lean()
+      : [];
+    res.status(200).json({
+      roles: roleNames,
+      excludedAdminIds: [...excluded],
+      members: members.map((m) => ({
+        adminId: String(m._id),
+        name: m.name,
+        role: m.roleId ? roleById.get(String(m.roleId)) || null : null,
+        status: m.status,
+        isDisabled: !!m.isDisabled,
+        excluded: excluded.has(String(m._id)),
+      })),
+    });
+  } catch (error) {
+    respond(res, error);
+  }
+};
+
+module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement, GetMoods, PutMoods, GetAutoAssignPool };
