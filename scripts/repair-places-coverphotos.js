@@ -18,11 +18,17 @@
  *     importer originally chose, at its original width.
  *   PLAN B (fallback)  — if Plan A fails for a doc (photo_reference rotated,
  *     non-200, no redirect, or the chain never leaves maps.googleapis.com), fall
- *     back to that venue's own googlePhotos[0], but ONLY if it is itself durable
- *     and keyless. Every affected venue was Places-enriched and already carries
- *     up to 10 resolved lh3 URLs, so this is a same-place photo from the same
- *     source — a slightly different frame, not a wrong image.
+ *     back to the WIDEST durable, keyless entry in that venue's own googlePhotos.
+ *     Every affected venue was Places-enriched and already carries up to 10
+ *     resolved lh3 URLs, so this is a same-place photo from the same source — a
+ *     slightly different frame, not a wrong image.
  *   Only when BOTH fail is the doc left untouched and logged.
+ *
+ * --skip-a bypasses Plan A entirely and repairs straight from googlePhotos,
+ * issuing ZERO Places API calls. That is the right mode while the only available
+ * key is the same expired one embedded in the broken URLs — Plan A can only
+ * produce 403s. Drop the flag once a live key exists; Plan A is strictly better
+ * (it restores the originally-chosen photo at its original width).
  *
  * SCOPE: this script only ever writes the `coverPhoto` field, and only on docs
  * matched by the narrow filter below. No other field on any doc is touched.
@@ -45,9 +51,15 @@
  *   # local repair — key sourced inline from the existing .env var
  *   PLACES_KEY="$GOOGLE_PLACES_API_KEY" node scripts/repair-places-coverphotos.js --apply
  *
+ *   # plan-B only — no key needed, no Places calls
+ *   node scripts/repair-places-coverphotos.js --apply --skip-a
+ *
  *   # PROD repair — BOTH gates required
  *   ALLOW_REMOTE=1 PLACES_KEY="$GOOGLE_PLACES_API_KEY" \
  *     node scripts/repair-places-coverphotos.js --apply
+ *
+ *   # PROD repair, plan-B only (current recommendation — the key is expired)
+ *   ALLOW_REMOTE=1 node scripts/repair-places-coverphotos.js --apply --skip-a
  */
 require("dotenv").config();
 const fs = require("fs");
@@ -60,6 +72,14 @@ const TAG = "[repair-coverphotos]";
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 const APPLY = process.argv.includes("--apply");
 const ALLOW_REMOTE = process.env.ALLOW_REMOTE === "1";
+
+// --skip-a: bypass Plan A entirely and repair straight from googlePhotos. The
+// key embedded in all 46 broken URLs is expired, and the only key available is
+// that same dead key — so Plan A is 46 guaranteed 403s and 46 pointless calls
+// against Google. This flag skips them. Drop the flag the moment a genuinely
+// live key exists: Plan A yields the originally-chosen photo at its original
+// width, which is strictly better than any fallback.
+const SKIP_A = process.argv.includes("--skip-a");
 
 // Live Places key — read from PLACES_KEY and nothing else. There is deliberately
 // NO fallback to GOOGLE_PLACES_API_KEY: the key must be passed explicitly at the
@@ -150,19 +170,56 @@ function isDurableUrl(url) {
 }
 
 /**
- * PLAN B — the venue's own already-resolved Places photos. Returns the first
- * DURABLE entry, or null when none qualifies (in which case the doc is left
+ * Pixel width encoded in a resolved lh3 URL. Google appends a size spec after the
+ * final "=": "s1600-w800", "s4800-w1600", occasionally "w1200-h800". The w term
+ * is the real rendered width and wins; "sNNNN" (max-dimension) is the fallback
+ * signal. Returns 0 when nothing is parseable, which sorts last.
+ *
+ * Only the suffix is parsed, never the whole URL — the opaque photo token before
+ * the "=" is arbitrary base64url and routinely contains "-w<digits>" by chance
+ * (e.g. the-palash's token yields a spurious "w5"). Matching across the full
+ * string would read those as widths and could rank a small image highest.
+ */
+function photoWidth(url) {
+  const s = String(url);
+  const eq = s.lastIndexOf("=");
+  if (eq === -1) return 0;
+  const spec = s.slice(eq + 1); // e.g. "s1600-w800"
+  const w = spec.match(/(?:^|-)w(\d+)/);
+  if (w) return parseInt(w[1], 10);
+  const sz = spec.match(/(?:^|-)s(\d+)/);
+  if (sz) return parseInt(sz[1], 10);
+  return 0;
+}
+
+/**
+ * PLAN B — the venue's own already-resolved Places photos. Returns the WIDEST
+ * durable entry, or null when none qualifies (in which case the doc is left
  * unchanged and logged).
  *
- * Note: this scans for the first durable entry rather than testing googlePhotos[0]
- * and giving up if that one specific slot fails — otherwise a single junk entry
- * at index 0 would strand a venue that has nine perfectly good photos behind it.
- * On the current data the two are identical (all 459 entries across the 46 docs
- * are lh3), so this only ever matters as a safety margin.
+ * Widest, not first: these covers are rendered as hero images, and the resolved
+ * set genuinely varies (w480 through w1600 across the catalogue). Taking
+ * googlePhotos[0] blindly left flagship venues — itc-gardenia, jw-marriott,
+ * the-ritz-carlton, sheraton-grand, itc-windsor — on a 480px cover while an
+ * 800px frame of the same place sat in the same array.
+ *
+ * Scanning the whole array also means a single junk entry at index 0 cannot
+ * strand a venue that has nine good photos behind it. Ties keep the earlier
+ * entry, so ordering stays stable and the choice is deterministic.
  */
 function pickFallbackUrl(doc) {
   const photos = Array.isArray(doc.googlePhotos) ? doc.googlePhotos : [];
-  return photos.find((u) => isDurableUrl(u)) || null;
+  let best = null;
+  let bestWidth = -1;
+  for (const url of photos) {
+    if (!isDurableUrl(url)) continue;
+    const w = photoWidth(url);
+    if (w > bestWidth) {
+      best = url;
+      bestWidth = w;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +238,8 @@ function assertMongoTarget() {
   console.log(`${TAG} ┌───────────────────────────────────────────`);
   console.log(`${TAG} │ TARGET HOST: ${host}  (${isLocal ? "local" : "REMOTE"})`);
   console.log(`${TAG} │ MODE: ${APPLY ? "APPLY" : "DRY-RUN"}  ALLOW_REMOTE=${ALLOW_REMOTE ? "1" : "0"}`);
-  console.log(`${TAG} │ PLACES_KEY: ${PLACES_KEY ? "present" : "NOT SET"}`);
+  console.log(`${TAG} │ PLAN: ${SKIP_A ? "B ONLY (--skip-a — no Places API calls)" : "A → B fallback"}`);
+  console.log(`${TAG} │ PLACES_KEY: ${SKIP_A ? "not required (--skip-a)" : PLACES_KEY ? "present" : "NOT SET"}`);
   console.log(`${TAG} └───────────────────────────────────────────`);
   if (isLocal) return host;
   if (!ALLOW_REMOTE || !APPLY) {
@@ -333,25 +391,42 @@ async function run() {
       if (fallback) planBReady++;
       console.log(`${TAG} ${String(i + 1).padStart(3)}. _id=${d._id}  slug=${d.slug || "(none)"}`);
       console.log(`${TAG}       host=${hostOf(d.coverPhoto)}  cover=${truncate(d.coverPhoto)}`);
-      console.log(
-        `${TAG}       plan-B fallback: ${fallback ? `${hostOf(fallback)} (of ${d.googlePhotos.length} googlePhotos)` : "NONE — would be logged as a failure if A fails"}`
-      );
+      if (fallback) {
+        const widths = d.googlePhotos.filter(isDurableUrl).map(photoWidth);
+        console.log(
+          `${TAG}       plan-B fallback: ${hostOf(fallback)} w${photoWidth(fallback)} ` +
+            `(widest of ${widths.length} durable googlePhotos; widths ${widths.join("/")})`
+        );
+      } else {
+        console.log(`${TAG}       plan-B fallback: NONE — would be logged as a failure if A fails`);
+      }
     });
     console.log(`${TAG} --- end of list: ${docs.length} venue(s) ---`);
     console.log(`${TAG} plan-B fallback available for ${planBReady}/${docs.length} venue(s)`);
-    console.log(
-      `${TAG} → worst case (every plan-A resolve fails): ${planBReady} repaired via B, ` +
-        `${docs.length - planBReady} logged as failures.`
-    );
+    if (SKIP_A) {
+      console.log(
+        `${TAG} --skip-a: plan A bypassed entirely — an --apply run would repair ` +
+          `${planBReady} via B and log ${docs.length - planBReady} failure(s), with ZERO Places API calls.`
+      );
+    } else {
+      console.log(
+        `${TAG} → worst case (every plan-A resolve fails): ${planBReady} repaired via B, ` +
+          `${docs.length - planBReady} logged as failures.`
+      );
+    }
     console.log(`${TAG} DRY-RUN — no HTTP requests issued, no documents written.`);
-    console.log(`${TAG} Re-run with PLACES_KEY="$GOOGLE_PLACES_API_KEY" --apply to repair.`);
+    console.log(
+      SKIP_A
+        ? `${TAG} Re-run with --apply --skip-a to repair (no PLACES_KEY needed).`
+        : `${TAG} Re-run with PLACES_KEY="$GOOGLE_PLACES_API_KEY" --apply to repair.`
+    );
     await mongoose.disconnect();
     console.log(`${TAG} DONE`);
     return;
   }
 
   // ---- APPLY ----
-  if (!PLACES_KEY) {
+  if (!PLACES_KEY && !SKIP_A) {
     throw new Error(
       `Refusing to --apply: PLACES_KEY is not set. There is no fallback to ` +
         `GOOGLE_PLACES_API_KEY by design — pass it explicitly at the call site:\n` +
@@ -375,15 +450,18 @@ async function run() {
     const d = docs[i];
     const label = `${String(i + 1).padStart(3)}/${docs.length} ${d.slug || d._id}`;
 
-    // ---- PLAN A ----
-    const result = await resolveDurableUrl(d.coverPhoto);
-    if (result.ok) {
-      // ONLY coverPhoto is ever set. Nothing else on the doc is touched.
-      await Venue.updateOne({ _id: d._id }, { $set: { coverPhoto: result.finalUrl } });
-      repairedA++;
-      console.log(`${TAG} ${label} A:OK → ${result.host}`);
-      await sleep(FETCH_DELAY_MS);
-      continue;
+    // ---- PLAN A ---- (skipped wholesale under --skip-a: no request is issued)
+    let result = { ok: false, reason: "plan A skipped (--skip-a)" };
+    if (!SKIP_A) {
+      result = await resolveDurableUrl(d.coverPhoto);
+      if (result.ok) {
+        // ONLY coverPhoto is ever set. Nothing else on the doc is touched.
+        await Venue.updateOne({ _id: d._id }, { $set: { coverPhoto: result.finalUrl } });
+        repairedA++;
+        console.log(`${TAG} ${label} A:OK → ${result.host}`);
+        await sleep(FETCH_DELAY_MS);
+        continue;
+      }
     }
 
     // ---- PLAN B ----
@@ -392,7 +470,8 @@ async function run() {
       await Venue.updateOne({ _id: d._id }, { $set: { coverPhoto: fallback } });
       repairedB++;
       console.log(
-        `${TAG} ${label} A:FAILED (${result.reason}) → B:OK using googlePhotos → ${hostOf(fallback)}`
+        `${TAG} ${label} ${SKIP_A ? "B:OK (A skipped)" : `A:FAILED (${result.reason}) → B:OK`} ` +
+          `→ ${hostOf(fallback)} w${photoWidth(fallback)}`
       );
     } else {
       const nPhotos = Array.isArray(d.googlePhotos) ? d.googlePhotos.length : 0;
@@ -401,7 +480,8 @@ async function run() {
       console.log(`${TAG} ${label} A+B FAILED — left unchanged (${reason})`);
     }
 
-    await sleep(FETCH_DELAY_MS);
+    // Under --skip-a nothing was fetched, so there is no API to be gentle with.
+    if (!SKIP_A) await sleep(FETCH_DELAY_MS);
   }
 
   // ---- VERIFY ----
