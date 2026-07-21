@@ -17,6 +17,7 @@ const RESOURCES = [
   // founder role's *:*:all wildcard; never seeded to other roles).
   "settings_kiara",
   "settings_moods",
+  "settings_planner",
 ];
 const ACTIONS = ["view", "create", "edit", "delete", "assign", "export", "approve"];
 const SCOPES = ["own", "team", "department", "all"];

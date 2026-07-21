@@ -49,11 +49,11 @@ const AddLook = wrap(async (req, res) => {
 });
 const PatchLook = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(200).json({ look: await PlanService.patchLook(req.params._id, req.params.lookId, req.body || {}) });
+  res.status(200).json({ look: await PlanService.patchLook(req.params._id, req.params.lookId, req.body || {}, req.auth.user_id) });
 });
 const DeleteLook = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(200).json(await PlanService.removeLook(req.params._id, req.params.lookId));
+  res.status(200).json(await PlanService.removeLook(req.params._id, req.params.lookId, req.auth.user_id));
 });
 const ReactLook = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
@@ -65,10 +65,18 @@ const ReactMood = wrap(async (req, res) => {
 });
 const PatchPlan = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  if ((req.body || {}).styleSignature === undefined) {
-    return res.status(400).json({ message: "Nothing to update (styleSignature)." });
+  const body = req.body || {};
+  const out = {};
+  if (body.styleSignature !== undefined) {
+    Object.assign(out, await PlanService.setStyleSignature(req.params._id, body.styleSignature));
   }
-  res.status(200).json(await PlanService.setStyleSignature(req.params._id, req.body.styleSignature));
+  if (body.selectionComplete !== undefined) {
+    Object.assign(out, await PlanService.setSelectionComplete(req.params._id, body.selectionComplete));
+  }
+  if (!Object.keys(out).length) {
+    return res.status(400).json({ message: "Nothing to update (styleSignature | selectionComplete)." });
+  }
+  res.status(200).json(out);
 });
 
 // ── P2 ────────────────────────────────────────────────────────────────────────
@@ -116,19 +124,27 @@ const ListDrafts = wrap(async (req, res) => {
 // ── P4 ────────────────────────────────────────────────────────────────────────
 const AddDay = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(201).json({ day: await DraftEventService.addDay(req.params._id, req.params.eventId, req.body || {}) });
+  res.status(201).json({ day: await DraftEventService.addDay(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id) });
 });
 const AddItem = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(201).json({ item: await DraftEventService.addItem(req.params._id, req.params.eventId, req.params.dayId, req.body || {}) });
+  const body = req.body || {};
+  // A7 — draftIds[]: write the same product into several drafts at once
+  // (independent copies).
+  if (Array.isArray(body.draftIds) && body.draftIds.length) {
+    return res.status(201).json(
+      await DraftEventService.addItemMulti(req.params._id, req.params.eventId, req.params.dayId, body, body.draftIds, req.auth.user_id)
+    );
+  }
+  res.status(201).json({ item: await DraftEventService.addItem(req.params._id, req.params.eventId, req.params.dayId, body, req.auth.user_id) });
 });
 const PatchItem = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(200).json({ item: await DraftEventService.patchItem(req.params._id, req.params.eventId, req.params.dayId, req.params.itemId, req.body || {}) });
+  res.status(200).json({ item: await DraftEventService.patchItem(req.params._id, req.params.eventId, req.params.dayId, req.params.itemId, req.body || {}, req.auth.user_id) });
 });
 const DeleteItem = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(200).json(await DraftEventService.removeItem(req.params._id, req.params.eventId, req.params.dayId, req.params.itemId));
+  res.status(200).json(await DraftEventService.removeItem(req.params._id, req.params.eventId, req.params.dayId, req.params.itemId, req.auth.user_id));
 });
 const ReorderItems = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
@@ -136,7 +152,7 @@ const ReorderItems = wrap(async (req, res) => {
 });
 const AddPackage = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
-  res.status(201).json({ package: await DraftEventService.addPackage(req.params._id, req.params.eventId, req.params.dayId, req.body || {}) });
+  res.status(201).json({ package: await DraftEventService.addPackage(req.params._id, req.params.eventId, req.params.dayId, req.body || {}, req.auth.user_id) });
 });
 const DeletePackage = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
@@ -188,8 +204,79 @@ const Reveal = wrap(async (req, res) => {
   res.status(200).json(await PlanComposerService.reveal(req.params._id));
 });
 
+// ── ADDENDUM A1–A8 ───────────────────────────────────────────────────────────
+const ThemeService = require("../services/ThemeService");
+const LogWorkService = require("../services/LogWorkService");
+
+const SelectTheme = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json({ selectedThemes: await PlanService.selectTheme(req.params._id, req.body || {}, req.auth.user_id) });
+});
+const MoreRequests = wrap(async (req, res) => {
+  await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
+  res.status(200).json({ list: await PlanService.listMoreRequests(req.params._id, { includeFulfilled: req.query.includeFulfilled === "1" }) });
+});
+const InternalMoreOptions = wrap(async (req, res) => {
+  res.status(201).json({ request: await PlanService.requestMoreOptions(req.body || {}) });
+});
+const ThemesList = wrap(async (req, res) => {
+  res.status(200).json({ themes: await ThemeService.list({ eventType: req.query.eventType }) });
+});
+const ThemeCatalogue = wrap(async (req, res) => {
+  res.status(200).json(await ThemeService.catalogue(req.params.themeId, { categoryKey: req.query.categoryKey, limit: req.query.limit }));
+});
+const PresentPublish = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  const out = await PlanSnapshotService.publishPresent(req.params._id, req.body || {}, req.auth.user_id);
+  res.status(201).json(out);
+});
+const FinaliseDraft = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await DraftEventService.finalise(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id));
+});
+const UnlockDraft = wrap(async (req, res) => {
+  // Owner/manager ONLY — the deliberate deal-value reopen (no lane-owner path).
+  const inScope = await Enquiry.findOne({ $and: [{ _id: req.params._id }, req.scopeFilter || {}] }, { _id: 1 }).lean();
+  if (!inScope) return res.status(403).json({ message: "Unlock is the lead owner's / manager's call." });
+  res.status(200).json(await DraftEventService.unlock(req.params._id, req.params.eventId, req.auth.user_id));
+});
+const PublishDraft = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await DraftEventService.publishDraft(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id));
+});
+const RevokeDraft = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await DraftEventService.revokeDraft(req.params._id, req.params.eventId, req.auth.user_id));
+});
+const InternalPublishedDraft = wrap(async (req, res) => {
+  res.status(200).json({ snapshot: await DraftEventService.publishedSnapshotFor(req.params.leadId, req.params.eventId) });
+});
+const PushToBuild = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await DraftEventService.pushToBuild(req.params._id, req.body || {}, req.auth.user_id));
+});
+const CopyItem = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await DraftEventService.copyItem(req.params._id, req.params.eventId, req.params.dayId, req.params.itemId, req.body || {}, req.auth.user_id));
+});
+const MoveItem = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await DraftEventService.moveItem(req.params._id, req.params.eventId, req.params.dayId, req.params.itemId, req.body || {}, req.auth.user_id));
+});
+const LogWorkCompose = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(await LogWorkService.composeBrief(req.params._id));
+});
+const LogWorkCommit = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(201).json(await LogWorkService.commit(req.params._id, req.body || {}, req.auth.user_id));
+});
+
 module.exports = {
   GetPlan, AddLook, PatchLook, DeleteLook, ReactLook, ReactMood, PatchPlan,
+  SelectTheme, MoreRequests, InternalMoreOptions, ThemesList, ThemeCatalogue,
+  PresentPublish, FinaliseDraft, UnlockDraft, PublishDraft, RevokeDraft, InternalPublishedDraft,
+  PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
   CreateDraft, ListDrafts,

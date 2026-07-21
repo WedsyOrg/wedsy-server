@@ -9,6 +9,17 @@ const EventSchema = new mongoose.Schema(
     user: {type: ObjectId, ref: "User", required: false, default: null},
     leadId: {type: ObjectId, ref: "Enquiry", default: null, index: true},
     draftName: {type: String, default: null},
+    // Addendum A5 (additive) — the finalise lock: a finalised draft is the
+    // committed bill of materials; edits require explicit unlock.
+    locked: {type: Boolean, default: false},
+    lockedAt: {type: Date, default: null},
+    lockedBy: {type: ObjectId, ref: "Admin", default: null},
+    finalisedBy: {type: String, enum: [null, "couple", "admin"], default: null},
+    // Addendum A6 (additive) — per-draft publish membrane.
+    published: {type: Boolean, default: false},
+    publishedAt: {type: Date, default: null},
+    publishedSnapshotId: {type: ObjectId, ref: "PlanSnapshot", default: null},
+    hasUnpublishedChanges: {type: Boolean, default: false},
     eventAccess: {type: [String], default: []},
     name: {type: String, required: true},
     brideName: {type: String, default: null},

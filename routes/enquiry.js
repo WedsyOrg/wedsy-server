@@ -672,6 +672,32 @@ router.post("/:_id/plan/feed-decor-lane", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.FeedDecorLane);
 router.get("/:_id/plan/moods", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.Moods);
+// ── PLANNER ADDENDUM (A1–A8) ─────────────────────────────────────────────────
+router.post("/:_id/plan/select-theme", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.SelectTheme);
+router.get("/:_id/plan/more-requests", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.MoreRequests);
+router.post("/:_id/plan/present/publish", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PresentPublish);
+router.post("/:_id/plan/looks/push-to-build", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PushToBuild);
+router.post("/:_id/plan/drafts/:eventId/finalise", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.FinaliseDraft);
+router.post("/:_id/plan/drafts/:eventId/unlock", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.UnlockDraft);
+router.post("/:_id/plan/drafts/:eventId/publish", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PublishDraft);
+router.post("/:_id/plan/drafts/:eventId/revoke", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.RevokeDraft);
+router.post("/:_id/plan/drafts/:eventId/days/:dayId/items/:itemId/copy", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.CopyItem);
+router.post("/:_id/plan/drafts/:eventId/days/:dayId/items/:itemId/move", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.MoveItem);
+router.post("/:_id/plan/log-work", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.LogWorkCompose);
+router.post("/:_id/plan/log-work/commit", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.LogWorkCommit);
+
 router.get("/:_id/plan/reveal", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.Reveal);
 

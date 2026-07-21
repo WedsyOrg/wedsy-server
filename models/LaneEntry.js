@@ -14,7 +14,7 @@ const LaneEntrySchema = new mongoose.Schema(
     authorId: { type: ObjectId, ref: "Admin", default: null }, // null for auto
     autoType: {
       type: String,
-      enum: ["", "call_logged", "meeting_booked", "task_done", "lane_woken", "proposal_sent", "agreement", "payment", "lane_opened", "owner_changed", "brief_saved", "lane_priced", "engagement_sent", "meeting_updated", "nudge"],
+      enum: ["", "call_logged", "meeting_booked", "task_done", "lane_woken", "proposal_sent", "agreement", "payment", "lane_opened", "owner_changed", "brief_saved", "lane_priced", "engagement_sent", "meeting_updated", "nudge", "log_work"],
       default: "",
     },
     at: { type: Date, default: Date.now },
