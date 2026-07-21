@@ -7,5 +7,5 @@ ecosystem.config.js
 *.swp
 # Next.js build artifacts (should never be committed in a backend repo)
 .next/
-# Migration backup dumps (contain pre-repair field values)
+# Migration backup dumps (contain pre-repair field values, incl. dead API keys)
 /scripts/backups/

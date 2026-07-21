@@ -1,5 +1,27 @@
 const mongoose = require("mongoose");
 
+// ---------------------------------------------------------------------------
+// coverPhoto durability guard
+//
+// Rejects raw Google Places Photo endpoint URLs — the shape that embeds an API
+// key and breaks permanently when that key rotates:
+//   https://maps.googleapis.com/maps/api/place/photo?...&key=<KEY>
+//
+// Durable URLs are unaffected: lh3.googleusercontent.com (the resolved target),
+// image.wedmegood.com, *.cloudfront.net, *.s3.*.amazonaws.com all pass, as do
+// "" (the schema default) and unset.
+//
+// NOTE: this is a narrow, interim guard aimed at one known failure mode. The
+// broader "coverPhoto must be a Wedsy-owned S3 asset" rule is specced separately
+// and lands with the S3 migration; this is deliberately not that.
+// ---------------------------------------------------------------------------
+const RAW_PLACES_PHOTO_RE = /maps\.googleapis\.com\/maps\/api\/place\/photo/i;
+
+function isDurableCoverPhoto(value) {
+  if (value === undefined || value === null || value === "") return true;
+  return !RAW_PLACES_PHOTO_RE.test(String(value));
+}
+
 const VenueSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   slug: { type: String, required: true, unique: true },
@@ -130,7 +152,23 @@ const VenueSchema = new mongoose.Schema({
     rooms: [String],
     spaces: [String],
   },
-  coverPhoto: { type: String, default: "" },
+  // A raw Google Places Photo endpoint URL is NOT a durable image: it carries an
+  // embedded API key and dies the moment that key is rotated or revoked. That is
+  // exactly what happened to 46 published venues (repaired by
+  // scripts/repair-places-coverphotos.js). The endpoint is a redirector — always
+  // follow its 302 and persist the final lh3.googleusercontent.com URL instead.
+  // See RAW_PLACES_PHOTO_RE / assertDurableCoverPhoto below.
+  coverPhoto: {
+    type: String,
+    default: "",
+    validate: {
+      validator: isDurableCoverPhoto,
+      message: (p) =>
+        `coverPhoto must not be a raw Google Places Photo URL with an embedded key ` +
+        `(got "${String(p.value).slice(0, 80)}…"). Resolve the 302 and store the ` +
+        `final lh3.googleusercontent.com URL instead.`,
+    },
+  },
   featurePhoto: { type: String, default: "" },
   // Venue brand logo (URL from the /file/upload flow, or a data: URI). Rendered
   // top-left on quote/invoice PDFs when set; absence degrades gracefully.
@@ -216,9 +254,48 @@ const VenueSchema = new mongoose.Schema({
   },
 }, { timestamps: true });
 
+// Path validators only fire on document save()/create() — Mongoose skips them on
+// update queries unless the caller opts in with runValidators. The failure this
+// guard exists to prevent came from an ad-hoc script calling updateOne directly,
+// so the same rule is enforced at the query layer, where no opt-in is needed.
+// Only payloads that actually carry coverPhoto are inspected; every other update
+// passes through untouched.
+function guardCoverPhotoUpdate(next) {
+  const update = this.getUpdate();
+  if (!update) return next();
+  for (const container of [update, update.$set, update.$setOnInsert]) {
+    if (!container || typeof container !== "object") continue;
+    if (!Object.prototype.hasOwnProperty.call(container, "coverPhoto")) continue;
+    if (!isDurableCoverPhoto(container.coverPhoto)) {
+      return next(
+        new Error(
+          `Venue.coverPhoto: refusing to persist a raw Google Places Photo URL with an ` +
+            `embedded API key — it breaks when the key rotates. Follow the endpoint's 302 ` +
+            `and store the final lh3.googleusercontent.com URL instead. ` +
+            `(got "${String(container.coverPhoto).slice(0, 80)}…")`
+        )
+      );
+    }
+  }
+  return next();
+}
+
+VenueSchema.pre("updateOne", guardCoverPhotoUpdate);
+VenueSchema.pre("updateMany", guardCoverPhotoUpdate);
+VenueSchema.pre("findOneAndUpdate", guardCoverPhotoUpdate);
+VenueSchema.pre("replaceOne", guardCoverPhotoUpdate);
+
 VenueSchema.index({ location: "2dsphere" }, { sparse: true });
 VenueSchema.index({ slug: 1 });
 VenueSchema.index({ status: 1 });
 VenueSchema.index({ city: 1, venueType: 1 });
 
-module.exports = mongoose.model("Venue", VenueSchema);
+const VenueModel = mongoose.model("Venue", VenueSchema);
+
+// Exposed so scripts/verify-coverphoto-guard.js can exercise the coverPhoto
+// guard — both the predicate and the exact function registered as the update
+// hook — without a database connection. Not part of the runtime API.
+VenueModel.isDurableCoverPhoto = isDurableCoverPhoto;
+VenueModel.__guardCoverPhotoUpdate = guardCoverPhotoUpdate;
+
+module.exports = VenueModel;
