@@ -27,6 +27,10 @@
  *
  * SCOPE: writes `coverPhoto` and appends to `photos.venue[]`. Nothing else on
  * any document is touched, and only venues in the target set are considered.
+ * The target set is deliberately narrow — covers that are BROKEN TODAY (dead, or
+ * empty on a published listing). Covers that still serve are left alone, lh3
+ * included: those tokens will rot, but that is the S3 migration's job, not this
+ * script's, and replacing a working image has no present benefit.
  *
  * SAFETY:
  *   - Dry-run by default. Dry-run live-checks covers to compute the target set
@@ -301,9 +305,12 @@ async function downloadPhoto(photoRef) {
 // ---------------------------------------------------------------------------
 
 /**
- * A venue is a target when its cover is dead, is an lh3 URL (alive or not —
- * those tokens are actively rotting, so re-sourcing pre-empts the next outage),
- * or is empty on a published listing.
+ * A venue is a target when its cover is DEAD (403/404/network failure/non-image)
+ * or is empty on a published listing — i.e. something is visibly broken today.
+ *
+ * Covers that still serve are never targeted, including lh3 ones. Those tokens
+ * are known to rot, but they work right now; re-sourcing them is deferred to the
+ * full S3 migration rather than churning live listings here.
  */
 async function classify(v) {
   const cover = v.coverPhoto || "";
@@ -324,7 +331,12 @@ async function classify(v) {
 
   const live = await isLive(cover);
   if (!live.ok) return { target: true, reason: `dead: ${live.detail}` };
-  if (isLh3(cover)) return { target: true, reason: "lh3 cover still live but rotting" };
+  if (isLh3(cover)) {
+    // Still serving. Deferred deliberately: these tokens WILL rot, but replacing
+    // a working image costs Places quota and churns a live listing for no
+    // present benefit. They belong to the full S3 migration, not this stopgap.
+    return { target: false, skipped: "lh3 cover still live — deferred to the S3 migration" };
+  }
   return { target: false };
 }
 
