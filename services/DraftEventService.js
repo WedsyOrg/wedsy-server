@@ -116,6 +116,93 @@ const listDrafts = async (leadId) => {
   return rows;
 };
 
+// ONE draft with its full day→item detail — the shape the FE item table
+// renders. Read-only (OS *or* couple-origin events on this lead, like the
+// list). The list carries totals but not items; this fills that gap.
+const getDraftDetail = async (leadId, eventId) => {
+  if (!isId(leadId) || !isId(eventId)) throw err(400, "Invalid id");
+  const event = await Event.findOne({ _id: eventId, leadId }).lean();
+  if (!event) {
+    // Couple-origin events are reachable through the Onboarding bridge; still
+    // read-only, but visible in the list, so readable here too.
+    const bridge = await Onboarding.findOne({ leadId, eventId }, { eventId: 1 }).lean();
+    if (!bridge) throw err(404, "Draft not found on this lead");
+  }
+  const doc = event || (await Event.findById(eventId).lean());
+  if (!doc) throw err(404, "Draft not found");
+
+  // Batch-hydrate the decor display fields (name / category / thumbnail) the
+  // item table needs — the subdoc stores only the decor ObjectId.
+  const decorIds = [
+    ...new Set(
+      (doc.eventDays || [])
+        .flatMap((d) => d.decorItems || [])
+        .map((it) => String(it.decor || ""))
+        .filter(Boolean)
+    ),
+  ];
+  const decors = decorIds.length
+    ? await Decor.find({ _id: { $in: decorIds } }, { name: 1, category: 1, thumbnail: 1, image: 1 }).lean()
+    : [];
+  const decorById = new Map(decors.map((d) => [String(d._id), d]));
+
+  const mapItem = (it) => {
+    const d = decorById.get(String(it.decor || "")) || {};
+    return {
+      _id: String(it._id),
+      decor: it.decor ? String(it.decor) : null,
+      decorId: it.decor ? String(it.decor) : null,
+      name: d.name || "",
+      category: it.category || d.category || "",
+      thumbnail: d.thumbnail || d.image || "",
+      variant: it.variant || "Standard",
+      productVariant: it.productVariant || "",
+      quantity: it.quantity != null ? it.quantity : 1,
+      unit: it.unit || "",
+      platform: !!it.platform,
+      platformRate: Number(it.platformRate) || 0,
+      flooring: it.flooring || "",
+      flooringRate: Number(it.flooringRate) || 0,
+      decorPrice: Number(it.decorPrice) || 0,
+      priceModifier: Number(it.priceModifier) || 0,
+      dimensions: {
+        length: (it.dimensions && it.dimensions.length) || 0,
+        breadth: (it.dimensions && it.dimensions.breadth) || 0,
+        height: (it.dimensions && it.dimensions.height) || 0,
+      },
+      addOns: (it.addOns || []).map((a) => ({ name: a.name || "", price: Number(a.price) || 0, notes: a.notes || "" })),
+      included: it.included || [],
+      user_notes: it.user_notes || "",
+      admin_notes: it.admin_notes || "",
+      setupLocationImage: it.setupLocationImage || "",
+      price: Number(it.price) || 0,
+    };
+  };
+
+  const days = (doc.eventDays || []).map((day) => ({
+    dayId: String(day._id),
+    name: day.name || "",
+    date: day.date || "",
+    time: day.time || "",
+    venue: day.venue || "",
+    // FE derives functionKey from the day name (lowercased); expose it too.
+    functionKey: String(day.name || "").toLowerCase(),
+    decorItems: (day.decorItems || []).map(mapItem),
+    packages: day.packages || [],
+    customItems: day.customItems || [],
+    mandatoryItems: day.mandatoryItems || [],
+  }));
+
+  return {
+    eventId: String(doc._id),
+    name: doc.draftName || doc.name,
+    origin: event ? "os" : "couple",
+    status: doc.status || {},
+    totals: await totalsFor(doc),
+    days,
+  };
+};
+
 // OS-draft guard: writes NEVER touch couple-origin events. A5: a LOCKED
 // (finalised) draft refuses writes with 409 until explicitly unlocked.
 const getDraft = async (leadId, eventId, { forWrite = false } = {}) => {
@@ -196,6 +283,9 @@ const composeItem = async (input = {}, existing = null) => {
     included: Array.isArray(merged.included) ? merged.included.map(String) : item.included || [],
     user_notes: String(merged.user_notes ?? item.user_notes ?? ""),
     admin_notes: String(merged.admin_notes ?? item.admin_notes ?? ""),
+    // Setup-reference image URL (the ⚙ editor's "setup reference"). Subdoc-backed
+    // (Event.decorItems.setupLocationImage); whitelist-added here so it round-trips.
+    setupLocationImage: String(merged.setupLocationImage ?? item.setupLocationImage ?? ""),
     primaryColor: String(merged.primaryColor ?? item.primaryColor ?? ""),
     secondaryColor: String(merged.secondaryColor ?? item.secondaryColor ?? ""),
   };
@@ -591,7 +681,7 @@ const addItemMulti = async (leadId, primaryEventId, dayId, input = {}, draftIds 
 };
 
 module.exports = {
-  createDraft, listDrafts, getDraft, totalsFor,
+  createDraft, listDrafts, getDraftDetail, getDraft, totalsFor,
   finalise, unlock, publishDraft, revokeDraft, publishedSnapshotFor,
   pushToBuild, copyItem, moveItem, addItemMulti,
   addDay, addItem, patchItem, removeItem, reorderItems,
