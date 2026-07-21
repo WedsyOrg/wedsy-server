@@ -19,6 +19,11 @@ router.put("/engagement", CheckAdminLogin, settings.PutEngagement);
 router.get("/moods", CheckAdminLogin, settings.GetMoods);
 // Auto-assign exclusions — the pool read (settings_assignment gate).
 router.get("/auto-assign-pool", CheckAdminLogin, settings.GetAutoAssignPool);
+// Addendum A1 — Planner themes (settings_planner gate).
+router.get("/themes", CheckAdminLogin, settings.ListThemes);
+router.post("/themes", CheckAdminLogin, settings.CreateTheme);
+router.patch("/themes/:id", CheckAdminLogin, settings.PatchTheme);
+router.delete("/themes/:id", CheckAdminLogin, settings.DeleteTheme);
 router.put("/moods", CheckAdminLogin, settings.PutMoods);
 router.get("/", CheckAdminLogin, settings.GetCategory);
 router.put("/", CheckAdminLogin, settings.Put);

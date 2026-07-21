@@ -82,19 +82,20 @@ const created = { leads: [], admins: [], users: [], events: [], decors: [], pack
     created.events.push(dBare._id);
     ok(dBare.user === null && dBare.eventDays.length === 0, "no consumer account / no discovery → null user, empty days (schema relaxed)");
 
-    // 3-cap
-    created.events.push((await DraftEventService.createDraft(lead._id, { name: "Realistic" }, admin._id))._id);
-    created.events.push((await DraftEventService.createDraft(lead._id, { name: "Budget" }, admin._id))._id);
+    // cap (addendum: raised to 5 per the locked flow)
+    for (const n of ["Realistic", "Budget", "Fourth", "Fifth"]) {
+      created.events.push((await DraftEventService.createDraft(lead._id, { name: n }, admin._id))._id);
+    }
     let cap = null;
-    try { await DraftEventService.createDraft(lead._id, { name: "Fourth" }, admin._id); } catch (e) { cap = e; }
-    ok(cap && cap.status === 422, "the fourth draft is refused (422 cap)");
+    try { await DraftEventService.createDraft(lead._id, { name: "Sixth" }, admin._id); } catch (e) { cap = e; }
+    ok(cap && cap.status === 422, "the sixth draft is refused (422 cap, addendum)");
 
     // couple-origin listing via the Onboarding bridge
     const coupleEvent = await Event.create({ user: couple._id, name: `${TAG}-couple-event` });
     created.events.push(coupleEvent._id);
     created.onboardings.push((await Onboarding.create({ leadId: lead._id, eventId: coupleEvent._id }))._id);
     const listed = await DraftEventService.listDrafts(lead._id);
-    ok(listed.filter((r) => r.origin === "os").length === 3, "three OS drafts list");
+    ok(listed.filter((r) => r.origin === "os").length === 5, "all OS drafts list");
     const coupleRow = listed.find((r) => r.origin === "couple");
     ok(!!coupleRow && coupleRow.eventId === String(coupleEvent._id), "the couple-origin event lists via the Onboarding bridge");
 

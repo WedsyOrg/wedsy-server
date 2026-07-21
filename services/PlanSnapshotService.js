@@ -19,7 +19,10 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 // ── Content composers (all output is FROZEN — plain data, no ids the couple
 //    app must re-resolve) ────────────────────────────────────────────────────
-const composeDraftContent = async (leadId, eventId) => {
+// `full` (A6) = the couple event-view fidelity: every item/qty/variant/
+// setup/add-on/per-line price. EXCLUDED always: admin_notes (team-only).
+// Cost prices don't exist on the item subdocs — nothing to strip there.
+const composeDraftContent = async (leadId, eventId, { full = false } = {}) => {
   const event = await DraftEventService.getDraft(leadId, eventId);
   const totals = await DraftEventService.totalsFor(event);
   const decorIds = [];
@@ -50,6 +53,20 @@ const composeDraftContent = async (leadId, eventId) => {
           category: i.category,
           quantity: i.quantity,
           price: i.price,
+          ...(full
+            ? {
+                variant: i.variant,
+                productVariant: i.productVariant || "",
+                unit: i.unit || "",
+                platform: !!i.platform,
+                flooring: i.flooring || "",
+                dimensions: i.dimensions || {},
+                addOns: (i.addOns || []).map((a) => ({ name: a.name, price: a.price, notes: a.notes || "" })),
+                included: i.included || [],
+                notes: i.user_notes || "", // couple-facing; admin_notes stays internal
+                setupLocationImage: i.setupLocationImage || "",
+              }
+            : {}),
         })),
         ...day.packages.map((p) => ({
           kind: "package",
@@ -103,7 +120,7 @@ const composeComparisonContent = async (leadId, eventIds = []) => {
 };
 
 // ── Publish ──────────────────────────────────────────────────────────────────
-const publish = async (leadId, { kind, title, coverNote, pricingVisible, forDecision, eventId, eventIds, lookIds, blocks } = {}, actorId) => {
+const publish = async (leadId, { kind, title, coverNote, pricingVisible, forDecision, eventId, eventIds, lookIds, blocks, full } = {}, actorId) => {
   if (!isId(leadId)) throw err(400, "Invalid lead id");
   if (!["reveal", "options", "draft", "comparison"].includes(kind)) {
     throw err(400, 'kind must be "reveal" | "options" | "draft" | "comparison"');
@@ -111,7 +128,7 @@ const publish = async (leadId, { kind, title, coverNote, pricingVisible, forDeci
   let content = {};
   if (kind === "draft") {
     if (!isId(eventId)) throw err(400, "A draft snapshot needs an eventId");
-    content = await composeDraftContent(leadId, eventId);
+    content = await composeDraftContent(leadId, eventId, { full: !!full });
   } else if (kind === "options") {
     content = await composeOptionsContent(leadId, lookIds);
     if (!content.looks.length) throw err(422, "Nothing shortlisted — nothing to publish.");
@@ -150,6 +167,83 @@ const publish = async (leadId, { kind, title, coverNote, pricingVisible, forDeci
     console.error("[PlanSnapshot] activity echo failed:", e.message);
   }
   return snap.toObject();
+};
+
+// A4 — the WHOLE-WEDDING presentation publish (price-free by default): all
+// events' selected themes + looks in one frozen snapshot. Returns whether it
+// was the FIRST send (FE: "Send to {couple}?" vs "Update their dashboard?").
+const publishPresent = async (leadId, { kind = "options", pricingVisible = false, coverNote, title } = {}, actorId) => {
+  if (!["options", "reveal"].includes(kind)) throw err(400, 'present kind must be "options" | "reveal"');
+  const plan = await LeadPlan.findOne({ leadId }).lean();
+  const looks = (plan && plan.looks) || [];
+  const selectedThemes = (plan && plan.selectedThemes) || [];
+  if (!looks.length && !selectedThemes.length) throw err(422, "Nothing on the plan to present yet.");
+
+  const DecorTheme = require("../models/DecorTheme");
+  const themeIds = [...new Set(selectedThemes.map((t) => String(t.themeId)))];
+  const themes = themeIds.length ? await DecorTheme.find({ _id: { $in: themeIds } }).lean() : [];
+  const themeById = new Map(themes.map((t) => [String(t._id), t]));
+
+  const fns = [...new Set([...selectedThemes.map((t) => t.functionKey), ...looks.map((l) => l.functionKey || "")])].filter(
+    (f) => f !== ""
+  );
+  const ungrouped = looks.filter((l) => !l.functionKey);
+  const lookRow = (l) => ({
+    lookId: String(l._id),
+    name: (l.snapshot && l.snapshot.name) || "",
+    image: (l.snapshot && l.snapshot.image) || l.imageUrl || "",
+    categoryKey: l.categoryKey || "",
+    talkingPoint: l.talkingPoint || "",
+    themeName: l.themeName || "",
+    provenance: l.provenance || "direct",
+    shortlisted: !!l.shortlisted,
+    ...(pricingVisible ? { priceChip: (l.snapshot && l.snapshot.priceChip) || "" } : {}), // price-free unless toggled
+  });
+  const content = {
+    presentation: true,
+    functions: fns.map((fn) => {
+      const sel = selectedThemes.find((t) => t.functionKey === fn);
+      const theme = sel ? themeById.get(String(sel.themeId)) : null;
+      return {
+        functionKey: fn,
+        theme: theme
+          ? { themeId: String(theme._id), name: theme.name, backgroundImageUrl: theme.backgroundImageUrl || "" }
+          : sel
+            ? { themeId: String(sel.themeId), name: sel.themeName, backgroundImageUrl: "" }
+            : null,
+        looks: looks.filter((l) => (l.functionKey || "") === fn).map(lookRow),
+      };
+    }),
+    ...(ungrouped.length ? { unassignedLooks: ungrouped.map(lookRow) } : {}),
+  };
+
+  const wasFirstSend = !(await PlanSnapshot.exists({ leadId, "content.presentation": true }));
+  const snap = await PlanSnapshot.create({
+    leadId,
+    kind,
+    title: String(title || "Your wedding, three ways").slice(0, 200),
+    coverNote: String(coverNote || "").slice(0, 1000),
+    pricingVisible: !!pricingVisible,
+    forDecision: false,
+    content,
+    publishedBy: actorId || null,
+    at: new Date(),
+  });
+  try {
+    await require("./LeadActivityService").ingest(
+      {
+        leadId,
+        kind: "other",
+        text: wasFirstSend ? "Presented the wedding to the couple (first send)" : "Updated the couple's presentation",
+        meta: { snapshotId: String(snap._id), snapshotKind: kind, presentation: true, resend: !wasFirstSend },
+        voice: "wedsy",
+      },
+      { adminId: actorId }
+    );
+  } catch (e) {
+    console.error("[Present] activity echo failed:", e.message);
+  }
+  return { snapshot: snap.toObject(), wasFirstSend };
 };
 
 const list = async (leadId) => {
@@ -257,4 +351,4 @@ const feedDecorLane = async (leadId, eventId, actorId) => {
   return { laneId: String(lane._id), value, price: result.price };
 };
 
-module.exports = { publish, list, get, grantDiscount, decideDiscount, listDiscounts, feedDecorLane };
+module.exports = { publish, publishPresent, list, get, grantDiscount, decideDiscount, listDiscounts, feedDecorLane };

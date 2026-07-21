@@ -26,13 +26,11 @@ const fs = require("fs");
 const path = require("path");
 const mongoose = require("mongoose");
 const Venue = require("../models/Venue");
-
 const TAG = "[restore-coverphotos]";
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 const APPLY = process.argv.includes("--apply");
 const ALLOW_REMOTE = process.env.ALLOW_REMOTE === "1";
 const FILE_ARG = (process.argv.find((a) => a.startsWith("--file=")) || "").split("=")[1] || "";
-
 function assertMongoTarget() {
   const url = process.env.DATABASE_URL || "";
   let host;
@@ -56,7 +54,6 @@ function assertMongoTarget() {
   console.log(`${TAG} ⚠  REMOTE ROLLBACK authorized — writing to ${host}`);
   return host;
 }
-
 function loadBackup() {
   const dir = path.join(__dirname, "backups");
   if (!fs.existsSync(dir)) throw new Error(`No backups directory at ${dir}`);
@@ -69,6 +66,13 @@ function loadBackup() {
   if (!Array.isArray(rows) || !rows.length) throw new Error(`Backup ${name} is empty or malformed`);
   for (const r of rows) {
     if (!r._id || typeof r.coverPhoto !== "string") throw new Error(`Backup ${name} has a malformed row`);
+    if (r.photosVenue !== undefined && !Array.isArray(r.photosVenue)) {
+      throw new Error(`Backup ${name} has a malformed photosVenue on ${r.slug || r._id}`);
+    }
+  }
+  const withPhotos = rows.filter((r) => Array.isArray(r.photosVenue)).length;
+  if (withPhotos) {
+    console.log(`${TAG} ${withPhotos} row(s) also carry photos.venue[] — that field will be restored too.`);
   }
   console.log(`${TAG} backup: ${name} (${rows.length} doc(s))${FILE_ARG ? "" : "  [newest]"}`);
   if (candidates.length > 1 && !FILE_ARG) {
@@ -76,48 +80,56 @@ function loadBackup() {
   }
   return rows;
 }
-
 async function run() {
   const host = assertMongoTarget();
   const rows = loadBackup();
   await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 8000 });
   console.log(`${TAG} connected to Mongo @ ${host}`);
-
+  const sameArray = (a, b) =>
+    Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
   let differs = 0;
   for (const r of rows) {
-    const cur = await Venue.findById(r._id).select("coverPhoto").lean();
+    const cur = await Venue.findById(r._id).select("coverPhoto photos.venue").lean();
     if (!cur) {
       console.log(`${TAG} MISSING _id=${r._id} (${r.slug}) — skipped`);
       continue;
     }
-    if (cur.coverPhoto !== r.coverPhoto) differs++;
+    const coverDiffers = cur.coverPhoto !== r.coverPhoto;
+    const photosDiffer =
+      Array.isArray(r.photosVenue) && !sameArray(cur.photos && cur.photos.venue, r.photosVenue);
+    if (coverDiffers || photosDiffer) differs++;
   }
   console.log(`${TAG} ${differs}/${rows.length} doc(s) currently differ from the backup`);
-
   if (!APPLY) {
     console.log(`${TAG} DRY-RUN — nothing written. Re-run with --apply to roll back.`);
     await mongoose.disconnect();
     console.log(`${TAG} DONE`);
     return;
   }
-
   let restored = 0;
   for (const r of rows) {
     // Native driver: bypasses the coverPhoto guard so pre-repair values (which
     // are exactly what the guard rejects) can be written back verbatim.
+    const $set = { coverPhoto: r.coverPhoto };
+    // Only restore photos.venue[] when the backup captured it — older dumps
+    // (coverPhoto-only repairs) never touched that field, so writing it would
+    // clobber edits the repair was never responsible for.
+    if (Array.isArray(r.photosVenue)) $set["photos.venue"] = r.photosVenue;
     const res = await Venue.collection.updateOne(
       { _id: new mongoose.Types.ObjectId(String(r._id)) },
-      { $set: { coverPhoto: r.coverPhoto } }
+      { $set }
     );
     if (res.matchedCount) restored++;
   }
-
   let mismatched = 0;
   for (const r of rows) {
-    const cur = await Venue.findById(r._id).select("coverPhoto").lean();
-    if (!cur || cur.coverPhoto !== r.coverPhoto) mismatched++;
+    const cur = await Venue.findById(r._id).select("coverPhoto photos.venue").lean();
+    if (!cur || cur.coverPhoto !== r.coverPhoto) {
+      mismatched++;
+    } else if (Array.isArray(r.photosVenue) && !sameArray(cur.photos && cur.photos.venue, r.photosVenue)) {
+      mismatched++;
+    }
   }
-
   console.log(`${TAG} ───────────── SUMMARY ─────────────`);
   console.log(`${TAG} rows in backup:  ${rows.length}`);
   console.log(`${TAG} docs restored:   ${restored}`);
@@ -127,11 +139,9 @@ async function run() {
       ? `${TAG} ✅ every doc is byte-identical to the backup.`
       : `${TAG} ⚠  ${mismatched} doc(s) did not match after restore — investigate.`
   );
-
   await mongoose.disconnect();
   console.log(`${TAG} DONE`);
 }
-
 run().catch(async (err) => {
   console.error(`${TAG} FAILED: ${err.message}`);
   try {

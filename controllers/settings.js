@@ -233,4 +233,41 @@ const GetAutoAssignPool = async (req, res) => {
   }
 };
 
-module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement, GetMoods, PutMoods, GetAutoAssignPool };
+// Addendum A1 — THEMES (Settings → Planner → Themes). Model-backed CRUD (the
+// learning loop mutates taggedDecorIds outside settings), settings_planner gate.
+const PLANNER = "settings_planner";
+const themeGate = async (req, res) => {
+  const perms = await callerPermissions(req.auth.user_id);
+  if (!canEditCategory(perms, PLANNER)) {
+    res.status(403).json({ message: "Forbidden", required: `${PLANNER}:edit:all` });
+    return false;
+  }
+  return true;
+};
+const ThemeService = require("../services/ThemeService");
+const ListThemes = async (req, res) => {
+  try {
+    if (!(await themeGate(req, res))) return;
+    res.status(200).json({ themes: await ThemeService.list({ eventType: req.query.eventType, includeInactive: true }) });
+  } catch (error) { respond(res, error); }
+};
+const CreateTheme = async (req, res) => {
+  try {
+    if (!(await themeGate(req, res))) return;
+    res.status(201).json({ theme: await ThemeService.create(req.body || {}, req.auth.user_id) });
+  } catch (error) { respond(res, error); }
+};
+const PatchTheme = async (req, res) => {
+  try {
+    if (!(await themeGate(req, res))) return;
+    res.status(200).json({ theme: await ThemeService.patch(req.params.id, req.body || {}) });
+  } catch (error) { respond(res, error); }
+};
+const DeleteTheme = async (req, res) => {
+  try {
+    if (!(await themeGate(req, res))) return;
+    res.status(200).json(await ThemeService.remove(req.params.id));
+  } catch (error) { respond(res, error); }
+};
+
+module.exports = { GetCategory, Put, GetPublic, callerPermissions, GetBilling, PutBilling, GetEngagement, PutEngagement, GetMoods, PutMoods, GetAutoAssignPool, ListThemes, CreateTheme, PatchTheme, DeleteTheme };
