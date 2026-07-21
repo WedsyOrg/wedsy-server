@@ -120,6 +120,11 @@ const ListDrafts = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
   res.status(200).json({ drafts: await DraftEventService.listDrafts(req.params._id) });
 });
+// ONE draft with full day→item detail (the list omits items). Roster/participant read.
+const GetDraft = wrap(async (req, res) => {
+  await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
+  res.status(200).json({ draft: await DraftEventService.getDraftDetail(req.params._id, req.params.eventId) });
+});
 
 // ── P4 ────────────────────────────────────────────────────────────────────────
 const AddDay = wrap(async (req, res) => {
@@ -279,7 +284,7 @@ module.exports = {
   PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
-  CreateDraft, ListDrafts,
+  CreateDraft, ListDrafts, GetDraft,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem,
   GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,

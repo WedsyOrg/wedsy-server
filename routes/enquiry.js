@@ -638,6 +638,8 @@ router.post("/:_id/plan/drafts", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.CreateDraft);
 router.get("/:_id/plan/drafts", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListDrafts);
+router.get("/:_id/plan/drafts/:eventId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GetDraft);
 router.post("/:_id/plan/drafts/:eventId/days", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddDay);
 router.post("/:_id/plan/drafts/:eventId/days/:dayId/items", CheckAdminLogin,
