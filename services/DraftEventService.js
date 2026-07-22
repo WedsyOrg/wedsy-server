@@ -278,7 +278,14 @@ const composeItem = async (input = {}, existing = null) => {
     productVariant: String(merged.productVariant ?? item.productVariant ?? ""),
     priceModifier: Number(merged.priceModifier) || 0,
     addOns: Array.isArray(merged.addOns)
-      ? merged.addOns.map((a) => ({ name: String((a && a.name) || ""), price: Number(a && a.price) || 0, notes: String((a && a.notes) || "") }))
+      ? merged.addOns.map((a) => ({
+          name: String((a && a.name) || ""),
+          price: Number(a && a.price) || 0, // negatives valid — sign-flip deductions
+          notes: String((a && a.notes) || ""),
+          quantity: Number.isFinite(Number(a && a.quantity)) && Number(a.quantity) > 0 ? Number(a.quantity) : 1,
+          ests: a && (a.ests === "es" || a.ests === "ts") ? a.ests : null, // flag only, never priced
+          photo: String((a && a.photo) || ""),
+        }))
       : item.addOns || [],
     included: Array.isArray(merged.included) ? merged.included.map(String) : item.included || [],
     user_notes: String(merged.user_notes ?? item.user_notes ?? ""),
@@ -286,6 +293,9 @@ const composeItem = async (input = {}, existing = null) => {
     // Setup-reference image URL (the ⚙ editor's "setup reference"). Subdoc-backed
     // (Event.decorItems.setupLocationImage); whitelist-added here so it round-trips.
     setupLocationImage: String(merged.setupLocationImage ?? item.setupLocationImage ?? ""),
+    // Item-editor fields (additive) — same echo discipline as setupLocationImage.
+    setupLocation: String(merged.setupLocation ?? item.setupLocation ?? ""),
+    priceAdj: Number(merged.priceAdj ?? item.priceAdj ?? 0) || 0,
     primaryColor: String(merged.primaryColor ?? item.primaryColor ?? ""),
     secondaryColor: String(merged.secondaryColor ?? item.secondaryColor ?? ""),
   };

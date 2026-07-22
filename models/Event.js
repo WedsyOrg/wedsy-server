@@ -93,8 +93,15 @@ const EventSchema = new mongoose.Schema(
                   type: [
                     {
                       name: {type: String, default: ""},
+                      // Negative prices are VALID (the sign-flip deduction
+                      // add-on) — deliberately no min guard.
                       price: {type: Number, default: 0},
                       notes: {type: String, default: ""},
+                      // Item-editor fields (additive): per-add-on quantity,
+                      // the ES/TS flag (display-only, never priced), photo.
+                      quantity: {type: Number, default: 1},
+                      ests: {type: String, enum: ["es", "ts", null], default: null},
+                      photo: {type: String, default: ""},
                     },
                   ],
                   required: true,
@@ -104,6 +111,11 @@ const EventSchema = new mongoose.Schema(
                 primaryColor: {type: String, default: ""},
                 secondaryColor: {type: String, default: ""},
                 setupLocationImage: {type: String, default: ""},
+                // Item-editor fields (additive): free PER-UNIT price
+                // adjustment + the setup-location TEXT (image existed, the
+                // text field did not).
+                priceAdj: {type: Number, default: 0},
+                setupLocation: {type: String, default: ""},
               },
             ],
             default: [],
