@@ -49,11 +49,16 @@ const limiter = rateLimit({
   message: { error: 'Too many requests, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
+  // INCIDENT FIX (the promised MB5 per-user keying): the office shares one
+  // public IP, so an IP bucket let one runaway client 429 everyone. Bearer
+  // traffic now keys on the token's admin/user id (decode-only — cheap; auth
+  // still verifies downstream), so 2000/15min is a PER-PERSON budget.
+  // Anonymous traffic stays IP-keyed. See utils/rateLimitKey.js.
+  keyGenerator: require('./utils/rateLimitKey').keyGenerator,
   // Skip localhost — both IPv4 and IPv6 loopback (::1, and the IPv4-mapped form).
   // Also skip session verification and the chat polling reads: the Client File
   // chat polls every 5s, which would saturate any per-IP budget and 429 the
-  // whole app. Auth on those routes still rejects unauthenticated callers;
-  // per-user keyed limits land in MB5.
+  // whole app. Auth on those routes still rejects unauthenticated callers.
   skip: (req) =>
     ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.ip) || // skip localhost
     (req.method === 'GET' &&
