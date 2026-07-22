@@ -6,11 +6,15 @@
 // SNAPSHOT taken at write time, never live config, so old items never reprice
 // themselves.
 //
-//   lineTotal(item) = qty × (decorPrice + priceModifier)
+//   lineTotal(item) = qty × (decorPrice + priceModifier + priceAdj)
 //                   + (platform ? L×B×platformRate : 0) × pathwayMult
 //                   + (L+H)×(B+H)×flooringRate × pathwayMult
-//                   + Σ addOns[].price          (negatives allowed — discounts)
+//                   + Σ addOns[].price × addOns[].quantity   (negatives allowed
+//                     — a sign-flipped add-on subtracts × its qty)
 //     pathwayMult = category === "Pathway" ? quantity : 1
+//     priceAdj = the planner's free PER-UNIT adjustment (item-editor B2);
+//     addOn.quantity defaults 1 (legacy rows price identically);
+//     addOn.ests is a display flag ONLY — never priced.
 //
 //   dayTotal(day)  = Σ decorItems.price + Σ packages.price
 //                  + Σ customItems.price     where !includeInTotalSummary
@@ -37,10 +41,13 @@ const lineTotal = (item = {}) => {
   const H = n(dims.height);
   const pathwayMult = item.category === "Pathway" ? qty : 1;
 
-  const base = qty * (n(item.decorPrice) + n(item.priceModifier));
+  const base = qty * (n(item.decorPrice) + n(item.priceModifier) + n(item.priceAdj));
   const platformLeg = (item.platform ? L * B * n(item.platformRate) : 0) * pathwayMult;
   const flooringLeg = (L + H) * (B + H) * n(item.flooringRate) * pathwayMult;
-  const addOnsLeg = (Array.isArray(item.addOns) ? item.addOns : []).reduce((s, a) => s + n(a && a.price), 0);
+  const addOnsLeg = (Array.isArray(item.addOns) ? item.addOns : []).reduce(
+    (s, a) => s + n(a && a.price) * (a && a.quantity !== undefined ? n(a.quantity) : 1),
+    0
+  );
 
   return Math.round(base + platformLeg + flooringLeg + addOnsLeg);
 };

@@ -61,10 +61,20 @@ const composeDraftContent = async (leadId, eventId, { full = false } = {}) => {
                 platform: !!i.platform,
                 flooring: i.flooring || "",
                 dimensions: i.dimensions || {},
-                addOns: (i.addOns || []).map((a) => ({ name: a.name, price: a.price, notes: a.notes || "" })),
+                addOns: (i.addOns || []).map((a) => ({
+                  name: a.name,
+                  price: a.price,
+                  notes: a.notes || "",
+                  quantity: a.quantity !== undefined && a.quantity !== null ? a.quantity : 1,
+                  ests: a.ests || null,
+                  photo: a.photo || "",
+                })),
                 included: i.included || [],
                 notes: i.user_notes || "", // couple-facing; admin_notes stays internal
+                setupLocation: i.setupLocation || "",
                 setupLocationImage: i.setupLocationImage || "",
+                // priceAdj deliberately NOT exposed as a line — it is folded
+                // into the per-line price the couple already sees.
               }
             : {}),
         })),
