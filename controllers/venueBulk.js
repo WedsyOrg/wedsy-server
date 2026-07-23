@@ -14,6 +14,7 @@ const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const venueWhatsApp = require("../utils/venueWhatsApp");
 const { hasCapability } = require("../utils/venueRbac");
 const { validateAssignable } = require("../utils/venueLeadAssign");
+const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 
 const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
 
@@ -78,12 +79,15 @@ const bulkAction = async (req, res) => {
     }
 
     let updated = 0;
+    let skipped = 0;
     const errors = [];
     for (const id of enquiryIds) {
       try {
-        const enquiry = await VenueEnquiry.findOne({ _id: id, venueId: venue._id });
+        // Scoped: out-of-scope (or non-existent) ids are silently skipped so a
+        // member can't mutate another member's leads via a bulk id list.
+        const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, id);
         if (!enquiry) {
-          errors.push({ enquiryId: id, reason: "not found for this venue" });
+          skipped += 1;
           continue;
         }
         if (action === "assign") {
@@ -104,7 +108,7 @@ const bulkAction = async (req, res) => {
         errors.push({ enquiryId: id, reason: e.message });
       }
     }
-    return res.status(200).json({ updated, errors });
+    return res.status(200).json({ updated, skipped, errors });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -136,12 +140,14 @@ const bulkWhatsApp = async (req, res) => {
     }
 
     let sent = 0;
+    let skipped = 0;
     const failed = [];
     for (const id of enquiryIds) {
       try {
-        const enquiry = await VenueEnquiry.findOne({ _id: id, venueId: venue._id });
+        // Scoped: silently skip ids outside the requester's visibility.
+        const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, id);
         if (!enquiry) {
-          failed.push({ enquiryId: id, reason: "not found for this venue" });
+          skipped += 1;
           continue;
         }
         const phone = enquiry.couplePhone || enquiry.phone;
@@ -166,7 +172,7 @@ const bulkWhatsApp = async (req, res) => {
         failed.push({ enquiryId: id, reason: e.message });
       }
     }
-    return res.status(200).json({ sent, failed });
+    return res.status(200).json({ sent, skipped, failed });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }

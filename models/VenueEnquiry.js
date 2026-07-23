@@ -88,6 +88,12 @@ const VenueEnquirySchema = new mongoose.Schema(
     outreachChannel: { type: String },
     followUp24hSentAt: { type: Date },
     followUp48hSentAt: { type: Date },
+    // MB-CRM S? (review fix): soft-delete. Gated by leads_delete; excluded from
+    // every CRM query via utils/venueLeadScope. Never hard-deleted so audit and
+    // OS linkage survive.
+    deleted: { type: Boolean, default: false },
+    deletedAt: { type: Date },
+    deletedBy: { type: mongoose.Schema.Types.ObjectId },
   },
   // id:false avoids adding the duplicate `id` string virtual; virtuals:true so
   // durationHours is serialized by hydrated reads (lean() reads still skip it).
@@ -106,11 +112,12 @@ VenueEnquirySchema.pre("validate", function (next) {
     this.eventDate = this.checkIn;
   }
   if (this.checkIn && this.checkOut) {
+    // Use invalidate() so save() rejects with a Mongoose ValidationError
+    // (err.name === "ValidationError") that controllers surface as 400, not 500.
     if (this.checkOut <= this.checkIn) {
-      return next(new Error("checkOut must be after checkIn"));
-    }
-    if (this.checkOut - this.checkIn > 7 * MS_PER_DAY) {
-      return next(new Error("checkOut must be within 7 days of checkIn"));
+      this.invalidate("checkOut", "checkOut must be after checkIn");
+    } else if (this.checkOut - this.checkIn > 7 * MS_PER_DAY) {
+      this.invalidate("checkOut", "checkOut must be within 7 days of checkIn");
     }
   }
   next();
@@ -131,5 +138,7 @@ VenueEnquirySchema.index({ venueId: 1, stage: 1 });
 VenueEnquirySchema.index({ venueId: 1, source: 1 });
 // S0a: scoped-visibility query boundary — list/read filtered by assignee.
 VenueEnquirySchema.index({ venueId: 1, assignedTo: 1 });
+// Soft-delete exclusion is applied to every CRM query.
+VenueEnquirySchema.index({ venueId: 1, deleted: 1 });
 
 module.exports = mongoose.models.VenueEnquiry || mongoose.model("VenueEnquiry", VenueEnquirySchema);

@@ -11,6 +11,7 @@ const VenueTask = require("../models/VenueTask");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const { hasCapability } = require("../utils/venueRbac");
 const { validateAssignable } = require("../utils/venueLeadAssign");
+const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optDate, cleanStr, MAXLEN } = require("../utils/venueInput");
 
 const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
@@ -69,9 +70,11 @@ const listTasks = async (req, res) => {
 
 // Validate an optional linkedEnquiry belongs to this venue. Returns
 // { ok, id } (id may be null when not provided) or { ok:false, status, message }.
-async function resolveLinkedEnquiry(venueId, linkedEnquiry) {
+async function resolveLinkedEnquiry(req, venueId, linkedEnquiry) {
   if (linkedEnquiry == null || String(linkedEnquiry).trim() === "") return { ok: true, id: null };
-  const lead = await VenueEnquiry.findOne({ _id: linkedEnquiry, venueId }).select("_id").lean();
+  // Scoped: a member can only link a task to a lead they can see (else the
+  // populated task list would leak the lead's name/stage).
+  const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venueId, linkedEnquiry, { select: "_id", lean: true });
   if (!lead) return { ok: false, status: 404, message: "Linked lead not found for this venue" };
   return { ok: true, id: lead._id };
 }
@@ -107,7 +110,7 @@ const createTask = async (req, res) => {
     const due = optDate(dueAt, "dueAt");
     if (!due.ok) return res.status(400).json({ message: due.message });
 
-    const link = await resolveLinkedEnquiry(venue._id, linkedEnquiry);
+    const link = await resolveLinkedEnquiry(req, venue._id, linkedEnquiry);
     if (!link.ok) return res.status(link.status).json({ message: link.message });
     const assignee = await resolveTaskAssignee(req, venue._id, assignedTo, { defaultToCreator: true });
     if (!assignee.ok) return res.status(assignee.status).json({ message: assignee.message });
@@ -171,7 +174,7 @@ const updateTask = async (req, res) => {
       task.dueAt = due.value;
     }
     if (linkedEnquiry !== undefined) {
-      const link = await resolveLinkedEnquiry(venue._id, linkedEnquiry);
+      const link = await resolveLinkedEnquiry(req, venue._id, linkedEnquiry);
       if (!link.ok) return res.status(link.status).json({ message: link.message });
       task.linkedEnquiry = link.id;
     }

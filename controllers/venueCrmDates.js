@@ -14,7 +14,7 @@ const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
-const { hasCapability } = require("../utils/venueRbac");
+const { canViewAllLeads, scopedLeadFilter } = require("../utils/venueLeadScope");
 
 const DAY = 24 * 60 * 60 * 1000;
 const OPEN_SCAN_DAYS = 120;
@@ -33,12 +33,13 @@ const getDemandMap = async (req, res) => {
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const canViewAll = await hasCapability(req.venueOwner, "leads_view_all", req.venueMember);
+    const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
     const now = new Date();
 
-    const leads = await VenueEnquiry.find({ venueId: venue._id, stage: { $ne: "lost" } })
-      .select("coupleName name checkIn eventDate stage")
-      .lean();
+    // Scope the aggregate itself: a member without leads_view_all only feeds the
+    // demand map with their OWN leads (contested counts + booked names included).
+    const leadFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id, { stage: { $ne: "lost" } });
+    const leads = await VenueEnquiry.find(leadFilter).select("coupleName name checkIn eventDate stage").lean();
 
     // demand (non-booked) grouped by date; booked leads → booked dates w/ names
     const demand = new Map(); // key -> [{_id,name}]
@@ -85,7 +86,9 @@ const getDemandMap = async (req, res) => {
       .map((h) => {
         const primary = dayKey((h.dates || [])[0]);
         const daysLeft = Math.max(0, Math.ceil((new Date(h.expiresAt).getTime() - now.getTime()) / DAY));
-        const couple = h.requestedByName || (h.linkedEnquiry && leadName(h.linkedEnquiry)) || "A couple";
+        // Gate the couple NAME the same way contested names are gated: only
+        // leads_view_all sees it (holds are venue-wide; the name is lead PII).
+        const couple = canViewAll ? (h.requestedByName || (h.linkedEnquiry && leadName(h.linkedEnquiry)) || "A couple") : "A couple";
         const competing = primary && demand.has(primary) ? demand.get(primary).length : 0;
         return { date: primary, dates: (h.dates || []).map(dayKey), daysLeft, couple, status: h.status, competingCount: Math.max(0, competing) };
       })

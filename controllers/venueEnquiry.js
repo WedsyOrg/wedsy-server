@@ -7,7 +7,8 @@ const { createOrGetConversation } = require("./venueConversation");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 const { hasCapability } = require("../utils/venueRbac");
-const { resolveCreateAssignment, validateAssignable } = require("../utils/venueLeadAssign");
+const { resolveCreateAssignment, validateAssignable, pickRoundRobinAssignee } = require("../utils/venueLeadAssign");
+const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../utils/venueLeadScope");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
@@ -161,12 +162,10 @@ const getVenueEnquiries = async (req, res) => {
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    // S0d scoped visibility (query boundary, not hidden UI): a member without
-    // leads_view_all sees ONLY leads assigned to themselves. Owners always pass.
-    const query = { venueId: venue._id };
-    const canViewAll = await hasCapability(req.venueOwner, "leads_view_all", req.venueMember);
-    if (!canViewAll) query.assignedTo = req.venueOwner.memberId || null;
-
+    // S0d scoped visibility via the shared boundary (utils/venueLeadScope):
+    // a member without leads_view_all sees ONLY their own leads; deleted excluded.
+    const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
+    const query = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
     const enquiries = await VenueEnquiry.find(query).sort({ createdAt: -1 }).lean();
     return res.status(200).json({ enquiries, total: enquiries.length, scoped: !canViewAll });
   } catch (err) {
@@ -186,11 +185,9 @@ const getEnquiryById = async (req, res) => {
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const query = { _id: enquiryId, venueId: venue._id };
-    const canViewAll = await hasCapability(req.venueOwner, "leads_view_all", req.venueMember);
-    if (!canViewAll) query.assignedTo = req.venueOwner.memberId || null;
-
-    const enquiry = await VenueEnquiry.findOne(query).populate("assignedTo", "name");
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId, {
+      populate: { path: "assignedTo", select: "name" },
+    });
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
     return res.status(200).json({ enquiry: enquiry.toJSON() });
   } catch (err) {
@@ -215,7 +212,9 @@ const checkEnquiryExists = async (req, res) => {
     if (key.length < 10) return res.status(200).json({ exists: false });
     // Anchor the regex to the last 10 digits; the stored value may carry a
     // country code or formatting, so match the canonical suffix.
-    const candidates = await VenueEnquiry.find({ venueId: venue._id })
+    // Scoped + soft-delete-excluded: a member is only warned about their own dupes.
+    const existsFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
+    const candidates = await VenueEnquiry.find(existsFilter)
       .select("coupleName name couplePhone stage createdAt")
       .sort({ createdAt: -1 })
       .lean();
@@ -243,7 +242,9 @@ const updateEnquiry = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id });
+    // Scoped resolve: a member without leads_view_all cannot touch (or even
+    // learn of) another member's lead — un-gated fields included. 404, not 403.
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
     const {
@@ -383,6 +384,7 @@ const updateEnquiry = async (req, res) => {
 
     return res.status(200).json({ enquiry, booking: booking ? { _id: booking._id } : undefined });
   } catch (err) {
+    if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
     return res.status(500).json({ message: err.message });
   }
 };
@@ -443,13 +445,26 @@ const createManualLead = async (req, res) => {
     ) {
       return res.status(403).json({ message: "You don't have permission to assign leads to others" });
     }
-    const assign = await resolveCreateAssignment({
+    const autoAssignOn = Boolean(venue.settings && venue.settings.autoAssignLeads);
+    let assign = await resolveCreateAssignment({
       venueId: venue._id,
       requested: assignedTo,
       creatorMemberId,
-      autoAssign: Boolean(venue.settings && venue.settings.autoAssignLeads),
+      autoAssign: autoAssignOn,
     });
     if (assign.error) return res.status(assign.error.status).json({ message: assign.error.message });
+    // EDGE 1: re-validate the chosen assignee immediately before create. If the
+    // target went inactive in the validate→apply window, fall back to auto (or
+    // unassigned) rather than parking the lead on a disabled member.
+    if (assign.assignedTo) {
+      const recheck = await validateAssignable(venue._id, assign.assignedTo);
+      if (!recheck.ok) {
+        const autoId = autoAssignOn ? await pickRoundRobinAssignee(venue._id) : null;
+        assign = autoId
+          ? { assignedTo: autoId, via: "round_robin", auto: true }
+          : { assignedTo: null, via: null, auto: false };
+      }
+    }
 
     let notesArray = [];
     if (Array.isArray(notes)) {
@@ -497,6 +512,31 @@ const createManualLead = async (req, res) => {
 
     return res.status(201).json({ success: true, enquiryId: enquiry._id, enquiry });
   } catch (err) {
+    if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// DELETE /venues/:slug/enquiries/:enquiryId — soft-delete (leads_delete gated at
+// the route). Scoped resolve so a member can only delete a lead they can see;
+// the row is flagged (never hard-removed) and excluded from every CRM query.
+const deleteEnquiry = async (req, res) => {
+  try {
+    const { slug, enquiryId } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+    enquiry.deleted = true;
+    enquiry.deletedAt = new Date();
+    enquiry.deletedBy = actorIdOf(req);
+    enquiry.activities.push({ type: "deleted", description: "Lead deleted", actor: actorIdOf(req), timestamp: new Date() });
+    await enquiry.save();
+    return res.status(200).json({ success: true });
+  } catch (err) {
     return res.status(500).json({ message: err.message });
   }
 };
@@ -507,7 +547,7 @@ const createManualLead = async (req, res) => {
 // defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
 // errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
 async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
-  const existing = await VenueEnquiry.find({ venueId }).select("couplePhone").lean();
+  const existing = await VenueEnquiry.find({ venueId, deleted: { $ne: true } }).select("couplePhone").lean();
   const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
 
   let created = 0;
@@ -617,4 +657,4 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, checkEnquiryExists, updateEnquiry, importLeads, getImports, importLeadRows };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, importLeads, getImports, importLeadRows };

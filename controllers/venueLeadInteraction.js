@@ -1,7 +1,8 @@
 const Venue = require("../models/Venue");
-const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { optDate, cleanStr, MAXLEN } = require("../utils/venueInput");
+const { hasCapability } = require("../utils/venueRbac");
+const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 
 const INTERACTION_TYPES = ["call", "whatsapp", "email", "site_visit", "meeting", "enquiry", "note"];
 
@@ -25,9 +26,9 @@ async function resolveOwnedEnquiry(req, res) {
     res.status(403).json({ message: "Forbidden" });
     return null;
   }
-  const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id })
-    .select("_id")
-    .lean();
+  // Scoped: a member without leads_view_all can't read/write another member's
+  // timeline by direct id (404, no existence leak).
+  const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId, { select: "_id", lean: true });
   if (!enquiry) {
     res.status(404).json({ message: "Enquiry not found" });
     return null;
@@ -91,7 +92,7 @@ const quickLog = async (req, res) => {
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id });
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
     const { type, note, followUpDate, followUpNote, advanceStage } = req.body || {};
@@ -110,12 +111,15 @@ const quickLog = async (req, res) => {
       createdBy: req.venueOwner.venueOwnerId,
     });
 
-    // Auto-advance (forward-only, non-terminal), unless the caller overrides.
+    // Auto-advance (forward-only, non-terminal), unless the caller overrides —
+    // and only if the member may change stage. A member lacking leads_change_stage
+    // still gets the interaction logged; the advance is skipped (never a 403).
     let advancedTo = null;
     const target = QUICK_LOG_ADVANCE[type];
     const cur = STAGE_ORDER.indexOf(enquiry.stage);
     const terminal = enquiry.stage === "booked" || enquiry.stage === "lost";
-    if (advanceStage !== false && target && !terminal && STAGE_ORDER.indexOf(target) > cur) {
+    const canAdvance = await hasCapability(req.venueOwner, "leads_change_stage", req.venueMember);
+    if (advanceStage !== false && canAdvance && target && !terminal && STAGE_ORDER.indexOf(target) > cur) {
       enquiry.activities.push({
         type: "stage_changed",
         description: `Stage advanced to ${target} (${type} logged)`,

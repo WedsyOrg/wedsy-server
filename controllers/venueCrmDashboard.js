@@ -15,7 +15,7 @@ const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueTask = require("../models/VenueTask");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
-const { hasCapability } = require("../utils/venueRbac");
+const { canViewAllLeads, scopedLeadFilter } = require("../utils/venueLeadScope");
 
 const DAY = 24 * 60 * 60 * 1000;
 const COLD_GAP_MS = 7 * DAY;
@@ -40,13 +40,12 @@ const getCrmOverview = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const canViewAll = await hasCapability(req.venueOwner, "leads_view_all", req.venueMember);
+    const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
     const memberId = req.venueOwner.memberId || null;
     const actorId = memberId || req.venueOwner.venueOwnerId || null;
 
-    const leadFilter = { venueId: venue._id };
-    if (!canViewAll) leadFilter.assignedTo = memberId; // scoped: only my leads
-
+    // Scoped + soft-delete-excluded via the shared boundary.
+    const leadFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
     const leads = await VenueEnquiry.find(leadFilter)
       .select("coupleName name stage assignedTo followUpDate estimatedValue source createdAt updatedAt")
       .lean();

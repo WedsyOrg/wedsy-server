@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
 const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
@@ -89,6 +89,8 @@ router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries); // read: all 
 // /enquiries/{imports,exists,bulk,...} segments so those still match first).
 router.get("/:slug/enquiries/:enquiryId", venueOwnerAuth, getEnquiryById);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, requireCapability("leads"), updateEnquiry);
+// Soft-delete a lead — leads_delete (Owner only by default). Scoped resolve inside.
+router.delete("/:slug/enquiries/:enquiryId", venueOwnerAuth, requireCapability("leads_delete"), deleteEnquiry);
 // Per-lead communication log — write=leads, read open.
 router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, requireCapability("leads"), addInteraction);
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
