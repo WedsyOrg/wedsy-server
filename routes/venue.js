@@ -13,6 +13,7 @@ const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
 const { getCrmOverview } = require("../controllers/venueCrmDashboard");
 const { getDemandMap } = require("../controllers/venueCrmDates");
+const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
@@ -98,6 +99,9 @@ router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapa
 router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);
 // ── MB-CRM S6: demand map (contested / held-expiring / booked / open) ──
 router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
+// ── MB-CRM S7: owner-tunable CRM settings (auto-assign) — team capability ──
+router.get("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), getCrmSettings);
+router.patch("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), updateCrmSettings);
 
 // ── MB-CRM S0c: CRM tasks (standalone or lead-linked) ──
 router.get("/:slug/tasks", venueOwnerAuth, tasks.listTasks);
