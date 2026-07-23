@@ -10,12 +10,21 @@
 //   · Enquiry.updates.notes           — the legacy blob (one verbatim entry;
 //     it mirrors addNote appends, so its lines can repeat canonical notes —
 //     included anyway: "nothing dropped" outranks de-dup elegance)
+//   · LeadChatMessage "[Lead comms] …" rows — notes the journey strip
+//     misrouted into internal chat (prefix stripped; hidden from the rail)
 // Source labels: pre-qual | qualifier | post-qual — "qualifier" marks the
 // qualifier stores; dated notes split pre-/post- on qualifiedAt.
 const mongoose = require("mongoose");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
+const LeadChatMessage = require("../models/LeadChatMessage");
+
+// Misrouted lead-communication notes: the journey strip used to POST them to
+// the internal-chat endpoint with this prefix (see LEAD_COMMS_PREFIX_RE in
+// LeadChatService, which hides them from the rail). Surfaced HERE at read
+// time instead — no migration.
+const LEAD_COMMS_PREFIX = "[Lead comms] ";
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
@@ -32,7 +41,21 @@ const listNotes = async (leadId) => {
     { actorId: 1, createdAt: 1, payload: 1 }
   ).lean();
 
-  const authorIds = [...new Set(events.map((e) => String(e.actorId || "")).filter(Boolean))];
+  // Misrouted "[Lead comms] …" chat rows — genuine lead-communication notes
+  // that landed in the internal-chat store. Real messages only (kind
+  // "message"), never system rows.
+  const chatNotes = await LeadChatMessage.find(
+    { leadId, kind: "message", body: { $regex: "^\\[Lead comms\\] " } },
+    { authorId: 1, body: 1, createdAt: 1 }
+  ).lean();
+
+  const authorIds = [
+    ...new Set(
+      [...events.map((e) => e.actorId), ...chatNotes.map((m) => m.authorId)]
+        .filter(Boolean)
+        .map(String)
+    ),
+  ];
   const authors = authorIds.length ? await Admin.find({ _id: { $in: authorIds } }, { name: 1 }).lean() : [];
   const nameOf = new Map(authors.map((a) => [String(a._id), a.name]));
 
@@ -88,6 +111,21 @@ const listNotes = async (leadId) => {
       authorName: linked && linked.actorId ? nameOf.get(String(linked.actorId)) || null : null,
       at,
       source: at ? eraOf(at) : "pre-qual",
+    });
+  }
+  // Misrouted chat notes: prefix stripped, author + time from the message
+  // row. These rows are hidden from the chat rail (LeadChatService) — the
+  // stream is their one home now.
+  for (const m of chatNotes) {
+    const text = String(m.body || "").slice(LEAD_COMMS_PREFIX.length).trim();
+    if (!text) continue;
+    notes.push({
+      _id: String(m._id),
+      text,
+      authorId: m.authorId ? String(m.authorId) : null,
+      authorName: m.authorId ? nameOf.get(String(m.authorId)) || null : null,
+      at: m.createdAt,
+      source: eraOf(m.createdAt),
     });
   }
   if (lead.qualifierNotes && lead.qualifierNotes.trim()) {
