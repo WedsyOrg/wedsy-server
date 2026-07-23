@@ -11,6 +11,7 @@ const { getDashboardOverview } = require("../controllers/venueDashboard");
 const { addInteraction, getInteractions, quickLog } = require("../controllers/venueLeadInteraction");
 const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
+const { getCrmOverview } = require("../controllers/venueCrmDashboard");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
@@ -91,6 +92,9 @@ router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, requireC
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
 // S0e quick-log: one-tap touch that auto-advances stage + captures next follow-up.
 router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapability("leads"), quickLog);
+
+// ── MB-CRM S4: CRM dashboard overview (my-day, real alerts, proof) ──
+router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);
 
 // ── MB-CRM S0c: CRM tasks (standalone or lead-linked) ──
 router.get("/:slug/tasks", venueOwnerAuth, tasks.listTasks);
