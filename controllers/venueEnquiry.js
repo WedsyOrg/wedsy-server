@@ -246,10 +246,23 @@ const updateEnquiry = async (req, res) => {
     const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id });
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
-    const { stage, estimatedValue, lostReason, followUpDate, followUpNote, addNote, assignedTo, checkIn, checkOut } = req.body || {};
+    const {
+      stage, estimatedValue, lostReason, followUpDate, followUpNote, addNote, assignedTo, checkIn, checkOut,
+      // S3: profile fields are editable after creation ("nothing locked").
+      coupleName, couplePhone, email, guestCount, source, budget, message,
+    } = req.body || {};
 
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
       return res.status(400).json({ message: `lostReason must be one of ${LOST_REASON_ENUM.filter(Boolean).join(", ")}` });
+    }
+    // S3 profile-field validation (all optional, additive).
+    for (const [val, field, max] of [[coupleName, "coupleName", MAXLEN.name], [couplePhone, "couplePhone", MAXLEN.phone], [email, "email", MAXLEN.email], [budget, "budget", MAXLEN.label], [message, "message", MAXLEN.text]]) {
+      if (val !== undefined) { const r = optStr(val, field, max); if (!r.ok) return res.status(400).json({ message: r.message }); }
+    }
+    const gcU = guestCount !== undefined ? optCount(guestCount, "guestCount") : null;
+    if (gcU && !gcU.ok) return res.status(400).json({ message: gcU.message });
+    if (source !== undefined && !SOURCE_ENUM.includes(source)) {
+      return res.status(400).json({ message: `source must be one of ${SOURCE_ENUM.join(", ")}` });
     }
     if (stage !== undefined && !STAGE_ENUM.includes(stage)) {
       return res.status(400).json({ message: `stage must be one of ${STAGE_ENUM.join(", ")}` });
@@ -311,6 +324,15 @@ const updateEnquiry = async (req, res) => {
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
     if (followUpDate !== undefined) enquiry.followUpDate = fuV.value;
     if (followUpNote !== undefined) enquiry.followUpNote = cleanStr(followUpNote).slice(0, MAXLEN.text);
+    // S3 profile-field edits (keep name/phone mirrors in sync with the couple
+    // fields so dedup + WhatsApp keep working).
+    if (coupleName !== undefined) { enquiry.coupleName = cleanStr(coupleName); enquiry.name = cleanStr(coupleName); }
+    if (couplePhone !== undefined) { enquiry.couplePhone = cleanStr(couplePhone); enquiry.phone = cleanStr(couplePhone); }
+    if (email !== undefined) enquiry.email = cleanStr(email);
+    if (budget !== undefined) enquiry.budget = cleanStr(budget);
+    if (message !== undefined) enquiry.message = cleanStr(message);
+    if (guestCount !== undefined) enquiry.guestCount = gcU.value != null ? gcU.value : null;
+    if (source !== undefined) enquiry.source = source;
     if (winSent) {
       if (checkIn !== undefined) enquiry.checkIn = win.checkIn;
       if (checkOut !== undefined) enquiry.checkOut = win.checkOut;

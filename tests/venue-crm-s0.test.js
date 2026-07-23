@@ -179,6 +179,13 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
 
       const badReassign = await call(enq.updateEnquiry, ownerReq(venue, { params: p, body: { assignedTo: String(inactive._id) } }));
       ok(badReassign.code === 422, "reassign to a non-assignable member → 422");
+
+      // S3: profile fields are editable after creation
+      const editProfile = await call(enq.updateEnquiry, ownerReq(venue, { params: p, body: { coupleName: `${TAG} Renamed`, couplePhone: "7770099", guestCount: 275, source: "referral", budget: "₹20L" } }));
+      ok(editProfile.code === 200 && editProfile.body.enquiry.coupleName === `${TAG} Renamed` && editProfile.body.enquiry.guestCount === 275 && editProfile.body.enquiry.source === "referral", "profile fields (name/guests/source/budget) are editable post-create");
+      ok(editProfile.body.enquiry.name === `${TAG} Renamed` && editProfile.body.enquiry.phone === "7770099" && editProfile.body.enquiry.couplePhone === "7770099", "name/phone mirrors stay in sync when coupleName/couplePhone edited");
+      const badSource = await call(enq.updateEnquiry, ownerReq(venue, { params: p, body: { source: "not_a_source" } }));
+      ok(badSource.code === 400, "an invalid source is rejected (400)");
     }
 
     // ───────────────── SECTION 5: quick-log stage-advance ─────────────────
