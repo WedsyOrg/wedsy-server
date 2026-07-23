@@ -1,10 +1,11 @@
-// LEAD-COMMS NOTES ROUTING test. Run: node tests/leadcomms-notes-routing.test.js
-// Covers: a legacy "[Lead comms] …" chat row surfaces in the merged note
-// stream (prefix stripped, author + time intact, era-labelled) and is ABSENT
-// from the chat rail read and its unread count; a note via the canonical
-// POST /note path appears in the stream and never in chat; ordinary chat
-// messages (including ones that merely MENTION "[Lead comms]" mid-body) are
-// untouched.
+// RITUAL NOTES ROUTING test. Run: node tests/leadcomms-notes-routing.test.js
+// Covers: a misrouted ritual-prefixed chat row ("[Lead comms] …", and every
+// sibling — [Kickoff] [Meetings] [Proposal] [Agreement] [Onboard]) surfaces in
+// the merged note stream (prefix stripped, author + time intact, era-labelled)
+// and is ABSENT from the chat rail read and its unread count; a note via the
+// canonical POST /note path appears in the stream and never in chat; ordinary
+// chat messages (including ones that merely MENTION "[Lead comms]" mid-body)
+// are untouched.
 require("dotenv").config();
 const mongoose = require("mongoose");
 
@@ -88,6 +89,33 @@ const created = { admins: [], leads: [] };
       "…and NEVER lands in chat");
     ok((await LeadChatMessage.countDocuments({ leadId: lead._id })) === 3,
       "no new LeadChatMessage rows were written by the note path");
+
+    // ── 5. EVERY ritual prefix gets the same treatment (not just Lead comms) ──
+    const NEW_PREFIXES = ["Kickoff", "Meetings", "Proposal", "Agreement", "Onboard"];
+    const ritualRows = {};
+    for (const p of NEW_PREFIXES) {
+      ritualRows[p] = await LeadChatMessage.create({
+        leadId: lead._id, authorId: author._id, kind: "message",
+        body: `[${p}] ${TAG} ${p.toLowerCase()} note body`,
+      });
+    }
+    const ritualStream = await NoteStreamService.listNotes(lead._id);
+    const ritualRail = (await LeadChatService.listMessages(lead._id, reader._id, { limit: 50 })).messages;
+    for (const p of NEW_PREFIXES) {
+      const row = ritualRows[p];
+      const surf = ritualStream.find((n) => n._id === String(row._id));
+      ok(surf && surf.text === `${TAG} ${p.toLowerCase()} note body`,
+        `[${p}] row surfaces in the note stream, prefix stripped`);
+      ok(surf && surf.authorId === String(author._id) && surf.source === "post-qual",
+        `[${p}] note carries author + era from the message row`);
+      ok(!ritualRail.some((m) => String(m._id) === String(row._id)),
+        `[${p}] row is EXCLUDED from the chat rail`);
+    }
+    const ritualUnread = await LeadChatService.unreadCountForLead(
+      lead._id,
+      await Admin.create({ name: `${TAG}-fresh2`, email: `${TAG}f2@x.com`, phone: `${TAG}f2`, password: "x", roles: ["sales"], status: "active" }).then((a) => { created.admins.push(a._id); return a._id; })
+    );
+    ok(ritualUnread === 2, `unread count still skips all ritual notes (${ritualUnread} — genuine + lookalike only)`);
   } catch (e) {
     fail++;
     console.error("UNEXPECTED ERROR:", e);

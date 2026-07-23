@@ -89,8 +89,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       "qualifierNotes string surfaces as source qualifier");
     ok(stream.some((n) => n.text === "Groom side handles decor decisions" && n.source === "qualifier"),
       "qualificationData.additionalNotes surfaces as source qualifier");
-    ok(stream.some((n) => n.text === "old blob content" && n.source === "pre-qual"),
-      "the legacy updates.notes blob surfaces verbatim");
+    // Stream-purity ruling: only blob ORPHANS surface (this seeded blob text
+    // exists nowhere else, so it renders as one authorless orphan row).
+    ok(stream.filter((n) => n.text === "old blob content" && n.authorId === null).length === 1,
+      "a blob-only orphan surfaces as one authorless row (purity ruling)");
     const unlinked = stream.find((n) => n.text === "unlinked canonical note");
     ok(!!unlinked && unlinked.authorName === `${TAG}-author` && unlinked.source === "post-qual",
       "pre-mirror commented event surfaces with author name; after qualifiedAt → post-qual");
