@@ -10,6 +10,13 @@ const httpError = (status, message) => Object.assign(new Error(message), { statu
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 const MAX_BODY = 5000;
+
+// Lead-communication notes the journey strip misrouted into this chat store
+// ("[Lead comms] …" bodies). They are NOTES, not team messages: the chat rail
+// (and its unread counts) must never show them — NoteStreamService surfaces
+// them in the merged note stream instead. Read-time exclusion; no migration.
+const LEAD_COMMS_PREFIX_RE = "^\\[Lead comms\\] ";
+const notLeadCommsFilter = () => ({ body: { $not: { $regex: LEAD_COMMS_PREFIX_RE } } });
 const cleanAttachments = (raw) => {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -41,7 +48,7 @@ const withAuthors = async (rows) => {
 const listMessages = async (leadId, callerId, { limit = 30, before } = {}) => {
   if (!isId(leadId)) throw httpError(400, "Invalid leadId");
   const lim = Math.min(100, Math.max(1, parseInt(limit, 10) || 30));
-  const filter = { leadId };
+  const filter = { leadId, ...notLeadCommsFilter() };
   if (before && isId(before)) {
     const cursor = await LeadChatMessage.findById(before, { createdAt: 1 }).lean();
     if (cursor) filter.createdAt = { $lt: cursor.createdAt };
@@ -64,7 +71,12 @@ const listMessages = async (leadId, callerId, { limit = 30, before } = {}) => {
 };
 
 const unreadCountForLead = async (leadId, adminId) =>
-  LeadChatMessage.countDocuments({ leadId, authorId: { $ne: adminId }, readBy: { $ne: adminId } });
+  LeadChatMessage.countDocuments({
+    leadId,
+    authorId: { $ne: adminId },
+    readBy: { $ne: adminId },
+    ...notLeadCommsFilter(),
+  });
 
 const postMessage = async (leadId, authorId, { body, attachments, mentions } = {}) => {
   if (!isId(leadId)) throw httpError(400, "Invalid leadId");
