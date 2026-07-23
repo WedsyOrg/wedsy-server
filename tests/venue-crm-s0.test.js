@@ -18,6 +18,7 @@ const enq = require("../controllers/venueEnquiry");
 const bulk = require("../controllers/venueBulk");
 const inter = require("../controllers/venueLeadInteraction");
 const tasks = require("../controllers/venueTask");
+const team = require("../controllers/venueTeam");
 const { validateAssignable, pickRoundRobinAssignee, resolveCreateAssignment } = require("../utils/venueLeadAssign");
 
 const TAG = `mbcrm-s0-${Date.now()}`;
@@ -266,6 +267,17 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       await VenueEnquiry.create({ venueId: v._id, coupleName: "y", couplePhone: "222", assignedTo: m2._id, stage: "booked" });
       const pick2 = await pickRoundRobinAssignee(v._id);
       ok(String(pick2) === String(m2._id), "booked/lost leads are not counted as active load");
+    }
+
+    // ───────────────── SECTION 8: assignable-members roster (S3 support) ─────────────────
+    console.log("\n[assignable-roster]");
+    {
+      const res = await call(team.listAssignableMembers, ownerReq(venue));
+      const ids = (res.body.members || []).map((m) => String(m._id));
+      ok(res.code === 200 && ids.includes(String(salesA._id)) && ids.includes(String(salesB._id)), "assignable roster lists active members of the venue");
+      ok(!ids.includes(String(inactive._id)), "assignable roster excludes INACTIVE members");
+      ok(!ids.includes(String(otherVenueMember._id)), "assignable roster excludes members of other venues");
+      ok((res.body.members || []).every((m) => m.name !== undefined && m.role !== undefined), "roster returns id + name (+ role) only");
     }
   } catch (err) {
     console.error("FATAL", err);

@@ -19,7 +19,7 @@ const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
-const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
+const { listMembers, listAssignableMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
 const roles = require("../controllers/venueRoles");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
@@ -207,6 +207,9 @@ router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, require
 router.post("/:slug/integrations/google-sheets/sync", venueOwnerAuth, requireCapability("leads"), sheets.syncNow);
 
 // ── Team members — team capability ──
+// Lightweight assignable-member roster for the CRM Assign-To dropdown — leads
+// capability (declared BEFORE the param-free /team so it is not shadowed).
+router.get("/:slug/team/assignable", venueOwnerAuth, requireCapability("leads"), listAssignableMembers);
 router.get("/:slug/team", venueOwnerAuth, requireCapability("team"), listMembers);
 router.post("/:slug/team", venueOwnerAuth, requireCapability("team"), inviteMember);
 router.get("/:slug/team/activity", venueOwnerAuth, requireCapability("team"), getActivity);
