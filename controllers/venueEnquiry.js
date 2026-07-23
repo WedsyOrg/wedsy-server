@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
@@ -5,10 +6,18 @@ const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { createOrGetConversation } = require("./venueConversation");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
+const { hasCapability } = require("../utils/venueRbac");
+const { resolveCreateAssignment, validateAssignable, pickRoundRobinAssignee } = require("../utils/venueLeadAssign");
+const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../utils/venueLeadScope");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
-const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN } = require("../utils/venueInput");
+const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow } = require("../utils/venueInput");
+
+// The acting principal's id for audit stamps: a member id when a team member is
+// logged in, otherwise the owner anchor id.
+const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
+const toMemberIdOrNull = (v) => (mongoose.isValidObjectId(v) ? v : null);
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
@@ -153,10 +162,34 @@ const getVenueEnquiries = async (req, res) => {
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
     }
-    const enquiries = await VenueEnquiry.find({ venueId: venue._id })
-      .sort({ createdAt: -1 })
-      .lean();
-    return res.status(200).json({ enquiries, total: enquiries.length });
+    // S0d scoped visibility via the shared boundary (utils/venueLeadScope):
+    // a member without leads_view_all sees ONLY their own leads; deleted excluded.
+    const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
+    const query = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
+    const enquiries = await VenueEnquiry.find(query).sort({ createdAt: -1 }).lean();
+    return res.status(200).json({ enquiries, total: enquiries.length, scoped: !canViewAll });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// S0d single-lead read WITH the same scope boundary — a member without
+// leads_view_all cannot read another member's lead by direct id (returns 404,
+// not 403, so existence isn't leaked). Hydrated (not lean) so durationHours is
+// included in the response.
+const getEnquiryById = async (req, res) => {
+  try {
+    const { slug, enquiryId } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId, {
+      populate: { path: "assignedTo", select: "name" },
+    });
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+    return res.status(200).json({ enquiry: enquiry.toJSON() });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -179,7 +212,9 @@ const checkEnquiryExists = async (req, res) => {
     if (key.length < 10) return res.status(200).json({ exists: false });
     // Anchor the regex to the last 10 digits; the stored value may carry a
     // country code or formatting, so match the canonical suffix.
-    const candidates = await VenueEnquiry.find({ venueId: venue._id })
+    // Scoped + soft-delete-excluded: a member is only warned about their own dupes.
+    const existsFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
+    const candidates = await VenueEnquiry.find(existsFilter)
       .select("coupleName name couplePhone stage createdAt")
       .sort({ createdAt: -1 })
       .lean();
@@ -207,23 +242,76 @@ const updateEnquiry = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
-    const enquiry = await VenueEnquiry.findOne({ _id: enquiryId, venueId: venue._id });
+    // Scoped resolve: a member without leads_view_all cannot touch (or even
+    // learn of) another member's lead — un-gated fields included. 404, not 403.
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
-    const { stage, estimatedValue, lostReason, followUpDate, addNote, assignedTo } = req.body || {};
+    const {
+      stage, estimatedValue, lostReason, followUpDate, followUpNote, addNote, assignedTo, checkIn, checkOut,
+      // S3: profile fields are editable after creation ("nothing locked").
+      coupleName, couplePhone, email, guestCount, source, budget, message,
+    } = req.body || {};
 
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
       return res.status(400).json({ message: `lostReason must be one of ${LOST_REASON_ENUM.filter(Boolean).join(", ")}` });
+    }
+    // S3 profile-field validation (all optional, additive).
+    for (const [val, field, max] of [[coupleName, "coupleName", MAXLEN.name], [couplePhone, "couplePhone", MAXLEN.phone], [email, "email", MAXLEN.email], [budget, "budget", MAXLEN.label], [message, "message", MAXLEN.text]]) {
+      if (val !== undefined) { const r = optStr(val, field, max); if (!r.ok) return res.status(400).json({ message: r.message }); }
+    }
+    const gcU = guestCount !== undefined ? optCount(guestCount, "guestCount") : null;
+    if (gcU && !gcU.ok) return res.status(400).json({ message: gcU.message });
+    if (source !== undefined && !SOURCE_ENUM.includes(source)) {
+      return res.status(400).json({ message: `source must be one of ${SOURCE_ENUM.join(", ")}` });
     }
     if (stage !== undefined && !STAGE_ENUM.includes(stage)) {
       return res.status(400).json({ message: `stage must be one of ${STAGE_ENUM.join(", ")}` });
     }
     const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
     const fuV = optDate(followUpDate, "followUpDate"); if (!fuV.ok) return res.status(400).json({ message: fuV.message });
+    // S0b event window (either/both may be sent; validated against the 7-day cap).
+    const winSent = checkIn !== undefined || checkOut !== undefined;
+    const win = eventWindow(
+      checkIn !== undefined ? checkIn : enquiry.checkIn,
+      checkOut !== undefined ? checkOut : enquiry.checkOut
+    );
+    if (winSent && !win.ok) return res.status(400).json({ message: win.message });
+
+    // ── S0d fine-grained capability gates (coarse "leads" already required by
+    // the route). Each mutating field checks its own capability; owners pass all.
+    const stageChanging = stage !== undefined && stage !== enquiry.stage;
+    const markingLost = stage === "lost" || (lostReason !== undefined && lostReason !== "");
+    if (stageChanging && !(await hasCapability(req.venueOwner, "leads_change_stage", req.venueMember))) {
+      return res.status(403).json({ message: "You don't have permission to change lead stage" });
+    }
+    if (markingLost && !(await hasCapability(req.venueOwner, "leads_mark_lost", req.venueMember))) {
+      return res.status(403).json({ message: "You don't have permission to mark leads lost" });
+    }
+    if (evV.value !== undefined && !(await hasCapability(req.venueOwner, "money_negotiate", req.venueMember))) {
+      return res.status(403).json({ message: "You don't have permission to change deal value" });
+    }
+
+    // ── S0a assignedTo is now a ref: reassignment needs leads_reassign, the
+    // target must be an active member of this venue (422), and it's audited.
+    let assignResolved; // { id, unassign } when a change is requested
+    if (assignedTo !== undefined) {
+      if (!(await hasCapability(req.venueOwner, "leads_reassign", req.venueMember))) {
+        return res.status(403).json({ message: "You don't have permission to reassign leads" });
+      }
+      const wantsUnassign = assignedTo == null || String(assignedTo).trim() === "";
+      if (wantsUnassign) {
+        assignResolved = { id: null, unassign: true };
+      } else {
+        const v = await validateAssignable(venue._id, assignedTo);
+        if (!v.ok) return res.status(422).json({ message: v.message });
+        assignResolved = { id: v.id, unassign: false };
+      }
+    }
 
     let movedToBooked = false;
     let stageChanged = false;
-    if (stage !== undefined && stage !== enquiry.stage) {
+    if (stageChanging) {
       enquiry.activities.push({
         type: "stage_changed",
         description: `Stage changed from ${enquiry.stage} to ${stage}`,
@@ -236,13 +324,28 @@ const updateEnquiry = async (req, res) => {
     if (evV.value !== undefined) enquiry.estimatedValue = evV.value;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
     if (followUpDate !== undefined) enquiry.followUpDate = fuV.value;
-    // assignedTo: a String holding a VenueTeamMember._id (so OS can read/resolve it);
-    // not an ObjectId ref yet. Empty = unassigned. (Harness caught it was dropped.)
-    if (assignedTo !== undefined) {
-      enquiry.assignedTo = assignedTo ? String(assignedTo) : "";
+    if (followUpNote !== undefined) enquiry.followUpNote = cleanStr(followUpNote).slice(0, MAXLEN.text);
+    // S3 profile-field edits (keep name/phone mirrors in sync with the couple
+    // fields so dedup + WhatsApp keep working).
+    if (coupleName !== undefined) { enquiry.coupleName = cleanStr(coupleName); enquiry.name = cleanStr(coupleName); }
+    if (couplePhone !== undefined) { enquiry.couplePhone = cleanStr(couplePhone); enquiry.phone = cleanStr(couplePhone); }
+    if (email !== undefined) enquiry.email = cleanStr(email);
+    if (budget !== undefined) enquiry.budget = cleanStr(budget);
+    if (message !== undefined) enquiry.message = cleanStr(message);
+    if (guestCount !== undefined) enquiry.guestCount = gcU.value != null ? gcU.value : null;
+    if (source !== undefined) enquiry.source = source;
+    if (winSent) {
+      if (checkIn !== undefined) enquiry.checkIn = win.checkIn;
+      if (checkOut !== undefined) enquiry.checkOut = win.checkOut;
+      // eventDate is re-derived from checkIn by the model pre-validate hook.
+    }
+    if (assignResolved) {
+      enquiry.assignedTo = assignResolved.id;
       enquiry.activities.push({
-        type: "assigned",
-        description: assignedTo ? "Lead assigned" : "Lead unassigned",
+        type: assignResolved.unassign ? "unassigned" : "manual_assigned",
+        description: assignResolved.unassign ? "Lead unassigned" : "Lead reassigned",
+        via: "manual_reassign",
+        actor: actorIdOf(req),
         timestamp: new Date(),
       });
     }
@@ -281,6 +384,7 @@ const updateEnquiry = async (req, res) => {
 
     return res.status(200).json({ enquiry, booking: booking ? { _id: booking._id } : undefined });
   } catch (err) {
+    if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
     return res.status(500).json({ message: err.message });
   }
 };
@@ -295,6 +399,8 @@ const createManualLead = async (req, res) => {
       couplePhone,
       email,
       eventDate,
+      checkIn,
+      checkOut,
       guestCount,
       message,
       source,
@@ -302,6 +408,7 @@ const createManualLead = async (req, res) => {
       estimatedValue,
       notes,
       followUpDate,
+      followUpNote,
       assignedTo,
     } = req.body || {};
 
@@ -319,11 +426,44 @@ const createManualLead = async (req, res) => {
     const fuV = optDate(followUpDate, "followUpDate"); if (!fuV.ok) return res.status(400).json({ message: fuV.message });
     const gcV = optCount(guestCount, "guestCount"); if (!gcV.ok) return res.status(400).json({ message: gcV.message });
     const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
+    const win = eventWindow(checkIn, checkOut); if (!win.ok) return res.status(400).json({ message: win.message });
 
-    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    const venue = await Venue.findOne({ slug }).select("_id settings").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
+    }
+
+    // ── Assignment contract: explicit wins → creator default → auto round-robin.
+    // A member assigning to someone OTHER than themselves needs leads_reassign.
+    const creatorMemberId = req.venueOwner.memberId || null;
+    const explicit = assignedTo != null && String(assignedTo).trim() !== "";
+    if (
+      explicit &&
+      (!creatorMemberId || String(assignedTo) !== String(creatorMemberId)) &&
+      !(await hasCapability(req.venueOwner, "leads_reassign", req.venueMember))
+    ) {
+      return res.status(403).json({ message: "You don't have permission to assign leads to others" });
+    }
+    const autoAssignOn = Boolean(venue.settings && venue.settings.autoAssignLeads);
+    let assign = await resolveCreateAssignment({
+      venueId: venue._id,
+      requested: assignedTo,
+      creatorMemberId,
+      autoAssign: autoAssignOn,
+    });
+    if (assign.error) return res.status(assign.error.status).json({ message: assign.error.message });
+    // EDGE 1: re-validate the chosen assignee immediately before create. If the
+    // target went inactive in the validate→apply window, fall back to auto (or
+    // unassigned) rather than parking the lead on a disabled member.
+    if (assign.assignedTo) {
+      const recheck = await validateAssignable(venue._id, assign.assignedTo);
+      if (!recheck.ok) {
+        const autoId = autoAssignOn ? await pickRoundRobinAssignee(venue._id) : null;
+        assign = autoId
+          ? { assignedTo: autoId, via: "round_robin", auto: true }
+          : { assignedTo: null, via: null, auto: false };
+      }
     }
 
     let notesArray = [];
@@ -336,6 +476,17 @@ const createManualLead = async (req, res) => {
       notesArray = [{ text: notes.trim().slice(0, MAXLEN.text) }];
     }
 
+    const activities = [{ type: "created", description: "Lead added manually", timestamp: new Date() }];
+    if (assign.assignedTo) {
+      activities.push({
+        type: assign.auto ? "auto_assigned" : "manual_assigned",
+        description: assign.auto ? "Auto-assigned (round-robin)" : "Assigned on create",
+        via: assign.via,
+        actor: actorIdOf(req),
+        timestamp: new Date(),
+      });
+    }
+
     const enquiry = await VenueEnquiry.create({
       venueId: venue._id,
       name: nameC,
@@ -344,6 +495,8 @@ const createManualLead = async (req, res) => {
       couplePhone: phoneC,
       email: cleanStr(email),
       eventDate: edV.value,
+      checkIn: win.checkIn,
+      checkOut: win.checkOut,
       guestCount: gcV.value != null ? gcV.value : null,
       message: cleanStr(message),
       source: source || "other",
@@ -351,12 +504,38 @@ const createManualLead = async (req, res) => {
       estimatedValue: evV.value != null ? evV.value : 0,
       notes: notesArray,
       followUpDate: fuV.value,
-      assignedTo: cleanStr(assignedTo),
-      activities: [{ type: "created", description: "Lead added manually", timestamp: new Date() }],
+      followUpNote: cleanStr(followUpNote).slice(0, MAXLEN.text),
+      assignedTo: assign.assignedTo,
+      activities,
       status: "new",
     });
 
     return res.status(201).json({ success: true, enquiryId: enquiry._id, enquiry });
+  } catch (err) {
+    if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// DELETE /venues/:slug/enquiries/:enquiryId — soft-delete (leads_delete gated at
+// the route). Scoped resolve so a member can only delete a lead they can see;
+// the row is flagged (never hard-removed) and excluded from every CRM query.
+const deleteEnquiry = async (req, res) => {
+  try {
+    const { slug, enquiryId } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+    enquiry.deleted = true;
+    enquiry.deletedAt = new Date();
+    enquiry.deletedBy = actorIdOf(req);
+    enquiry.activities.push({ type: "deleted", description: "Lead deleted", actor: actorIdOf(req), timestamp: new Date() });
+    await enquiry.save();
+    return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -368,7 +547,7 @@ const createManualLead = async (req, res) => {
 // defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
 // errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
 async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
-  const existing = await VenueEnquiry.find({ venueId }).select("couplePhone").lean();
+  const existing = await VenueEnquiry.find({ venueId, deleted: { $ne: true } }).select("couplePhone").lean();
   const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
 
   let created = 0;
@@ -411,7 +590,9 @@ async function importLeadRows(venueId, rows, { activityDescription = "Lead impor
         estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
         notes: notesStr ? [{ text: notesStr }] : [],
         followUpDate: toDateOrNull(row.followUpDate),
-        assignedTo: toStr(row.assignedTo),
+        // Bulk best-effort: keep a valid member id, else leave unassigned. (The
+        // migration reconciles legacy name/id values; import doesn't 422 rows.)
+        assignedTo: toMemberIdOrNull(toStr(row.assignedTo)),
         activities: [{ type: "created", description: activityDescription, timestamp: new Date() }],
         status: "new",
       });
@@ -476,4 +657,4 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, checkEnquiryExists, updateEnquiry, importLeads, getImports, importLeadRows };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, importLeads, getImports, importLeadRows };

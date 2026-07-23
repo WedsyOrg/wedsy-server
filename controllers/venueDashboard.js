@@ -71,7 +71,7 @@ const getDashboardOverview = async (req, res) => {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    const baseFilter = { venueId, stage: { $nin: TERMINAL_STAGES } };
+    const baseFilter = { venueId, deleted: { $ne: true }, stage: { $nin: TERMINAL_STAGES } };
 
     const [overdue, dueToday] = await Promise.all([
       VenueEnquiry.countDocuments({ ...baseFilter, followUpDate: { $lt: startOfToday } }),

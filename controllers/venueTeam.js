@@ -65,6 +65,26 @@ const listMembers = async (req, res) => {
   }
 };
 
+// GET /venues/:slug/team/assignable — MB-CRM: the lightweight ACTIVE-member
+// roster (id + name only) for the lead Assign-To dropdown and the leads-table
+// assignee names. Gated by the LEADS capability (not team) so Owner, Manager
+// and Sales can all resolve names — cross-assignment itself is still enforced
+// server-side (leads_reassign / the create contract). Owners are not members,
+// so they never appear here; the UI offers "You (owner)" → unassigned itself.
+const listAssignableMembers = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const members = await VenueTeamMember.find({ venueId: venue._id, isActive: true })
+      .select("_id name role")
+      .sort({ name: 1 })
+      .lean();
+    return res.status(200).json({ members, total: members.length });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 // POST /venues/:slug/team — invite a member (team capability).
 // RBAC v2 (D5) additions, all backward-compatible: `roleId` assigns a
 // VenueRole bundle (legacy `role` enum still accepted); `email` + password
@@ -267,4 +287,4 @@ const getActivity = async (req, res) => {
   }
 };
 
-module.exports = { listMembers, inviteMember, updateMember, setMemberPassword, getActivity, logActivity };
+module.exports = { listMembers, listAssignableMembers, inviteMember, updateMember, setMemberPassword, getActivity, logActivity };

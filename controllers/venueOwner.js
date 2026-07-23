@@ -674,8 +674,8 @@ const portfolioOverview = async (req, res) => {
       owned.map(async (i) => {
         const venueId = i.doc.venueId._id;
         const [newLeads7d, followUpsDue, bookingsUpcoming, bookings, invoices] = await Promise.all([
-          VenueEnquiry.countDocuments({ venueId, createdAt: { $gte: d7 } }),
-          VenueEnquiry.countDocuments({ venueId, stage: { $nin: TERMINAL }, followUpDate: { $lte: endOfToday, $ne: null } }),
+          VenueEnquiry.countDocuments({ venueId, deleted: { $ne: true }, createdAt: { $gte: d7 } }),
+          VenueEnquiry.countDocuments({ venueId, deleted: { $ne: true }, stage: { $nin: TERMINAL }, followUpDate: { $lte: endOfToday, $ne: null } }),
           VenueBooking.countDocuments({ venue: venueId, status: { $ne: "cancelled" }, "days.date": { $gte: now } }),
           VenueBooking.find({ venue: venueId, status: { $ne: "cancelled" } }).select("totalValue").lean(),
           VenueInvoice.find({ venue: venueId }).select("payments").lean(),

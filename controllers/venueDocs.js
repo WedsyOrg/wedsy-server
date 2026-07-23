@@ -345,7 +345,10 @@ async function loadAckDoc(payload) {
     const quote = await VenueQuote.findById(payload.docId);
     if (!quote) return null;
     const VenueEnquiry = require("../models/VenueEnquiry");
-    const enq = await VenueEnquiry.findById(quote.enquiry).select("coupleName couplePhone").lean();
+    // Public token flow — no member context, so member-scoping (resolveScopedEnquiry)
+    // does not apply here; but a soft-deleted lead's PII must not surface on the
+    // white-label acceptance page, so exclude deleted.
+    const enq = await VenueEnquiry.findOne({ _id: quote.enquiry, deleted: { $ne: true } }).select("coupleName couplePhone").lean();
     return { kind: "quote", doc: quote, partyName: enq && enq.coupleName, partyPhone: enq && enq.couplePhone };
   }
   return null;

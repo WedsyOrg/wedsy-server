@@ -1,15 +1,19 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, createManualLead, getVenueEnquiries, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
 const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
 const { refreshReviews } = require("../controllers/venueReviews");
 const { generateLocationDescription } = require("../controllers/venueLocation");
 const { getDashboardOverview } = require("../controllers/venueDashboard");
-const { addInteraction, getInteractions } = require("../controllers/venueLeadInteraction");
+const { addInteraction, getInteractions, quickLog } = require("../controllers/venueLeadInteraction");
 const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
+const tasks = require("../controllers/venueTask");
+const { getCrmOverview } = require("../controllers/venueCrmDashboard");
+const { getDemandMap } = require("../controllers/venueCrmDates");
+const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
@@ -18,7 +22,7 @@ const { summary: paymentsSummary } = require("../controllers/venuePayment");
 const { getAnalytics } = require("../controllers/venueAnalytics");
 const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
-const { listMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
+const { listMembers, listAssignableMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
 const roles = require("../controllers/venueRoles");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
@@ -79,11 +83,35 @@ router.get("/:slug/enquiries/exists", venueOwnerAuth, checkEnquiryExists);
 // Bulk actions over selected leads (literal "bulk" segments — before /:enquiryId).
 router.post("/:slug/enquiries/bulk", venueOwnerAuth, requireCapability("leads"), bulkAction);
 router.post("/:slug/enquiries/bulk-whatsapp", venueOwnerAuth, requireCapability("leads"), bulkWhatsApp);
-router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries); // read: all roles
+router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries); // read: all roles (server-side scoped when no leads_view_all)
+// Single-lead read — SERVER-SIDE scoped: a member without leads_view_all cannot
+// read another member's lead by direct id (declared after the literal
+// /enquiries/{imports,exists,bulk,...} segments so those still match first).
+router.get("/:slug/enquiries/:enquiryId", venueOwnerAuth, getEnquiryById);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, requireCapability("leads"), updateEnquiry);
+// Soft-delete a lead — leads_delete (Owner only by default). Scoped resolve inside.
+router.delete("/:slug/enquiries/:enquiryId", venueOwnerAuth, requireCapability("leads_delete"), deleteEnquiry);
 // Per-lead communication log — write=leads, read open.
 router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, requireCapability("leads"), addInteraction);
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
+// S0e quick-log: one-tap touch that auto-advances stage + captures next follow-up.
+router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapability("leads"), quickLog);
+
+// ── MB-CRM S4: CRM dashboard overview (my-day, real alerts, proof) ──
+router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);
+// ── MB-CRM S6: demand map (contested / held-expiring / booked / open) ──
+router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
+// ── MB-CRM S7: owner-tunable CRM settings (auto-assign) — team capability ──
+router.get("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), getCrmSettings);
+router.patch("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), updateCrmSettings);
+
+// ── MB-CRM S0c: CRM tasks (standalone or lead-linked) ──
+router.get("/:slug/tasks", venueOwnerAuth, tasks.listTasks);
+router.post("/:slug/tasks", venueOwnerAuth, tasks.createTask);
+router.patch("/:slug/tasks/:taskId", venueOwnerAuth, tasks.updateTask);
+router.post("/:slug/tasks/:taskId/complete", venueOwnerAuth, tasks.completeTask);
+router.post("/:slug/tasks/:taskId/reopen", venueOwnerAuth, tasks.reopenTask);
+router.delete("/:slug/tasks/:taskId", venueOwnerAuth, tasks.deleteTask);
 // Message templates — list open, writes=leads.
 router.get("/:slug/templates", venueOwnerAuth, listTemplates);
 router.post("/:slug/templates", venueOwnerAuth, requireCapability("leads"), createTemplate);
@@ -192,6 +220,9 @@ router.post("/:slug/integrations/google-sheets/mapping", venueOwnerAuth, require
 router.post("/:slug/integrations/google-sheets/sync", venueOwnerAuth, requireCapability("leads"), sheets.syncNow);
 
 // ── Team members — team capability ──
+// Lightweight assignable-member roster for the CRM Assign-To dropdown — leads
+// capability (declared BEFORE the param-free /team so it is not shadowed).
+router.get("/:slug/team/assignable", venueOwnerAuth, requireCapability("leads"), listAssignableMembers);
 router.get("/:slug/team", venueOwnerAuth, requireCapability("team"), listMembers);
 router.post("/:slug/team", venueOwnerAuth, requireCapability("team"), inviteMember);
 router.get("/:slug/team/activity", venueOwnerAuth, requireCapability("team"), getActivity);

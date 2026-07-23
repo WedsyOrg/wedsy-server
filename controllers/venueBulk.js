@@ -12,6 +12,11 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueMessageTemplate = require("../models/VenueMessageTemplate");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const venueWhatsApp = require("../utils/venueWhatsApp");
+const { hasCapability } = require("../utils/venueRbac");
+const { validateAssignable } = require("../utils/venueLeadAssign");
+const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
+
+const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
 
 const STAGE_ENUM = [
   "new", "contacted", "site_visit_scheduled", "site_visit_done",
@@ -57,18 +62,37 @@ const bulkAction = async (req, res) => {
       return res.status(400).json({ message: "value (note text) is required for note" });
     }
 
+    // S0a/S0d: bulk assign is a reassignment — gate on leads_reassign and
+    // validate the (single, batch-wide) target is an active member of this
+    // venue up front, so a bad assignee 422s the whole batch (parks no lead).
+    let assignId = null;
+    if (action === "assign") {
+      if (!(await hasCapability(req.venueOwner, "leads_reassign", req.venueMember))) {
+        return res.status(403).json({ message: "You don't have permission to reassign leads" });
+      }
+      const v = await validateAssignable(venue._id, value.trim());
+      if (!v.ok) return res.status(422).json({ message: v.message });
+      assignId = v.id;
+    }
+    if (action === "stage" && !(await hasCapability(req.venueOwner, "leads_change_stage", req.venueMember))) {
+      return res.status(403).json({ message: "You don't have permission to change lead stage" });
+    }
+
     let updated = 0;
+    let skipped = 0;
     const errors = [];
     for (const id of enquiryIds) {
       try {
-        const enquiry = await VenueEnquiry.findOne({ _id: id, venueId: venue._id });
+        // Scoped: out-of-scope (or non-existent) ids are silently skipped so a
+        // member can't mutate another member's leads via a bulk id list.
+        const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, id);
         if (!enquiry) {
-          errors.push({ enquiryId: id, reason: "not found for this venue" });
+          skipped += 1;
           continue;
         }
         if (action === "assign") {
-          enquiry.assignedTo = value.trim();
-          enquiry.activities.push({ type: "assigned", description: `Assigned to ${value.trim()}`, timestamp: new Date() });
+          enquiry.assignedTo = assignId;
+          enquiry.activities.push({ type: "manual_assigned", description: "Reassigned (bulk)", via: "bulk_reassign", actor: actorIdOf(req), timestamp: new Date() });
         } else if (action === "stage") {
           if (value !== enquiry.stage) {
             enquiry.activities.push({ type: "stage_changed", description: `Stage changed from ${enquiry.stage} to ${value}`, timestamp: new Date() });
@@ -84,7 +108,7 @@ const bulkAction = async (req, res) => {
         errors.push({ enquiryId: id, reason: e.message });
       }
     }
-    return res.status(200).json({ updated, errors });
+    return res.status(200).json({ updated, skipped, errors });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -116,12 +140,14 @@ const bulkWhatsApp = async (req, res) => {
     }
 
     let sent = 0;
+    let skipped = 0;
     const failed = [];
     for (const id of enquiryIds) {
       try {
-        const enquiry = await VenueEnquiry.findOne({ _id: id, venueId: venue._id });
+        // Scoped: silently skip ids outside the requester's visibility.
+        const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, id);
         if (!enquiry) {
-          failed.push({ enquiryId: id, reason: "not found for this venue" });
+          skipped += 1;
           continue;
         }
         const phone = enquiry.couplePhone || enquiry.phone;
@@ -146,7 +172,7 @@ const bulkWhatsApp = async (req, res) => {
         failed.push({ enquiryId: id, reason: e.message });
       }
     }
-    return res.status(200).json({ sent, failed });
+    return res.status(200).json({ sent, skipped, failed });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
