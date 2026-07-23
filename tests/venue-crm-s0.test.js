@@ -219,19 +219,17 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       const badLink = await call(tasks.createTask, ownerReq(venue, { body: { title: `${TAG} badlink`, linkedEnquiry: String(new mongoose.Types.ObjectId()) } }));
       ok(badLink.code === 404, "linking a non-existent lead → 404");
 
-      // Per spec, Sales DOES hold tasks_assign_others (not in the exclusion
-      // list) → Sales CAN assign a task to another member. The gate itself is
-      // proven by a role that lacks the cap below.
+      // Sales does NOT hold tasks_assign_others → cannot assign a task to others.
       const salesAssignOther = await call(tasks.createTask, memberReq(venue, salesA, { body: { title: `${TAG} sa`, assignedTo: String(salesB._id) } }));
-      ok(salesAssignOther.code === 201 && String(salesAssignOther.body.task.assignedTo) === String(salesB._id), "Sales holds tasks_assign_others (spec) → can assign to others");
+      ok(salesAssignOther.code === 403, "Sales cannot assign a task to others (no tasks_assign_others)");
 
-      // A role WITHOUT tasks_assign_others (custom 'leads'-only bundle) is denied.
-      const restricted = await VenueRole.create({ venue: venue._id, name: `${TAG}-restricted`, capabilities: ["leads"] });
-      created.roles.push(restricted._id);
-      const restrictedMember = await VenueTeamMember.create({ venueId: venue._id, ownerId: OWNER_ID, name: `${TAG}-R`, phone: `${TAG}R`, role: "sales", roleRef: restricted._id, isActive: true });
-      created.members.push(restrictedMember._id);
-      const deniedAssign = await call(tasks.createTask, memberReq(venue, restrictedMember, { body: { title: `${TAG} da`, assignedTo: String(salesB._id) } }));
-      ok(deniedAssign.code === 403, "a role lacking tasks_assign_others cannot assign tasks to others (gate works)");
+      // A member WHOSE bundle includes tasks_assign_others CAN (gate opens).
+      const grantRole = await VenueRole.create({ venue: venue._id, name: `${TAG}-taskrole`, capabilities: ["leads", "tasks_assign_others"] });
+      created.roles.push(grantRole._id);
+      const grantMember = await VenueTeamMember.create({ venueId: venue._id, ownerId: OWNER_ID, name: `${TAG}-G`, phone: `${TAG}G`, role: "sales", roleRef: grantRole._id, isActive: true });
+      created.members.push(grantMember._id);
+      const allowedAssign = await call(tasks.createTask, memberReq(venue, grantMember, { body: { title: `${TAG} ga`, assignedTo: String(salesB._id) } }));
+      ok(allowedAssign.code === 201 && String(allowedAssign.body.task.assignedTo) === String(salesB._id), "a bundle with tasks_assign_others CAN assign to others (gate opens)");
 
       // Sales assigning to SELF is fine, and defaults to self
       const salesSelf = await call(tasks.createTask, memberReq(venue, salesA, { body: { title: `${TAG} ss` } }));

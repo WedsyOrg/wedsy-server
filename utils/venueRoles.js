@@ -47,7 +47,7 @@ const ROLE_CAPABILITIES = {
     "team_see_pipelines",
     "tasks_assign_others",
   ],
-  sales: ["leads", "leads_change_stage", "leads_mark_lost", "tasks_assign_others"],
+  sales: ["leads", "leads_change_stage", "leads_mark_lost"],
   listing_manager: ["listing", "availability"],
   marketing: ["listing"],
 };
@@ -97,9 +97,11 @@ const CAPABILITY_ALIASES = { billing: "bookings_money", bookings_money: "billing
 // every capability). Names are user-facing and unique per venue.
 // S0d defaults: Owner (system role, seeded elsewhere) = all. Manager = all
 // except leads_delete (and, preserving existing behavior, still not "team").
-// Sales gets the two lead-worker lead caps + task-assign, but NOT
-// leads_view_all/leads_reassign/leads_delete/money_negotiate/team_see_pipelines.
-const SALES_LEAD_CAPS = ["leads_change_stage", "leads_mark_lost", "tasks_assign_others"];
+// Sales gets the two lead-worker lead caps only. It does NOT get
+// tasks_assign_others (a role that can't reassign leads shouldn't push tasks
+// onto colleagues — Sales makes tasks for itself; Owner can enable per-venue),
+// nor leads_view_all/leads_reassign/leads_delete/money_negotiate/team_see_pipelines.
+const SALES_LEAD_CAPS = ["leads_change_stage", "leads_mark_lost"];
 const DEFAULT_ROLE_BUNDLES = [
   { name: "Manager", capabilities: CAPABILITIES_V2.filter((c) => c !== "team" && c !== "leads_delete") },
   { name: "Sales", capabilities: ["leads", "insights", "chats", ...SALES_LEAD_CAPS] },
