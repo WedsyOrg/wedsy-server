@@ -51,4 +51,26 @@ function optCount(v, field, { max = 1e7 } = {}) {
   return { ok: true, value: n };
 }
 
-module.exports = { MAXLEN, cleanStr, reqStr, optStr, optDate, optNumber, optCount };
+// MB-CRM S0b: validate an optional event window. Returns
+// { ok, checkIn, checkOut } (either may be null) or { ok:false, message }.
+// Mirrors the model's pre-validate invariants so controllers 400 cleanly
+// instead of relying on a 500 from the save-time hook.
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+function eventWindow(checkInRaw, checkOutRaw) {
+  const ci = optDate(checkInRaw, "checkIn");
+  if (!ci.ok) return ci;
+  const co = optDate(checkOutRaw, "checkOut");
+  if (!co.ok) return co;
+  if (co.value && !ci.value) {
+    return { ok: false, message: "checkIn is required when checkOut is set" };
+  }
+  if (ci.value && co.value) {
+    if (co.value <= ci.value) return { ok: false, message: "checkOut must be after checkIn" };
+    if (co.value - ci.value > 7 * MS_PER_DAY) {
+      return { ok: false, message: "checkOut must be within 7 days of checkIn" };
+    }
+  }
+  return { ok: true, checkIn: ci.value, checkOut: co.value };
+}
+
+module.exports = { MAXLEN, cleanStr, reqStr, optStr, optDate, optNumber, optCount, eventWindow };

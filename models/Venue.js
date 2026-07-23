@@ -208,6 +208,10 @@ const VenueSchema = new mongoose.Schema({
     // E3x: default for the per-document whiteLabel flag on new quotes/bills/
     // invoices. false keeps the co-branded render (system line + footer).
     documentsWhiteLabelDefault: { type: Boolean, default: false },
+    // MB-CRM S0d: when true, a lead arriving with NO explicit assignee is
+    // round-robined across active Sales members. Explicit assignment always
+    // wins; off by default so nothing changes for venues that don't opt in.
+    autoAssignLeads: { type: Boolean, default: false },
   },
   // backward compat
   phone: { type: String, default: "" },

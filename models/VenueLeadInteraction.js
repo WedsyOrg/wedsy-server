@@ -8,12 +8,16 @@ const VenueLeadInteractionSchema = new mongoose.Schema(
     venue: { type: mongoose.Schema.Types.ObjectId, ref: "Venue", required: true },
     type: {
       type: String,
-      enum: ["call", "whatsapp", "email", "site_visit", "meeting", "enquiry"],
+      // MB-CRM S0e: "note" added for the quick-log free-text touch.
+      enum: ["call", "whatsapp", "email", "site_visit", "meeting", "enquiry", "note"],
       required: true,
     },
     note: { type: String, default: "" },
     // VenueOwner who logged it; null for the auto-seeded "enquiry" interaction.
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "VenueOwner" },
+    // MB-CRM S0a audit: how an auto-seeded assignment interaction arose, e.g.
+    // "round_robin" | "create_override". Only stamped on assignment interactions.
+    via: { type: String },
   },
   { timestamps: true }
 );

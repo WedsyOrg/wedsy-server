@@ -12,6 +12,10 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueMessageTemplate = require("../models/VenueMessageTemplate");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const venueWhatsApp = require("../utils/venueWhatsApp");
+const { hasCapability } = require("../utils/venueRbac");
+const { validateAssignable } = require("../utils/venueLeadAssign");
+
+const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
 
 const STAGE_ENUM = [
   "new", "contacted", "site_visit_scheduled", "site_visit_done",
@@ -57,6 +61,22 @@ const bulkAction = async (req, res) => {
       return res.status(400).json({ message: "value (note text) is required for note" });
     }
 
+    // S0a/S0d: bulk assign is a reassignment — gate on leads_reassign and
+    // validate the (single, batch-wide) target is an active member of this
+    // venue up front, so a bad assignee 422s the whole batch (parks no lead).
+    let assignId = null;
+    if (action === "assign") {
+      if (!(await hasCapability(req.venueOwner, "leads_reassign", req.venueMember))) {
+        return res.status(403).json({ message: "You don't have permission to reassign leads" });
+      }
+      const v = await validateAssignable(venue._id, value.trim());
+      if (!v.ok) return res.status(422).json({ message: v.message });
+      assignId = v.id;
+    }
+    if (action === "stage" && !(await hasCapability(req.venueOwner, "leads_change_stage", req.venueMember))) {
+      return res.status(403).json({ message: "You don't have permission to change lead stage" });
+    }
+
     let updated = 0;
     const errors = [];
     for (const id of enquiryIds) {
@@ -67,8 +87,8 @@ const bulkAction = async (req, res) => {
           continue;
         }
         if (action === "assign") {
-          enquiry.assignedTo = value.trim();
-          enquiry.activities.push({ type: "assigned", description: `Assigned to ${value.trim()}`, timestamp: new Date() });
+          enquiry.assignedTo = assignId;
+          enquiry.activities.push({ type: "manual_assigned", description: "Reassigned (bulk)", via: "bulk_reassign", actor: actorIdOf(req), timestamp: new Date() });
         } else if (action === "stage") {
           if (value !== enquiry.stage) {
             enquiry.activities.push({ type: "stage_changed", description: `Stage changed from ${enquiry.stage} to ${value}`, timestamp: new Date() });
