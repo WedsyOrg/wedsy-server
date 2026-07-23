@@ -127,12 +127,38 @@ const notifyNewLead = async (enquiryId, assignee) => {
 
 // Post-create hook for genuinely-new leads: auto-assignment. Runs AFTER the existing
 // (venue-hardened) validation and insert — additive only, never blocks the response.
-const afterCreate = async (enquiryId) => {
+// N3 — explicit assignment override: when the (admin) creator named an
+// assignee, that choice WINS outright — no round-robin, no pool, no overflow,
+// no triage. The target is re-checked against the assignable predicate at
+// apply time (the controller validated it pre-create too); if it stopped
+// being assignable in between, we fall back to normal auto-assign rather
+// than parking the lead on a disabled admin.
+const afterCreate = async (enquiryId, { explicitAssignee = null, actorId = null } = {}) => {
   let assignee = null;
   try {
-    // assignLead returns the chosen admin (auto mode) or null (triage / disabled /
-    // no capacity). We branch the new-lead notification on this outcome.
-    assignee = await LeadAssignmentService.assignLead(enquiryId);
+    if (explicitAssignee) {
+      const { isAssignableAdmin } = require("../utils/assignable");
+      if (await isAssignableAdmin(explicitAssignee)) {
+        await Enquiry.updateOne({ _id: enquiryId }, { $set: { assignedTo: explicitAssignee } });
+        const Admin = require("../models/Admin");
+        assignee = await Admin.findById(explicitAssignee, { name: 1 }).lean();
+        await LeadInternalEventService.record({
+          leadId: enquiryId,
+          type: "manual_assigned",
+          actorId,
+          payload: { assignedTo: String(explicitAssignee), via: "create_override" },
+        });
+      } else {
+        console.warn(
+          `LeadIntakeService.afterCreate: explicit assignee ${explicitAssignee} no longer assignable — falling back to auto-assign`
+        );
+        assignee = await LeadAssignmentService.assignLead(enquiryId);
+      }
+    } else {
+      // assignLead returns the chosen admin (auto mode) or null (triage / disabled /
+      // no capacity). We branch the new-lead notification on this outcome.
+      assignee = await LeadAssignmentService.assignLead(enquiryId);
+    }
   } catch (e) {
     console.error("LeadIntakeService.afterCreate failed:", e.message);
   }

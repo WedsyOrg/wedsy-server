@@ -76,9 +76,40 @@ const effectiveScopeFilter = async (req) => {
   return { $or: [scope, { _id: { $in: ids } }] };
 };
 
-const CreateNew = (req, res) => {
+const CreateNew = async (req, res) => {
   const { name, phone, verified, source, Otp, ReferenceId, additionalInfo } =
     req.body;
+  // N3 — explicit assignment override. This route is PUBLIC (the consumer
+  // site posts here too), so assignedTo is an admin-only knob: it is honored
+  // only when the request carries a VERIFIED admin bearer, and the target
+  // must pass the assignable predicate (active + not disabled). Validated
+  // up-front so a bad target is rejected BEFORE any lead is created; when
+  // absent, the existing auto-assign path is untouched.
+  const assignOverride = { explicitAssignee: null, actorId: null };
+  if (req.body.assignedTo) {
+    try {
+      const authHeader = req.headers.authorization || "";
+      if (!authHeader.startsWith("Bearer ")) {
+        return res.status(403).send({ message: "assignedTo is only available to logged-in admins" });
+      }
+      const decoded = jwt.verify(authHeader.slice(7), process.env.JWT_SECRET);
+      const caller = decoded && decoded._id ? await Admin.findById(decoded._id, { _id: 1 }).lean() : null;
+      if (!caller) {
+        return res.status(403).send({ message: "assignedTo is only available to logged-in admins" });
+      }
+      const { isAssignableAdmin } = require("../utils/assignable");
+      if (!(await isAssignableAdmin(req.body.assignedTo))) {
+        return res.status(422).send({
+          message: "That admin can't receive leads right now (inactive or disabled) — pick someone else or leave it on auto-assign.",
+        });
+      }
+      assignOverride.explicitAssignee = String(req.body.assignedTo);
+      assignOverride.actorId = String(caller._id);
+    } catch (e) {
+      // Bad/expired token or a lookup failure — never honor the override.
+      return res.status(403).send({ message: "assignedTo is only available to logged-in admins" });
+    }
+  }
   if (!name || !phone || !source || verified === undefined) {
     res.status(400).send({ message: "Incomplete Data" });
   } else if (verified && Otp && ReferenceId) {
@@ -173,7 +204,7 @@ const CreateNew = (req, res) => {
                         .save()
                         .then((result) => {
                           // Lifecycle intake hook (additive): auto-assign the new lead.
-                          LeadIntakeService.afterCreate(result._id);
+                          LeadIntakeService.afterCreate(result._id, assignOverride);
                           SendUpdate({
                             channels: ["SMS", "Whatsapp"],
                             message: "New Lead",
@@ -210,7 +241,7 @@ const CreateNew = (req, res) => {
                             .save()
                             .then((result) => {
                               // Lifecycle intake hook (additive): auto-assign the new lead.
-                              LeadIntakeService.afterCreate(result._id);
+                              LeadIntakeService.afterCreate(result._id, assignOverride);
                               SendUpdate({
                                 channels: ["SMS", "Whatsapp"],
                                 message: "New Lead",
@@ -298,7 +329,7 @@ const CreateNew = (req, res) => {
                 .save()
                 .then((result) => {
                   // Lifecycle intake hook (additive): auto-assign the new lead.
-                  LeadIntakeService.afterCreate(result._id);
+                  LeadIntakeService.afterCreate(result._id, assignOverride);
                   SendUpdate({
                     channels: ["SMS", "Whatsapp"],
                     message: "New Lead",
@@ -1378,6 +1409,10 @@ const UpdateConversation = (req, res) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // N2 note: no event sync needed — for linked notes the merged stream
+        // reads text/time from THIS subdoc (the event only lends authorship),
+        // so edits here surface everywhere and LeadInternalEvent stays
+        // append-only.
         res.send({ message: "success" });
       }
     })
@@ -1411,6 +1446,25 @@ const CreateUser = (req, res) => {
     });
 };
 
+// N1 — ONE NOTE STREAM. Read-time merge of every note store on the lead
+// (canonical "commented" events + updates.conversations + qualifierNotes +
+// qualificationData.additionalNotes + the updates.notes blob), newest-first,
+// each row labelled pre-qual | qualifier | post-qual. Participant-widened read.
+const GetNoteStream = async (req, res) => {
+  try {
+    const { assertInScopeOrRoster } = require("../utils/leadScope");
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, {
+      includeParticipants: true,
+    });
+    const notes = await require("../services/NoteStreamService").listNotes(req.params._id);
+    res.send({ notes });
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error("[GetNoteStream]", error);
+    res.status(status).send({ message: status === 500 ? "Could not load notes — please retry." : error.message });
+  }
+};
+
 const AddConversation = (req, res) => {
   const { _id } = req.params;
   const { conversation, createdAt } = req.body;
@@ -1419,6 +1473,9 @@ const AddConversation = (req, res) => {
     createdAtDate = new Date();
   }
   const conversationObj = {
+    // N2 — pre-mint the subdoc id so the canonical "commented" event can link
+    // back to it (the merged note stream de-dups on this link).
+    _id: new mongoose.Types.ObjectId(),
     text: conversation,
     createdAt: createdAtDate,
   };
@@ -1434,6 +1491,23 @@ const AddConversation = (req, res) => {
         // customer response (per the Signal Matrix decision) + activity.
         await EnquiryRepository.stampFirstRespondedAt(_id, createdAtDate);
         await EnquiryRepository.touchLastActivity(_id);
+        // N2 — write-once, visible everywhere: mirror into the CANONICAL note
+        // store (LeadInternalEvent "commented") with the author this legacy
+        // subdoc never captured. Fire-safe: the legacy write already landed.
+        try {
+          if (req.auth && req.auth.user_id && conversation && String(conversation).trim()) {
+            await require("../services/LeadInternalEventService").record({
+              leadId: _id,
+              type: "commented",
+              actorId: req.auth.user_id,
+              // payload.at preserves the (possibly backdated) conversation time —
+              // the event's own createdAt is always "now".
+              payload: { text: String(conversation).trim(), conversationId: String(conversationObj._id), at: createdAtDate },
+            });
+          }
+        } catch (e) {
+          console.error("AddConversation canonical mirror failed:", e.message);
+        }
         res.send({ message: "success" });
       }
     })
@@ -1456,6 +1530,9 @@ const DeleteConversation = (req, res) => {
       if (!result) {
         res.status(404).send();
       } else {
+        // N2 note: the linked "commented" event stays (append-only store);
+        // the merged stream drops linked notes whose subdoc row is gone, so
+        // deletion here removes the note from every view.
         res.send({ message: "success" });
       }
     })
@@ -1596,6 +1673,7 @@ module.exports = {
   Delete,
   CreateUser,
   AddConversation,
+  GetNoteStream,
   DeleteConversation,
   UpdateConversation,
   UpdateNotes,

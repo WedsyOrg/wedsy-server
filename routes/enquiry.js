@@ -226,6 +226,14 @@ router.delete(
 // Now scope-gated consistent with reads.
 router.put("/:_id/", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiry.UpdateLead);
 router.put("/:_id/notes", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiry.UpdateNotes);
+// N1 — the merged note stream (every store, read-time merge, newest-first).
+// Participant-widened READ: the controller runs assertInScopeOrRoster.
+router.get(
+  "/:_id/notes",
+  CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }),
+  enquiry.GetNoteStream
+);
 router.put("/:_id/call", CheckAdminLogin, ...LEADS_EDIT_SCOPED, enquiry.UpdateCallSchedule);
 router.put(
   "/:_id/first-call",

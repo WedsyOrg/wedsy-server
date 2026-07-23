@@ -696,12 +696,26 @@ const addNote = async (enquiryId, text, actorId) => {
   const lead = await EnquiryRepository.findById(enquiryId);
   if (!lead) throw httpError(404, "Enquiry not found");
   const clean = text.trim();
+  // N2 — write-once, visible everywhere: mirror the note into the legacy
+  // updates.conversations subdoc (the pre-qual comms tab reads it), linked by
+  // conversationId so the merged stream renders ONE entry — the canonical
+  // event, which carries the authorship the subdoc schema can't hold.
+  const convId = new mongoose.Types.ObjectId();
+  const now = new Date();
   await LeadInternalEventService.record({
     leadId: enquiryId,
     type: "commented",
     actorId,
-    payload: { text: clean },
+    payload: { text: clean, conversationId: String(convId), at: now },
   });
+  try {
+    await Enquiry.updateOne(
+      { _id: enquiryId },
+      { $push: { "updates.conversations": { _id: convId, text: clean, createdAt: now } } }
+    );
+  } catch (e) {
+    console.error("addNote conversations mirror failed:", e.message);
+  }
   const stamp = new Date().toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" });
   const legacy = lead.updates?.notes ? `${lead.updates.notes}\n\n[${stamp}] ${clean}` : `[${stamp}] ${clean}`;
   const updated = await EnquiryRepository.updateFieldsById(enquiryId, { "updates.notes": legacy });
