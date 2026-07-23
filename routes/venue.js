@@ -12,6 +12,7 @@ const { addInteraction, getInteractions, quickLog } = require("../controllers/ve
 const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
 const { getCrmOverview } = require("../controllers/venueCrmDashboard");
+const { getDemandMap } = require("../controllers/venueCrmDates");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
@@ -95,6 +96,8 @@ router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapa
 
 // ── MB-CRM S4: CRM dashboard overview (my-day, real alerts, proof) ──
 router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);
+// ── MB-CRM S6: demand map (contested / held-expiring / booked / open) ──
+router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
 
 // ── MB-CRM S0c: CRM tasks (standalone or lead-linked) ──
 router.get("/:slug/tasks", venueOwnerAuth, tasks.listTasks);
