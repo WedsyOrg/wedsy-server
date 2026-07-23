@@ -4,10 +4,10 @@
  */
 const Venue = require("../models/Venue");
 const VenueQuote = require("../models/VenueQuote");
-const VenueEnquiry = require("../models/VenueEnquiry");
 const { computeTotals, GST_MODES } = require("../utils/venueMoney");
 const { streamQuotePdf } = require("../utils/venuePdf");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
+const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 
 async function resolveOwnedVenue(req, res, select = "_id") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
@@ -26,7 +26,9 @@ const createQuote = async (req, res) => {
     if (whiteLabel !== undefined && typeof whiteLabel !== "boolean") {
       return res.status(400).json({ message: "whiteLabel must be a boolean" });
     }
-    const enquiryDoc = await VenueEnquiry.findOne({ _id: enquiry, venueId: venue._id }).select("_id").lean();
+    // Scoped: a member can only quote a lead they can see, and never a
+    // soft-deleted one (resolveScopedEnquiry is the single boundary + 404-not-403).
+    const enquiryDoc = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiry, { select: "_id", lean: true });
     if (!enquiryDoc) return res.status(404).json({ message: "Enquiry not found for this venue" });
 
     const pct = gstPercent !== undefined ? Number(gstPercent) : 18;
@@ -133,7 +135,7 @@ const updateQuote = async (req, res) => {
 
     let booking = null;
     if (status === "accepted") {
-      const enquiry = await VenueEnquiry.findOne({ _id: quote.enquiry, venueId: venue._id });
+      const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
       if (enquiry) {
         booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
         booking.totalValue = quote.totals.grandTotal;
@@ -156,7 +158,7 @@ const confirmBookingFromQuote = async (req, res) => {
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id });
     if (!quote) return res.status(404).json({ message: "Quote not found" });
     if (quote.status !== "accepted") return res.status(409).json({ message: `Quote is ${quote.status}, not accepted` });
-    const enquiry = await VenueEnquiry.findOne({ _id: quote.enquiry, venueId: venue._id });
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found for this venue" });
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
     booking.totalValue = quote.totals.grandTotal;
@@ -172,7 +174,9 @@ const quotePdf = async (req, res) => {
     if (!venue) return;
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id }).lean();
     if (!quote) return res.status(404).json({ message: "Quote not found" });
-    const enquiry = await VenueEnquiry.findById(quote.enquiry).select("coupleName name couplePhone").lean();
+    // Scoped like the other enquiry reads: never render a lead the requester
+    // cannot see (or a soft-deleted one) into a PDF.
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry, { select: "coupleName name couplePhone", lean: true });
     await streamQuotePdf(res, { venue, enquiry, quote });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };

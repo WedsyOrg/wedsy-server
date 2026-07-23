@@ -52,6 +52,7 @@ async function pickRoundRobinAssignee(venueId) {
     {
       $match: {
         venueId: new mongoose.Types.ObjectId(String(venueId)),
+        deleted: { $ne: true },
         assignedTo: { $in: poolIds },
         stage: { $nin: ["booked", "lost"] },
       },

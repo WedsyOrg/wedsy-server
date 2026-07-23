@@ -60,7 +60,9 @@ const listTasks = async (req, res) => {
     const tasks = await VenueTask.find(query)
       .sort({ dueAt: 1, createdAt: -1 })
       .populate("assignedTo", "name")
-      .populate("linkedEnquiry", "coupleName name stage")
+      // match excludes soft-deleted leads: a lead deleted AFTER being linked must
+      // not surface its coupleName/stage here (populate nulls the link instead).
+      .populate({ path: "linkedEnquiry", select: "coupleName name stage", match: { deleted: { $ne: true } } })
       .lean();
     return res.status(200).json({ tasks, total: tasks.length, scoped: !(filter === "all" && canSeeAll) });
   } catch (err) {

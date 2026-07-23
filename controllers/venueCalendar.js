@@ -347,7 +347,7 @@ const demandHeat = async (req, res) => {
     const range = rangeFromQuery(req, res);
     if (!range) return;
     const rows = await VenueEnquiry.aggregate([
-      { $match: { venueId: venue._id, stage: { $ne: "lost" }, eventDate: { $gte: range.from, $lte: new Date(range.to.getTime() + 86399999) } } },
+      { $match: { venueId: venue._id, deleted: { $ne: true }, stage: { $ne: "lost" }, eventDate: { $gte: range.from, $lte: new Date(range.to.getTime() + 86399999) } } },
       { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$eventDate" } }, leads: { $sum: 1 } } },
       { $sort: { _id: 1 } },
     ]);
@@ -371,13 +371,16 @@ const getCalendar = async (req, res) => {
     const [rows, holds, demand, visits] = await Promise.all([
       VenueSpaceDate.find({ venue: venue._id, date: { $gte: range.from, $lte: range.to } }).lean(),
       VenueHold.find({ venue: venue._id, status: "requested", expiresAt: { $gte: new Date() }, dates: { $elemMatch: { $gte: range.from, $lte: range.to } } })
-        .populate("linkedEnquiry", "coupleName stage")
+        // match excludes soft-deleted leads: a lead deleted after a hold was placed
+        // must not surface its coupleName/stage here (holds don't release on delete,
+        // so the populate nulls the link instead). Mirrors listTasks.
+        .populate({ path: "linkedEnquiry", select: "coupleName stage", match: { deleted: { $ne: true } } })
         .lean(),
       VenueEnquiry.aggregate([
-        { $match: { venueId: venue._id, stage: { $ne: "lost" }, eventDate: { $gte: range.from, $lte: toEnd } } },
+        { $match: { venueId: venue._id, deleted: { $ne: true }, stage: { $ne: "lost" }, eventDate: { $gte: range.from, $lte: toEnd } } },
         { $group: { _id: { $dateToString: { format: "%Y-%m-%d", date: "$eventDate" } }, leads: { $sum: 1 } } },
       ]),
-      VenueEnquiry.find({ venueId: venue._id, stage: "site_visit_scheduled", followUpDate: { $gte: range.from, $lte: toEnd } })
+      VenueEnquiry.find({ venueId: venue._id, deleted: { $ne: true }, stage: "site_visit_scheduled", followUpDate: { $gte: range.from, $lte: toEnd } })
         .select("coupleName followUpDate")
         .lean(),
     ]);

@@ -62,7 +62,7 @@ const getAnalytics = async (req, res) => {
     if (fromDate && !isNaN(fromDate)) dateFilter.$gte = fromDate;
     if (toDate && !isNaN(toDate)) dateFilter.$lte = toDate;
 
-    const enqQuery = { venueId: venue._id };
+    const enqQuery = { venueId: venue._id, deleted: { $ne: true } };
     if (Object.keys(dateFilter).length) enqQuery.createdAt = dateFilter;
     const enquiries = await VenueEnquiry.find(enqQuery).select("stage source lostReason createdAt").lean();
 
