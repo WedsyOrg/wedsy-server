@@ -170,11 +170,26 @@ const getDraftDetail = async (leadId, eventId) => {
         breadth: (it.dimensions && it.dimensions.breadth) || 0,
         height: (it.dimensions && it.dimensions.height) || 0,
       },
-      addOns: (it.addOns || []).map((a) => ({ name: a.name || "", price: Number(a.price) || 0, notes: a.notes || "" })),
+      // Extended add-ons round-trip the item-editor shape: per-add-on quantity,
+      // the ES/TS display flag (never priced), and a photo URL.
+      addOns: (it.addOns || []).map((a) => ({
+        name: a.name || "",
+        price: Number(a.price) || 0,
+        notes: a.notes || "",
+        quantity: Number(a.quantity) > 0 ? Number(a.quantity) : 1,
+        ests: a.ests === "es" || a.ests === "ts" ? a.ests : null,
+        photo: a.photo || "",
+      })),
       included: it.included || [],
       user_notes: it.user_notes || "",
       admin_notes: it.admin_notes || "",
       setupLocationImage: it.setupLocationImage || "",
+      // Item-editor read shapes (additive) — priceAdj folds into the priced line;
+      // it is surfaced here for the editor but never exposed in a snapshot.
+      priceAdj: Number(it.priceAdj) || 0,
+      setupLocation: it.setupLocation || "",
+      primaryColor: it.primaryColor || "",
+      secondaryColor: it.secondaryColor || "",
       price: Number(it.price) || 0,
     };
   };
