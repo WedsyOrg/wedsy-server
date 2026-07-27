@@ -287,6 +287,38 @@ const assemble = async (leadId, { lanes } = {}, actorId) => {
   return listLanes(leadId);
 };
 
+// BASELINE LANES — every qualified lead carries this set even with zero
+// discovery services. makeup and vendor:* stay service-dependent (discovery /
+// explicit add only) and are deliberately NOT here.
+const BASELINE_LANE_KEYS = ["lead_comms", "engagement", "kickoff", "venue", "decor"];
+
+// Ensure the baseline set exists — assemble() any missing baseline key.
+// Idempotent by construction: assemble skips keys the lead already has, so
+// existing lanes (and their owners) are never touched, and a second call is a
+// no-op that doesn't even reach assemble. Owner/department suggestions reuse
+// the proposal's own logic (suggestFor; lead_comms is owner-forced inside
+// assemble).
+const ensureBaselineLanes = async (leadId, actorId) => {
+  if (!isId(leadId)) throw err(400, "Invalid lead id");
+  const lead = await Enquiry.findById(leadId, { "qualificationData.venueStatus": 1 }).lean();
+  if (!lead) throw err(404, "Enquiry not found");
+  const existing = await LeadLane.find({ leadId }, { key: 1 }).lean();
+  const have = new Set(existing.map((l) => l.key));
+  // Same venue-drop rule as the assembly proposal: a booked venue has no lane
+  // work — never spawn a dead venue lane. Décor + the standing three always.
+  const venueBooked = lead.qualificationData && lead.qualificationData.venueStatus === "booked";
+  const missing = BASELINE_LANE_KEYS.filter((k) => !have.has(k) && !(k === "venue" && venueBooked));
+  if (!missing.length) return { created: [] };
+  const specs = [];
+  for (const key of missing) {
+    const name = LANE_LIBRARY[key];
+    const sug = key === "lead_comms" ? { departmentId: null, suggestedOwnerId: null } : await suggestFor(leadId, name);
+    specs.push({ key, name, departmentId: sug.departmentId, ownerId: sug.suggestedOwnerId });
+  }
+  await assemble(leadId, { lanes: specs }, actorId);
+  return { created: missing };
+};
+
 // POST /lanes — add ONE lane later (same rules as assemble).
 const addLane = async (leadId, spec = {}, actorId) => {
   const result = await assemble(leadId, { lanes: [spec] }, actorId);
@@ -629,6 +661,8 @@ module.exports = {
   listLanes,
   listEntries,
   assemble,
+  ensureBaselineLanes,
+  BASELINE_LANE_KEYS,
   addLane,
   patchLane,
   addEntry,
