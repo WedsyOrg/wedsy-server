@@ -29,9 +29,25 @@ const assertCanWrite = async (leadId, scopeFilter, callerId, laneId = null) => {
 
 // GET /enquiry/:_id/lanes — lanes + last entries; assembly proposal when none.
 // READ: roster members allowed (Slice B1 guard).
+// Baseline ensure (lazy hook): every QUALIFIED, non-lost lead gets the
+// baseline lane set on first read — covers historic leads with no migration
+// and every qualify path without touching them. Idempotent (assemble skips
+// existing keys) and fire-safe: an ensure failure never breaks the read.
 const List = async (req, res) => {
   try {
     await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, { includeParticipants: true });
+    try {
+      const { isTerminalLost } = require("../utils/lostTerminal");
+      const lead = await Enquiry.findById(
+        req.params._id,
+        { qualifiedAt: 1, stage: 1, isLost: 1, lostStatus: 1 }
+      ).lean();
+      if (lead && lead.qualifiedAt && !isTerminalLost(lead)) {
+        await LeadLaneService.ensureBaselineLanes(req.params._id, req.auth.user_id);
+      }
+    } catch (e) {
+      console.error("[leadLane] baseline ensure failed:", e.message);
+    }
     res.status(200).json(await LeadLaneService.listLanes(req.params._id));
   } catch (error) {
     respond(res, error);
