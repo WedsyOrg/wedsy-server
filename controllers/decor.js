@@ -1,7 +1,15 @@
 const Decor = require("../models/Decor");
 const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
-const { suggestPrice, normalizeComparable } = require("../services/decorPricing");
+const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
+const { analyseImage } = require("../services/decorVision");
+
+// Confidence gates for the vision → pricing handoff (env-overridable). Below a
+// gate we drop the low-confidence signal and fall back to the category band,
+// reporting each fallback in the response.
+const CATEGORY_CONF_MIN = Number(process.env.DECOR_VISION_CATEGORY_CONF_MIN) || 0.5;
+const SIZE_CONF_MIN = Number(process.env.DECOR_VISION_SIZE_CONF_MIN) || 0.5;
+const COMPLEXITY_CONF_MIN = Number(process.env.DECOR_VISION_COMPLEXITY_CONF_MIN) || 0.5;
 
 const stripJsonFence = (text = "") =>
   String(text)
@@ -719,6 +727,103 @@ const SuggestPrice = (req, res) => {
     });
 };
 
+// ─── Phase B — vision layer ──────────────────────────────────────────────────
+// POST /decor/analyse-image  { imageBase64? | imageUrl? | image?, source? }
+// Read-only. Runs the vision model, then the Phase A engine on VISIBLE +
+// AVAILABLE comparables only (demo panel must not show unbuyable items), wiring
+// the complexity tier into band position. Low-confidence signals are dropped and
+// reported under `fallbacks` (fall back to the category median, and say so).
+const AnalyseImage = async (req, res) => {
+  const { imageBase64, imageUrl, image, source } = req.body || {};
+  const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
+  const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
+  if (!b64 && !url) {
+    return res.status(400).send({ message: "image (base64) or imageUrl is required" });
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).send({ message: "ANTHROPIC_API_KEY not configured" });
+  }
+
+  let analysis;
+  try {
+    analysis = await analyseImage({ imageBase64: b64, imageUrl: url });
+  } catch (apiErr) {
+    if (apiErr && apiErr.code === "VISION_PARSE") {
+      return res.status(502).send({
+        message: "AI returned an unexpected response format",
+        raw: apiErr.raw,
+      });
+    }
+    return sendAnthropicError(res, apiErr, "AnalyseImage");
+  }
+
+  const cat = analysis.category;
+  const applicable = CATEGORY_TIERS[cat];
+  const fallbacks = [];
+
+  if (analysis.categoryConfidence < CATEGORY_CONF_MIN) {
+    fallbacks.push(`category: low confidence (${analysis.categoryConfidence})`);
+  }
+
+  // Size feeds pricing only for Stage/Mandap AND only when confident.
+  const sizeConf = analysis.size ? analysis.size.confidence : 0;
+  const sizeIsSized = cat === "Stage" || cat === "Mandap";
+  const useSize = sizeIsSized && sizeConf >= SIZE_CONF_MIN;
+  if (sizeIsSized && !useSize) {
+    fallbacks.push(
+      `size: low confidence (${sizeConf}) — ignored, using the category band (median)`
+    );
+  }
+
+  // Complexity places the price within the band; low confidence → standard.
+  const cxConf = analysis.complexity ? analysis.complexity.confidence : 0;
+  const useComplexity = cxConf >= COMPLEXITY_CONF_MIN;
+  const complexityTier = useComplexity ? analysis.complexity.tier : "standard";
+  if (!useComplexity) {
+    fallbacks.push(
+      `complexity: low confidence (${cxConf}) — defaulted to standard (median)`
+    );
+  }
+
+  // Style only applies to Stage and only when the model committed to one.
+  const style = cat === "Stage" && (analysis.style === "Modern" || analysis.style === "Traditional")
+    ? analysis.style
+    : undefined;
+
+  if (!applicable) {
+    return res.status(200).send({
+      analysis,
+      pricing: null,
+      fallbacks: [...fallbacks, `category "${cat}" is not in the pricing model — no price computed`],
+    });
+  }
+
+  try {
+    // Demo/orderability filter: never surface an unbuyable comparable on a call.
+    const docs = await Decor.find(
+      { category: cat, productVisibility: true, productAvailability: true },
+      "name productInfo.id productInfo.measurements productTypes image thumbnail"
+    ).lean();
+    const comparables = docs.map(normalizeComparable);
+
+    const pricing = suggestPrice(
+      {
+        category: cat,
+        length: useSize ? analysis.size.length : undefined,
+        width: useSize ? analysis.size.width : undefined,
+        style,
+        complexity: complexityTier,
+        source: source === "extension" ? "extension" : "internal",
+      },
+      comparables
+    );
+
+    return res.status(200).send({ analysis, pricing, fallbacks });
+  } catch (error) {
+    return res.status(400).send({ message: "error", error });
+  }
+};
+
 // ─── AI listing helpers ──────────────────────────────────────────────────────
 
 const AI_SYSTEM_PROMPT = `You are a luxury Indian wedding decor product naming expert. Analyze the uploaded product image carefully.
@@ -948,4 +1053,4 @@ Return ONLY valid JSON:
   }
 };
 
-module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, SuggestPrice };
+module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, SuggestPrice, AnalyseImage };

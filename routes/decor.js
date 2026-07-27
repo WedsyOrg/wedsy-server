@@ -16,6 +16,10 @@ router.post("/ai-regenerate", CheckAdminLogin, decor.AiRegenerate);
 // path — MUST stay above the "/:_id" routes so it isn't captured as an id.
 router.post("/suggest-price", CheckAdminLogin, decor.SuggestPrice);
 
+// Phase B — vision layer. base64 images can be several MB → largeJson. Literal
+// path, above "/:_id". Admin-gated.
+router.post("/analyse-image", largeJson, CheckAdminLogin, decor.AnalyseImage);
+
 router.post("/", CheckAdminLogin, decor.CreateNew);
 router.get("/", decor.GetAll);
 router.get("/:_id", decor.Get);

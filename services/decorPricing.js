@@ -82,6 +82,33 @@ const STYLE_PREMIUM = {
   Stage: { Modern: 1.0, Traditional: 45000 / 64000 },
 };
 
+// ── Complexity → band position (Phase B). The backtest showed the residual
+// error IS the design-complexity variable the engine was never given: two
+// same-size stages differ up to 6×. Instead of always returning the median,
+// the vision layer's complexity tier places the product within its own band.
+//   simple → p25 · standard → median · elaborate → p75 · premium → above p75
+// The factor is expressed relative to the median so it composes with the size
+// lookup / ladder anchor (which already lands at the median).
+const COMPLEXITY_POSITION = {
+  simple: "p25",
+  standard: "median",
+  elaborate: "p75",
+  premium: "above_p75",
+};
+const complexityAdjustment = (band, tier) => {
+  if (!tier) return { applied: false, factor: 1, position: "median" };
+  const med = band && band.median;
+  const position = COMPLEXITY_POSITION[tier] || "median";
+  if (!positive(med)) return { applied: true, factor: 1, position };
+  let factor = 1;
+  if (tier === "simple" && positive(band.p25)) factor = band.p25 / med;
+  else if (tier === "elaborate" && positive(band.p75)) factor = band.p75 / med;
+  // "above p75" = one more p75-sized step past the median.
+  else if (tier === "premium" && positive(band.p75)) factor = (2 * band.p75 - med) / med;
+  else factor = 1; // standard, or a tier the band can't support
+  return { applied: true, factor, position };
+};
+
 // ── Rule 2 — premium outliers (>3× median): excluded from the median comps but
 // their price is still reported as the band ceiling (max).
 const PREMIUM_OUTLIERS = {
@@ -162,6 +189,8 @@ const normalizeComparable = (doc = {}) => {
     width,
     area,
     sizeLabel: length && width ? `${length}x${width}` : "",
+    // Demo mode renders comparables as photographs, so carry an image URL.
+    image: doc.image || doc.thumbnail || "",
     prices,
   };
 };
@@ -235,6 +264,7 @@ const pickComparables = (comparables, bandTier, outliers, area, bandMedian) => {
     name: c.name,
     [bandTier]: c.prices[bandTier],
     size: c.sizeLabel,
+    image: c.image || "",
   }));
 };
 
@@ -298,6 +328,10 @@ const suggestPrice = (input = {}, comparables = []) => {
     });
   }
 
+  // Step: complexity — place within the observed band (p25/median/p75/premium)
+  // instead of always regressing to the median. Absent → standard (factor 1).
+  const cx = complexityAdjustment(observedBand, input.complexity);
+
   // Step: style premium (Stage only, when confidently identified).
   const styleMap = STYLE_PREMIUM[category];
   const styleFactor =
@@ -310,7 +344,8 @@ const suggestPrice = (input = {}, comparables = []) => {
 
   Object.keys(suggested).forEach((tier) => {
     const v = suggested[tier];
-    suggested[tier] = v == null ? null : Math.round(v * styleFactor * upliftApplied);
+    suggested[tier] =
+      v == null ? null : Math.round(v * cx.factor * styleFactor * upliftApplied);
   });
 
   const outComparables = pickComparables(
@@ -329,6 +364,15 @@ const suggestPrice = (input = {}, comparables = []) => {
     upliftApplied,
     comparables: outComparables,
     ...(sizeBasis ? { sizeBasis } : {}),
+    ...(cx.applied
+      ? {
+          complexity: {
+            tier: input.complexity,
+            bandPosition: cx.position,
+            factor: Number(cx.factor.toFixed(4)),
+          },
+        }
+      : {}),
   };
 };
 
