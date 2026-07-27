@@ -1,6 +1,7 @@
 const Decor = require("../models/Decor");
 const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
+const { suggestPrice, normalizeComparable } = require("../services/decorPricing");
 
 const stripJsonFence = (text = "") =>
   String(text)
@@ -685,6 +686,39 @@ const Delete = (req, res) => {
     });
 };
 
+// ─── Phase A — décor price suggestion ────────────────────────────────────────
+// POST /decor/suggest-price  { category, size?|length?/width?|area?, style?, source? }
+// Read-only: pulls same-category comparables from `decors` (productTypes only —
+// never productInfo.variant) and runs the pure engine in services/decorPricing.
+// Always returns observedBand + comparables next to `suggested`.
+const SuggestPrice = (req, res) => {
+  const { category } = req.body || {};
+  if (!category) {
+    return res.status(400).send({ message: "category is required" });
+  }
+  Decor.find(
+    { category },
+    "name productInfo.id productInfo.measurements productTypes"
+  )
+    .lean()
+    .then((docs) => {
+      const comparables = docs.map(normalizeComparable);
+      let result;
+      try {
+        result = suggestPrice(req.body, comparables);
+      } catch (e) {
+        if (e && e.code === "UNKNOWN_CATEGORY") {
+          return res.status(400).send({ message: e.message });
+        }
+        throw e;
+      }
+      res.status(200).send(result);
+    })
+    .catch((error) => {
+      res.status(400).send({ message: "error", error });
+    });
+};
+
 // ─── AI listing helpers ──────────────────────────────────────────────────────
 
 const AI_SYSTEM_PROMPT = `You are a luxury Indian wedding decor product naming expert. Analyze the uploaded product image carefully.
@@ -914,4 +948,4 @@ Return ONLY valid JSON:
   }
 };
 
-module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate };
+module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, SuggestPrice };

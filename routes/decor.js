@@ -12,6 +12,10 @@ const largeJson = bodyParser.json({ limit: "50mb" });
 router.post("/ai-analyze", largeJson, CheckAdminLogin, decor.AiAnalyze);
 router.post("/ai-regenerate", CheckAdminLogin, decor.AiRegenerate);
 
+// Phase A — pricing engine. Internal / team-only (JSON in, no image). Literal
+// path — MUST stay above the "/:_id" routes so it isn't captured as an id.
+router.post("/suggest-price", CheckAdminLogin, decor.SuggestPrice);
+
 router.post("/", CheckAdminLogin, decor.CreateNew);
 router.get("/", decor.GetAll);
 router.get("/:_id", decor.Get);
