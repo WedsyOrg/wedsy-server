@@ -4,13 +4,18 @@
 // writes. The controller (POST /decor/analyse-image) pairs this with the Phase A
 // pricing engine (services/decorPricing.js) to attach a band + comparables.
 //
-// Model: Haiku 4.5 (cheap, fast — the demo needs < 3s). The static rules below
-// are sent as a cached system block so repeated calls bill the prompt at 0.1×.
+// Model: Haiku 4.5. The SHARED rules go in a cached system block; a small
+// mode-specific schema block follows (uncached), so both modes share the same
+// cached prefix. Two modes:
+//   • demo — returns ONLY isDecorProduct, category, categoryConfidence, size,
+//     complexity, style. Fewer output tokens → faster (the < 3s live path).
+//   • full — everything, for the draft pipeline.
 //
-// Size is CLASSIFIED, never measured: the model picks from each category's real
-// vocabulary and we snap defensively server-side. We never round to a multiple
-// of 4 — the catalog uses 30, 15×15, 3×2, etc. Complexity is the price-placing
-// signal the backtest proved was missing (same-size stages differ up to 6×).
+// Accuracy-gate fixes (v2): a rejection escape hatch (isDecorProduct) so cakes/
+// portraits/landmarks aren't forced into a category; complexity graded against
+// the full budget→celebrity range (not Pinterest) so it stops defaulting to
+// "premium"; size anchored to the catalogue's real frequency distribution so it
+// stops over-picking 40x20; retry-with-backoff on 429/529.
 
 const Anthropic = require("@anthropic-ai/sdk");
 
@@ -34,28 +39,23 @@ const CATEGORY_LIST = [
   "Sound & Light", "Entries & Effects",
 ];
 
-// ── Static rules (CACHED). Keep this stable — editing it busts the cache. ─────
-const STATIC_RULES = `You are Wedsy's décor vision analyst. Wedsy is a luxury Indian wedding décor company. You are shown ONE photograph of wedding/event décor and you return a SINGLE JSON object describing it.
+// ── SHARED rules (CACHED). Identical for both modes — editing it busts the
+// cache for both. The mode-specific output schema is a separate block below. ──
+const SHARED_RULES = `You are Wedsy's décor vision analyst. Wedsy is a luxury Indian wedding décor company. You are shown ONE photograph and must judge it for the Wedsy décor catalogue.
 
-Return ONLY the JSON object. No prose, no explanation, no markdown code fences.
+STEP 0 — IS THIS A DÉCOR PRODUCT? Decide this FIRST and set "isDecorProduct".
+Wedsy sells INSTALLED event décor: stages, mandaps, photobooths, entrance arches, pathways, nameboards, garlands, floral canopies, and related props/services.
+The following are NOT décor products — set isDecorProduct=false and category=null EVEN WHEN FLOWERS ARE PRESENT:
+- Wedding cakes or any food/dessert — a flower-topped cake is still a cake.
+- Outfits: lehengas, sarees, suits, jewellery, anyone's clothing.
+- Bridal or couple PORTRAITS / close-up shots of people — the subject is the person, not an installation.
+- Venues or buildings shown WITHOUT installed décor: empty halls, hotels, exteriors, interiors as architecture.
+- Famous landmarks or monuments (Taj Mahal, forts, palaces as tourist sites) — never décor.
+- Vehicles — a decorated car is still a vehicle.
+- Landscapes, gardens, nature scenes with no built installation.
+If the image genuinely shows a Wedsy-type BUILT installation, set isDecorProduct=true and classify it. On a borderline built installation, lean true — but the categories above are hard NOs no matter how many flowers appear.
 
-SCHEMA (all keys required):
-{
-  "category": one of ${JSON.stringify(CATEGORY_LIST)},
-  "categoryConfidence": number 0.0-1.0,
-  "style": "Modern" | "Traditional" | null,
-  "flowers": string[],            // e.g. "artificial","natural","roses","orchids","marigold"; [] if none/unsure
-  "colors": string[],             // dominant colours, lowercase
-  "fabric": string[],             // visible drape/backdrop fabrics; [] otherwise
-  "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
-  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
-  "suggestedName": string,        // 2 words, premium Indian-wedding catalogue feel
-  "description": string,          // 2-3 sentences, emotional luxury language
-  "tags": string[],               // 8-12 lowercase search tags
-  "included": string[]            // what a Wedsy build of this piece would include
-}
-
-CATEGORY — pick the single best:
+CATEGORY (only when isDecorProduct=true) — pick the single best:
 - Stage: main wedding stage / seating backdrop.
 - Mandap: 4-pillar canopy structure the couple sits under.
 - Photobooth: selfie / photo backdrop.
@@ -66,24 +66,62 @@ CATEGORY — pick the single best:
 - Phoolon Ki Chadar: floral canopy carried over the head.
 - Partitions / Furniture / Sound & Light / Entries & Effects: props and services.
 
-SIZE — CLASSIFY, DO NOT MEASURE. Snap to the category's known vocabulary. NEVER output a free-form number and NEVER round to a multiple of 4 (the catalogue genuinely uses 30, 15×15, 3×2).
-- Stage: choose EXACTLY ONE (length×width ft): 16x12, 24x16, 16x16, 30x16, 12x8, 20x16, 8x8, 40x20, 12x12.
-- Mandap: choose EXACTLY ONE: 16x16, 12x12, 20x20, 15x15, 20x16.
-- Photobooth: always 8x8. Pathway: always 8x8. Nameboard: always 3x2.
-- Entrance: default 8x8 unless clearly larger; then pick from 10x10, 10x8, 8x10, 12x10.
-- Mala & More, Phoolon Ki Chadar, Partitions, Furniture, Sound & Light, Entries & Effects: size is not meaningful — return {"length":0,"width":0,"confidence":0}.
-Estimate scale from reference objects in the photo: a grand sofa ≈ 6-7 ft wide, a chair ≈ 1.5 ft, an adult ≈ 5.5 ft tall, a doorway ≈ 7 ft tall. A backdrop ≈ 2 sofa-widths ≈ 12-16 ft; ≈ 4 sofas across ≈ 24-30 ft. Set size.confidence honestly — if there is no reference object to scale from, lower it.
+SIZE — CLASSIFY, DO NOT MEASURE. Snap to the category's real vocabulary; NEVER free-form, NEVER round to a multiple of 4 (the catalogue genuinely uses 30, 15x15, 3x2).
+Only Stage and Mandap vary meaningfully. Every other category has a dominant size:
+- Photobooth 8x8 · Pathway 8x8 · Nameboard 3x2 · Entrance default 8x8 (go larger — 10x10 / 10x8 / 8x10 / 12x10 — ONLY with clear evidence).
+- Mala & More / Phoolon Ki Chadar / Partitions / Furniture / Sound & Light / Entries & Effects: size is not meaningful → {"length":0,"width":0,"confidence":0}.
+STAGE — choose ONE and PREFER THE COMMON SIZES. Real catalogue frequency (count of products):
+  24x16 (42) · 16x12 (39) · 16x16 (23) · 30x16 (21) · 20x16 (17) · 12x8 (14) · 8x8 (12) · 40x20 (4).
+24x16 and 16x12 are the safe defaults when scale is ambiguous. 40x20 is only ~2% of the catalogue: pick it ONLY with visible evidence of a stage spanning a FULL HALL with multiple distinct seating groups. If you are not certain it is a hall-spanning, multi-group stage, choose 24x16 or 30x16 instead. NEVER choose 40x20 just because the stage is tall, grand, or richly decorated.
+MANDAP — choose ONE of 16x16, 12x12, 20x20, 15x15, 20x16; 16x16 and 12x12 are the common defaults.
+Scale from reference objects: sofa ≈ 6-7 ft wide, chair ≈ 1.5 ft, adult ≈ 5.5 ft, doorway ≈ 7 ft. A backdrop ≈ 2 sofa-widths ≈ 12-16 ft. Set size.confidence honestly — low if there is nothing to scale against.
 
-COMPLEXITY — the most important field for pricing. Two same-size stages can differ up to 6× in price on build complexity alone. Judge: flower density & coverage (sparse accents → full floral walls), structure (flat backdrop → arches, domes, multi-tier, layered/3D backdrops, hanging installs), lighting & props (none → chandeliers, LED, drapery, candles, fire/water features), and finish quality. Map to a tier:
-- simple: minimal flowers, one flat backdrop, little/no lighting → bottom of the band.
-- standard: moderate florals, one structural element, some lighting → middle of the band.
-- elaborate: dense florals, multiple structures (e.g. arch + tiering), rich lighting/drapery → upper band.
-- premium: full floral coverage, grand multi-structure build, chandeliers/heavy props, luxury finish → top of the band.
-Give a one-line reasoning naming exactly what you saw, and set complexity.confidence honestly.
+COMPLEXITY — grade against the FULL RANGE of Indian wedding décor, from budget weddings to celebrity weddings — NOT against other Pinterest images. A typical well-shot Pinterest photo is usually STANDARD or ELABORATE, not premium. Premium is the TOP QUARTILE ONLY: genuinely exceptional scale — a full-hall installation, multiple distinct structures, chandeliers/heavy props, luxury finish. Do NOT default to premium.
+Calibrate against the Stage natural-tier price the build would command:
+- simple:    under ₹40,000   — minimal flowers, one flat backdrop, little/no lighting.
+- standard:  ₹40,000-60,000  — moderate florals, one structural element, some lighting.
+- elaborate: ₹60,000-84,000  — dense florals, multiple structures (arch + tiering), rich lighting/drapery.
+- premium:   above ₹84,000   — TOP QUARTILE ONLY: full floral coverage, grand multi-structure build, chandeliers, luxury finish.
+DECISION PROCEDURE (follow in order, do not skip a step): start at "standard".
+- Go DOWN to "simple" only if the build is minimal — a single flat backdrop, sparse/no flowers, no special lighting.
+- Go UP to "elaborate" if there are dense florals AND at least one clear structural feature (arch, tiering, layered/3D backdrop, hanging install). MOST lavish, well-decorated Pinterest stages are ELABORATE — a beautiful full-floral backdrop with an arch is elaborate, not premium.
+- Go UP to "premium" ONLY if ALL FOUR hold at once: (1) full floral coverage across the entire set, (2) MULTIPLE distinct built structures (e.g. stage PLUS separate arches / pillars / a ceiling installation), (3) chandeliers or heavy props, AND (4) clearly large / full-hall scale. If even ONE is missing, it is at most elaborate. Your reasoning must name which of these four you actually see. A gorgeous single ornate floral arch/backdrop with a chandelier is ELABORATE, not premium — it has one structure, not several.
+DISTRIBUTIONAL PRIOR: in the real catalogue only ~15-20% of stages are premium and very few are simple — MOST are standard-to-elaborate, and "elaborate" is the correct default for a pretty, well-decorated Pinterest stage. If you are calling premium on most images, you are over-grading; pull back to elaborate. Do NOT default to premium.
+For non-Stage categories apply the same quartile logic within that category's own price range. Give a one-line reasoning naming exactly what you saw, and set complexity.confidence honestly.
 
-STYLE: only "Modern" or "Traditional" (Indian classical / royal). Return null unless you are confident. Style mainly matters for Stage.
+STYLE: only "Modern" or "Traditional" (Indian classical / royal). Return null unless confident. Mainly matters for Stage.
 
-Be decisive but calibrate every confidence honestly. Return ONLY the JSON object.`;
+Calibrate every confidence honestly.`;
+
+// ── mode-specific output schema (NOT cached; small). ─────────────────────────
+const FULL_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys:
+{
+  "isDecorProduct": boolean,
+  "category": one of ${JSON.stringify(CATEGORY_LIST)} OR null (null when isDecorProduct is false),
+  "categoryConfidence": number 0.0-1.0,
+  "style": "Modern" | "Traditional" | null,
+  "flowers": string[],
+  "colors": string[],
+  "fabric": string[],
+  "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
+  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
+  "suggestedName": string,
+  "description": string,
+  "tags": string[],
+  "included": string[]
+}
+If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags/included and empty strings for suggestedName/description; still give best-effort size/complexity/style.`;
+
+const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys and NOTHING else:
+{
+  "isDecorProduct": boolean,
+  "category": one of ${JSON.stringify(CATEGORY_LIST)} OR null (null when isDecorProduct is false),
+  "categoryConfidence": number 0.0-1.0,
+  "style": "Modern" | "Traditional" | null,
+  "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
+  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string }
+}
+Do NOT include flowers, colors, fabric, suggestedName, description, tags, or included.`;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 const stripJsonFence = (text = "") =>
@@ -126,10 +164,15 @@ const clamp01 = (v) => {
   const x = Number(v);
   return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0;
 };
+const asStr = (v) => (typeof v === "string" ? v : "");
 
-// Normalise the model output into the documented shape (defensive server-side).
-const postProcess = (raw = {}) => {
-  const category = raw.category;
+// Normalise model output into the documented shape (defensive server-side).
+// When isDecorProduct is false, category is null and no included[]/text fields.
+const postProcess = (raw = {}, mode = "full") => {
+  const isDecorProduct =
+    typeof raw.isDecorProduct === "boolean" ? raw.isDecorProduct : Boolean(raw.category);
+  const category = isDecorProduct ? raw.category || null : null;
+
   const rawSize = raw.size || {};
   const snapped = snapSize(category, rawSize);
   const size = snapped
@@ -140,52 +183,88 @@ const postProcess = (raw = {}) => {
   const tier = ["simple", "standard", "elaborate", "premium"].includes(cx.tier)
     ? cx.tier
     : "standard";
+  const complexity = {
+    tier,
+    confidence: clamp01(cx.confidence),
+    reasoning: asStr(cx.reasoning),
+  };
 
   const style = raw.style === "Modern" || raw.style === "Traditional" ? raw.style : null;
 
-  return {
+  const base = {
+    isDecorProduct,
     category,
     categoryConfidence: clamp01(raw.categoryConfidence),
     style,
+    size,
+    complexity,
+  };
+  if (mode === "demo") return base;
+
+  return {
+    ...base,
     flowers: asArray(raw.flowers),
     colors: asArray(raw.colors),
     fabric: asArray(raw.fabric),
-    size,
-    complexity: {
-      tier,
-      confidence: clamp01(cx.confidence),
-      reasoning: typeof cx.reasoning === "string" ? cx.reasoning : "",
-    },
-    suggestedName: typeof raw.suggestedName === "string" ? raw.suggestedName : "",
-    description: typeof raw.description === "string" ? raw.description : "",
-    tags: asArray(raw.tags),
-    included: asArray(raw.included),
+    suggestedName: isDecorProduct ? asStr(raw.suggestedName) : "",
+    description: isDecorProduct ? asStr(raw.description) : "",
+    tags: isDecorProduct ? asArray(raw.tags) : [],
+    included: isDecorProduct ? asArray(raw.included) : [], // no included[] for non-décor
   };
 };
 
-// analyseImage({ imageBase64?, imageUrl? }) → normalized analysis object.
-// Throws: err.code "NO_IMAGE" (bad input), "VISION_PARSE" (model returned
-// non-JSON — carries err.raw), or the raw Anthropic SDK error (auth/rate/etc.).
-const analyseImage = async ({ imageBase64, imageUrl } = {}) => {
+// Retry the model call on transient overload (429 rate limit / 529 overloaded).
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RETRYABLE = new Set([429, 529]);
+const isRetryable = (e) =>
+  RETRYABLE.has(e && e.status) ||
+  (e && e.error && e.error.type === "overloaded_error") ||
+  e?.name === "APIConnectionError";
+const createWithRetry = async (client, params, attempts = 3) => {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await client.messages.create(params);
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1 && isRetryable(e)) {
+        await sleep(500 * Math.pow(2, i)); // 500ms, 1000ms
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw lastErr;
+};
+
+// analyseImage({ imageBase64?, imageUrl?, mode? }) → normalized analysis object.
+//   mode: 'demo' (default fields only, faster) | 'full' (everything).
+// Throws: err.code "NO_IMAGE" (bad input), "VISION_PARSE" (non-JSON — err.raw),
+// or the raw Anthropic SDK error (auth/rate/etc., after retries).
+const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
   const source = buildImageSource({ imageBase64, imageUrl });
   if (!source) {
     const err = new Error("image (base64) or imageUrl is required");
     err.code = "NO_IMAGE";
     throw err;
   }
+  const useMode = mode === "demo" ? "demo" : "full";
 
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const message = await client.messages.create({
+  const message = await createWithRetry(client, {
     model: MODEL,
-    max_tokens: 1024,
+    max_tokens: useMode === "demo" ? 512 : 1024,
     temperature: 0,
-    system: [{ type: "text", text: STATIC_RULES, cache_control: { type: "ephemeral" } }],
+    system: [
+      { type: "text", text: SHARED_RULES, cache_control: { type: "ephemeral" } },
+      { type: "text", text: useMode === "demo" ? DEMO_SCHEMA_INSTR : FULL_SCHEMA_INSTR },
+    ],
     messages: [
       {
         role: "user",
         content: [
           { type: "image", source },
-          { type: "text", text: "Analyse this décor image. Return only the JSON object." },
+          { type: "text", text: "Analyse this image. Return only the JSON object." },
         ],
       },
     ],
@@ -205,7 +284,7 @@ const analyseImage = async ({ imageBase64, imageUrl } = {}) => {
     err.raw = text;
     throw err;
   }
-  return postProcess(parsed);
+  return postProcess(parsed, useMode);
 };
 
 module.exports = {

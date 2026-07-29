@@ -734,7 +734,7 @@ const SuggestPrice = (req, res) => {
 // the complexity tier into band position. Low-confidence signals are dropped and
 // reported under `fallbacks` (fall back to the category median, and say so).
 const AnalyseImage = async (req, res) => {
-  const { imageBase64, imageUrl, image, source } = req.body || {};
+  const { imageBase64, imageUrl, image, source, mode } = req.body || {};
   const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
   const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
   if (!b64 && !url) {
@@ -746,7 +746,11 @@ const AnalyseImage = async (req, res) => {
 
   let analysis;
   try {
-    analysis = await analyseImage({ imageBase64: b64, imageUrl: url });
+    analysis = await analyseImage({
+      imageBase64: b64,
+      imageUrl: url,
+      mode: mode === "demo" ? "demo" : "full",
+    });
   } catch (apiErr) {
     if (apiErr && apiErr.code === "VISION_PARSE") {
       return res.status(502).send({
@@ -755,6 +759,11 @@ const AnalyseImage = async (req, res) => {
       });
     }
     return sendAnthropicError(res, apiErr, "AnalyseImage");
+  }
+
+  // Rejection escape hatch: not a décor product → no pricing, no comparables.
+  if (!analysis.isDecorProduct) {
+    return res.status(200).send({ analysis, pricing: null, rejected: true });
   }
 
   const cat = analysis.category;
