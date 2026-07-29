@@ -12,7 +12,10 @@ const ReactionSchema = new mongoose.Schema(
     name: { type: String, default: "" },
     userId: { type: ObjectId, ref: "User", default: null },
     adminId: { type: ObjectId, ref: "Admin", default: null },
-    kind: { type: String, enum: ["love", "pass"], required: true },
+    // "note" = a note-only live mark left by the planner in present mode — a
+    // sticky note on a look that carries NO love/pass sentiment (upserted one-per
+    // -presenter in PlanService.reactToLook; an empty note removes it).
+    kind: { type: String, enum: ["love", "pass", "note"], required: true },
     note: { type: String, default: "" },
     // A4 (additive) — how the reaction was captured: "default" = the actor's
     // own tap (couple app / OS); "live_marked" = Meera marking in present mode
