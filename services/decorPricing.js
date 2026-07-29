@@ -268,6 +268,41 @@ const pickComparables = (comparables, bandTier, outliers, area, bandMedian) => {
   }));
 };
 
+// ── demo price range ─────────────────────────────────────────────────────────
+// Demo mode shows a client-facing RANGE, not a point — and deliberately drops
+// complexity (Haiku's least reliable signal). The range is p25–p75 of the
+// SIZE-MATCHED comparables (same nearest size bucket for Stage/Mandap; whole
+// category otherwise). If the matched bucket is too thin to be meaningful it
+// falls back to the whole-category band. Raw catalogue prices — no complexity,
+// no uplift.
+const MIN_SIZE_MATCHED = 3;
+const computePriceRange = (category, area, nonOutlier, bandTier) => {
+  let pool = nonOutlier;
+  let sizeMatched = false;
+  if (SIZE_ADJUSTED_CATEGORIES.includes(category) && area != null && SIZE_LOOKUP[category]) {
+    const buckets = Object.keys(SIZE_LOOKUP[category]).map(Number);
+    const target = nearestSizeBucket(area, buckets);
+    const matched = nonOutlier.filter(
+      (c) => c.area != null && nearestSizeBucket(c.area, buckets) === target
+    );
+    if (matched.length >= MIN_SIZE_MATCHED) {
+      pool = matched;
+      sizeMatched = true;
+    }
+  }
+  const vals = pool.map((c) => c.prices[bandTier]).filter(positive).sort((a, b) => a - b);
+  if (!vals.length) return null;
+  const r = (v) => (v == null ? null : Math.round(v));
+  return {
+    tier: bandTier,
+    low: r(quantile(vals, 0.25)),
+    median: r(quantile(vals, 0.5)),
+    high: r(quantile(vals, 0.75)),
+    n: vals.length,
+    sizeMatched,
+  };
+};
+
 // ── the engine ───────────────────────────────────────────────────────────────
 // suggestPrice(input, comparables)
 //   input: { category, size?|length?/width?|area?, style?, source? }
@@ -330,7 +365,12 @@ const suggestPrice = (input = {}, comparables = []) => {
 
   // Step: complexity — place within the observed band (p25/median/p75/premium)
   // instead of always regressing to the median. Absent → standard (factor 1).
-  const cx = complexityAdjustment(observedBand, input.complexity);
+  // Demo mode shows a range and deliberately does NOT let complexity move the
+  // price (it stays the least reliable signal); full mode keeps it.
+  const isDemo = input.mode === "demo";
+  const cx = isDemo
+    ? { applied: false, factor: 1, position: "median" }
+    : complexityAdjustment(observedBand, input.complexity);
 
   // Step: style premium (Stage only, when confidently identified).
   const styleMap = STYLE_PREMIUM[category];
@@ -356,6 +396,9 @@ const suggestPrice = (input = {}, comparables = []) => {
     observedBand.median
   );
 
+  // Demo-only: the client-facing p25–p75 range of size-matched comparables.
+  const priceRange = isDemo ? computePriceRange(category, area, nonOutlier, bandTier) : null;
+
   return {
     category,
     applicableTiers,
@@ -364,6 +407,7 @@ const suggestPrice = (input = {}, comparables = []) => {
     upliftApplied,
     comparables: outComparables,
     ...(sizeBasis ? { sizeBasis } : {}),
+    ...(priceRange ? { priceRange } : {}),
     ...(cx.applied
       ? {
           complexity: {

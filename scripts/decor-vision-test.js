@@ -101,10 +101,16 @@ const printTally = (label, pairs, total) => {
   const decor = ok.filter((a) => a.isDecorProduct);
   const nonDecor = ok.filter((a) => !a.isDecorProduct);
   console.error(`\nisDecorProduct: true ${decor.length} · false ${nonDecor.length}`);
+
+  // Full roster — isDecorProduct for EVERY image.
+  console.error("\nroster (file → isDecorProduct → category):");
+  results.forEach((r) =>
+    console.error(`  ${r.analysis.isDecorProduct ? "TRUE " : "false"}  ${r.file}  ${r.analysis.category == null ? "—" : r.analysis.category}`)
+  );
   if (nonDecor.length) {
-    console.error("  rejected (isDecorProduct=false):");
+    console.error("  rejection reasoning:");
     results.filter((r) => !r.analysis.isDecorProduct).forEach((r) =>
-      console.error(`    ${r.file}  → category=${JSON.stringify(r.analysis.category)}  (${r.analysis.complexity.reasoning || "no reasoning"})`)
+      console.error(`    ${r.file}: ${r.analysis.complexity.reasoning || "no reasoning"}`)
     );
   }
 

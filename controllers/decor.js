@@ -823,6 +823,8 @@ const AnalyseImage = async (req, res) => {
         style,
         complexity: complexityTier,
         source: source === "extension" ? "extension" : "internal",
+        // demo → range instead of a complexity-adjusted point price
+        mode: mode === "demo" ? "demo" : "full",
       },
       comparables
     );
