@@ -51,14 +51,15 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(r.ladder[0].prices.mixed, undefined, "no mixed tier");
 }
 
-// ── 3. Stage — full ladder ───────────────────────────────────────────────────
+// ── 3. Stage — full ladder priced from LIVE orderable comparables ────────────
 {
-  console.log("Stage (full size ladder):");
-  // Sized-row prices come from the engine's size lookup, so comps aren't needed
-  // for the price assertions; add a couple with sizes for the examples test.
+  console.log("Stage (full size ladder, live comparables):");
   const comps = [
-    doc("st_a", "SA", { "Natural Flowers": 60000 }, [16, 12]), // 192 bucket
-    doc("st_b", "SB", { "Natural Flowers": 90000 }, [24, 16]), // 384 bucket
+    doc("st_a", "SA", { "Natural Flowers": 40000 }, [16, 12]), // 192 bucket
+    doc("st_b", "SB", { "Natural Flowers": 50000 }, [16, 12]), // 192 → median 45000
+    doc("st108", "OUT", { "Natural Flowers": 300000 }, [16, 12]), // 192 premium OUTLIER
+    doc("st_c", "SC", { "Natural Flowers": 90000 }, [24, 16]), // 384 bucket
+    // nothing at 40x20 → that row must fall back to the engine size lookup
   ];
   const r = buildDemoPrice(analysis("Stage"), comps, { includeExamples: true });
   eq(r.sized, true, "Stage is size-laddered");
@@ -66,19 +67,40 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(JSON.stringify(r.applicableTiers), JSON.stringify(["artificial", "mixed", "natural"]), "all three tiers");
 
   const row1612 = r.ladder.find((x) => x.size === "16x12");
-  eq(row1612.prices.natural, 46000, "16x12 natural = size-lookup median");
-  eq(row1612.prices.artificial, 31944, "16x12 artificial = natural / 1.44");
-  eq(row1612.prices.mixed, 38972, "16x12 mixed = artificial × 1.22");
+  eq(row1612.priceBasis, "live", "16x12 priced from live comparables");
+  eq(row1612.prices.natural, 45000, "16x12 natural = live median (outlier excluded, not 115000)");
+  eq(row1612.comparablesUsed, 2, "premium outlier st108 excluded from the median");
+  eq(row1612.prices.artificial, 31250, "16x12 artificial = natural / 1.44 (ladder)");
+  eq(row1612.prices.mixed, 38125, "16x12 mixed = artificial × 1.22 (ladder)");
+
   const row2416 = r.ladder.find((x) => x.size === "24x16");
-  eq(row2416.prices.natural, 80000, "24x16 natural = size-lookup median");
+  eq(row2416.prices.natural, 90000, "24x16 natural = live median");
+
+  const row4020 = r.ladder.find((x) => x.size === "40x20");
+  eq(row4020.priceBasis, "lookup", "40x20 has no live comps → falls back to the table");
+  eq(row4020.prices.natural, 257500, "40x20 natural = engine size lookup (fallback)");
 
   // examplesAtThisSize: scale/price-point proof, bucketed by nearest size.
   ok(Array.isArray(row1612.examplesAtThisSize), "16x12 row has examplesAtThisSize array");
-  eq(row1612.examplesAtThisSize[0] && row1612.examplesAtThisSize[0].productCode, "st_a", "16x12 example is the 192-bucket product");
   ok(row1612.examplesAtThisSize[0].image === "https://cdn/st_a.jpg", "example carries an image URL");
-  eq(row2416.examplesAtThisSize[0] && row2416.examplesAtThisSize[0].productCode, "st_b", "24x16 example is the 384-bucket product");
-  // no similarity naming anywhere
+  eq(row2416.examplesAtThisSize[0] && row2416.examplesAtThisSize[0].productCode, "st_c", "24x16 example is the 384-bucket product");
   ok(!("similar" in row1612) && !("matches" in row1612), "field is examplesAtThisSize, not similar/matches");
+}
+
+// ── 3b. Mandap 15x15 — live fixes the missing-lookup-bucket underpricing ─────
+{
+  console.log("Mandap 15x15 (live fixes the 256-snap bug):");
+  // SIZE_LOOKUP.Mandap has no 225 (15x15) entry, so the engine snaps it to the
+  // 256 bucket (₹82,000). Live comparables at 15x15 price it correctly.
+  const comps = [
+    doc("ma_x", "MX", { "Natural Flowers": 150000 }, [15, 15]),
+    doc("ma_y", "MY", { "Natural Flowers": 150000 }, [15, 15]),
+  ];
+  const r = buildDemoPrice(analysis("Mandap"), comps);
+  const row = r.ladder.find((x) => x.size === "15x15");
+  eq(row.priceBasis, "live", "15x15 priced from live comparables");
+  eq(row.prices.natural, 150000, "15x15 natural = live median (not the 82000 snap-to-256)");
+  eq(row.prices.artificial, 96154, "15x15 artificial = natural / 1.56 (Mandap ladder)");
 }
 
 // ── 4. Non-décor image → rejected ────────────────────────────────────────────

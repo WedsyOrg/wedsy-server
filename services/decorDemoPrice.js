@@ -1,27 +1,39 @@
 // Demo panel pricing — pure logic for POST /decor/demo-price.
 //
-// Turns a vision-identified category into a client-facing PRICE LADDER using the
-// Phase A pricing engine. No DB, no vision, no network here — the controller
-// runs vision + queries comparables and hands them in, so this stays unit-
-// testable. Retrieval / similarity is descoped: examples are scale/price-point
-// proof, never "matches".
+// Turns a vision-identified category into a client-facing PRICE LADDER. No DB,
+// no vision, no network here — the controller runs vision + queries comparables
+// (pre-filtered to productVisibility:true AND productAvailability:true) and hands
+// them in, so this stays unit-testable. Retrieval / similarity is descoped:
+// examples are scale/price-point proof, never "matches".
 //
-// Rules honoured:
-//  • Stage & Mandap → one row per common size bucket (size moves price there).
-//  • Every other category → a single row with the category band (size doesn't
-//    predict price: Photobooth r=−0.16, Pathway 0.20, Entrance 0.29).
-//  • Tiers are category-aware (pricing-engine Rule 1) — the engine's `suggested`
-//    already contains only the applicable tiers, so we never invent one.
-//  • Raw catalogue prices, NO uplift (source:'internal'); complexity is off in
-//    demo mode. The human picks the size — the model's size estimate is ignored.
+// Sized rows (Stage & Mandap) are priced from LIVE size-matched orderable
+// comparables, not a hardcoded table — the demo answers "what do existing
+// orderable products cost", and a table goes stale as products are added. We
+// take the natural-tier median of the bucket's orderable, non-premium-outlier
+// products and derive the other tiers with the Rule 4 ladder. Premium outliers
+// (>3× median) are excluded so one ₹350k build doesn't distort the "typical"
+// price. If a bucket has no live comparables, we fall back to the engine's size
+// lookup so the row still renders. (The draft/full path keeps the engine lookup.)
+//
+// Every other category → a single category-band row (size doesn't predict price
+// there), whose prices already come from the live comparables via the engine.
 
-const { suggestPrice, CATEGORY_TIERS } = require("./decorPricing");
+const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS } = require("./decorPricing");
 
 // Common size buckets to show, in the order the panel lists them. Only these
 // two categories get a size ladder.
 const SIZE_BUCKETS = {
   Stage: [[16, 12], [24, 16], [16, 16], [30, 16], [20, 16], [12, 8], [8, 8], [40, 20]],
   Mandap: [[16, 16], [12, 12], [20, 20], [15, 15], [20, 16]],
+};
+
+const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
+const positive = (v) => num(v) !== null && num(v) > 0;
+const median = (values) => {
+  const s = values.filter(positive).map(Number).sort((a, b) => a - b);
+  if (!s.length) return null;
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 };
 
 // The tier whose price labels an example product (richest applicable tier).
@@ -36,12 +48,45 @@ const exampleOf = (c, bandTier) => ({
   price: c.prices ? (c.prices[bandTier] ?? null) : null,
 });
 
-// Per-size prices for a Stage/Mandap row come from the engine's size lookup;
-// comps only matter for the observed band (unused here) so an empty list is fine.
-const pricesForSize = (category, l, w, comps) =>
-  suggestPrice({ category, length: l, width: w, mode: "demo", source: "internal" }, comps).suggested;
+// Which displayed bucket (by area) is a product's size nearest to?
+const nearestBucketArea = (category, area) => {
+  const areas = SIZE_BUCKETS[category].map(([l, w]) => l * w);
+  let best = areas[0], bestD = Infinity;
+  areas.forEach((a) => { const d = Math.abs(a - area); if (d < bestD) { bestD = d; best = a; } });
+  return best;
+};
 
-// Category-band prices (no size) for the non-sized single row.
+// Per-size prices from LIVE orderable comparables: natural median (outliers
+// excluded) → ladder-derived artificial/mixed. Falls back to the engine's size
+// lookup when the bucket has no live comparables.
+const livePricesForRow = (category, l, w, comps) => {
+  const area = l * w;
+  const outliers = new Set(PREMIUM_OUTLIERS[category] || []);
+  const ladder = TIER_LADDER[category];
+  const matched = comps
+    .filter((c) => c && !outliers.has(c.id) && c.area != null &&
+      nearestBucketArea(category, c.area) === area && c.prices && positive(c.prices.natural))
+    .map((c) => c.prices.natural);
+  const natLive = median(matched);
+  if (natLive != null && ladder) {
+    const artificial = natLive / ladder.natural;
+    return {
+      basis: "live",
+      n: matched.length,
+      prices: {
+        artificial: Math.round(artificial),
+        mixed: Math.round(artificial * ladder.mixed),
+        natural: Math.round(natLive),
+      },
+    };
+  }
+  // no live comparables in this bucket → engine size lookup keeps the row honest
+  const prices = suggestPrice({ category, length: l, width: w, mode: "demo", source: "internal" }, comps).suggested;
+  return { basis: "lookup", n: 0, prices };
+};
+
+// Category-band prices (no size) for the non-sized single row — already derived
+// from the live comparables by the engine (per-tier median / ladder).
 const pricesForCategory = (category, comps) =>
   suggestPrice({ category, mode: "demo", source: "internal" }, comps).suggested;
 
@@ -77,21 +122,12 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
 
   let ladder;
   if (sized) {
-    const bucketAreas = buckets.map(([l, w]) => l * w);
-    // Assign each example product to its single nearest displayed bucket.
-    const nearestBucketIndex = (area) => {
-      let best = 0, bestD = Infinity;
-      bucketAreas.forEach((ba, j) => {
-        const d = Math.abs(area - ba);
-        if (d < bestD) { bestD = d; best = j; }
-      });
-      return best;
-    };
-    ladder = buckets.map(([l, w], bi) => {
-      const row = { size: `${l}x${w}`, area: l * w, prices: pricesForSize(category, l, w, comps) };
+    ladder = buckets.map(([l, w]) => {
+      const { basis, n, prices } = livePricesForRow(category, l, w, comps);
+      const row = { size: `${l}x${w}`, area: l * w, prices, priceBasis: basis, comparablesUsed: n };
       if (includeExamples) {
         row.examplesAtThisSize = withImage
-          .filter((c) => c.area != null && nearestBucketIndex(c.area) === bi)
+          .filter((c) => c.area != null && nearestBucketArea(category, c.area) === l * w)
           .slice(0, 3)
           .map((c) => exampleOf(c, bandTier));
       }
