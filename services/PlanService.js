@@ -166,7 +166,9 @@ const removeLook = async (leadId, lookId, actorId = null) => {
 
 // ── Reactions (looks + moods) ────────────────────────────────────────────────
 const cleanReaction = ({ voice, kind, note, name, userId, source } = {}, { adminId = null } = {}) => {
-  if (!["love", "pass"].includes(kind)) throw err(400, 'kind must be "love" | "pass"');
+  // "note" = a note-only live mark (a planner's sticky note in present mode) — no
+  // love/pass sentiment. love | pass carry sentiment as before.
+  if (!["love", "pass", "note"].includes(kind)) throw err(400, 'kind must be "love" | "pass" | "note"');
   const v = ["couple", "family", "wedsy"].includes(voice) ? voice : adminId ? "wedsy" : "couple";
   // A4 — "live_marked" = captured by the planner in present mode ("marked
   // live by Meera"); only an admin actor may claim it.
@@ -208,6 +210,19 @@ const reactToLook = async (leadId, lookId, body = {}, ctx = {}) => {
   const look = plan.looks.id(lookId);
   if (!look) throw err(404, "Look not found");
   const reaction = cleanReaction(body, ctx);
+  // A note-only live mark is a SINGLE upsert per presenter: replace any prior
+  // note this admin left on the look, and an EMPTY note removes it (the sticky-
+  // note × delete). No heart echo — a note carries no love/pass sentiment.
+  if (reaction.kind === "note") {
+    const adminId = ctx.adminId ? String(ctx.adminId) : "";
+    for (let i = look.reactions.length - 1; i >= 0; i--) {
+      const r = look.reactions[i];
+      if (r.kind === "note" && String(r.adminId || "") === adminId) look.reactions.splice(i, 1);
+    }
+    if (reaction.note) look.reactions.push(reaction);
+    await plan.save();
+    return look.toObject();
+  }
   look.reactions.push(reaction);
   await plan.save();
   await echoHeart(leadId, reaction, look.snapshot && look.snapshot.name ? `“${look.snapshot.name}”` : "a look");
