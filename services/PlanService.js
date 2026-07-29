@@ -31,7 +31,45 @@ const getOrCreate = async (leadId) => {
   return plan;
 };
 
-const getPlan = async (leadId) => (await getOrCreate(leadId)).toObject();
+// Derive-at-read: mark each look pushed:bool (+ pushedDraftIds[]) by checking
+// whether that look's decor/package appears in any draft Event's items. pushToBuild
+// copies the decor into the draft (no stored look→draft link), so we resolve it
+// here at read time — additive, no migration. Fire-safe: any failure degrades to
+// pushed:false rather than breaking the plan read.
+const decoratePushed = async (leadId, planObj) => {
+  const looks = planObj.looks || [];
+  if (!looks.length) return planObj;
+  try {
+    const Event = require("../models/Event");
+    const drafts = await Event.find({ leadId }, { _id: 1, eventDays: 1 }).lean();
+    const decorMap = new Map(); // decorId → Set(draftId)
+    const pkgMap = new Map(); // packageId → Set(draftId)
+    const add = (map, key, draftId) => {
+      const k = key == null ? "" : String(key);
+      if (!k) return;
+      if (!map.has(k)) map.set(k, new Set());
+      map.get(k).add(draftId);
+    };
+    for (const ev of drafts) {
+      const draftId = String(ev._id);
+      for (const day of ev.eventDays || []) {
+        for (const it of day.decorItems || []) add(decorMap, it.decor, draftId);
+        for (const pk of day.packages || []) add(pkgMap, pk.package, draftId);
+      }
+    }
+    planObj.looks = looks.map((l) => {
+      const hit = (l.decorId && decorMap.get(String(l.decorId))) || (l.packageId && pkgMap.get(String(l.packageId))) || null;
+      const pushedDraftIds = hit ? Array.from(hit) : [];
+      return { ...l, pushed: pushedDraftIds.length > 0, pushedDraftIds };
+    });
+  } catch (e) {
+    console.error("[Plan] pushed-state derive failed:", e.message);
+    planObj.looks = looks.map((l) => ({ ...l, pushed: false, pushedDraftIds: [] }));
+  }
+  return planObj;
+};
+
+const getPlan = async (leadId) => decoratePushed(leadId, (await getOrCreate(leadId)).toObject());
 
 // ── Looks ─────────────────────────────────────────────────────────────────────
 const addLook = async (leadId, { source, decorId, packageId, imageUrl, functionKey, categoryKey, round, talkingPoint, themeId, provenance } = {}, actorId) => {
@@ -223,9 +261,29 @@ const reactToLook = async (leadId, lookId, body = {}, ctx = {}) => {
     await plan.save();
     return look.toObject();
   }
-  look.reactions.push(reaction);
+  // Love / pass are idempotent PER ACTOR — an actor (adminId for the wedsy voice,
+  // userId for the couple) holds AT MOST ONE love-or-pass on a look. We remove
+  // that actor's prior love/pass first (also de-duping any legacy stack), then:
+  //   • repeat of the SAME kind  → toggle OFF (remove, add nothing)
+  //   • switch (love→pass etc.)  → replace (removed old, add the new)
+  // The heart echo fires ONLY on a net-new love (not on a toggle-off / switch-away).
+  const sameActor = (r) => {
+    if (reaction.adminId) return String(r.adminId || "") === String(reaction.adminId);
+    if (reaction.userId) return String(r.userId || "") === String(reaction.userId);
+    return r.voice === reaction.voice && !r.adminId && !r.userId;
+  };
+  let hadSameKind = false;
+  for (let i = look.reactions.length - 1; i >= 0; i--) {
+    const r = look.reactions[i];
+    if ((r.kind === "love" || r.kind === "pass") && sameActor(r)) {
+      if (r.kind === reaction.kind) hadSameKind = true;
+      look.reactions.splice(i, 1);
+    }
+  }
+  const netNewLove = !hadSameKind && reaction.kind === "love";
+  if (!hadSameKind) look.reactions.push(reaction);
   await plan.save();
-  await echoHeart(leadId, reaction, look.snapshot && look.snapshot.name ? `“${look.snapshot.name}”` : "a look");
+  if (netNewLove) await echoHeart(leadId, reaction, look.snapshot && look.snapshot.name ? `“${look.snapshot.name}”` : "a look");
   return look.toObject();
 };
 
