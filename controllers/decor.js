@@ -3,6 +3,29 @@ const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
 const { analyseImage } = require("../services/decorVision");
+const { buildDemoPrice, pinTextCategoryCheck } = require("../services/decorDemoPrice");
+const sharp = require("sharp");
+
+// Downscale a base64 or URL image before the vision call — cuts tokens/latency
+// (demo needs < 3s). EXIF-corrected, aspect-preserved, max 800px longest edge.
+const DEMO_MAX_EDGE = Number(process.env.DEMO_IMAGE_MAX_EDGE) || 800;
+const downscaleToBase64 = async ({ imageBase64, imageUrl }) => {
+  let buf;
+  if (imageUrl) {
+    const res = await fetch(imageUrl);
+    if (!res.ok) throw new Error(`could not fetch image (HTTP ${res.status})`);
+    buf = Buffer.from(await res.arrayBuffer());
+  } else {
+    const m = /^data:[^;]+;base64,(.+)$/.exec(imageBase64 || "");
+    buf = Buffer.from(m ? m[1] : imageBase64 || "", "base64");
+  }
+  const out = await sharp(buf, { failOn: "none" })
+    .rotate()
+    .resize({ width: DEMO_MAX_EDGE, height: DEMO_MAX_EDGE, fit: "inside", withoutEnlargement: true })
+    .jpeg({ quality: 85 })
+    .toBuffer();
+  return out.toString("base64");
+};
 
 // Confidence gates for the vision → pricing handoff (env-overridable). Below a
 // gate we drop the low-confidence signal and fall back to the category band,
@@ -835,6 +858,64 @@ const AnalyseImage = async (req, res) => {
   }
 };
 
+// ─── Demo panel — live client pricing ────────────────────────────────────────
+// POST /decor/demo-price  { imageBase64? | imageUrl? | image?, pinText?, includeExamples? }
+// Read-only. Vision (demo mode) → category; non-décor → { rejected }. Otherwise a
+// category-aware PRICE LADDER (per size bucket for Stage/Mandap, one category-band
+// row otherwise) from the Phase A engine. Raw prices, NO uplift. The size ladder
+// exists so the human asks the client the size — the model's size is ignored.
+const DemoPrice = async (req, res) => {
+  const { imageBase64, imageUrl, image, pinText, includeExamples } = req.body || {};
+  const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
+  const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
+  if (!b64 && !url) {
+    return res.status(400).send({ message: "image (base64) or imageUrl is required" });
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(500).send({ message: "ANTHROPIC_API_KEY not configured" });
+  }
+
+  // Downscale before the vision call. A read failure must not throw a stack
+  // trace onto a live call — return a graceful message the panel can render.
+  let downscaled;
+  try {
+    downscaled = await downscaleToBase64({ imageBase64: b64, imageUrl: url });
+  } catch (e) {
+    return res.status(502).send({ message: "Couldn't read this image — try another." });
+  }
+
+  let analysis;
+  try {
+    analysis = await analyseImage({ imageBase64: downscaled, mode: "demo" });
+  } catch (apiErr) {
+    if (apiErr && apiErr.code === "VISION_PARSE") {
+      return res.status(502).send({ message: "Couldn't read this image — try another." });
+    }
+    return sendAnthropicError(res, apiErr, "DemoPrice");
+  }
+
+  const pinTextCheck = pinTextCategoryCheck(pinText, analysis.category);
+
+  // Non-décor → reject, no pricing, no comparables.
+  if (!analysis.isDecorProduct) {
+    const out = buildDemoPrice(analysis, [], { includeExamples: false });
+    return res.status(200).send({ ...out, ...(pinTextCheck ? { pinTextCheck } : {}) });
+  }
+
+  try {
+    // Examples + non-sized band prices come from ORDERABLE products only.
+    const docs = await Decor.find(
+      { category: analysis.category, productVisibility: true, productAvailability: true },
+      "name productInfo.id productInfo.measurements productTypes image thumbnail"
+    ).lean();
+    const comparables = docs.map(normalizeComparable);
+    const out = buildDemoPrice(analysis, comparables, { includeExamples: !!includeExamples });
+    return res.status(200).send({ ...out, ...(pinTextCheck ? { pinTextCheck } : {}) });
+  } catch (error) {
+    return res.status(400).send({ message: "error", error });
+  }
+};
+
 // ─── AI listing helpers ──────────────────────────────────────────────────────
 
 const AI_SYSTEM_PROMPT = `You are a luxury Indian wedding decor product naming expert. Analyze the uploaded product image carefully.
@@ -1064,4 +1145,4 @@ Return ONLY valid JSON:
   }
 };
 
-module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, SuggestPrice, AnalyseImage };
+module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, SuggestPrice, AnalyseImage, DemoPrice };
