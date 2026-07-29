@@ -69,7 +69,26 @@ const decoratePushed = async (leadId, planObj) => {
   return planObj;
 };
 
-const getPlan = async (leadId) => decoratePushed(leadId, (await getOrCreate(leadId)).toObject());
+// Derive-at-read: attach each decor look's human product id (Decor.productInfo.id,
+// e.g. "st069") so the Inspiration card can show it. One batched Decor lookup;
+// additive, fire-safe (any failure just omits productId).
+const decorateProductIds = async (planObj) => {
+  const looks = planObj.looks || [];
+  const decorIds = [...new Set(looks.filter((l) => l.decorId).map((l) => String(l.decorId)))];
+  if (!decorIds.length) return planObj;
+  try {
+    const Decor = require("../models/Decor");
+    const docs = await Decor.find({ _id: { $in: decorIds } }, { productInfo: 1 }).lean();
+    const map = new Map(docs.map((d) => [String(d._id), (d.productInfo && d.productInfo.id) || ""]));
+    planObj.looks = looks.map((l) => ({ ...l, productId: l.decorId ? map.get(String(l.decorId)) || "" : "" }));
+  } catch (e) {
+    console.error("[Plan] productId derive failed:", e.message);
+  }
+  return planObj;
+};
+
+const getPlan = async (leadId) =>
+  decorateProductIds(await decoratePushed(leadId, (await getOrCreate(leadId)).toObject()));
 
 // ── Looks ─────────────────────────────────────────────────────────────────────
 const addLook = async (leadId, { source, decorId, packageId, imageUrl, functionKey, categoryKey, round, talkingPoint, themeId, provenance } = {}, actorId) => {
