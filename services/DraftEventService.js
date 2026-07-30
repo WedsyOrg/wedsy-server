@@ -97,6 +97,12 @@ const listDrafts = async (leadId) => {
       name: e.draftName || e.name,
       origin: "os",
       status: e.status || {},
+      // Build & Bill v2 (additive) — the draft-lock + publish state lives on
+      // event-level fields the FE previously could not see.
+      locked: !!e.locked,
+      finalisedBy: e.finalisedBy || null,
+      published: !!e.published,
+      hasUnpublishedChanges: !!e.hasUnpublishedChanges,
       totals: await totalsFor(e),
       days: (e.eventDays || []).length,
       createdAt: e.createdAt,
@@ -108,6 +114,10 @@ const listDrafts = async (leadId) => {
       name: e.name,
       origin: "couple",
       status: e.status || {},
+      locked: !!e.locked,
+      finalisedBy: e.finalisedBy || null,
+      published: !!e.published,
+      hasUnpublishedChanges: !!e.hasUnpublishedChanges,
       totals: await totalsFor(e),
       days: (e.eventDays || []).length,
       createdAt: e.createdAt,
@@ -142,7 +152,7 @@ const getDraftDetail = async (leadId, eventId) => {
     ),
   ];
   const decors = decorIds.length
-    ? await Decor.find({ _id: { $in: decorIds } }, { name: 1, category: 1, thumbnail: 1, image: 1 }).lean()
+    ? await Decor.find({ _id: { $in: decorIds } }, { name: 1, category: 1, thumbnail: 1, image: 1, "productInfo.id": 1 }).lean()
     : [];
   const decorById = new Map(decors.map((d) => [String(d._id), d]));
 
@@ -153,6 +163,9 @@ const getDraftDetail = async (leadId, eventId) => {
       decor: it.decor ? String(it.decor) : null,
       decorId: it.decor ? String(it.decor) : null,
       name: d.name || "",
+      // Build & Bill v2 (additive) — the human product id ("st069"), the team's
+      // find-by-ID handle, shown mono on every item card.
+      productId: (d.productInfo && d.productInfo.id) || "",
       category: it.category || d.category || "",
       thumbnail: d.thumbnail || d.image || "",
       variant: it.variant || "Standard",
@@ -202,6 +215,11 @@ const getDraftDetail = async (leadId, eventId) => {
     venue: day.venue || "",
     // FE derives functionKey from the day name (lowercased); expose it too.
     functionKey: String(day.name || "").toLowerCase(),
+    // Build & Bill v2 (additive) — per-day status dots + the day-notes field
+    // ("Extra notes" under the add-ons table) + the renamable add-ons title.
+    status: day.status || {},
+    notes: day.notes || "",
+    customItemsTitle: day.customItemsTitle || "",
     decorItems: (day.decorItems || []).map(mapItem),
     packages: day.packages || [],
     customItems: day.customItems || [],
@@ -213,6 +231,11 @@ const getDraftDetail = async (leadId, eventId) => {
     name: doc.draftName || doc.name,
     origin: event ? "os" : "couple",
     status: doc.status || {},
+    // Build & Bill v2 (additive) — lock + publish state (see listDrafts).
+    locked: !!doc.locked,
+    finalisedBy: doc.finalisedBy || null,
+    published: !!doc.published,
+    hasUnpublishedChanges: !!doc.hasUnpublishedChanges,
     totals: await totalsFor(doc),
     days,
   };
