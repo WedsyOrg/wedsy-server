@@ -64,6 +64,7 @@ const SIZE_LOOKUP = {
   Stage: {
     64: 25000,
     96: 37000,
+    144: 48000, // 12x12 — added 2026-07 from live median (n=4); was a gap
     192: 46000,
     256: 45000,
     320: 60000,
@@ -71,8 +72,19 @@ const SIZE_LOOKUP = {
     480: 180000,
     800: 257500,
   },
-  Mandap: { 144: 64000, 256: 82000, 400: 151000 },
+  Mandap: {
+    144: 64000,
+    225: 150000, // 15x15 — added 2026-07 from live median (n=6); was snapping to 256 (82000)
+    256: 82000,
+    320: 132500, // 20x16 — added 2026-07 from live median (n=4); was snapping to 256 (82000)
+    400: 151000,
+  },
 };
+// Guard for sizes with no exact table entry: if the nearest bucket is more than
+// SIZE_SNAP_WARN_PCT away in area, we're extrapolating — warn + widen the band
+// instead of snapping silently (silent snapping mispriced 15x15/20x16 Mandaps).
+const SIZE_SNAP_WARN_PCT = Number(process.env.DECOR_SIZE_SNAP_WARN_PCT) || 0.15;
+const SIZE_SNAP_WIDEN = Number(process.env.DECOR_SIZE_SNAP_WIDEN) || 0.2;
 
 // ── Rule 5 — style premium (Stage only). Modern median ₹64,000 vs Traditional
 // ₹45,000. Expressed relative to Modern (the dominant style the bands reflect:
@@ -344,7 +356,18 @@ const suggestPrice = (input = {}, comparables = []) => {
     const bucket = nearestSizeBucket(area, buckets);
     const naturalAtSize = SIZE_LOOKUP[category][bucket];
     baseAnchor = naturalAtSize / ladder.natural;
-    sizeBasis = { area, bucket, naturalMedian: naturalAtSize };
+    // Guard: an exact entry is trustworthy; a far snap is an extrapolation.
+    const exact = SIZE_LOOKUP[category][area] != null;
+    const snapDistancePct = bucket ? Math.abs(area - bucket) / bucket : 0;
+    const confidence = exact ? "exact" : snapDistancePct > SIZE_SNAP_WARN_PCT ? "low" : "near";
+    sizeBasis = { area, bucket, naturalMedian: naturalAtSize, exact, snapDistancePct: Number(snapDistancePct.toFixed(3)), confidence };
+    if (confidence === "low") {
+      sizeBasis.warning =
+        `no size entry for ${area} sqft; snapped to the ${bucket} sqft bucket ` +
+        `(${(snapDistancePct * 100).toFixed(0)}% away) — widening the estimate instead of trusting the point`;
+      // eslint-disable-next-line no-console
+      console.warn(`[decorPricing] ${category}: ${sizeBasis.warning}`);
+    }
   }
 
   // Step: tier ladder → build the suggested set.
@@ -397,7 +420,27 @@ const suggestPrice = (input = {}, comparables = []) => {
   );
 
   // Demo-only: the client-facing p25–p75 range of size-matched comparables.
-  const priceRange = isDemo ? computePriceRange(category, area, nonOutlier, bandTier) : null;
+  let priceRange = isDemo ? computePriceRange(category, area, nonOutlier, bandTier) : null;
+
+  // Guard payoff: on a low-confidence size snap, don't hand back a confident
+  // point — widen it into a per-tier band, and widen the demo range too.
+  let suggestedBand;
+  if (sizeBasis && sizeBasis.confidence === "low") {
+    const W = SIZE_SNAP_WIDEN;
+    suggestedBand = {};
+    Object.keys(suggested).forEach((tier) => {
+      const v = suggested[tier];
+      suggestedBand[tier] = v == null ? null : { low: Math.round(v * (1 - W)), high: Math.round(v * (1 + W)) };
+    });
+    if (priceRange) {
+      priceRange = {
+        ...priceRange,
+        low: Math.round(priceRange.low * (1 - W)),
+        high: Math.round(priceRange.high * (1 + W)),
+        widened: true,
+      };
+    }
+  }
 
   return {
     category,
@@ -407,6 +450,7 @@ const suggestPrice = (input = {}, comparables = []) => {
     upliftApplied,
     comparables: outComparables,
     ...(sizeBasis ? { sizeBasis } : {}),
+    ...(suggestedBand ? { suggestedBand } : {}),
     ...(priceRange ? { priceRange } : {}),
     ...(cx.applied
       ? {

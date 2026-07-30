@@ -125,5 +125,36 @@ const comps = (docs) => docs.map(normalizeComparable);
   ok(threw, "unknown category throws UNKNOWN_CATEGORY");
 }
 
+// ── added SIZE_LOOKUP entries (were gaps) ────────────────────────────────────
+{
+  console.log("Added size-lookup entries:");
+  const s = suggestPrice({ category: "Stage", size: { length: 12, width: 12 } }, []);
+  eq(s.sizeBasis.confidence, "exact", "Stage 12x12 now has an exact entry");
+  eq(s.suggested.natural, 48000, "Stage 12x12 natural = 48000 (added)");
+  const m15 = suggestPrice({ category: "Mandap", size: { length: 15, width: 15 } }, []);
+  eq(m15.sizeBasis.confidence, "exact", "Mandap 15x15 now exact (was snapping to 256)");
+  eq(m15.suggested.natural, 150000, "Mandap 15x15 natural = 150000 (was 82000)");
+  const m20 = suggestPrice({ category: "Mandap", size: { length: 20, width: 16 } }, []);
+  eq(m20.suggested.natural, 132500, "Mandap 20x16 natural = 132500 (was 82000)");
+}
+
+// ── snap guard: near vs far ──────────────────────────────────────────────────
+{
+  console.log("Snap guard:");
+  // 14x14 = 196 → nearest 192 (2% away) → "near", trusted point, no band.
+  const near = suggestPrice({ category: "Stage", size: { length: 14, width: 14 } }, []);
+  eq(near.sizeBasis.confidence, "near", "196 sqft snaps <15% → near");
+  eq(near.suggestedBand, undefined, "near snap keeps a confident point (no widened band)");
+  eq(near.suggested.natural, 46000, "196 → 192 bucket natural 46000");
+
+  // 50x30 = 1500 → nearest 800 (88% away) → "low": warn + widened band.
+  const far = suggestPrice({ category: "Stage", size: { length: 50, width: 30 } }, []);
+  eq(far.sizeBasis.confidence, "low", "1500 sqft snaps >15% → low confidence");
+  ok(typeof far.sizeBasis.warning === "string" && far.sizeBasis.warning.length > 0, "far snap carries a warning");
+  ok(far.suggestedBand && far.suggestedBand.natural, "far snap widens into a per-tier band");
+  eq(far.suggestedBand.natural.low, Math.round(far.suggested.natural * 0.8), "band low = point × 0.8");
+  eq(far.suggestedBand.natural.high, Math.round(far.suggested.natural * 1.2), "band high = point × 1.2");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
