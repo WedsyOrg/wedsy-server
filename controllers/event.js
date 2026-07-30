@@ -503,6 +503,7 @@ const UpdateCustomItemsInEventDay = async (req, res) => {
     );
 
     if (result) {
+      stampEventAction(_id, req.auth, "custom_items_update", { dayId, count: customItems.length });
       res.status(200).send({ message: "success" });
     } else {
       console.error("UpdateCustomItemsInEventDay: Failed to update event", {
@@ -705,6 +706,7 @@ const UpdateMandatoryItemsInEventDay = async (req, res) => {
     );
 
     if (result) {
+      stampEventAction(_id, req.auth, "mandatory_items_update", { dayId, count: mandatoryItems.length });
       res.status(200).send({ message: "success" });
     } else {
       console.error("UpdateMandatoryItemsInEventDay: Failed to update event", {
@@ -1612,6 +1614,7 @@ const MarkEventLost = (req, res) => {
   )
     .then((result) => {
       if (result) {
+        stampEventAction(_id, req.auth, "lost", { lostResponse: String(lostResponse || "") });
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -1635,6 +1638,7 @@ const FinalizeEventDay = (req, res) => {
   )
     .then((result) => {
       if (result) {
+        stampEventAction(_id, req.auth, "finalize_day", { dayId });
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -1750,6 +1754,7 @@ const FinalizeEvent = (req, res) => {
                 eventId: String(_id),
                 by: isAdmin ? "admin" : "client",
               });
+              stampEventAction(_id, req.auth, "finalize");
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "Event not found" });
@@ -1785,6 +1790,7 @@ const ApproveEventDay = (req, res) => {
   )
     .then((result) => {
       if (result) {
+        stampEventAction(_id, req.auth, "approve_day", { dayId });
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -1819,6 +1825,7 @@ const RemoveEventDayApproval = (req, res) => {
   )
     .then((result) => {
       if (result) {
+        stampEventAction(_id, req.auth, "unapprove_day", { dayId });
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -1920,6 +1927,7 @@ const ApproveEvent = (req, res) => {
               });
               // MB7a Slice 1 — Wedsy validates (key 2); payment now unlocks.
               OnboardingService.recordEventJourney(event, "wedsy_approved", user_id, { eventId: String(_id) });
+              stampEventAction(_id, req.auth, "approve", { discount: Number(req.body.discount) || 0 });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "Event not found" });
@@ -1950,6 +1958,7 @@ const RemoveEventApproval = (req, res) => {
   )
     .then((result) => {
       if (result) {
+        stampEventAction(_id, req.auth, "unapprove");
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -1973,6 +1982,7 @@ const RemoveEventFinalize = (req, res) => {
   )
     .then((result) => {
       if (result) {
+        stampEventAction(_id, req.auth, "remove_finalize");
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -2053,23 +2063,71 @@ const Get = (req, res) => {
     });
 };
 
+// Build & Bill audit stamps — the /event action routes had NO audit trail.
+// When the event is lead-linked (leadId set: OS drafts + bridged couple
+// events), each action records one LeadInternalEvent type "event_action"
+// (sibling of "plan_change", which stays reserved for OS draft WRITES).
+// Fire-safe by contract: a stamp failure never breaks the action; an event
+// with no leadId skips silently. actorId only carries ADMIN ids (the field
+// refs Admin) — couple-side actions stamp actorId:null with payload.by.
+const stampEventAction = async (eventId, auth, action, extra = {}) => {
+  try {
+    const ev = await Event.findById(eventId, { leadId: 1, draftName: 1, name: 1 }).lean();
+    if (!ev || !ev.leadId) return;
+    const isAdmin = !!(auth && auth.isAdmin);
+    await require("../services/LeadInternalEventService").record({
+      leadId: ev.leadId,
+      type: "event_action",
+      actorId: isAdmin ? auth.user_id : null,
+      payload: {
+        action,
+        eventId: String(eventId),
+        name: ev.draftName || ev.name || "",
+        by: isAdmin ? "admin" : "client",
+        ...extra,
+      },
+    });
+  } catch (e) {
+    console.error("[event] audit stamp failed:", e.message);
+  }
+};
+
+// Build & Bill G1 — recipient resolution shared by send + reminder. Couple
+// events carry a populated user; OS DRAFTS may have user:null with the
+// contact living on the lead (Enquiry). Falls back leadId → lead name/phone
+// so drafts send to a real number instead of WhatsApp-ing undefined.
+const eventRecipient = async (event) => {
+  if (event.user && event.user.phone) return { name: event.user.name, phone: event.user.phone };
+  if (event.leadId) {
+    const Enquiry = require("../models/Enquiry");
+    const lead = await Enquiry.findById(event.leadId, { name: 1, phone: 1 }).lean();
+    if (lead && lead.phone) return { name: lead.name, phone: lead.phone };
+  }
+  return null;
+};
+
 const SendEventToClient = (req, res) => {
   const { _id } = req.params;
   // Event.findOne({ _id, "status.finalized": true, "status.approved": false })
   Event.findOne({ _id })
     .populate("user")
     .exec()
-    .then((event) => {
+    .then(async (event) => {
       if (event._id) {
+        const to = await eventRecipient(event);
+        if (!to) {
+          return res.status(422).send({ message: "No client phone on this event or its lead — nothing to send to." });
+        }
         SendUpdate({
           channels: ["Whatsapp"],
           message: "Event Planner",
           parameters: {
-            name: event?.user?.name,
-            phone: event?.user?.phone,
+            name: to.name,
+            phone: to.phone,
             link: `${process.env.USER_APP_ORIGIN || "https://www.wedsy.in"}/event/${event?._id}/view`,
           },
         });
+        stampEventAction(_id, req.auth, "send_to_client");
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });
@@ -2086,16 +2144,21 @@ const SendEventBookingReminder = (req, res) => {
   Event.findOne({ _id })
     .populate("user")
     .exec()
-    .then((event) => {
+    .then(async (event) => {
       if (event._id) {
+        const to = await eventRecipient(event);
+        if (!to) {
+          return res.status(422).send({ message: "No client phone on this event or its lead — nothing to send to." });
+        }
         SendUpdate({
           channels: ["Whatsapp"],
           message: "Booking Reminder",
           parameters: {
-            name: event?.user?.name,
-            phone: event?.user?.phone,
+            name: to.name,
+            phone: to.phone,
           },
         });
+        stampEventAction(_id, req.auth, "booking_reminder");
         res.status(200).send({ message: "success" });
       } else {
         res.status(404).send({ message: "Event not found" });

@@ -126,6 +126,14 @@ const GetDraft = wrap(async (req, res) => {
   res.status(200).json({ draft: await DraftEventService.getDraftDetail(req.params._id, req.params.eventId) });
 });
 
+// G3 — the bill rail's CP/SP + earnings read. Admin-JWT-gated like every
+// /plan route; deliberately a SEPARATE endpoint from the draft detail so no
+// couple-facing read can ever inherit cost data.
+const DraftEarnings = wrap(async (req, res) => {
+  await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
+  res.status(200).json(await DraftEventService.draftEarnings(req.params._id, req.params.eventId));
+});
+
 // ── P4 ────────────────────────────────────────────────────────────────────────
 const AddDay = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
@@ -284,7 +292,7 @@ module.exports = {
   PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
-  CreateDraft, ListDrafts, GetDraft,
+  CreateDraft, ListDrafts, GetDraft, DraftEarnings,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem,
   GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
