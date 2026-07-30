@@ -6,6 +6,28 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueBooking = require("../models/VenueBooking");
 const { optStr } = require("../utils/venueInput");
 const { notifyHoldRequested } = require("../utils/venueHoldAlert");
+const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
+
+// MB-CRM-2 S1d: holds write to their linked lead's timeline so the workbench
+// tells one coherent story ("everything writes here"). Best-effort — a
+// timeline failure never fails the hold action itself.
+async function logOnLinkedLead(holdOrEnquiryId, type, text) {
+  if (!holdOrEnquiryId) return;
+  try {
+    await VenueEnquiry.updateOne(
+      { _id: holdOrEnquiryId },
+      {
+        $push: {
+          notes: { text, addedAt: new Date() },
+          activities: { type, description: text, timestamp: new Date() },
+        },
+      }
+    );
+  } catch (e) {
+    console.warn(`[venueCalendar] lead timeline write failed: ${e.message}`);
+  }
+}
+const fmtDay = (d) => new Date(d).toISOString().slice(0, 10);
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_HOLD_DATES = 31;
@@ -82,7 +104,13 @@ const createHold = async (req, res) => {
 
     let linkedEnquiry;
     if (body.linkedEnquiry) {
-      const enq = await VenueEnquiry.findOne({ _id: body.linkedEnquiry, venueId: venue._id }).select("_id").lean();
+      // S1d: venue tokens resolve the lead through the scope boundary — a
+      // member who can't see a lead can't link a hold to it (same 400 as a
+      // wrong-venue id so existence isn't leaked). Admin (wedsy concierge)
+      // tokens keep the venue-bound check.
+      const enq = req.admin
+        ? await VenueEnquiry.findOne({ _id: body.linkedEnquiry, venueId: venue._id, deleted: { $ne: true } }).select("_id").lean()
+        : await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, body.linkedEnquiry, { select: "_id", lean: true });
       if (!enq) return res.status(400).json({ message: "linkedEnquiry does not belong to this venue" });
       linkedEnquiry = enq._id;
     }
@@ -98,6 +126,15 @@ const createHold = async (req, res) => {
       notes: notesV.value,
       expiresAt: new Date(Date.now() + holdDays * 86400000),
     });
+
+    // S1d: the hold lands on the lead's timeline.
+    if (linkedEnquiry) {
+      await logOnLinkedLead(
+        linkedEnquiry,
+        "hold_requested",
+        `Hold requested for ${dates.map(fmtDay).join(", ")} — expires ${fmtDay(hold.expiresAt)}.`
+      );
+    }
 
     // Owner gets a WhatsApp ping for wedsy-side requests (log-only default).
     if (req.admin) notifyHoldRequested(venue, hold).catch((e) => console.warn(`[holdAlert] ${e.message}`));
@@ -178,6 +215,12 @@ const approveHold = async (req, res) => {
     hold.decidedAt = new Date();
     hold.decidedBy = actorName(req);
     await hold.save();
+    // S1d: the lead's page reads holdExpiry from this hold; log the grant.
+    await logOnLinkedLead(
+      hold.linkedEnquiry,
+      "hold_approved",
+      `Date held for them (${hold.dates.map(fmtDay).join(", ")}) — hold expires ${fmtDay(hold.expiresAt)}.`
+    );
     return res.status(200).json({ hold, claimed: rows.length });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -218,6 +261,8 @@ const releaseHold = async (req, res) => {
     hold.decidedAt = new Date();
     hold.decidedBy = actorName(req);
     await hold.save();
+    // S1d symmetric: release lands on the lead's timeline too.
+    await logOnLinkedLead(hold.linkedEnquiry, "hold_released", "Hold released — the date is open again.");
     return res.status(200).json({ hold });
   } catch (err) {
     return res.status(500).json({ message: err.message });

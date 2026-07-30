@@ -21,6 +21,53 @@ const VenueEnquirySchema = new mongoose.Schema(
     budget: { type: String },
     vibe: [{ type: String }],
     message: { type: String, default: "" },
+    // MB-CRM-2 S1a (additive): structured contacts — who actually decides.
+    // coupleName/couplePhone stay the legacy mirrors (dashboards, WhatsApp,
+    // dedup import all read them); contacts[] is the CRM-2 source of truth.
+    // Exactly one isPrimary is enforced by the controller sanitizer, not here,
+    // so legacy rows (empty contacts) never fail validation on save.
+    contacts: [
+      {
+        name: { type: String, default: "" },
+        phone: { type: String, default: "" },
+        role: {
+          type: String,
+          enum: ["groom", "bride", "brides_father", "mother", "planner", "other"],
+          default: "other",
+        },
+        isPrimary: { type: Boolean, default: false },
+      },
+    ],
+    // MB-CRM-2 S1b (additive): per-function event mapping across the stay.
+    // `space` references a Venue.spaces subdoc _id (same convention as
+    // VenueHold.space); it is validated against the venue at the controller
+    // (the model can't reach Venue). Two functions may share a date in
+    // different spaces — that is normal, never a conflict. Function dates must
+    // sit inside [checkIn, checkOut] when the window is set (pre-validate).
+    functions: [
+      {
+        name: {
+          type: String,
+          enum: ["mehendi", "haldi", "sangeet", "wedding", "reception", "custom"],
+          required: true,
+        },
+        customLabel: { type: String, default: "" },
+        date: { type: Date, required: true },
+        timeSlot: { type: String, default: "" },
+        space: { type: mongoose.Schema.Types.ObjectId },
+        expectedPax: { type: Number },
+        notes: { type: String, default: "" },
+      },
+    ],
+    // MB-CRM-2 S1c (additive): "the shape of the deal". All fields optional —
+    // "" / undefined mean not-asked-yet, which the UI renders explicitly.
+    requirements: {
+      food: { type: String, enum: ["", "veg", "nonveg", "both"], default: "" },
+      catering: { type: String, enum: ["", "inhouse", "outside", "both"], default: "" },
+      alcohol: { type: Boolean },
+      roomsNeeded: { type: Number },
+      decorNotes: { type: String, default: "" },
+    },
     source: {
       type: String,
       enum: ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"],
@@ -118,6 +165,24 @@ VenueEnquirySchema.pre("validate", function (next) {
       this.invalidate("checkOut", "checkOut must be after checkIn");
     } else if (this.checkOut - this.checkIn > 7 * MS_PER_DAY) {
       this.invalidate("checkOut", "checkOut must be within 7 days of checkIn");
+    }
+  }
+  // MB-CRM-2 S1b: function dates ⊆ [checkIn, checkOut] whenever the window is
+  // set (compared at day granularity — a function on the check-out day is
+  // fine). Mirrored by the controller so callers get a clean 400 first; this
+  // is the defense-in-depth backstop.
+  if (this.checkIn && this.checkOut && Array.isArray(this.functions)) {
+    const dayStart = (d) => new Date(d).setHours(0, 0, 0, 0);
+    const lo = dayStart(this.checkIn);
+    const hi = dayStart(this.checkOut);
+    for (const fn of this.functions) {
+      if (fn && fn.date) {
+        const day = dayStart(fn.date);
+        if (day < lo || day > hi) {
+          this.invalidate("functions", "every function date must fall within the check-in/check-out window");
+          break;
+        }
+      }
     }
   }
   next();

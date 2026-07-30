@@ -42,17 +42,17 @@ const getDemandMap = async (req, res) => {
     const leads = await VenueEnquiry.find(leadFilter).select("coupleName name checkIn eventDate stage").lean();
 
     // demand (non-booked) grouped by date; booked leads → booked dates w/ names
-    const demand = new Map(); // key -> [{_id,name}]
-    const bookedByDate = new Map(); // key -> couple name
+    const demand = new Map(); // key -> [{_id,name,stage}]
+    const bookedByDate = new Map(); // key -> { couple, enquiryId }
     for (const l of leads) {
       const key = dayKey(l.checkIn || l.eventDate);
       if (!key) continue;
       if (l.stage === "booked") {
-        if (!bookedByDate.has(key)) bookedByDate.set(key, leadName(l));
+        if (!bookedByDate.has(key)) bookedByDate.set(key, { couple: leadName(l), enquiryId: l._id });
         continue;
       }
       if (!demand.has(key)) demand.set(key, []);
-      demand.get(key).push({ _id: l._id, name: leadName(l) });
+      demand.get(key).push({ _id: l._id, name: leadName(l), stage: l.stage });
     }
 
     // active holds (requested/approved, not expired)
@@ -68,6 +68,10 @@ const getDemandMap = async (req, res) => {
     for (const s of spaceBooked) { const k = dayKey(s.date); if (k) bookedDates.add(k); }
 
     // ── contested ──
+    // MB-CRM-2 S5: link the actual leads (id+name+stage), not just names. This
+    // stays scope-safe because `demand` is built from the requester's OWN
+    // scoped lead set — a scoped member only ever sees their own leads here
+    // (legacy `leads` name array kept for pre-S5 consumers).
     const contested = [];
     for (const [key, arr] of demand) {
       if (arr.length > 1 && !bookedDates.has(key)) {
@@ -75,6 +79,7 @@ const getDemandMap = async (req, res) => {
           date: key,
           leadCount: arr.length,
           leads: canViewAll ? arr.slice(0, 3).map((x) => x.name) : [],
+          leadRefs: arr.slice(0, 4).map((x) => ({ _id: x._id, name: x.name, stage: x.stage })),
           hasHold: heldDates.has(key),
         });
       }
@@ -90,13 +95,18 @@ const getDemandMap = async (req, res) => {
         // leads_view_all sees it (holds are venue-wide; the name is lead PII).
         const couple = canViewAll ? (h.requestedByName || (h.linkedEnquiry && leadName(h.linkedEnquiry)) || "A couple") : "A couple";
         const competing = primary && demand.has(primary) ? demand.get(primary).length : 0;
-        return { date: primary, dates: (h.dates || []).map(dayKey), daysLeft, couple, status: h.status, competingCount: Math.max(0, competing) };
+        // S5: the "Open lead ›" link — only where the name is un-gated (a gated
+        // name with a live id would leak lead existence to scoped members).
+        const enquiryId = canViewAll && h.linkedEnquiry ? h.linkedEnquiry._id : undefined;
+        return { date: primary, dates: (h.dates || []).map(dayKey), daysLeft, couple, status: h.status, competingCount: Math.max(0, competing), enquiryId, holdId: h._id };
       })
       .filter((h) => h.date)
       .sort((a, b) => a.daysLeft - b.daysLeft);
 
     // ── booked ──
-    const booked = [...bookedByDate.entries()].map(([date, couple]) => ({ date, couple })).sort((a, b) => a.date.localeCompare(b.date));
+    const booked = [...bookedByDate.entries()]
+      .map(([date, v]) => ({ date, couple: v.couple, enquiryId: v.enquiryId }))
+      .sort((a, b) => a.date.localeCompare(b.date));
 
     // ── open inventory (near-term dates with no demand/hold/booking) ──
     const openSample = [];

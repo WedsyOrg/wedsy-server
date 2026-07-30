@@ -3,6 +3,9 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
+const VenueHold = require("../models/VenueHold");
+const VenueConversation = require("../models/VenueConversation");
+const VenueBooking = require("../models/VenueBooking");
 const { createOrGetConversation } = require("./venueConversation");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
@@ -22,6 +25,13 @@ const toMemberIdOrNull = (v) => (mongoose.isValidObjectId(v) ? v : null);
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
 const STAGE_ENUM = ["new", "contacted", "site_visit_scheduled", "site_visit_done", "proposal_sent", "negotiating", "booked", "lost"];
+// MB-CRM-2 S1 enums (kept in sync with models/VenueEnquiry.js).
+const CONTACT_ROLE_ENUM = ["groom", "bride", "brides_father", "mother", "planner", "other"];
+const FUNCTION_NAME_ENUM = ["mehendi", "haldi", "sangeet", "wedding", "reception", "custom"];
+const REQ_FOOD_ENUM = ["", "veg", "nonveg", "both"];
+const REQ_CATERING_ENUM = ["", "inhouse", "outside", "both"];
+const MAX_CONTACTS = 20;
+const MAX_FUNCTIONS = 20;
 
 // ── Import coercion helpers ──
 const toStr = (v) => (v == null ? "" : String(v).trim());
@@ -37,6 +47,167 @@ function toNumberOrNull(v) {
   if (!s) return null;
   const n = Number(s.replace(/[,₹\s]/g, ""));
   return Number.isNaN(n) ? null : n;
+}
+
+// ── MB-CRM-2 S1 sanitizers ──
+// Each returns { ok, value } or { ok:false, message } (venueInput convention).
+
+// S1a contacts[]: name-or-phone required per row, role coerced to the enum,
+// EXACTLY one isPrimary in the result — first explicitly-marked wins, else the
+// first contact. Empty array is allowed (legacy rows).
+function sanitizeContacts(list) {
+  if (!Array.isArray(list)) return { ok: false, message: "contacts must be an array" };
+  if (list.length > MAX_CONTACTS) return { ok: false, message: `contacts is too long (max ${MAX_CONTACTS})` };
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i] || {};
+    const name = cleanStr(c.name).slice(0, MAXLEN.name);
+    const phone = cleanStr(c.phone).slice(0, MAXLEN.phone);
+    if (!name && !phone) return { ok: false, message: `contacts[${i}] needs a name or phone` };
+    const role = CONTACT_ROLE_ENUM.includes(c.role) ? c.role : "other";
+    out.push({ name, phone, role, isPrimary: Boolean(c.isPrimary) });
+  }
+  if (out.length > 0) {
+    const primaryIdx = out.findIndex((c) => c.isPrimary);
+    out.forEach((c, i) => { c.isPrimary = i === (primaryIdx === -1 ? 0 : primaryIdx); });
+  }
+  return { ok: true, value: out };
+}
+
+// S1b functions[]: name from the enum (custom requires customLabel), strict
+// date inside [checkIn, checkOut] when the window is set, space must be a
+// bookable space of THIS venue (or absent), pax a positive count. Two
+// functions on the same date are fine — different spaces is the normal case.
+function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
+  if (!Array.isArray(list)) return { ok: false, message: "functions must be an array" };
+  if (list.length > MAX_FUNCTIONS) return { ok: false, message: `functions is too long (max ${MAX_FUNCTIONS})` };
+  const dayStart = (d) => new Date(d).setHours(0, 0, 0, 0);
+  const lo = checkIn && checkOut ? dayStart(checkIn) : null;
+  const hi = checkIn && checkOut ? dayStart(checkOut) : null;
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i] || {};
+    if (!FUNCTION_NAME_ENUM.includes(f.name)) {
+      return { ok: false, message: `functions[${i}].name must be one of ${FUNCTION_NAME_ENUM.join(", ")}` };
+    }
+    const customLabel = cleanStr(f.customLabel).slice(0, MAXLEN.label);
+    if (f.name === "custom" && !customLabel) {
+      return { ok: false, message: `functions[${i}].customLabel is required for a custom function` };
+    }
+    const dV = optDate(f.date, `functions[${i}].date`);
+    if (!dV.ok) return { ok: false, message: dV.message };
+    if (!dV.value) return { ok: false, message: `functions[${i}].date is required` };
+    if (lo !== null) {
+      const day = dayStart(dV.value);
+      if (day < lo || day > hi) {
+        return { ok: false, message: `functions[${i}].date must fall within the check-in/check-out window` };
+      }
+    }
+    let space;
+    if (f.space !== undefined && f.space !== null && f.space !== "") {
+      const match = (venueSpaces || []).find((s) => String(s._id) === String(f.space));
+      if (!match) return { ok: false, message: `functions[${i}].space is not a space of this venue` };
+      if (match.isBookable === false) return { ok: false, message: `functions[${i}].space is not bookable` };
+      space = match._id;
+    }
+    const paxV = optCount(f.expectedPax, `functions[${i}].expectedPax`);
+    if (!paxV.ok) return { ok: false, message: paxV.message };
+    out.push({
+      name: f.name,
+      customLabel: f.name === "custom" ? customLabel : "",
+      date: dV.value,
+      timeSlot: cleanStr(f.timeSlot).slice(0, MAXLEN.label),
+      space,
+      expectedPax: paxV.value != null ? paxV.value : undefined,
+      notes: cleanStr(f.notes).slice(0, MAXLEN.text),
+    });
+  }
+  return { ok: true, value: out };
+}
+
+// S1c requirements: partial object — only the keys sent are validated/applied.
+function sanitizeRequirements(body) {
+  if (body == null || typeof body !== "object" || Array.isArray(body)) {
+    return { ok: false, message: "requirements must be an object" };
+  }
+  const out = {};
+  if (body.food !== undefined) {
+    if (!REQ_FOOD_ENUM.includes(body.food)) return { ok: false, message: `requirements.food must be one of ${REQ_FOOD_ENUM.filter(Boolean).join(", ")}` };
+    out.food = body.food;
+  }
+  if (body.catering !== undefined) {
+    if (!REQ_CATERING_ENUM.includes(body.catering)) return { ok: false, message: `requirements.catering must be one of ${REQ_CATERING_ENUM.filter(Boolean).join(", ")}` };
+    out.catering = body.catering;
+  }
+  if (body.alcohol !== undefined) {
+    if (typeof body.alcohol !== "boolean" && body.alcohol !== null) {
+      return { ok: false, message: "requirements.alcohol must be a boolean" };
+    }
+    out.alcohol = body.alcohol === null ? undefined : body.alcohol;
+  }
+  if (body.roomsNeeded !== undefined) {
+    if (body.roomsNeeded === null || body.roomsNeeded === "") {
+      out.roomsNeeded = undefined;
+    } else {
+      const n = Number(body.roomsNeeded);
+      if (!Number.isInteger(n) || n < 0 || n > 10000) return { ok: false, message: "requirements.roomsNeeded must be a non-negative whole number" };
+      out.roomsNeeded = n;
+    }
+  }
+  if (body.decorNotes !== undefined) {
+    const r = optStr(body.decorNotes, "requirements.decorNotes", MAXLEN.text);
+    if (!r.ok) return r;
+    out.decorNotes = r.value;
+  }
+  return { ok: true, value: out };
+}
+
+// Every dedup key (last-10 digits) a lead answers to: legacy couplePhone/phone
+// mirrors + every contact phone. Dedup keys on ANY contact phone (S1a).
+function leadPhoneKeys(e) {
+  const keys = new Set();
+  for (const p of [e.couplePhone, e.phone]) {
+    const k = digitsOnly(p).slice(-10);
+    if (k.length === 10) keys.add(k);
+  }
+  for (const c of e.contacts || []) {
+    const k = digitsOnly(c.phone).slice(-10);
+    if (k.length === 10) keys.add(k);
+  }
+  return keys;
+}
+
+// SCOPED dedup lookup: the most recent OTHER lead sharing any phone key with
+// `enquiry`, restricted to what the requester may see (invariant #11 — a
+// scoped Sales member is never shown another member's lead via the banner).
+// Soft-deleted rows are excluded by the scoped filter. Returns a lean doc or null.
+async function findDedupMatch(venueOwner, venueMember, venueId, enquiry) {
+  const mine = leadPhoneKeys(enquiry);
+  if (mine.size === 0) return null;
+  const filter = await scopedLeadFilter(venueOwner, venueMember, venueId, {
+    _id: { $ne: enquiry._id },
+  });
+  const candidates = await VenueEnquiry.find(filter)
+    .select("coupleName name couplePhone phone contacts stage source createdAt")
+    .sort({ createdAt: -1 })
+    .limit(500)
+    .lean();
+  return candidates.find((c) => {
+    for (const k of leadPhoneKeys(c)) if (mine.has(k)) return true;
+    return false;
+  }) || null;
+}
+
+// Shape the dedup match for responses (the "enquired before" banner).
+function matchedLeadPayload(m) {
+  if (!m) return undefined;
+  return {
+    _id: m._id,
+    name: m.coupleName || m.name || "Lead",
+    stage: m.stage,
+    source: m.source,
+    enquiredOn: m.createdAt,
+  };
 }
 
 const createEnquiry = async (req, res) => {
@@ -167,6 +338,24 @@ const getVenueEnquiries = async (req, res) => {
     const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
     const query = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
     const enquiries = await VenueEnquiry.find(query).sort({ createdAt: -1 }).lean();
+    // S1d: attach each lead's live hold (requested/approved) so list rows can
+    // show "Date held · Nd left" without a per-row round-trip. Only holds for
+    // leads THIS requester can see are queried (ids come from the scoped list).
+    if (enquiries.length) {
+      const holds = await VenueHold.find({
+        venue: venue._id,
+        linkedEnquiry: { $in: enquiries.map((e) => e._id) },
+        status: { $in: ["requested", "approved"] },
+      })
+        .sort({ createdAt: 1 })
+        .select("linkedEnquiry status expiresAt")
+        .lean();
+      const byLead = new Map(holds.map((h) => [String(h.linkedEnquiry), h]));
+      for (const e of enquiries) {
+        const h = byLead.get(String(e._id));
+        e.hold = h ? { _id: h._id, status: h.status, holdExpiry: h.expiresAt } : null;
+      }
+    }
     return res.status(200).json({ enquiries, total: enquiries.length, scoped: !canViewAll });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -180,7 +369,7 @@ const getVenueEnquiries = async (req, res) => {
 const getEnquiryById = async (req, res) => {
   try {
     const { slug, enquiryId } = req.params;
-    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    const venue = await Venue.findOne({ slug }).select("_id spaces").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
@@ -189,7 +378,47 @@ const getEnquiryById = async (req, res) => {
       populate: { path: "assignedTo", select: "name" },
     });
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
-    return res.status(200).json({ enquiry: enquiry.toJSON() });
+
+    const json = enquiry.toJSON();
+
+    // S1b: resolve space subdoc ids to display names for the functions grid.
+    const spaceName = new Map((venue.spaces || []).map((s) => [String(s._id), s.name]));
+    json.functions = (json.functions || []).map((f) => ({
+      ...f,
+      spaceName: f.space ? spaceName.get(String(f.space)) || "" : "",
+    }));
+
+    // S1d: the lead's live hold (hold→lead is already linked via
+    // VenueHold.linkedEnquiry) so the workbench can show "Held · expires in Nd"
+    // from ONE source of truth. requested/approved are the live states.
+    const hold = await VenueHold.findOne({
+      venue: venue._id,
+      linkedEnquiry: enquiry._id,
+      status: { $in: ["requested", "approved"] },
+    })
+      .sort({ createdAt: -1 })
+      .select("status expiresAt dates space")
+      .lean();
+    json.hold = hold
+      ? { _id: hold._id, status: hold.status, holdExpiry: hold.expiresAt, dates: hold.dates, space: hold.space }
+      : null;
+
+    // S1e: chat↔lead link — the Wedsy conversation thread id when one exists.
+    // Safe to expose here: this read is already scoped, so a member who can't
+    // see the lead never reaches this point (404 above).
+    const thread = await VenueConversation.findOne({ enquiryId: enquiry._id }).select("_id").lean();
+    json.threadId = thread ? thread._id : null;
+
+    // S2: booking↔lead link, lead side — "✓ Booked · open the booking ›".
+    const booking = await VenueBooking.findOne({ enquiry: enquiry._id }).select("_id status").lean();
+    json.bookingId = booking ? booking._id : null;
+
+    // S1a: bidirectional dedup banner — the most recent other lead sharing any
+    // contact phone, scoped to what THIS requester may see.
+    const match = await findDedupMatch(req.venueOwner, req.venueMember, venue._id, json);
+    json.matchedLead = matchedLeadPayload(match) || null;
+
+    return res.status(200).json({ enquiry: json });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -210,15 +439,15 @@ const checkEnquiryExists = async (req, res) => {
     }
     const key = last10(req.query.phone);
     if (key.length < 10) return res.status(200).json({ exists: false });
-    // Anchor the regex to the last 10 digits; the stored value may carry a
-    // country code or formatting, so match the canonical suffix.
+    // S1a: dedup keys on ANY contact phone (plus the legacy couplePhone/phone
+    // mirrors), matched on the last-10 canonical digits.
     // Scoped + soft-delete-excluded: a member is only warned about their own dupes.
     const existsFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
     const candidates = await VenueEnquiry.find(existsFilter)
-      .select("coupleName name couplePhone stage createdAt")
+      .select("coupleName name couplePhone phone contacts stage source createdAt")
       .sort({ createdAt: -1 })
       .lean();
-    const match = candidates.find((e) => last10(e.couplePhone) === key);
+    const match = candidates.find((e) => leadPhoneKeys(e).has(key));
     if (!match) return res.status(200).json({ exists: false });
     return res.status(200).json({
       exists: true,
@@ -227,6 +456,9 @@ const checkEnquiryExists = async (req, res) => {
         name: match.coupleName || match.name || "Lead",
         stage: match.stage,
       },
+      // The richer shape the CRM-2 dedup banner reads; `lead` stays for the
+      // pre-existing add-lead consumers.
+      matchedLead: matchedLeadPayload(match),
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -236,7 +468,7 @@ const checkEnquiryExists = async (req, res) => {
 const updateEnquiry = async (req, res) => {
   try {
     const { slug, enquiryId } = req.params;
-    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    const venue = await Venue.findOne({ slug }).select("_id spaces").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
@@ -251,6 +483,8 @@ const updateEnquiry = async (req, res) => {
       stage, estimatedValue, lostReason, followUpDate, followUpNote, addNote, assignedTo, checkIn, checkOut,
       // S3: profile fields are editable after creation ("nothing locked").
       coupleName, couplePhone, email, guestCount, source, budget, message,
+      // MB-CRM-2 S1: structured lead shape (wholesale replace when sent).
+      contacts, functions, requirements,
     } = req.body || {};
 
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
@@ -277,6 +511,33 @@ const updateEnquiry = async (req, res) => {
       checkOut !== undefined ? checkOut : enquiry.checkOut
     );
     if (winSent && !win.ok) return res.status(400).json({ message: win.message });
+
+    // ── MB-CRM-2 S1 validation. Functions are checked against the window as it
+    // will be AFTER this update (win.checkIn/checkOut when valid, else current),
+    // and existing functions are re-checked when the window itself moves.
+    const effCheckIn = win.ok ? win.checkIn : enquiry.checkIn;
+    const effCheckOut = win.ok ? win.checkOut : enquiry.checkOut;
+    let contactsV = null;
+    if (contacts !== undefined) {
+      contactsV = sanitizeContacts(contacts);
+      if (!contactsV.ok) return res.status(400).json({ message: contactsV.message });
+    }
+    let functionsV = null;
+    if (functions !== undefined) {
+      functionsV = sanitizeFunctions(functions, venue.spaces, effCheckIn, effCheckOut);
+      if (!functionsV.ok) return res.status(400).json({ message: functionsV.message });
+    }
+    if (functions === undefined && winSent && effCheckIn && effCheckOut && (enquiry.functions || []).length) {
+      const recheck = sanitizeFunctions(enquiry.functions, venue.spaces, effCheckIn, effCheckOut);
+      if (!recheck.ok) {
+        return res.status(400).json({ message: "the new check-in/check-out window would orphan an existing function date" });
+      }
+    }
+    let requirementsV = null;
+    if (requirements !== undefined) {
+      requirementsV = sanitizeRequirements(requirements);
+      if (!requirementsV.ok) return res.status(400).json({ message: requirementsV.message });
+    }
 
     // ── S0d fine-grained capability gates (coarse "leads" already required by
     // the route). Each mutating field checks its own capability; owners pass all.
@@ -338,6 +599,21 @@ const updateEnquiry = async (req, res) => {
       if (checkIn !== undefined) enquiry.checkIn = win.checkIn;
       if (checkOut !== undefined) enquiry.checkOut = win.checkOut;
       // eventDate is re-derived from checkIn by the model pre-validate hook.
+    }
+    // MB-CRM-2 S1 writes (wholesale replace — the workbench sends full arrays).
+    if (contactsV) {
+      enquiry.contacts = contactsV.value;
+      // Keep the legacy couple mirrors following the primary contact so dedup
+      // import, WhatsApp and the legacy dashboards stay coherent.
+      const primary = contactsV.value.find((c) => c.isPrimary);
+      if (primary) {
+        if (primary.name) { enquiry.coupleName = primary.name; enquiry.name = primary.name; }
+        if (primary.phone) { enquiry.couplePhone = primary.phone; enquiry.phone = primary.phone; }
+      }
+    }
+    if (functionsV) enquiry.functions = functionsV.value;
+    if (requirementsV) {
+      enquiry.requirements = { ...(enquiry.requirements ? enquiry.requirements.toObject ? enquiry.requirements.toObject() : enquiry.requirements : {}), ...requirementsV.value };
     }
     if (assignResolved) {
       enquiry.assignedTo = assignResolved.id;
@@ -410,6 +686,8 @@ const createManualLead = async (req, res) => {
       followUpDate,
       followUpNote,
       assignedTo,
+      budget,
+      contacts,
     } = req.body || {};
 
     const nameC = cleanStr(coupleName);
@@ -418,7 +696,7 @@ const createManualLead = async (req, res) => {
       return res.status(400).json({ message: "Couple name or phone is required" });
     }
     // Hostile-input validation (length caps, strict dates, non-negative numbers).
-    for (const [v, f, max] of [[coupleName, "coupleName", MAXLEN.name], [couplePhone, "couplePhone", MAXLEN.phone], [email, "email", MAXLEN.email], [message, "message", MAXLEN.text]]) {
+    for (const [v, f, max] of [[coupleName, "coupleName", MAXLEN.name], [couplePhone, "couplePhone", MAXLEN.phone], [email, "email", MAXLEN.email], [message, "message", MAXLEN.text], [budget, "budget", MAXLEN.label]]) {
       const r = optStr(v, f, max);
       if (!r.ok) return res.status(400).json({ message: r.message });
     }
@@ -427,6 +705,13 @@ const createManualLead = async (req, res) => {
     const gcV = optCount(guestCount, "guestCount"); if (!gcV.ok) return res.status(400).json({ message: gcV.message });
     const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
     const win = eventWindow(checkIn, checkOut); if (!win.ok) return res.status(400).json({ message: win.message });
+    // S1a: optional explicit contacts; default = one primary contact seeded
+    // from the couple name+phone (the add-lead modal contract).
+    let contactsV = null;
+    if (contacts !== undefined) {
+      contactsV = sanitizeContacts(contacts);
+      if (!contactsV.ok) return res.status(400).json({ message: contactsV.message });
+    }
 
     const venue = await Venue.findOne({ slug }).select("_id settings").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
@@ -487,6 +772,13 @@ const createManualLead = async (req, res) => {
       });
     }
 
+    // Default contact seeding: the couple themselves, primary.
+    const contactRows = contactsV
+      ? contactsV.value
+      : nameC || phoneC
+        ? [{ name: nameC, phone: phoneC, role: "other", isPrimary: true }]
+        : [];
+
     const enquiry = await VenueEnquiry.create({
       venueId: venue._id,
       name: nameC,
@@ -499,6 +791,7 @@ const createManualLead = async (req, res) => {
       checkOut: win.checkOut,
       guestCount: gcV.value != null ? gcV.value : null,
       message: cleanStr(message),
+      budget: cleanStr(budget),
       source: source || "other",
       stage: stage || "new",
       estimatedValue: evV.value != null ? evV.value : 0,
@@ -506,11 +799,23 @@ const createManualLead = async (req, res) => {
       followUpDate: fuV.value,
       followUpNote: cleanStr(followUpNote).slice(0, MAXLEN.text),
       assignedTo: assign.assignedTo,
+      contacts: contactRows,
       activities,
       status: "new",
     });
 
-    return res.status(201).json({ success: true, enquiryId: enquiry._id, enquiry });
+    // S1a matchedLead: dedup NEVER blocks or reassigns (EDGE 2 — a matching
+    // create keeps its own record and owner); it only surfaces the banner so
+    // the caller can link the histories. Scoped to what this requester sees.
+    let matchedLead;
+    try {
+      const match = await findDedupMatch(req.venueOwner, req.venueMember, venue._id, enquiry);
+      matchedLead = matchedLeadPayload(match);
+    } catch (dedupErr) {
+      console.warn(`[createManualLead] dedup lookup failed: ${dedupErr.message}`);
+    }
+
+    return res.status(201).json({ success: true, enquiryId: enquiry._id, enquiry, matchedLead });
   } catch (err) {
     if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
     return res.status(500).json({ message: err.message });
@@ -547,8 +852,20 @@ const deleteEnquiry = async (req, res) => {
 // defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
 // errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
 async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
-  const existing = await VenueEnquiry.find({ venueId, deleted: { $ne: true } }).select("couplePhone").lean();
-  const seenPhones = new Set(existing.map((e) => digitsOnly(e.couplePhone)).filter(Boolean));
+  // S1a: dedup keys on ANY contact phone, not just the couplePhone mirror.
+  // Full-digit keys (legacy behaviour) plus every contact's digits. EDGE 2
+  // holds: a duplicate row is SKIPPED outright, so its assignedTo can never
+  // reassign the existing owned lead.
+  const existing = await VenueEnquiry.find({ venueId, deleted: { $ne: true } }).select("couplePhone contacts.phone").lean();
+  const seenPhones = new Set();
+  for (const e of existing) {
+    const k = digitsOnly(e.couplePhone);
+    if (k) seenPhones.add(k);
+    for (const c of e.contacts || []) {
+      const ck = digitsOnly(c.phone);
+      if (ck) seenPhones.add(ck);
+    }
+  }
 
   let created = 0;
   let skipped = 0;

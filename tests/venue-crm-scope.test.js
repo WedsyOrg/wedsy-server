@@ -19,6 +19,10 @@ const VenueTask = require("../models/VenueTask");
 const VenueBooking = require("../models/VenueBooking");
 
 const enq = require("../controllers/venueEnquiry");
+const bookingCtl = require("../controllers/venueBooking");
+const convo = require("../controllers/venueConversation");
+const VenueConversation = require("../models/VenueConversation");
+require("../models/User"); // registers "User" for the conversation userId populate
 const inter = require("../controllers/venueLeadInteraction");
 const bulk = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
@@ -56,12 +60,48 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
 
     console.log("\n[deny-sweep: scoped Sales (owns nothing) vs another member's lead by direct id]");
 
-    // updateEnquiry
+    // updateEnquiry (incl. the MB-CRM-2 S1 field groups)
     const before = await freshA();
-    const upd = await call(enq.updateEnquiry, memberReq(venue, salesB, { params: p, body: { stage: "site_visit_scheduled", addNote: "sneaky", followUpNote: "hacked" } }));
+    const upd = await call(enq.updateEnquiry, memberReq(venue, salesB, { params: p, body: { stage: "site_visit_scheduled", addNote: "sneaky", followUpNote: "hacked", contacts: [{ name: "Mallory", phone: "666" }], functions: [{ name: "wedding", date: "2027-01-01" }], requirements: { food: "veg" } } }));
     const afterUpd = await freshA();
     ok(upd.code === 404, "updateEnquiry → 404");
     ok(afterUpd.stage === before.stage && afterUpd.followUpNote === "orig" && (afterUpd.notes || []).length === 0, "updateEnquiry wrote NOTHING (stage/note/followUpNote unchanged)");
+    ok((afterUpd.contacts || []).length === 0 && (afterUpd.functions || []).length === 0 && !(afterUpd.requirements && afterUpd.requirements.food), "S1 fields (contacts/functions/requirements) wrote NOTHING");
+
+    // getEnquiryById — the S1 read enrichments (hold/threadId/matchedLead) must
+    // not leak through a direct-id read either.
+    const gid = await call(enq.getEnquiryById, memberReq(venue, salesB, { params: p }));
+    ok(gid.code === 404, "getEnquiryById → 404 (no hold/threadId/matchedLead leak)");
+
+    // createHold linking an unseen lead (S1d): same 400 as a wrong-venue id,
+    // no hold row, no timeline write on the target lead.
+    const holdsBefore = await VenueHold.countDocuments({ venue: venue._id });
+    const ch = await call(calendar.createHold, memberReq(venue, salesB, { body: { dates: ["2027-12-14"], linkedEnquiry: String(leadA._id) } }));
+    ok(ch.code === 400, "createHold linking an unseen lead → 400 (existence not leaked)");
+    ok((await VenueHold.countDocuments({ venue: venue._id })) === holdsBefore, "createHold wrote NO hold for the out-of-scope lead");
+    ok(((await freshA()).notes || []).length === 0, "createHold wrote NOTHING to the lead's timeline");
+
+    // confirmBookingFromLead (MB-CRM-2 S2): the wizard endpoint on an unseen
+    // lead → 404, no booking, no calendar rows, lead untouched.
+    const cbBookingsBefore = await VenueBooking.countDocuments({ venue: venue._id });
+    const cbl = await call(bookingCtl.confirmBookingFromLead, memberReq(venue, salesB, { params: p, body: { functions: [{ date: "2027-11-11" }], tokenAmount: 100 } }));
+    ok(cbl.code === 404, "confirmBookingFromLead on an unseen lead → 404");
+    ok((await VenueBooking.countDocuments({ venue: venue._id })) === cbBookingsBefore, "confirmBookingFromLead created NO booking");
+    const afterCbl = await freshA();
+    ok(afterCbl.stage === before.stage && (afterCbl.notes || []).length === 0, "confirmBookingFromLead wrote NOTHING to the lead");
+
+    // conversation list (MB-CRM-2 review Flag A): the lead-chip fields stage/
+    // assignedTo are gated on leads_view_all — a scoped Sales member still
+    // gets the conversation (chats are venue-scoped) but those two fields are
+    // stripped; the owner sees them. Couple name stays (pre-existing exposure).
+    await VenueConversation.create({ venueId: venue._id, enquiryId: leadA._id, userId: new mongoose.Types.ObjectId() });
+    const convScoped = await call(convo.getVenueConversations, memberReq(venue, salesB));
+    const rowScoped = (convScoped.body.conversations || []).find((c) => c.enquiryId && String(c.enquiryId._id) === String(leadA._id));
+    ok(convScoped.code === 200 && !!rowScoped, "scoped member still lists the conversation (chats stay venue-scoped)");
+    ok(rowScoped && rowScoped.enquiryId.stage === undefined && rowScoped.enquiryId.assignedTo === undefined, "scoped member does NOT see the lead's stage/assignedTo through the conversation list");
+    const convOwner = await call(convo.getVenueConversations, ownerReq(venue));
+    const rowOwner = (convOwner.body.conversations || []).find((c) => c.enquiryId && String(c.enquiryId._id) === String(leadA._id));
+    ok(rowOwner && rowOwner.enquiryId.stage === "contacted" && String(rowOwner.enquiryId.assignedTo) === String(salesA._id), "owner (leads_view_all) sees stage/assignedTo on the same conversation");
 
     // quickLog
     const icBefore = await interCount();
@@ -209,6 +249,7 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     try {
       const vids = created.venues;
       await VenueEnquiry.deleteMany({ venueId: { $in: vids } });
+      await VenueConversation.deleteMany({ venueId: { $in: vids } });
       await VenueLeadInteraction.deleteMany({ venue: { $in: vids } });
       await VenueHold.deleteMany({ venue: { $in: vids } });
       await VenueQuote.deleteMany({ venue: { $in: vids } });

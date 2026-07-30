@@ -25,6 +25,11 @@ const VenueBookingSchema = new mongoose.Schema(
       },
     ],
     specialRequirements: { type: String, default: "" },
+    // MB-CRM-2 S2 (additive): the agreement chosen in the Confirm Booking
+    // wizard — a document-engine doc id (generated from template or an
+    // attached signed scan). Loose ObjectId on purpose: the docs engine has
+    // several doc models and the wizard only needs the pointer.
+    agreementDoc: { type: mongoose.Schema.Types.ObjectId },
     status: {
       type: String,
       enum: ["confirmed", "in_progress", "completed", "cancelled"],

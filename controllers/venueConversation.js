@@ -2,6 +2,7 @@ const VenueConversation = require("../models/VenueConversation");
 const VenueMessage = require("../models/VenueMessage");
 const Venue = require("../models/Venue");
 const { matchFlagTerms } = require("../utils/venueChatFlags");
+const { canViewAllLeads } = require("../utils/venueLeadScope");
 
 const createOrGetConversation = async ({ venueId, enquiryId, userId }) => {
   if (!venueId || !enquiryId || !userId) {
@@ -41,10 +42,22 @@ const getVenueConversations = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
+    // MB-CRM-2 S1e: the thread's lead chip (couple, stage, owner) rides the
+    // existing enquiry populate; soft-deleted leads null out (invariant #6).
+    // Cross-navigation stays scope-safe: opening the lead goes through the
+    // scoped single-lead read, which 404s for members outside its scope.
+    // The NEW chip fields (stage, assignedTo) are gated on leads_view_all —
+    // same precedent as demand-map name gating (invariant #11). The couple
+    // name stays: it was already exposed via the userId populate pre-CRM-2.
+    const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
     const conversations = await VenueConversation.find({ venueId: venue._id })
       .sort({ lastMessageAt: -1 })
       .populate("userId", "name phone")
-      .populate("enquiryId", "eventDate guestCount vibe")
+      .populate({
+        path: "enquiryId",
+        select: "eventDate guestCount vibe coupleName stage assignedTo",
+        match: { deleted: { $ne: true } },
+      })
       .populate("venueId", "name slug")
       .lean();
 
@@ -64,10 +77,18 @@ const getVenueConversations = async (req, res) => {
       lastMessageMap[String(entry._id)] = entry.message;
     });
 
-    const result = conversations.map((c) => ({
-      ...c,
-      lastMessage: lastMessageMap[String(c._id)] || null,
-    }));
+    const result = conversations.map((c) => {
+      const convo = {
+        ...c,
+        lastMessage: lastMessageMap[String(c._id)] || null,
+      };
+      // Strip the gated lead-chip fields for members without leads_view_all.
+      if (!canViewAll && convo.enquiryId && typeof convo.enquiryId === "object") {
+        const { stage: _stage, assignedTo: _assignedTo, ...rest } = convo.enquiryId;
+        convo.enquiryId = rest;
+      }
+      return convo;
+    });
 
     return res.status(200).json({ conversations: result, total: result.length });
   } catch (err) {

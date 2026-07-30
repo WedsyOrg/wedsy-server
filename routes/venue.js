@@ -15,7 +15,7 @@ const { getCrmOverview } = require("../controllers/venueCrmDashboard");
 const { getDemandMap } = require("../controllers/venueCrmDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
-const { listBookings, getBooking, createBooking, updateBooking } = require("../controllers/venueBooking");
+const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
@@ -96,6 +96,9 @@ router.post("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, requireC
 router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getInteractions);
 // S0e quick-log: one-tap touch that auto-advances stage + captures next follow-up.
 router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapability("leads"), quickLog);
+// ── MB-CRM-2 S2: Confirm Booking wizard — the lead graduates into a booking
+// through the ONE creation path (money movement ⇒ bookings_money gate).
+router.post("/:slug/enquiries/:enquiryId/confirm-booking", venueOwnerAuth, requireCapability("bookings_money"), confirmBookingFromLead);
 
 // ── MB-CRM S4: CRM dashboard overview (my-day, real alerts, proof) ──
 router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);
