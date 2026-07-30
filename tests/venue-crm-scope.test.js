@@ -20,6 +20,9 @@ const VenueBooking = require("../models/VenueBooking");
 
 const enq = require("../controllers/venueEnquiry");
 const bookingCtl = require("../controllers/venueBooking");
+const convo = require("../controllers/venueConversation");
+const VenueConversation = require("../models/VenueConversation");
+require("../models/User"); // registers "User" for the conversation userId populate
 const inter = require("../controllers/venueLeadInteraction");
 const bulk = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
@@ -86,6 +89,19 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok((await VenueBooking.countDocuments({ venue: venue._id })) === cbBookingsBefore, "confirmBookingFromLead created NO booking");
     const afterCbl = await freshA();
     ok(afterCbl.stage === before.stage && (afterCbl.notes || []).length === 0, "confirmBookingFromLead wrote NOTHING to the lead");
+
+    // conversation list (MB-CRM-2 review Flag A): the lead-chip fields stage/
+    // assignedTo are gated on leads_view_all — a scoped Sales member still
+    // gets the conversation (chats are venue-scoped) but those two fields are
+    // stripped; the owner sees them. Couple name stays (pre-existing exposure).
+    await VenueConversation.create({ venueId: venue._id, enquiryId: leadA._id, userId: new mongoose.Types.ObjectId() });
+    const convScoped = await call(convo.getVenueConversations, memberReq(venue, salesB));
+    const rowScoped = (convScoped.body.conversations || []).find((c) => c.enquiryId && String(c.enquiryId._id) === String(leadA._id));
+    ok(convScoped.code === 200 && !!rowScoped, "scoped member still lists the conversation (chats stay venue-scoped)");
+    ok(rowScoped && rowScoped.enquiryId.stage === undefined && rowScoped.enquiryId.assignedTo === undefined, "scoped member does NOT see the lead's stage/assignedTo through the conversation list");
+    const convOwner = await call(convo.getVenueConversations, ownerReq(venue));
+    const rowOwner = (convOwner.body.conversations || []).find((c) => c.enquiryId && String(c.enquiryId._id) === String(leadA._id));
+    ok(rowOwner && rowOwner.enquiryId.stage === "contacted" && String(rowOwner.enquiryId.assignedTo) === String(salesA._id), "owner (leads_view_all) sees stage/assignedTo on the same conversation");
 
     // quickLog
     const icBefore = await interCount();
@@ -233,6 +249,7 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     try {
       const vids = created.venues;
       await VenueEnquiry.deleteMany({ venueId: { $in: vids } });
+      await VenueConversation.deleteMany({ venueId: { $in: vids } });
       await VenueLeadInteraction.deleteMany({ venue: { $in: vids } });
       await VenueHold.deleteMany({ venue: { $in: vids } });
       await VenueQuote.deleteMany({ venue: { $in: vids } });
