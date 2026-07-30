@@ -54,6 +54,8 @@ const BOOKED = "2026-11-11";
     const c = (res.body.contested || []).find((x) => x.date === CONTESTED);
     ok(c && c.leadCount === 2, "contested date detected (2 leads competing)");
     ok(c && Array.isArray(c.leads) && c.leads.length === 2, "owner (view_all) sees competing lead names");
+    // MB-CRM-2 S5: contested cards link the ACTUAL leads (id + name + stage).
+    ok(c && Array.isArray(c.leadRefs) && c.leadRefs.length === 2 && c.leadRefs.every((r) => r._id && r.name && r.stage), "contested rows carry linkable leadRefs (_id/name/stage)");
     ok(!(res.body.contested || []).some((x) => x.date === HELD), "a date with only ONE lead is not contested");
 
     const h = (res.body.held || []).find((x) => x.date === HELD);
