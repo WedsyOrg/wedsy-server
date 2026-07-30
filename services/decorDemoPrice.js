@@ -48,24 +48,22 @@ const exampleOf = (c, bandTier) => ({
   price: c.prices ? (c.prices[bandTier] ?? null) : null,
 });
 
-// Which displayed bucket (by area) is a product's size nearest to?
-const nearestBucketArea = (category, area) => {
-  const areas = SIZE_BUCKETS[category].map(([l, w]) => l * w);
-  let best = areas[0], bestD = Infinity;
-  areas.forEach((a) => { const d = Math.abs(a - area); if (d < bestD) { bestD = d; best = a; } });
-  return best;
-};
+// A product matches a ladder row when its stored dimensions equal the row's,
+// either orientation. Exact dims (not nearest-area) keep the "30x16" row priced
+// off exactly-30x16 products — so the demo agrees with SIZE_LOOKUP (both are
+// exact-dims, outlier-excluded medians) instead of blending in nearby areas.
+const sameSize = (c, l, w) =>
+  c && c.length != null && c.width != null &&
+  ((c.length === l && c.width === w) || (c.length === w && c.width === l));
 
 // Per-size prices from LIVE orderable comparables: natural median (outliers
 // excluded) → ladder-derived artificial/mixed. Falls back to the engine's size
 // lookup when the bucket has no live comparables.
 const livePricesForRow = (category, l, w, comps) => {
-  const area = l * w;
   const outliers = new Set(PREMIUM_OUTLIERS[category] || []);
   const ladder = TIER_LADDER[category];
   const matched = comps
-    .filter((c) => c && !outliers.has(c.id) && c.area != null &&
-      nearestBucketArea(category, c.area) === area && c.prices && positive(c.prices.natural))
+    .filter((c) => c && !outliers.has(c.id) && sameSize(c, l, w) && c.prices && positive(c.prices.natural))
     .map((c) => c.prices.natural);
   const natLive = median(matched);
   if (natLive != null && ladder) {
@@ -83,6 +81,16 @@ const livePricesForRow = (category, l, w, comps) => {
   // no live comparables in this bucket → engine size lookup keeps the row honest
   const prices = suggestPrice({ category, length: l, width: w, mode: "demo", source: "internal" }, comps).suggested;
   return { basis: "lookup", n: 0, prices };
+};
+
+// Premium ceiling for a size bucket: the highest orderable price in that bucket
+// INCLUDING premium outliers. A different claim from the typical price (which
+// excludes them) — excluding outliers understates capability, and on a call the
+// ceiling is an upsell lever. Never merged into the typical range.
+const bucketCeiling = (category, l, w, comps, bandTier) => {
+  const inBucket = comps.filter((c) => sameSize(c, l, w) && c.prices && positive(c.prices[bandTier]));
+  if (!inBucket.length) return null;
+  return Math.round(Math.max(...inBucket.map((c) => c.prices[bandTier])));
 };
 
 // Category-band prices (no size) for the non-sized single row — already derived
@@ -124,10 +132,17 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
   if (sized) {
     ladder = buckets.map(([l, w]) => {
       const { basis, n, prices } = livePricesForRow(category, l, w, comps);
-      const row = { size: `${l}x${w}`, area: l * w, prices, priceBasis: basis, comparablesUsed: n };
+      const row = {
+        size: `${l}x${w}`,
+        area: l * w,
+        prices, // typical — premium outliers excluded
+        premiumCeiling: bucketCeiling(category, l, w, comps, bandTier), // incl. outliers; separate claim
+        priceBasis: basis,
+        comparablesUsed: n,
+      };
       if (includeExamples) {
         row.examplesAtThisSize = withImage
-          .filter((c) => c.area != null && nearestBucketArea(category, c.area) === l * w)
+          .filter((c) => sameSize(c, l, w))
           .slice(0, 3)
           .map((c) => exampleOf(c, bandTier));
       }

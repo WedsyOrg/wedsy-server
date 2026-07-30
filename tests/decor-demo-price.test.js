@@ -72,13 +72,18 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(row1612.comparablesUsed, 2, "premium outlier st108 excluded from the median");
   eq(row1612.prices.artificial, 31250, "16x12 artificial = natural / 1.44 (ladder)");
   eq(row1612.prices.mixed, 38125, "16x12 mixed = artificial × 1.22 (ladder)");
+  // premiumCeiling is a SEPARATE claim — highest orderable incl. the outlier.
+  eq(row1612.premiumCeiling, 300000, "16x12 ceiling = max incl. premium outlier st108");
+  ok(row1612.premiumCeiling !== row1612.prices.natural, "ceiling and typical are distinct, not merged");
 
   const row2416 = r.ladder.find((x) => x.size === "24x16");
   eq(row2416.prices.natural, 90000, "24x16 natural = live median");
+  eq(row2416.premiumCeiling, 90000, "24x16 ceiling = the single product (no outlier here)");
 
   const row4020 = r.ladder.find((x) => x.size === "40x20");
   eq(row4020.priceBasis, "lookup", "40x20 has no live comps → falls back to the table");
   eq(row4020.prices.natural, 257500, "40x20 natural = engine size lookup (fallback)");
+  eq(row4020.premiumCeiling, null, "40x20 has no comparables → no ceiling");
 
   // examplesAtThisSize: scale/price-point proof, bucketed by nearest size.
   ok(Array.isArray(row1612.examplesAtThisSize), "16x12 row has examplesAtThisSize array");

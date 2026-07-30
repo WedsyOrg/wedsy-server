@@ -60,6 +60,10 @@ const TIER_LADDER = {
 // r=0.72 (Stage) / 0.61 (Mandap). Every other category ignores size entirely
 // (Photobooth r=−0.16, Entrance 0.29, Pathway 0.20, Nameboard n/a).
 const SIZE_ADJUSTED_CATEGORIES = ["Stage", "Mandap"];
+// IMPORTANT: every value here is a natural-tier median of the LIVE catalogue with
+// premium outliers EXCLUDED (Rule 2). Do NOT "correct" 480 back to 180,000 — that
+// figure was a pre-Rule-2 plain median that included st108/st152/st154, which
+// contradicts Rule 2. 123,500 is the outlier-excluded median and is authoritative.
 const SIZE_LOOKUP = {
   Stage: {
     64: 25000,
@@ -69,7 +73,7 @@ const SIZE_LOOKUP = {
     256: 45000,
     320: 60000,
     384: 80000,
-    480: 180000,
+    480: 123500, // 30x16 — outlier-EXCLUDED median (was 180000, a pre-Rule-2 plain median)
     800: 257500,
   },
   Mandap: {
