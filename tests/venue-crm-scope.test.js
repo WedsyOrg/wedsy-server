@@ -19,6 +19,7 @@ const VenueTask = require("../models/VenueTask");
 const VenueBooking = require("../models/VenueBooking");
 
 const enq = require("../controllers/venueEnquiry");
+const bookingCtl = require("../controllers/venueBooking");
 const inter = require("../controllers/venueLeadInteraction");
 const bulk = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
@@ -76,6 +77,15 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(ch.code === 400, "createHold linking an unseen lead → 400 (existence not leaked)");
     ok((await VenueHold.countDocuments({ venue: venue._id })) === holdsBefore, "createHold wrote NO hold for the out-of-scope lead");
     ok(((await freshA()).notes || []).length === 0, "createHold wrote NOTHING to the lead's timeline");
+
+    // confirmBookingFromLead (MB-CRM-2 S2): the wizard endpoint on an unseen
+    // lead → 404, no booking, no calendar rows, lead untouched.
+    const cbBookingsBefore = await VenueBooking.countDocuments({ venue: venue._id });
+    const cbl = await call(bookingCtl.confirmBookingFromLead, memberReq(venue, salesB, { params: p, body: { functions: [{ date: "2027-11-11" }], tokenAmount: 100 } }));
+    ok(cbl.code === 404, "confirmBookingFromLead on an unseen lead → 404");
+    ok((await VenueBooking.countDocuments({ venue: venue._id })) === cbBookingsBefore, "confirmBookingFromLead created NO booking");
+    const afterCbl = await freshA();
+    ok(afterCbl.stage === before.stage && (afterCbl.notes || []).length === 0, "confirmBookingFromLead wrote NOTHING to the lead");
 
     // quickLog
     const icBefore = await interCount();

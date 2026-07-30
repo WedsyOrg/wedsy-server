@@ -5,6 +5,7 @@ const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const VenueHold = require("../models/VenueHold");
 const VenueConversation = require("../models/VenueConversation");
+const VenueBooking = require("../models/VenueBooking");
 const { createOrGetConversation } = require("./venueConversation");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
@@ -407,6 +408,10 @@ const getEnquiryById = async (req, res) => {
     // see the lead never reaches this point (404 above).
     const thread = await VenueConversation.findOne({ enquiryId: enquiry._id }).select("_id").lean();
     json.threadId = thread ? thread._id : null;
+
+    // S2: booking↔lead link, lead side — "✓ Booked · open the booking ›".
+    const booking = await VenueBooking.findOne({ enquiry: enquiry._id }).select("_id status").lean();
+    json.bookingId = booking ? booking._id : null;
 
     // S1a: bidirectional dedup banner — the most recent other lead sharing any
     // contact phone, scoped to what THIS requester may see.
