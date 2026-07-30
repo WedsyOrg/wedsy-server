@@ -41,10 +41,18 @@ const getVenueConversations = async (req, res) => {
       return res.status(403).json({ message: "Forbidden" });
     }
 
+    // MB-CRM-2 S1e: the thread's lead chip (couple, stage, owner) rides the
+    // existing enquiry populate; soft-deleted leads null out (invariant #6).
+    // Cross-navigation stays scope-safe: opening the lead goes through the
+    // scoped single-lead read, which 404s for members outside its scope.
     const conversations = await VenueConversation.find({ venueId: venue._id })
       .sort({ lastMessageAt: -1 })
       .populate("userId", "name phone")
-      .populate("enquiryId", "eventDate guestCount vibe")
+      .populate({
+        path: "enquiryId",
+        select: "eventDate guestCount vibe coupleName stage assignedTo",
+        match: { deleted: { $ne: true } },
+      })
       .populate("venueId", "name slug")
       .lean();
 

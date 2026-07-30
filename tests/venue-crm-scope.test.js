@@ -56,12 +56,26 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
 
     console.log("\n[deny-sweep: scoped Sales (owns nothing) vs another member's lead by direct id]");
 
-    // updateEnquiry
+    // updateEnquiry (incl. the MB-CRM-2 S1 field groups)
     const before = await freshA();
-    const upd = await call(enq.updateEnquiry, memberReq(venue, salesB, { params: p, body: { stage: "site_visit_scheduled", addNote: "sneaky", followUpNote: "hacked" } }));
+    const upd = await call(enq.updateEnquiry, memberReq(venue, salesB, { params: p, body: { stage: "site_visit_scheduled", addNote: "sneaky", followUpNote: "hacked", contacts: [{ name: "Mallory", phone: "666" }], functions: [{ name: "wedding", date: "2027-01-01" }], requirements: { food: "veg" } } }));
     const afterUpd = await freshA();
     ok(upd.code === 404, "updateEnquiry → 404");
     ok(afterUpd.stage === before.stage && afterUpd.followUpNote === "orig" && (afterUpd.notes || []).length === 0, "updateEnquiry wrote NOTHING (stage/note/followUpNote unchanged)");
+    ok((afterUpd.contacts || []).length === 0 && (afterUpd.functions || []).length === 0 && !(afterUpd.requirements && afterUpd.requirements.food), "S1 fields (contacts/functions/requirements) wrote NOTHING");
+
+    // getEnquiryById — the S1 read enrichments (hold/threadId/matchedLead) must
+    // not leak through a direct-id read either.
+    const gid = await call(enq.getEnquiryById, memberReq(venue, salesB, { params: p }));
+    ok(gid.code === 404, "getEnquiryById → 404 (no hold/threadId/matchedLead leak)");
+
+    // createHold linking an unseen lead (S1d): same 400 as a wrong-venue id,
+    // no hold row, no timeline write on the target lead.
+    const holdsBefore = await VenueHold.countDocuments({ venue: venue._id });
+    const ch = await call(calendar.createHold, memberReq(venue, salesB, { body: { dates: ["2027-12-14"], linkedEnquiry: String(leadA._id) } }));
+    ok(ch.code === 400, "createHold linking an unseen lead → 400 (existence not leaked)");
+    ok((await VenueHold.countDocuments({ venue: venue._id })) === holdsBefore, "createHold wrote NO hold for the out-of-scope lead");
+    ok(((await freshA()).notes || []).length === 0, "createHold wrote NOTHING to the lead's timeline");
 
     // quickLog
     const icBefore = await interCount();
