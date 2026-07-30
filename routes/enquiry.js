@@ -648,6 +648,9 @@ router.get("/:_id/plan/drafts", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListDrafts);
 router.get("/:_id/plan/drafts/:eventId", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GetDraft);
+// G3 — CP/SP earnings (admin-only; separate from the detail read by design).
+router.get("/:_id/plan/drafts/:eventId/earnings", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DraftEarnings);
 router.post("/:_id/plan/drafts/:eventId/days", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddDay);
 router.post("/:_id/plan/drafts/:eventId/days/:dayId/items", CheckAdminLogin,

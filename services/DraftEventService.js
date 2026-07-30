@@ -230,6 +230,73 @@ const getDraft = async (leadId, eventId, { forWrite = false } = {}) => {
   return event;
 };
 
+// G3 — the bill rail's CP/SP read (ADMIN-ONLY; never referenced by any
+// couple-facing read). CP comes from the CATALOG at read time: the item's
+// selected variant's productTypes costPrice × quantity. SP is the stored line
+// price (which folds platform/flooring/add-ons/priceAdj — those carry no cost
+// data, so their full value lands in earnings). Packages, custom and
+// mandatory rows have no catalog cost — they report sp with cp 0 and
+// cpKnown:false rather than pretending. Mandatory follows the pricing util's
+// rule: only itemRequired rows count.
+const draftEarnings = async (leadId, eventId) => {
+  const event = await getDraft(leadId, eventId);
+  const days = event.eventDays || [];
+  const decorIds = [
+    ...new Set(
+      days.flatMap((d) => (d.decorItems || []).map((i) => String(i.decor || "")).filter(Boolean))
+    ),
+  ];
+  const decors = decorIds.length
+    ? await Decor.find({ _id: { $in: decorIds } }, { productTypes: 1 }).lean()
+    : [];
+  const decorById = new Map(decors.map((d) => [String(d._id), d]));
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+
+  const byCategory = new Map();
+  const bucket = (key) => {
+    if (!byCategory.has(key)) byCategory.set(key, { category: key, cp: 0, sp: 0 });
+    return byCategory.get(key);
+  };
+  const extras = {
+    packages: { key: "packages", cp: 0, sp: 0, cpKnown: false },
+    customItems: { key: "customItems", cp: 0, sp: 0, cpKnown: false },
+    mandatoryItems: { key: "mandatoryItems", cp: 0, sp: 0, cpKnown: false },
+  };
+  for (const day of days) {
+    for (const item of day.decorItems || []) {
+      const b = bucket(item.category || "Uncategorised");
+      b.sp += num(item.price);
+      const d = decorById.get(String(item.decor || ""));
+      // Same tier resolution as the price path: exact variant-name match,
+      // else the first productType (the tier the selling price came from).
+      const tiers = (d && d.productTypes) || [];
+      const tier = tiers.find((t) => t && t.name === item.variant) || tiers[0];
+      b.cp += num(tier && tier.costPrice) * (num(item.quantity) || 1);
+    }
+    for (const p of day.packages || []) extras.packages.sp += num(p && p.price);
+    for (const c of day.customItems || []) extras.customItems.sp += num(c && c.price);
+    for (const mi of day.mandatoryItems || []) {
+      if (mi && mi.itemRequired) extras.mandatoryItems.sp += num(mi.price);
+    }
+  }
+
+  const categories = [...byCategory.values()].map((b) => ({
+    ...b,
+    cp: Math.round(b.cp),
+    sp: Math.round(b.sp),
+    earnings: Math.round(b.sp - b.cp),
+    cpKnown: true,
+  }));
+  const extraRows = Object.values(extras)
+    .filter((e) => e.sp !== 0)
+    .map((e) => ({ ...e, sp: Math.round(e.sp), earnings: Math.round(e.sp) }));
+  const totals = [...categories, ...extraRows].reduce(
+    (t, r) => ({ cp: t.cp + r.cp, sp: t.sp + r.sp, earnings: t.earnings + r.earnings }),
+    { cp: 0, sp: 0, earnings: 0 }
+  );
+  return { categories, extras: extraRows, totals };
+};
+
 // A6 — every draft write marks a PUBLISHED draft dirty (the couple sees the
 // frozen snapshot; the FE gets its "update their view" nudge from this flag).
 const saveDraftWrite = async (event) => {
@@ -706,7 +773,7 @@ const addItemMulti = async (leadId, primaryEventId, dayId, input = {}, draftIds 
 };
 
 module.exports = {
-  createDraft, listDrafts, getDraftDetail, getDraft, totalsFor,
+  createDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings,
   finalise, unlock, publishDraft, revokeDraft, publishedSnapshotFor,
   pushToBuild, copyItem, moveItem, addItemMulti,
   addDay, addItem, patchItem, removeItem, reorderItems,
