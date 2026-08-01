@@ -134,6 +134,14 @@ const DraftEarnings = wrap(async (req, res) => {
   res.status(200).json(await DraftEventService.draftEarnings(req.params._id, req.params.eventId));
 });
 
+// Bug 35 — the whole-event colour theme write (partial body; display-only).
+const SetEventTheme = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(
+    await DraftEventService.setEventTheme(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id)
+  );
+});
+
 // ── P4 ────────────────────────────────────────────────────────────────────────
 const AddDay = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
@@ -292,7 +300,7 @@ module.exports = {
   PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
-  CreateDraft, ListDrafts, GetDraft, DraftEarnings,
+  CreateDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem,
   GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
