@@ -152,7 +152,10 @@ const getDraftDetail = async (leadId, eventId) => {
     ),
   ];
   const decors = decorIds.length
-    ? await Decor.find({ _id: { $in: decorIds } }, { name: 1, category: 1, thumbnail: 1, image: 1, "productInfo.id": 1 }).lean()
+    ? await Decor.find(
+        { _id: { $in: decorIds } },
+        { name: 1, category: 1, thumbnail: 1, image: 1, "productInfo.id": 1, "productInfo.included": 1, productTypes: 1 }
+      ).lean()
     : [];
   const decorById = new Map(decors.map((d) => [String(d._id), d]));
 
@@ -194,6 +197,15 @@ const getDraftDetail = async (leadId, eventId) => {
         photo: a.photo || "",
       })),
       included: it.included || [],
+      // Bug 39 — the PRODUCT's spec list (Decor.productInfo.included) so the FE
+      // can prefill an empty Inclusive-of; the item's own included[] stays the
+      // persisted truth.
+      specIncluded: (d.productInfo && d.productInfo.included) || [],
+      // Bug 34 — the product's REAL pricings (productTypes drive decorPrice
+      // resolution by productVariant name) for the tier dropdown.
+      pricings: (d.productTypes || []).map((t) => ({ name: (t && t.name) || "", price: Number(t && t.sellingPrice) || 0 })).filter((t) => t.name),
+      // Bug 40/44 — the item's multi-notes ({text, image}) round-trip.
+      notes: (it.notes || []).map((nt) => ({ text: (nt && nt.text) || "", image: (nt && nt.image) || "" })),
       user_notes: it.user_notes || "",
       admin_notes: it.admin_notes || "",
       setupLocationImage: it.setupLocationImage || "",
@@ -424,6 +436,11 @@ const composeItem = async (input = {}, existing = null) => {
         }))
       : item.addOns || [],
     included: Array.isArray(merged.included) ? merged.included.map(String) : item.included || [],
+    // Bug 40/44 — the multi-notes array ({text, image}); full-array replace,
+    // same echo discipline as addOns.
+    notes: Array.isArray(merged.notes)
+      ? merged.notes.map((nt) => ({ text: String((nt && nt.text) || ""), image: String((nt && nt.image) || "") }))
+      : item.notes || [],
     user_notes: String(merged.user_notes ?? item.user_notes ?? ""),
     admin_notes: String(merged.admin_notes ?? item.admin_notes ?? ""),
     // Setup-reference image URL (the ⚙ editor's "setup reference"). Subdoc-backed
