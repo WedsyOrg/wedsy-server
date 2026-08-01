@@ -110,6 +110,9 @@ const EventSchema = new mongoose.Schema(
                 included: {type: [String], default: []},
                 primaryColor: {type: String, default: ""},
                 secondaryColor: {type: String, default: ""},
+                // Bug 35 — third colour slot. DISPLAY ONLY (like primary/
+                // secondary): the pricing law never reads any colour field.
+                tertiaryColor: {type: String, default: ""},
                 setupLocationImage: {type: String, default: ""},
                 // Item-editor fields (additive): free PER-UNIT price
                 // adjustment + the setup-location TEXT (image existed, the
@@ -228,6 +231,15 @@ const EventSchema = new mongoose.Schema(
       paymentDone: {type: Boolean, default: false},
       completed: {type: Boolean, default: false},
       lost: {type: Boolean, default: false},
+    },
+    // Bug 35 — whole-EVENT colour theme (event-level by design: the theme is
+    // "for the entire event"; items inherit it for display and a per-item
+    // override uses the item's own primary/secondary/tertiary when set).
+    // DISPLAY ONLY — never read by pricing.
+    eventTheme: {
+      primaryColor: {type: String, default: ""},
+      secondaryColor: {type: String, default: ""},
+      tertiaryColor: {type: String, default: ""},
     },
     amount: {
       total: {type: Number, required: true, default: 0},

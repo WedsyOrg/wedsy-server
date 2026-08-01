@@ -203,6 +203,7 @@ const getDraftDetail = async (leadId, eventId) => {
       setupLocation: it.setupLocation || "",
       primaryColor: it.primaryColor || "",
       secondaryColor: it.secondaryColor || "",
+      tertiaryColor: it.tertiaryColor || "",
       price: Number(it.price) || 0,
     };
   };
@@ -236,8 +237,38 @@ const getDraftDetail = async (leadId, eventId) => {
     finalisedBy: doc.finalisedBy || null,
     published: !!doc.published,
     hasUnpublishedChanges: !!doc.hasUnpublishedChanges,
+    // Bug 35 — the whole-event colour theme (items inherit for display;
+    // per-item colours override when set).
+    eventTheme: {
+      primaryColor: (doc.eventTheme && doc.eventTheme.primaryColor) || "",
+      secondaryColor: (doc.eventTheme && doc.eventTheme.secondaryColor) || "",
+      tertiaryColor: (doc.eventTheme && doc.eventTheme.tertiaryColor) || "",
+    },
     totals: await totalsFor(doc),
     days,
+  };
+};
+
+// Bug 35 — the whole-event colour theme write. Partial-body: only the keys
+// sent change; empty string clears a slot. DISPLAY ONLY — no price recompute
+// happens here by design (the pricing law reads no colour field).
+const setEventTheme = async (leadId, eventId, body = {}, actorId = null) => {
+  const event = await getDraft(leadId, eventId, { forWrite: true });
+  const theme = event.eventTheme || {};
+  for (const key of ["primaryColor", "secondaryColor", "tertiaryColor"]) {
+    if (body[key] !== undefined) theme[key] = String(body[key] ?? "").slice(0, 60);
+  }
+  event.eventTheme = theme;
+  await saveDraftWrite(event);
+  await planChangeLog.record(leadId, actorId, {
+    op: "set_event_theme", kind: "draft", name: event.draftName || event.name, theme: { ...theme },
+  });
+  return {
+    eventTheme: {
+      primaryColor: theme.primaryColor || "",
+      secondaryColor: theme.secondaryColor || "",
+      tertiaryColor: theme.tertiaryColor || "",
+    },
   };
 };
 
@@ -403,6 +434,8 @@ const composeItem = async (input = {}, existing = null) => {
     priceAdj: Number(merged.priceAdj ?? item.priceAdj ?? 0) || 0,
     primaryColor: String(merged.primaryColor ?? item.primaryColor ?? ""),
     secondaryColor: String(merged.secondaryColor ?? item.secondaryColor ?? ""),
+    // Bug 35 — third colour slot, same echo discipline. Display only.
+    tertiaryColor: String(merged.tertiaryColor ?? item.tertiaryColor ?? ""),
   };
   if (!out.category) throw err(400, "The item needs a category");
 
@@ -796,7 +829,7 @@ const addItemMulti = async (leadId, primaryEventId, dayId, input = {}, draftIds 
 };
 
 module.exports = {
-  createDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings,
+  createDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings, setEventTheme,
   finalise, unlock, publishDraft, revokeDraft, publishedSnapshotFor,
   pushToBuild, copyItem, moveItem, addItemMulti,
   addDay, addItem, patchItem, removeItem, reorderItems,
