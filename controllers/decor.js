@@ -859,39 +859,52 @@ const AnalyseImage = async (req, res) => {
 };
 
 // ─── Demo panel — live client pricing ────────────────────────────────────────
-// POST /decor/demo-price  { imageBase64? | imageUrl? | image?, pinText?, includeExamples? }
+// POST /decor/demo-price  { imageBase64? | imageUrl? | image?, pinText?,
+//                           includeExamples?, categoryOverride? }
 // Read-only. Vision (demo mode) → category; non-décor → { rejected }. Otherwise a
 // category-aware PRICE LADDER (per size bucket for Stage/Mandap, one category-band
 // row otherwise) from the Phase A engine. Raw prices, NO uplift. The size ladder
 // exists so the human asks the client the size — the model's size is ignored.
+// `categoryOverride` (a valid category name) SKIPS the vision call entirely and
+// prices that category directly: the panel's staff dropdown must be instant, and
+// a wrong category is a ~2× price error only the human on the call can fix.
 const DemoPrice = async (req, res) => {
-  const { imageBase64, imageUrl, image, pinText, includeExamples } = req.body || {};
-  const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
-  const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
-  if (!b64 && !url) {
-    return res.status(400).send({ message: "image (base64) or imageUrl is required" });
-  }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return res.status(500).send({ message: "ANTHROPIC_API_KEY not configured" });
-  }
-
-  // Downscale before the vision call. A read failure must not throw a stack
-  // trace onto a live call — return a graceful message the panel can render.
-  let downscaled;
-  try {
-    downscaled = await downscaleToBase64({ imageBase64: b64, imageUrl: url });
-  } catch (e) {
-    return res.status(502).send({ message: "Couldn't read this image — try another." });
-  }
+  const { imageBase64, imageUrl, image, pinText, includeExamples, categoryOverride } = req.body || {};
 
   let analysis;
-  try {
-    analysis = await analyseImage({ imageBase64: downscaled, mode: "demo" });
-  } catch (apiErr) {
-    if (apiErr && apiErr.code === "VISION_PARSE") {
+  if (categoryOverride != null) {
+    if (!CATEGORY_TIERS[categoryOverride]) {
+      return res.status(400).send({ message: `Unknown décor category: ${JSON.stringify(categoryOverride)}` });
+    }
+    // Staff said what it is — no vision, so no confidence and no observations.
+    analysis = { isDecorProduct: true, category: categoryOverride, categoryConfidence: null, observations: [] };
+  } else {
+    const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
+    const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
+    if (!b64 && !url) {
+      return res.status(400).send({ message: "image (base64) or imageUrl is required" });
+    }
+    if (!process.env.ANTHROPIC_API_KEY) {
+      return res.status(500).send({ message: "ANTHROPIC_API_KEY not configured" });
+    }
+
+    // Downscale before the vision call. A read failure must not throw a stack
+    // trace onto a live call — return a graceful message the panel can render.
+    let downscaled;
+    try {
+      downscaled = await downscaleToBase64({ imageBase64: b64, imageUrl: url });
+    } catch (e) {
       return res.status(502).send({ message: "Couldn't read this image — try another." });
     }
-    return sendAnthropicError(res, apiErr, "DemoPrice");
+
+    try {
+      analysis = await analyseImage({ imageBase64: downscaled, mode: "demo" });
+    } catch (apiErr) {
+      if (apiErr && apiErr.code === "VISION_PARSE") {
+        return res.status(502).send({ message: "Couldn't read this image — try another." });
+      }
+      return sendAnthropicError(res, apiErr, "DemoPrice");
+    }
   }
 
   const pinTextCheck = pinTextCategoryCheck(pinText, analysis.category);

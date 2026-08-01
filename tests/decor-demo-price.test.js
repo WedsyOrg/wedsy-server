@@ -9,6 +9,9 @@ const { normalizeComparable } = require("../services/decorPricing");
 let pass = 0, fail = 0;
 const ok = (c, label) => { if (c) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.error(`  ✗ ${label}`); } };
 const eq = (got, want, label) => ok(got === want, `${label} (${got} vs ${want})`);
+// Tier prices are RANGES ({low, high}); a lookup fallback collapses to low==high.
+const range = (got, low, high, label) =>
+  ok(got != null && got.low === low && got.high === high, `${label} (${JSON.stringify(got)} vs ${low}–${high})`);
 
 const analysis = (category, extra = {}) => ({ isDecorProduct: true, category, categoryConfidence: 0.9, ...extra });
 const doc = (id, name, tiers, size) => normalizeComparable({
@@ -31,7 +34,7 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(r.ladder.length, 1, "single category-band row");
   eq(r.ladder[0].size, null, "row has no size");
   eq(JSON.stringify(r.applicableTiers), JSON.stringify(["flat"]), "flat tier only");
-  eq(r.ladder[0].prices.flat, 20000, "flat = median of comparables");
+  range(r.ladder[0].prices.flat, 18750, 21250, "flat = p25–p75 of comparables");
   eq(r.ladder[0].prices.natural, undefined, "no natural tier on a flat category");
   eq(r.upliftApplied, 1, "no uplift");
 }
@@ -46,7 +49,7 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   const r = buildDemoPrice(analysis("Mala & More"), comps);
   eq(r.sized, false, "no size ladder");
   eq(JSON.stringify(r.applicableTiers), JSON.stringify(["natural"]), "natural tier only");
-  eq(r.ladder[0].prices.natural, 8000, "natural = median of comparables");
+  range(r.ladder[0].prices.natural, 8000, 9000, "natural = p25–p75 of comparables");
   eq(r.ladder[0].prices.artificial, undefined, "no artificial tier");
   eq(r.ladder[0].prices.mixed, undefined, "no mixed tier");
 }
@@ -68,21 +71,21 @@ const doc = (id, name, tiers, size) => normalizeComparable({
 
   const row1612 = r.ladder.find((x) => x.size === "16x12");
   eq(row1612.priceBasis, "live", "16x12 priced from live comparables");
-  eq(row1612.prices.natural, 45000, "16x12 natural = live median (outlier excluded, not 115000)");
-  eq(row1612.comparablesUsed, 2, "premium outlier st108 excluded from the median");
-  eq(row1612.prices.artificial, 31250, "16x12 artificial = natural / 1.44 (ladder)");
-  eq(row1612.prices.mixed, 38125, "16x12 mixed = artificial × 1.22 (ladder)");
+  range(row1612.prices.natural, 42500, 47500, "16x12 natural = p25–p75 (outlier excluded)");
+  eq(row1612.comparablesUsed, 2, "premium outlier st108 excluded from the range");
+  range(row1612.prices.artificial, 29514, 32986, "16x12 artificial = natural / 1.44 (ladder)");
+  range(row1612.prices.mixed, 36007, 40243, "16x12 mixed = artificial × 1.22 (ladder)");
   // premiumCeiling is a SEPARATE claim — highest orderable incl. the outlier.
   eq(row1612.premiumCeiling, 300000, "16x12 ceiling = max incl. premium outlier st108");
-  ok(row1612.premiumCeiling !== row1612.prices.natural, "ceiling and typical are distinct, not merged");
+  ok(row1612.premiumCeiling !== row1612.prices.natural.high, "ceiling and typical range are distinct, not merged");
 
   const row2416 = r.ladder.find((x) => x.size === "24x16");
-  eq(row2416.prices.natural, 90000, "24x16 natural = live median");
+  range(row2416.prices.natural, 90000, 90000, "24x16 natural = single comp → collapsed range");
   eq(row2416.premiumCeiling, 90000, "24x16 ceiling = the single product (no outlier here)");
 
   const row4020 = r.ladder.find((x) => x.size === "40x20");
   eq(row4020.priceBasis, "lookup", "40x20 has no live comps → falls back to the table");
-  eq(row4020.prices.natural, 257500, "40x20 natural = engine size lookup (fallback)");
+  range(row4020.prices.natural, 257500, 257500, "40x20 natural = engine size lookup (collapsed range)");
   eq(row4020.premiumCeiling, null, "40x20 has no comparables → no ceiling");
 
   // examplesAtThisSize: scale/price-point proof, bucketed by nearest size.
@@ -104,8 +107,8 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   const r = buildDemoPrice(analysis("Mandap"), comps);
   const row = r.ladder.find((x) => x.size === "15x15");
   eq(row.priceBasis, "live", "15x15 priced from live comparables");
-  eq(row.prices.natural, 150000, "15x15 natural = live median (not the 82000 snap-to-256)");
-  eq(row.prices.artificial, 96154, "15x15 artificial = natural / 1.56 (Mandap ladder)");
+  range(row.prices.natural, 150000, 150000, "15x15 natural = live comps (not the 82000 snap-to-256)");
+  range(row.prices.artificial, 96154, 96154, "15x15 artificial = natural / 1.56 (Mandap ladder)");
 }
 
 // ── 4. Non-décor image → rejected ────────────────────────────────────────────
@@ -131,8 +134,20 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(r.sized, false, "no size ladder");
   eq(JSON.stringify(r.applicableTiers), JSON.stringify(["mixed", "natural"]), "mixed + natural only");
   eq(r.ladder[0].prices.artificial, undefined, "never shows an artificial tier");
-  eq(r.ladder[0].prices.mixed, 17000, "mixed median");
-  eq(r.ladder[0].prices.natural, 20000, "natural median");
+  range(r.ladder[0].prices.mixed, 17000, 17000, "mixed p25–p75");
+  range(r.ladder[0].prices.natural, 20000, 20000, "natural p25–p75");
+}
+
+// ── 5b. Observations pass through untouched — never graded, never priced ─────
+{
+  console.log("observations passthrough:");
+  const comps = [doc("na1", "A", { Natural: 8000 })];
+  const obs = ["temple-style structure", "full floral coverage", "chandeliers"];
+  const withObs = buildDemoPrice(analysis("Mala & More", { observations: obs }), comps);
+  eq(JSON.stringify(withObs.observations), JSON.stringify(obs), "observations echoed verbatim");
+  const withoutObs = buildDemoPrice(analysis("Mala & More"), comps);
+  eq(JSON.stringify(withoutObs.observations), JSON.stringify([]), "missing observations → empty array");
+  range(withObs.ladder[0].prices.natural, 8000, 8000, "prices identical with observations present");
 }
 
 // ── 6. pin-text cross-check (quiet staff signal) ─────────────────────────────

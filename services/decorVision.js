@@ -116,6 +116,11 @@ const FULL_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
 }
 If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags/included and empty strings for suggestedName/description; still give best-effort size/complexity/style.`;
 
+// Demo-only: `observations` uses the founder's concrete vocabulary. These are
+// OBSERVATIONS the staff member reads to place the quote within the range —
+// they are never graded and never touch a price (the Phase 3 measurement gate
+// proved they do not predict price). Kept in this uncached block so adding
+// them didn't bust the shared cached prefix.
 const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys and NOTHING else:
 {
   "isDecorProduct": boolean,
@@ -123,8 +128,16 @@ const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
   "categoryConfidence": number 0.0-1.0,
   "style": "Modern" | "Traditional" | null,
   "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
-  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string }
+  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
+  "observations": string[]
 }
+"observations" — 2 to 5 short phrases describing ONLY what is clearly VISIBLE, one per axis, in exactly this vocabulary (skip an axis you cannot judge):
+- structure type: "temple-style structure" | "elegant non-square structure" | "regular square structure"
+- floral density: "sparse florals" | "moderate florals" | "heavy florals" | "full floral coverage"
+- floral workmanship: "traditional stringing / toran / hanging work" | "modern arranged florals"
+- fabrication: "stock steel structure" | "custom FRP / fibre work"
+- signature props, named plainly when present: e.g. "chandeliers", "canopy", "signage"
+These are factual observations, NOT gradings — no quality words, no price implications, no invented detail.
 Do NOT include flowers, colors, fabric, suggestedName, description, tags, or included.`;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -203,7 +216,14 @@ const postProcess = (raw = {}, mode = "full") => {
     size,
     complexity,
   };
-  if (mode === "demo") return base;
+  if (mode === "demo") {
+    // Founder-vocabulary observations (demo only) — descriptive strings, capped
+    // so a runaway list can't bloat the panel. Empty for non-décor images.
+    const observations = isDecorProduct
+      ? asArray(raw.observations).filter((o) => typeof o === "string").slice(0, 6)
+      : [];
+    return { ...base, observations };
+  }
 
   return {
     ...base,
@@ -257,7 +277,7 @@ const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const message = await createWithRetry(client, {
     model: MODEL,
-    max_tokens: useMode === "demo" ? 512 : 1024,
+    max_tokens: useMode === "demo" ? 640 : 1024, // demo grew observations[]; headroom over 512
     temperature: 0,
     system: [
       { type: "text", text: SHARED_RULES, cache_control: { type: "ephemeral" } },
