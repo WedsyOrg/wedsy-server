@@ -6,20 +6,19 @@
 // them in, so this stays unit-testable. Retrieval / similarity is descoped:
 // examples are scale/price-point proof, never "matches".
 //
-// Sized rows (Stage & Mandap) are priced from LIVE size-matched orderable
-// comparables, not a hardcoded table — the demo answers "what do existing
-// orderable products cost", and a table goes stale as products are added. Each
-// tier shows a RANGE (p25–p75 of the bucket's orderable, non-premium-outlier
-// natural prices, other tiers derived with the Rule 4 ladder) — the range
-// absorbs the temple-style-vs-plain-square spread the engine can't model, and
-// the staff member places the quote within it. Premium outliers (>3× median)
-// are excluded so one ₹350k build doesn't distort the typical range; their
-// price surfaces separately as premiumCeiling, never merged in. If a bucket has
-// no live comparables, we fall back to the engine's size lookup so the row
-// still renders (a point, returned as a collapsed low==high range).
+// The panel is a NEGOTIATING ANCHOR, not a description of catalogue prices:
+// staff quote from it and expect the client to bargain down, so every figure
+// carries deliberate headroom above the real price (a business decision, not a
+// statistic). Sized rows (Stage & Mandap) anchor on the p75 of the bucket's
+// LIVE orderable natural prices (premium outliers excluded — one ₹350k build
+// must not set the anchor; superseded low pricing must not drag it down), then
+// derive artificial/mixed via the demo ladder and headroom. Each tier displays
+// as a range whose LOW end is the anchored figure and whose high is low / 0.8.
+// If a bucket has no live comparables, the engine's size lookup supplies the
+// natural anchor so the row still renders.
 //
 // Every other category → a single category-band row (size doesn't predict price
-// there), each applicable tier a p25–p75 range of the live comparables.
+// there), each applicable tier anchored the same way on its own p75.
 
 const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS } = require("./decorPricing");
 
@@ -28,6 +27,26 @@ const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS
 const SIZE_BUCKETS = {
   Stage: [[16, 12], [24, 16], [16, 16], [30, 16], [20, 16], [12, 8], [8, 8], [40, 20]],
   Mandap: [[16, 16], [12, 12], [20, 20], [15, 15], [20, 16]],
+};
+
+// ── Demo anchoring config ────────────────────────────────────────────────────
+// Negotiating headroom applied to EVERY demo figure. Deliberately SEPARATE from
+// DECOR_PRICE_UPLIFT (×1.20): that one belongs to the draft/new-build path and
+// answers "what should this new product cost", while headroom answers "where do
+// we open a negotiation". Do not merge them.
+const DECOR_DEMO_HEADROOM = Number(process.env.DECOR_DEMO_HEADROOM) || 1.15;
+
+// The anchored figure is the LOW end of the displayed range; low sits 20% below
+// the top (high = low / 0.8). A proportional spread scales across categories —
+// a fixed rupee spread would exceed the entire price of a Nameboard.
+const DEMO_RANGE_LOW_FRACTION = 0.8;
+
+// Demo tier ladder (ratios relative to artificial). Mandap is founder-specified
+// (fresh = 1.8× artificial, mixed = 1.4×); every other category keeps the
+// engine's historical Rule 4 ratios for now.
+const DEMO_TIER_LADDER = {
+  ...TIER_LADDER,
+  Mandap: { mixed: 1.4, natural: 1.8 },
 };
 
 const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
@@ -70,63 +89,62 @@ const sameSize = (c, l, w) =>
   c && c.length != null && c.width != null &&
   ((c.length === l && c.width === w) || (c.length === w && c.width === l));
 
-const roundRange = (low, high) => ({ low: Math.round(low), high: Math.round(high) });
+// ₹500 rounding keeps figures quotable on a call ("fifty-seven and a half")
+// without visibly machine-precise endings.
+const round500 = (v) => Math.round(v / 500) * 500;
+const rangeFromLow = (low) => ({
+  low: round500(low),
+  high: round500(low / DEMO_RANGE_LOW_FRACTION),
+});
 
-// Per-size RANGES from LIVE orderable comparables: natural p25–p75 of the
-// bucket (outliers excluded) → ladder-derived artificial/mixed ranges. Falls
-// back to the engine's size lookup when the bucket has no live comparables —
-// a point, returned as a collapsed low==high range so the shape is uniform.
+// Ladder a headroomed natural anchor into per-tier display ranges.
+const ladderRanges = (natAnchor, ladder) => {
+  const art = natAnchor / ladder.natural;
+  return {
+    artificial: rangeFromLow(art),
+    mixed: rangeFromLow(art * ladder.mixed),
+    natural: rangeFromLow(natAnchor),
+  };
+};
+
+// Per-size ranges: anchor on the p75 of the bucket's LIVE orderable natural
+// prices (outliers excluded — and the p25 end is superseded pricing, so it is
+// deliberately not part of the anchor), apply headroom, derive the other tiers
+// via the demo ladder. Falls back to the engine's size lookup (its natural
+// figure re-anchored the same way) when the bucket has no live comparables.
 const livePricesForRow = (category, l, w, comps) => {
   const outliers = new Set(PREMIUM_OUTLIERS[category] || []);
-  const ladder = TIER_LADDER[category];
+  const ladder = DEMO_TIER_LADDER[category];
   const matched = comps
     .filter((c) => c && sameSize(c, l, w))
     .filter((c) => !outliers.has(c.id) && c.prices && positive(c.prices.natural))
     .map((c) => c.prices.natural)
     .sort((a, b) => a - b);
   if (matched.length && ladder) {
-    const natLow = quantile(matched, 0.25);
-    const natHigh = quantile(matched, 0.75);
-    const artLow = natLow / ladder.natural;
-    const artHigh = natHigh / ladder.natural;
-    return {
-      basis: "live",
-      n: matched.length,
-      prices: {
-        artificial: roundRange(artLow, artHigh),
-        mixed: roundRange(artLow * ladder.mixed, artHigh * ladder.mixed),
-        natural: roundRange(natLow, natHigh),
-      },
-    };
+    const natAnchor = quantile(matched, 0.75) * DECOR_DEMO_HEADROOM;
+    return { basis: "live", n: matched.length, prices: ladderRanges(natAnchor, ladder) };
   }
   // no live comparables in this bucket → engine size lookup keeps the row honest
   const point = suggestPrice({ category, length: l, width: w, mode: "demo", source: "internal" }, comps).suggested;
+  if (ladder && positive(point.natural)) {
+    return { basis: "lookup", n: 0, prices: ladderRanges(point.natural * DECOR_DEMO_HEADROOM, ladder) };
+  }
   const prices = {};
   Object.keys(point).forEach((tier) => {
-    prices[tier] = point[tier] == null ? null : { low: point[tier], high: point[tier] };
+    prices[tier] = point[tier] == null ? null : rangeFromLow(point[tier] * DECOR_DEMO_HEADROOM);
   });
   return { basis: "lookup", n: 0, prices };
 };
 
-// Premium ceiling for a size bucket: the highest orderable price in that bucket
-// INCLUDING premium outliers. A different claim from the typical price (which
-// excludes them) — excluding outliers understates capability, and on a call the
-// ceiling is an upsell lever. Never merged into the typical range.
-const bucketCeiling = (category, l, w, comps, bandTier) => {
-  const inBucket = comps.filter((c) => sameSize(c, l, w) && c.prices && positive(c.prices[bandTier]));
-  if (!inBucket.length) return null;
-  return Math.round(Math.max(...inBucket.map((c) => c.prices[bandTier])));
-};
-
-// Category-band RANGES (no size) for the non-sized single row: each applicable
-// tier is the p25–p75 of that tier's own live comparable prices. A tier with no
-// priced comparables stays null rather than borrowing another tier's figure.
+// Category-band ranges (no size) for the non-sized single row: each applicable
+// tier anchors on the p75 of its own live comparable prices, headroomed. A tier
+// with no priced comparables stays null rather than borrowing another tier's.
 const rangesForCategory = (category, tiers, comps) => {
   const outliers = new Set(PREMIUM_OUTLIERS[category] || []);
   const prices = {};
   tiers.forEach((tier) => {
     const vals = sortedTierPrices(comps, tier, outliers);
-    prices[tier] = vals.length ? roundRange(quantile(vals, 0.25), quantile(vals, 0.75)) : null;
+    prices[tier] = vals.length ? rangeFromLow(quantile(vals, 0.75) * DECOR_DEMO_HEADROOM) : null;
   });
   return prices;
 };
@@ -168,8 +186,7 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
       const row = {
         size: `${l}x${w}`,
         area: l * w,
-        prices, // typical — premium outliers excluded
-        premiumCeiling: bucketCeiling(category, l, w, comps, bandTier), // incl. outliers; separate claim
+        prices, // anchored + headroomed negotiating ranges (outliers excluded)
         priceBasis: basis,
         comparablesUsed: n,
       };
@@ -199,7 +216,8 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     observations: Array.isArray(analysis.observations) ? analysis.observations : [],
     applicableTiers: tiers,
     sized,
-    upliftApplied: 1, // raw catalogue prices — the ×1.20 uplift is draft-path only
+    upliftApplied: 1, // the ×1.20 draft-path uplift never applies to the demo
+    headroomApplied: DECOR_DEMO_HEADROOM, // negotiating headroom baked into every figure
     ladder,
   };
 };
@@ -229,4 +247,10 @@ const pinTextCategoryCheck = (pinText, modelCategory) => {
   return { detectedCategory: detected, agrees: detected === modelCategory };
 };
 
-module.exports = { buildDemoPrice, pinTextCategoryCheck, SIZE_BUCKETS };
+module.exports = {
+  buildDemoPrice,
+  pinTextCategoryCheck,
+  SIZE_BUCKETS,
+  DECOR_DEMO_HEADROOM,
+  DEMO_TIER_LADDER,
+};
