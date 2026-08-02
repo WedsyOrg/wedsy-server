@@ -54,8 +54,14 @@ const lineTotal = (item = {}) => {
 
 // A day's own total — ES/TS items (includeInTotalSummary) deliberately NOT
 // here; they itemize at event level via eventTotals.
+// Bug 57: a decor item with includedInTotal === false is an ALTERNATIVE — its
+// line price still computes and displays, but no total sums it. Strict
+// ===false so every legacy row (field absent) stays included.
 const dayTotal = (day = {}) => {
-  const decor = (day.decorItems || []).reduce((s, i) => s + n(i && i.price), 0);
+  const decor = (day.decorItems || []).reduce(
+    (s, i) => s + (i && i.includedInTotal !== false ? n(i.price) : 0),
+    0
+  );
   const packages = (day.packages || []).reduce((s, p) => s + n(p && p.price), 0);
   const custom = (day.customItems || []).reduce(
     (s, c) => s + (c && !c.includeInTotalSummary ? n(c.price) : 0),

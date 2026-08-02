@@ -278,7 +278,14 @@ const grantDiscount = async (leadId, eventId, { amount, pct } = {}, actorId) => 
   if (amt <= 0) throw err(400, "Give the discount an amount or a percentage.");
   const freePct = await SettingsService.get("dealDiscount.freePct");
   const equivalentPct = gross > 0 ? (amt / gross) * 100 : 100;
-  const auto = equivalentPct <= (Number(freePct) || 0);
+  // Bug 49a — the >freePct approval HOLD is disabled for now: every discount
+  // applies immediately. equivalentPct is still computed and the over-band
+  // notification below still fires (as an FYI, not a blocker), so the paper
+  // trail survives. RE-LINK POINT for the future Approvals tab: restore
+  //   const auto = equivalentPct <= (Number(freePct) || 0);
+  // to put over-band discounts back behind pending/decideDiscount.
+  const overFreeBand = equivalentPct > (Number(freePct) || 0);
+  const auto = true;
 
   const doc = await DealDiscount.create({
     leadId,
@@ -292,8 +299,9 @@ const grantDiscount = async (leadId, eventId, { amount, pct } = {}, actorId) => 
     decidedAt: auto ? new Date() : null,
   });
 
-  if (!auto) {
-    // Above the free threshold → the approvals ladder hears about it.
+  if (overFreeBand) {
+    // Above the free threshold → the ladder still HEARS about it (FYI only
+    // while the hold is disabled; see the Bug 49a re-link note above).
     try {
       const lead = await Enquiry.findById(leadId, { name: 1, assignedTo: 1 }).lean();
       const Admin = require("../models/Admin");
