@@ -129,8 +129,12 @@ const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
   "style": "Modern" | "Traditional" | null,
   "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
   "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
-  "observations": string[]
+  "observations": string[],
+  "minBuildWidth": { "minWidthFt": number, "reasoning": string, "confidence": number 0.0-1.0 },
+  "recommendedSize": { "length": number, "width": number } | null
 }
+"minBuildWidth" — the MINIMUM width in feet this design could physically be built at, scaled from reference objects visible in the photo: sofa ~5 ft wide, chair ~1.5 ft, adult ~5.5 ft tall, doorway ~7 ft tall. Count the objects the installation spans (e.g. "backdrop fits five to six sofas across, so it needs 30 ft") and state that count in "reasoning". This is a physical floor, not a size estimate — a design can be built LARGER than its minimum, never smaller. Set confidence below 0.5 when nothing in frame gives reliable scale.
+"recommendedSize" — the single size from the category's vocabulary this design best fits, or null when the category has no meaningful size.
 "observations" — 2 to 5 short phrases describing ONLY what is clearly VISIBLE, one per axis, in exactly this vocabulary (skip an axis you cannot judge):
 - structure type: "temple-style structure" | "elegant non-square structure" | "regular square structure"
 - floral density: "sparse florals" | "moderate florals" | "heavy florals" | "full floral coverage"
@@ -222,7 +226,27 @@ const postProcess = (raw = {}, mode = "full") => {
     const observations = isDecorProduct
       ? asArray(raw.observations).filter((o) => typeof o === "string").slice(0, 6)
       : [];
-    return { ...base, observations };
+
+    // Minimum buildable width, scaled from reference objects in the photo. The
+    // panel hides size rows below it (only when confidence is decent — that
+    // gate lives client-side so staff can tune it without a deploy).
+    const mbw = raw.minBuildWidth || {};
+    const minWidthFt = Number(mbw.minWidthFt);
+    const minBuildWidth =
+      isDecorProduct && Number.isFinite(minWidthFt) && minWidthFt > 0
+        ? { minWidthFt, reasoning: asStr(mbw.reasoning), confidence: clamp01(mbw.confidence) }
+        : null;
+
+    // Best-fit size, snapped to the category vocabulary — only when the model
+    // actually returned one (snapSize would otherwise fabricate the default).
+    let recommendedSize = null;
+    const rs = raw.recommendedSize;
+    if (isDecorProduct && rs && Number(rs.length) > 0 && Number(rs.width) > 0) {
+      const snapped = snapSize(category, rs);
+      if (snapped) recommendedSize = `${snapped.length}x${snapped.width}`;
+    }
+
+    return { ...base, observations, minBuildWidth, recommendedSize };
   }
 
   return {
@@ -277,7 +301,7 @@ const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const message = await createWithRetry(client, {
     model: MODEL,
-    max_tokens: useMode === "demo" ? 640 : 1024, // demo grew observations[]; headroom over 512
+    max_tokens: useMode === "demo" ? 768 : 1024, // demo carries observations + minBuildWidth reasoning
     temperature: 0,
     system: [
       { type: "text", text: SHARED_RULES, cache_control: { type: "ephemeral" } },

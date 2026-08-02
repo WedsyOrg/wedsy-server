@@ -57,36 +57,48 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(r.ladder[0].prices.mixed, undefined, "no mixed tier");
 }
 
-// ── 3. Stage — full ladder priced from LIVE orderable comparables ────────────
+// ── 3. Stage — ladder SMOOTHED from the 24x16 reference anchor ───────────────
 {
-  console.log("Stage (full size ladder, live comparables):");
+  console.log("Stage (smoothed ladder from the 24x16 reference):");
   const comps = [
-    doc("st_a", "SA", { "Natural Flowers": 40000 }, [16, 12]), // 192 bucket
-    doc("st_b", "SB", { "Natural Flowers": 50000 }, [16, 12]), // 192 → median 45000
-    doc("st108", "OUT", { "Natural Flowers": 300000 }, [16, 12]), // 192 premium OUTLIER
-    doc("st_c", "SC", { "Natural Flowers": 90000 }, [24, 16]), // 384 bucket
-    // nothing at 40x20 → that row must fall back to the engine size lookup
+    doc("st_a", "SA", { "Natural Flowers": 40000 }, [16, 12]), // examples only — never price a row directly
+    doc("st_b", "SB", { "Natural Flowers": 50000 }, [16, 12]),
+    doc("st_c", "SC", { "Natural Flowers": 90000 }, [24, 16]), // the reference comp
+    doc("st108", "OUT", { "Natural Flowers": 300000 }, [24, 16]), // premium OUTLIER at the reference size
   ];
   const r = buildDemoPrice(analysis("Stage"), comps, { includeExamples: true });
   eq(r.sized, true, "Stage is size-laddered");
   eq(r.ladder.length, SIZE_BUCKETS.Stage.length, "one row per Stage bucket (8)");
   eq(JSON.stringify(r.applicableTiers), JSON.stringify(["artificial", "mixed", "natural"]), "all three tiers");
-
-  const row1612 = r.ladder.find((x) => x.size === "16x12");
-  eq(row1612.priceBasis, "live", "16x12 priced from live comparables");
-  range(row1612.prices.natural, 54500, 68500, "16x12 natural anchored on p75 (47500) × 1.15");
-  eq(row1612.comparablesUsed, 2, "premium outlier st108 excluded from the anchor");
-  range(row1612.prices.artificial, 38000, 47500, "16x12 artificial = natural anchor / 1.44 (Stage ladder)");
-  range(row1612.prices.mixed, 46500, 58000, "16x12 mixed = artificial × 1.22 (Stage ladder)");
-  ok(!("premiumCeiling" in row1612), "premiumCeiling removed from the demo response");
+  eq(r.anchor.size, "24x16", "anchored on the Stage reference size");
+  eq(r.anchor.priceBasis, "live", "reference anchored on live comparables");
+  eq(r.anchor.comparablesUsed, 1, "premium outlier st108 excluded from the reference anchor");
 
   const row2416 = r.ladder.find((x) => x.size === "24x16");
-  range(row2416.prices.natural, 103500, 129500, "24x16 natural anchored on the single comp (90000) × 1.15");
+  range(row2416.prices.natural, 103500, 129500, "24x16 (reference) natural = 90000 × 1.15");
+  range(row2416.prices.artificial, 72000, 90000, "24x16 artificial = natural anchor / 1.44 (Stage ladder)");
+
+  const row1612 = r.ladder.find((x) => x.size === "16x12");
+  range(row1612.prices.natural, 53500, 67000, "16x12 natural = reference × (192/384)^0.95");
+  range(row1612.prices.artificial, 37000, 46500, "16x12 artificial via Stage ladder");
+  ok(!("premiumCeiling" in row1612), "premiumCeiling stays removed");
+
+  const row1616 = r.ladder.find((x) => x.size === "16x16");
+  range(row1616.prices.natural, 70500, 88000, "16x16 natural sits ABOVE 16x12 (smoothing fixed the inversion)");
+
+  const row3016 = r.ladder.find((x) => x.size === "30x16");
+  range(row3016.prices.natural, 128000, 160000, "30x16 natural = reference × (480/384)^0.95");
+  const ratio = row3016.prices.natural.low / row2416.prices.natural.low;
+  ok(ratio > 1.2 && ratio < 1.25, `30x16 is ~24% above 24x16 (founder: 20-25%) — got ${ratio.toFixed(3)}`);
 
   const row4020 = r.ladder.find((x) => x.size === "40x20");
-  eq(row4020.priceBasis, "lookup", "40x20 has no live comps → falls back to the table");
-  range(row4020.prices.natural, 296000, 370000, "40x20 natural = lookup (257500) × 1.15, ranged");
-  ok(!("premiumCeiling" in row4020), "no premiumCeiling on lookup rows either");
+  range(row4020.prices.natural, 208000, 260000, "40x20 smoothed too — no more per-bucket cliff");
+
+  const byArea = r.ladder.slice().sort((a, b) => a.area - b.area);
+  ok(
+    byArea.every((row, i) => i === 0 || row.prices.natural.low > byArea[i - 1].prices.natural.low),
+    "natural price increases MONOTONICALLY with area across all 8 rows"
+  );
 
   // examplesAtThisSize: scale/price-point proof, bucketed by nearest size.
   ok(Array.isArray(row1612.examplesAtThisSize), "16x12 row has examplesAtThisSize array");
@@ -95,20 +107,27 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   ok(!("similar" in row1612) && !("matches" in row1612), "field is examplesAtThisSize, not similar/matches");
 }
 
-// ── 3b. Mandap 15x15 — live fixes the missing-lookup-bucket underpricing ─────
+// ── 3b. Mandap — lookup-anchored reference smooths every row ─────────────────
 {
-  console.log("Mandap 15x15 (live fixes the 256-snap bug):");
-  // SIZE_LOOKUP.Mandap has no 225 (15x15) entry, so the engine snaps it to the
-  // 256 bucket (₹82,000). Live comparables at 15x15 price it correctly.
+  console.log("Mandap (12x12 reference falls back to lookup, rows smoothed):");
+  // No comparables at the 12x12 reference → the engine size lookup (₹64,000)
+  // anchors the ladder; 15x15 comps no longer price their own row directly.
   const comps = [
     doc("ma_x", "MX", { "Natural Flowers": 150000 }, [15, 15]),
     doc("ma_y", "MY", { "Natural Flowers": 150000 }, [15, 15]),
   ];
   const r = buildDemoPrice(analysis("Mandap"), comps);
+  eq(r.anchor.size, "12x12", "anchored on the Mandap reference size");
+  eq(r.anchor.priceBasis, "lookup", "no live comps at 12x12 → engine lookup anchors");
+  range(r.ladder.find((x) => x.size === "12x12").prices.natural, 73500, 92000, "12x12 natural = lookup 64000 × 1.15");
   const row = r.ladder.find((x) => x.size === "15x15");
-  eq(row.priceBasis, "live", "15x15 priced from live comparables");
-  range(row.prices.natural, 172500, 215500, "15x15 natural = live anchor (not the 82000 snap-to-256)");
-  range(row.prices.artificial, 96000, 120000, "15x15 artificial = natural anchor / 1.8 (founder Mandap ladder)");
+  range(row.prices.natural, 112500, 140500, "15x15 natural = reference × (225/144)^0.95");
+  range(row.prices.artificial, 62500, 78000, "15x15 artificial = natural / 1.8 (founder Mandap ladder)");
+  const byArea = r.ladder.slice().sort((a, b) => a.area - b.area);
+  ok(
+    byArea.every((x, i) => i === 0 || x.prices.natural.low > byArea[i - 1].prices.natural.low),
+    "Mandap natural price increases monotonically with area"
+  );
 }
 
 // ── 3c. Mandap 12x12 — the founder's verification figures, exactly ───────────
@@ -116,10 +135,44 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   console.log("Mandap 12x12 (founder verification: real price 50/70/90k):");
   const comps = [doc("ma_std", "Standard Mandap", { "Natural Flowers": 90000 }, [12, 12])];
   const r = buildDemoPrice(analysis("Mandap"), comps);
+  eq(r.anchor.size, "12x12", "12x12 IS the Mandap reference — figures survive smoothing");
   const row = r.ladder.find((x) => x.size === "12x12");
   range(row.prices.artificial, 57500, 72000, "Artificial ₹57,500 – 72,000");
   range(row.prices.mixed, 80500, 100500, "Mixed ₹80,500 – 1,00,500");
   range(row.prices.natural, 103500, 129500, "Fresh ₹1,03,500 – 1,29,500");
+}
+
+// ── 3d. Vision size signals — passthrough + postProcess normalization ────────
+{
+  console.log("minBuildWidth / recommendedSize:");
+  const { postProcess } = require("../services/decorVision");
+  const p = postProcess(
+    {
+      isDecorProduct: true, category: "Stage", categoryConfidence: 0.9,
+      size: { length: 24, width: 16, confidence: 0.6 },
+      complexity: { tier: "standard", confidence: 0.7, reasoning: "x" },
+      minBuildWidth: { minWidthFt: 30, reasoning: "backdrop spans five to six sofas across", confidence: 0.8 },
+      recommendedSize: { length: 29, width: 17 },
+    },
+    "demo"
+  );
+  eq(p.minBuildWidth.minWidthFt, 30, "minWidthFt normalized");
+  eq(p.minBuildWidth.confidence, 0.8, "min-width confidence kept");
+  eq(p.recommendedSize, "30x16", "recommendedSize snapped to the Stage vocabulary (29x17 → 30x16)");
+  const empty = postProcess({ isDecorProduct: true, category: "Stage", size: {}, complexity: {} }, "demo");
+  eq(empty.minBuildWidth, null, "absent minBuildWidth → null, never fabricated");
+  eq(empty.recommendedSize, null, "absent recommendedSize → null, never snapped from nothing");
+
+  const comps = [doc("st_ref", "R", { "Natural Flowers": 90000 }, [24, 16])];
+  const out = buildDemoPrice(
+    analysis("Stage", { minBuildWidth: p.minBuildWidth, recommendedSize: p.recommendedSize }),
+    comps
+  );
+  eq(out.minBuildWidth.minWidthFt, 30, "minBuildWidth passes through the demo response");
+  eq(out.recommendedSize, "30x16", "recommendedSize passes through the demo response");
+  const bare = buildDemoPrice(analysis("Stage"), comps);
+  eq(bare.minBuildWidth, null, "no vision signal → null in the response");
+  eq(bare.recommendedSize, null, "no vision signal → null in the response");
 }
 
 // ── 4. Non-décor image → rejected ────────────────────────────────────────────
