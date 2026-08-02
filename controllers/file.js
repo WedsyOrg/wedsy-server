@@ -102,7 +102,13 @@ const VenueOwnerUpload = async (req, res) => {
     const safeCategory = String(category || "venue").toLowerCase().replace(/[^a-z0-9-]/g, "-") || "venue";
     const extension = normalizedName.includes(".") ? normalizedName.split(".").pop() : "jpg";
     const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const s3Key = `venues/${req.venueOwner.venueId}/${safeCategory}/${unique}.${extension}`;
+    // Bug 50 — the route's auth admits admin JWTs (req.admin) as well as venue
+    // owners (req.venueOwner), but the key builder only knew the venue shape:
+    // req.venueOwner.venueId threw for every admin call → 400 "AWS Upload
+    // Error" on all OS Build & Bill uploads. Admin uploads land under os/.
+    const s3Key = req.venueOwner
+      ? `venues/${req.venueOwner.venueId}/${safeCategory}/${unique}.${extension}`
+      : `os/${safeCategory}/${unique}.${extension}`;
 
     await s3Client.putObject({
       Bucket: process.env.AWS_BUCKET_NAME,

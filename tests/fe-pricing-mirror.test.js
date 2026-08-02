@@ -107,6 +107,23 @@ function loadFeMirror() {
     const detail2 = await DraftEventService.getDraftDetail(lead._id, draft._id);
     const read2 = detail2.days.find((d) => d.name === "Sangeet").decorItems.find((i) => String(i._id) === String(item._id));
     ok(read2.notes.length === 1 && read2.notes[0].text === "gate 2 entry" && read2.notes[0].image === "https://x/img.jpg", "item notes[] {text,image} round-trips");
+
+    // ── 3: Bug 57 parity — an UNCHECKED alternative: line prices, totals skip ──
+    const { dayTotal } = require("../utils/eventDecorPricing");
+    const alt = await DraftEventService.addItem(lead._id, draft._id, day._id, {
+      decorId: decor._id, quantity: 1, includedInTotal: false,
+    }, admin._id);
+    ok(alt.price === 9000 && alt.includedInTotal === false,
+      "unchecked alternative: its OWN line price still computes (₹9000)");
+    ok(fe.clientLineTotal(alt) === alt.price,
+      "FE mirror prices the unchecked line identically (display parity)");
+    const eventDoc = await Event.findById(draft._id).lean();
+    const dayDoc = eventDoc.eventDays.find((d) => d.name === "Sangeet");
+    ok(dayTotal(dayDoc).decorItems === read.price,
+      `dayTotal sums ONLY included items (₹${dayTotal(dayDoc).decorItems} = the checked item alone)`);
+    const totals = await DraftEventService.totalsFor(eventDoc);
+    ok(totals.grandTotal === read.price, "grand total skips the alternative too");
+    // FE day/grand sums must apply the same skip: includedInTotal !== false.
   } catch (e) {
     fail++;
     console.error("UNEXPECTED ERROR:", e);

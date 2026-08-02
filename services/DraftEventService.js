@@ -138,8 +138,64 @@ const getDraftDetail = async (leadId, eventId) => {
     const bridge = await Onboarding.findOne({ leadId, eventId }, { eventId: 1 }).lean();
     if (!bridge) throw err(404, "Draft not found on this lead");
   }
-  const doc = event || (await Event.findById(eventId).lean());
+  let doc = event || (await Event.findById(eventId).lean());
   if (!doc) throw err(404, "Draft not found");
+
+  // Bug 51+53 — lazy day-propagation heal. Drafts seed days at CREATE time,
+  // so a lead function added later never showed. On every detail read of an
+  // OS draft, diff the lead's CURRENT discovery functions (per-function, not
+  // per-day — a second function on the same date is its own tab) against the
+  // draft's days by (name|date); any missing function is $push-ed as an EMPTY
+  // day (no items) so it renders as a buildable tab. Idempotent (key match on
+  // the next read), fire-safe (a heal failure never breaks the read), never
+  // touches existing days/items, never deletes anything — a draft day absent
+  // from the lead's current list is FLAGGED orphaned below, not removed.
+  // Locked drafts are frozen bills — not healed. A published draft that heals
+  // gains the dirty flag (the couple's frozen view is now behind).
+  const dayKey = (d) =>
+    `${String((d && d.name) || "").trim().toLowerCase()}|${String((d && d.date) || "").trim().toLowerCase()}`;
+  let leadDayKeys = null; // null = couple event (no orphan flagging)
+  if (event) {
+    try {
+      const lead = await Enquiry.findById(leadId, { qualificationData: 1 }).lean();
+      const wanted = [];
+      ((lead && lead.qualificationData && lead.qualificationData.eventDays) || [])
+        .filter(Boolean)
+        .forEach((d, i) => {
+          const fns = (d.functions || []).filter(Boolean);
+          if (!fns.length) {
+            wanted.push({ name: `Day ${i + 1}`, date: d.date || "TBD", time: "TBD", venue: "TBD", eventSpace: "" });
+            return;
+          }
+          for (const fn of fns) {
+            wanted.push({
+              name: fn.type || `Day ${i + 1}`,
+              date: d.date || "TBD",
+              time: fn.time || "TBD",
+              venue: fn.venue || "TBD",
+              eventSpace: fn.space || "",
+            });
+          }
+        });
+      leadDayKeys = new Set(wanted.map(dayKey));
+      if (!doc.locked) {
+        const have = new Set((doc.eventDays || []).map(dayKey));
+        const missing = wanted.filter((w) => !have.has(dayKey(w)));
+        if (missing.length) {
+          await Event.updateOne(
+            { _id: doc._id },
+            {
+              $push: { eventDays: { $each: missing } },
+              ...(doc.published ? { $set: { hasUnpublishedChanges: true } } : {}),
+            }
+          );
+          doc = await Event.findById(doc._id).lean();
+        }
+      }
+    } catch (e) {
+      console.error("[Draft] day-propagation heal failed:", e.message);
+    }
+  }
 
   // Batch-hydrate the decor display fields (name / category / thumbnail) the
   // item table needs — the subdoc stores only the decor ObjectId.
@@ -216,6 +272,8 @@ const getDraftDetail = async (leadId, eventId) => {
       primaryColor: it.primaryColor || "",
       secondaryColor: it.secondaryColor || "",
       tertiaryColor: it.tertiaryColor || "",
+      // Bug 57 — false = alternative (line price shows, totals skip it).
+      includedInTotal: it.includedInTotal !== false,
       price: Number(it.price) || 0,
     };
   };
@@ -233,6 +291,10 @@ const getDraftDetail = async (leadId, eventId) => {
     status: day.status || {},
     notes: day.notes || "",
     customItemsTitle: day.customItemsTitle || "",
+    // Bug 51+53 — true when this day is NOT on the lead's current discovery
+    // list (the lead dropped the function, or the day was added by hand).
+    // Never deleted server-side — the FE badges it; the planner decides.
+    orphaned: leadDayKeys ? !leadDayKeys.has(dayKey(day)) : false,
     decorItems: (day.decorItems || []).map(mapItem),
     packages: day.packages || [],
     customItems: day.customItems || [],
@@ -330,6 +392,10 @@ const draftEarnings = async (leadId, eventId) => {
   };
   for (const day of days) {
     for (const item of day.decorItems || []) {
+      // Bug 57 — the earnings basis is INCLUDED items only: an alternative
+      // (includedInTotal:false) is not sold, so neither its sp nor its cp
+      // belongs in the margin math.
+      if (item.includedInTotal === false) continue;
       const b = bucket(item.category || "Uncategorised");
       b.sp += num(item.price);
       const d = decorById.get(String(item.decor || ""));
@@ -453,6 +519,9 @@ const composeItem = async (input = {}, existing = null) => {
     secondaryColor: String(merged.secondaryColor ?? item.secondaryColor ?? ""),
     // Bug 35 — third colour slot, same echo discipline. Display only.
     tertiaryColor: String(merged.tertiaryColor ?? item.tertiaryColor ?? ""),
+    // Bug 57 — the "counts toward the total" checkbox. Echo discipline;
+    // absent everywhere → true (legacy rows are included).
+    includedInTotal: (merged.includedInTotal ?? item.includedInTotal) !== false,
   };
   if (!out.category) throw err(400, "The item needs a category");
 

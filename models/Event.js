@@ -113,6 +113,12 @@ const EventSchema = new mongoose.Schema(
                 // Bug 35 — third colour slot. DISPLAY ONLY (like primary/
                 // secondary): the pricing law never reads any colour field.
                 tertiaryColor: {type: String, default: ""},
+                // Bug 57 — "counts toward the total". false = an ALTERNATIVE
+                // sitting in the draft: its own line price still computes and
+                // shows, but day/event/grand totals skip it. Default TRUE
+                // (legacy rows unchanged). Distinct from the ES/TS
+                // includeInTotalSummary flag on custom/mandatory items.
+                includedInTotal: {type: Boolean, default: true},
                 setupLocationImage: {type: String, default: ""},
                 // Item-editor fields (additive): free PER-UNIT price
                 // adjustment + the setup-location TEXT (image existed, the

@@ -62,31 +62,28 @@ const created = { leads: [], admins: [], roles: [], decors: [], events: [], lane
     let totals = await DraftEventService.totalsFor(await DraftEventService.getDraft(lead._id, draft._id));
     ok(totals.gross === 100000 && totals.discount === 4000 && totals.net === 96000, `gross/discount/net (${totals.gross}/${totals.discount}/${totals.net})`);
 
-    // ── above the band → pending + notification + approvals row ──
+    // ── above the band — Bug 49a: the approval HOLD is disabled. The over-band
+    // discount applies IMMEDIATELY; the ladder is still notified (FYI paper
+    // trail) and no pending row reaches the Team approvals read. Re-link these
+    // assertions to the pending flow when the Approvals tab ships.
     const big = await PlanSnapshotService.grantDiscount(lead._id, draft._id, { pct: 10 }, seller._id);
-    ok(big.status === "pending" && big.amount === 10000, "10% → pending with the resolved amount");
+    ok(big.status === "approved" && big.amount === 10000 && !!big.decidedAt,
+      "10% (over-band) → applies immediately with the resolved amount (hold disabled)");
     const notif = await AdminNotification.find({ leadId: lead._id, type: "discount_approval" }).lean();
-    ok(notif.some((n) => String(n.adminId) === String(manager._id)), "the approver ladder is notified");
+    ok(notif.some((n) => String(n.adminId) === String(manager._id)), "the approver ladder is still notified (FYI)");
     totals = await DraftEventService.totalsFor(await DraftEventService.getDraft(lead._id, draft._id));
-    ok(totals.discount === 4000, "pending discounts do NOT count toward net");
+    ok(totals.discount === 14000 && totals.net === 86000, "the over-band discount lands in net immediately");
 
-    // approvals read gains the discount row (manager eligible via approve perm)
+    // approvals read: NO pending discount row while the hold is disabled
     const team = await TeamReadService.team(manager._id);
-    const row = team.pendingApprovals.items.find((i) => i.type === "discount_approval" && String(i.lead._id) === String(lead._id));
-    ok(!!row && row.discount.amount === 10000 && String(row.discount._id) === String(big._id), "Team approvals read carries the discount_approval row");
+    ok(!team.pendingApprovals.items.some((i) => i.type === "discount_approval" && String(i.lead._id) === String(lead._id)),
+      "Team approvals read carries NO discount row (nothing pends)");
     ok(team.pendingApprovals.items.every((i) => i.type), "every approvals row now carries a type (additive)");
 
-    // ── decide: ineligible then eligible ──
-    let denied = null;
-    try { await PlanSnapshotService.decideDiscount(big._id, "approve", seller._id); } catch (e) { denied = e; }
-    ok(denied && denied.status === 403, "the giver can't approve their own big discount (403)");
-    const decided = await PlanSnapshotService.decideDiscount(big._id, "approve", manager._id);
-    ok(decided.status === "approved" && String(decided.approvedBy) === String(manager._id), "manager approves");
-    totals = await DraftEventService.totalsFor(await DraftEventService.getDraft(lead._id, draft._id));
-    ok(totals.discount === 14000 && totals.net === 86000, "approved discount lands in net");
+    // ── decide: an already-approved discount can't be re-decided ──
     let twice = null;
     try { await PlanSnapshotService.decideDiscount(big._id, "reject", manager._id); } catch (e) { twice = e; }
-    ok(twice && twice.status === 400, "double-decide → 400");
+    ok(twice && twice.status === 400, "deciding an auto-approved discount → 400 (already decided)");
 
     // ── the décor-lane feed ──
     const feed = await PlanSnapshotService.feedDecorLane(lead._id, draft._id, seller._id);
