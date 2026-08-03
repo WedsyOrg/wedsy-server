@@ -4,7 +4,14 @@
 // a Stage full ladder, and a non-décor rejection — plus category-aware tiers,
 // the negotiating anchor (p75 × headroom, low = high × 0.8), the founder's
 // Mandap ladder, examplesAtThisSize, and the pin-text cross-check.
-const { buildDemoPrice, pinTextCategoryCheck, SIZE_BUCKETS } = require("../services/decorDemoPrice");
+const {
+  buildDemoPrice,
+  pinTextCategoryCheck,
+  SIZE_BUCKETS,
+  DECOR_FLORAL_RATE_PER_FT,
+  STAGE_TIER_DIVISORS,
+  readStageMeasurements,
+} = require("../services/decorDemoPrice");
 const { normalizeComparable } = require("../services/decorPricing");
 
 let pass = 0, fail = 0;
@@ -99,6 +106,7 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     byArea.every((row, i) => i === 0 || row.prices.natural.low > byArea[i - 1].prices.natural.low),
     "natural price increases MONOTONICALLY with area across all 8 rows"
   );
+  ok(!("pricingModel" in r), "no vision measurement → Stage stays on the area-ladder fallback");
 
   // examplesAtThisSize: scale/price-point proof, bucketed by nearest size.
   ok(Array.isArray(row1612.examplesAtThisSize), "16x12 row has examplesAtThisSize array");
@@ -142,6 +150,57 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   range(row.prices.natural, 103500, 129500, "Fresh ₹1,03,500 – 1,29,500");
 }
 
+// ── 3e. Stage floral-run pricing — founder calibration points ────────────────
+{
+  console.log("Stage floral-run (founder calibration):");
+  // Calibration point 1 — 24ft fully floral, pre-headroom bases within 5%:
+  // Fresh ₹1,50,000 · Mixed ₹1,00,000 · Artificial ₹75,000.
+  const fresh24 = 24 * DECOR_FLORAL_RATE_PER_FT;
+  ok(Math.abs(fresh24 - 150000) / 150000 <= 0.05, `24ft fresh base ₹${fresh24} within 5% of ₹1,50,000`);
+  const art24 = fresh24 / STAGE_TIER_DIVISORS.artificial;
+  ok(art24 >= 65000 && art24 <= 85000, `24ft artificial base ₹${art24} inside founder range 65-85k`);
+  const mix24 = fresh24 / STAGE_TIER_DIVISORS.mixed;
+  ok(mix24 >= 90000 && mix24 <= 120000, `24ft mixed base ₹${Math.round(mix24)} inside founder range 90-120k`);
+  // Calibration point 2 — the founder's garland-and-clusters example:
+  // ~12.5 running feet of true floral → fresh near ₹78,000.
+  const fresh125 = 12.5 * DECOR_FLORAL_RATE_PER_FT;
+  ok(Math.abs(fresh125 - 78000) / 78000 <= 0.05, `12.5ft fresh base ₹${fresh125} within 5% of ₹78,000`);
+
+  // End to end: solid 24ft wall → one price block, ±7% around headroomed base.
+  const solid = buildDemoPrice(
+    analysis("Stage", {
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 24, estimatedHeightFt: 12, reasoning: "solid floral wall, five sofas across", confidence: 0.85 },
+    }),
+    []
+  );
+  eq(solid.pricingModel, "floral-run", "measured Stage prices by floral run");
+  eq(solid.sized, false, "no size ladder for a measured Stage");
+  eq(solid.ladder.length, 1, "single measured price block");
+  range(solid.ladder[0].prices.natural, 160500, 184500, "fresh = 150000 × 1.15 headroom, ±7%");
+  range(solid.ladder[0].prices.mixed, 107000, 123000, "mixed = fresh/1.5 (Stage divisor, not the Mandap ladder)");
+  range(solid.ladder[0].prices.artificial, 80000, 92500, "artificial = fresh/2");
+  eq(solid.stageMeasurements.floralRunFt, 24, "measurements echoed in the response");
+
+  // Same 24ft backdrop, garland + clusters → half the price at 12.5 floral ft.
+  const garland = buildDemoPrice(
+    analysis("Stage", {
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 12.5, estimatedHeightFt: 12, reasoning: "top garland and side clusters ≈ 12-13 ft", confidence: 0.8 },
+    }),
+    []
+  );
+  range(garland.ladder[0].prices.natural, 83500, 96000, "12.5 floral ft fresh ≈ ₹78k base, headroomed ±7%");
+  ok(
+    garland.ladder[0].prices.natural.high < solid.ladder[0].prices.natural.low,
+    "same width, garland-only build prices well below the solid wall"
+  );
+
+  // Guards: floral run can't exceed the backdrop; height defaults to 12.
+  const capped = readStageMeasurements({ backdropWidthFt: 20, floralRunFt: 26, confidence: 0.9 });
+  eq(capped.floralRunFt, 20, "floral run capped at backdrop width");
+  eq(capped.estimatedHeightFt, 12, "missing height defaults to 12ft");
+  eq(readStageMeasurements({ backdropWidthFt: 0, floralRunFt: 5 }), null, "invalid width → no measurement");
+}
+
 // ── 3d. Vision size signals — passthrough + postProcess normalization ────────
 {
   console.log("minBuildWidth / recommendedSize:");
@@ -153,12 +212,15 @@ const doc = (id, name, tiers, size) => normalizeComparable({
       complexity: { tier: "standard", confidence: 0.7, reasoning: "x" },
       minBuildWidth: { minWidthFt: 30, reasoning: "backdrop spans five to six sofas across", confidence: 0.8 },
       recommendedSize: { length: 29, width: 17 },
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 30, estimatedHeightFt: 0, reasoning: "r", confidence: 0.7 },
     },
     "demo"
   );
   eq(p.minBuildWidth.minWidthFt, 30, "minWidthFt normalized");
   eq(p.minBuildWidth.confidence, 0.8, "min-width confidence kept");
   eq(p.recommendedSize, "30x16", "recommendedSize snapped to the Stage vocabulary (29x17 → 30x16)");
+  eq(p.stageMeasurements.floralRunFt, 24, "postProcess caps floral run at backdrop width");
+  eq(p.stageMeasurements.estimatedHeightFt, 12, "postProcess defaults height to 12ft");
   const empty = postProcess({ isDecorProduct: true, category: "Stage", size: {}, complexity: {} }, "demo");
   eq(empty.minBuildWidth, null, "absent minBuildWidth → null, never fabricated");
   eq(empty.recommendedSize, null, "absent recommendedSize → null, never snapped from nothing");

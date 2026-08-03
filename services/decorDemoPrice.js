@@ -11,15 +11,21 @@
 // carries deliberate headroom above the real price (a business decision, not a
 // statistic).
 //
-// Sized rows (Stage & Mandap) are SMOOTHED across sizes: one reference size per
-// category anchors on the p75 of its live orderable natural prices (premium
+// STAGE is priced by running feet of FLORAL WALL, not floor area (founder,
+// 2026-08): width alone does not set the price — the florals do. A 24ft
+// backdrop that is a solid wall of flowers is ₹1,50,000 fresh; the same 24ft
+// with only a top garland and side clusters is ₹75-80,000. Same width, half
+// the price. fresh = floralRunFt × rate; artificial/mixed via Stage-specific
+// divisors; range = ±spread around the headroomed figure. When the vision
+// measurement is missing (e.g. a category override without a vision call),
+// Stage falls back to the smoothed area ladder below so the panel never dies.
+//
+// MANDAP (and Stage fallback) rows are SMOOTHED across sizes: one reference
+// size anchors on the p75 of its live orderable natural prices (premium
 // outliers excluded; engine size-lookup fallback), and every other row derives
-// as reference × (area ratio ^ DECOR_AREA_EXPONENT). Per-bucket anchoring
-// produced nonsense — 16x16 cheaper than 16x12, 30x16 at 2.36× the 24x16 price
-// for 1.25× the area — because each bucket's comparables carry their own
-// history. One anchor + a power law guarantees prices increase monotonically
-// with area. Tiers derive via the demo ladder; each displays as a range whose
-// LOW end is the anchored figure and whose high is low / 0.8.
+// as reference × (area ratio ^ DECOR_AREA_EXPONENT), guaranteeing prices
+// increase monotonically with area. Tiers derive via the demo ladder; each
+// displays as a range whose LOW end is the anchored figure (high = low / 0.8).
 //
 // Every other category → a single category-band row (size doesn't predict price
 // there), each applicable tier anchored on its own p75.
@@ -59,6 +65,49 @@ const DECOR_AREA_EXPONENT = Number(process.env.DECOR_AREA_EXPONENT) || 0.95;
 const DEMO_TIER_LADDER = {
   ...TIER_LADDER,
   Mandap: { mixed: 1.4, natural: 1.8 },
+};
+
+// ── Stage floral-run pricing (founder-calibrated 2026-08) ────────────────────
+// fresh = floralRunFt × rate. At the calibration point — 24ft fully floral —
+// this is ₹1,50,000 fresh / ₹1,00,000 mixed / ₹75,000 artificial; at ~12.5
+// floral feet fresh lands near ₹78,000. Divisors are Stage-specific config,
+// deliberately NOT the Mandap ladder.
+const DECOR_FLORAL_RATE_PER_FT = Number(process.env.DECOR_FLORAL_RATE_PER_FT) || 6250;
+const STAGE_TIER_DIVISORS = { artificial: 2, mixed: 1.5, natural: 1 }; // fresh / divisor
+// Stage range: ±spread around the headroomed figure — the founder's own quoted
+// spread (₹1,40,000-1,60,000 around ₹1,50,000 ≈ ±7%), not the 20% low-rule
+// used by the area-anchored ladders.
+const STAGE_RANGE_SPREAD = Number(process.env.DECOR_STAGE_RANGE_SPREAD) || 0.07;
+
+const stageFloralPrices = (floralRunFt) => {
+  const fresh = floralRunFt * DECOR_FLORAL_RATE_PER_FT;
+  const prices = {};
+  Object.entries(STAGE_TIER_DIVISORS).forEach(([tier, divisor]) => {
+    const centre = (fresh / divisor) * DECOR_DEMO_HEADROOM;
+    prices[tier] = {
+      low: round500(centre * (1 - STAGE_RANGE_SPREAD)),
+      high: round500(centre * (1 + STAGE_RANGE_SPREAD)),
+    };
+  });
+  return prices;
+};
+
+// Defensive read of the vision measurement (also arrives client-supplied on a
+// category override, so validate here, not just in the vision layer). Floral
+// run can never exceed the backdrop width.
+const readStageMeasurements = (sm) => {
+  if (!sm) return null;
+  const width = Number(sm.backdropWidthFt);
+  const run = Number(sm.floralRunFt);
+  if (!(width > 0) || !(run > 0)) return null;
+  const height = Number(sm.estimatedHeightFt);
+  return {
+    backdropWidthFt: width,
+    floralRunFt: Math.min(run, width),
+    estimatedHeightFt: height > 0 ? height : 12,
+    reasoning: typeof sm.reasoning === "string" ? sm.reasoning : "",
+    confidence: Math.max(0, Math.min(1, Number(sm.confidence) || 0)),
+  };
 };
 
 const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
@@ -190,13 +239,21 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
 
   const comps = Array.isArray(comparables) ? comparables : [];
   const bandTier = bandTierOf(tiers);
-  const buckets = SIZE_BUCKETS[category];
+  const stageMeasurements = category === "Stage" ? readStageMeasurements(analysis.stageMeasurements) : null;
+  // Measured Stage replaces the size ladder with one floral-run price block.
+  const buckets = stageMeasurements ? null : SIZE_BUCKETS[category];
   const sized = !!buckets;
   const withImage = comps.filter((c) => c && c.image);
 
   let ladder;
   let anchor = null;
-  if (sized) {
+  if (stageMeasurements) {
+    const row = { size: null, prices: stageFloralPrices(stageMeasurements.floralRunFt) };
+    if (includeExamples) {
+      row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
+    }
+    ladder = [row];
+  } else if (sized) {
     anchor = referenceAnchor(category, comps);
     const tierLadder = DEMO_TIER_LADDER[category];
     ladder = buckets.map(([l, w]) => {
@@ -234,10 +291,15 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     // member to place the quote within the range. NEVER graded, never priced on
     // (the Phase 3 gate proved they don't predict price).
     observations: Array.isArray(analysis.observations) ? analysis.observations : [],
-    // Vision size signals for the panel: hide rows below the minimum buildable
-    // width, badge the best-fit size. Advisory only — never move a price.
+    // Vision size signals for the panel: informational only — the min-width
+    // estimate and best-fit badge NEVER remove rows (staff cannot quote a row
+    // that is not there) and never move a price.
     minBuildWidth: analysis.minBuildWidth || null,
     recommendedSize: analysis.recommendedSize || null,
+    // The vision backdrop measurement, echoed whatever the category so the
+    // panel can resend it with a category override to Stage.
+    stageMeasurements: readStageMeasurements(analysis.stageMeasurements),
+    ...(stageMeasurements ? { pricingModel: "floral-run" } : {}),
     applicableTiers: tiers,
     sized,
     upliftApplied: 1, // the ×1.20 draft-path uplift never applies to the demo
@@ -280,4 +342,9 @@ module.exports = {
   DEMO_TIER_LADDER,
   REFERENCE_SIZE,
   DECOR_AREA_EXPONENT,
+  DECOR_FLORAL_RATE_PER_FT,
+  STAGE_TIER_DIVISORS,
+  STAGE_RANGE_SPREAD,
+  stageFloralPrices,
+  readStageMeasurements,
 };

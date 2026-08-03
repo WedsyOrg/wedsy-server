@@ -869,7 +869,7 @@ const AnalyseImage = async (req, res) => {
 // prices that category directly: the panel's staff dropdown must be instant, and
 // a wrong category is a ~2× price error only the human on the call can fix.
 const DemoPrice = async (req, res) => {
-  const { imageBase64, imageUrl, image, pinText, includeExamples, categoryOverride } = req.body || {};
+  const { imageBase64, imageUrl, image, pinText, includeExamples, categoryOverride, stageMeasurements } = req.body || {};
 
   let analysis;
   if (categoryOverride != null) {
@@ -877,7 +877,15 @@ const DemoPrice = async (req, res) => {
       return res.status(400).send({ message: `Unknown décor category: ${JSON.stringify(categoryOverride)}` });
     }
     // Staff said what it is — no vision, so no confidence and no observations.
-    analysis = { isDecorProduct: true, category: categoryOverride, categoryConfidence: null, observations: [] };
+    // The panel may resend the earlier vision backdrop measurement so an
+    // override TO Stage keeps floral-run pricing (buildDemoPrice validates it).
+    analysis = {
+      isDecorProduct: true,
+      category: categoryOverride,
+      categoryConfidence: null,
+      observations: [],
+      stageMeasurements: stageMeasurements || null,
+    };
   } else {
     const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
     const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
