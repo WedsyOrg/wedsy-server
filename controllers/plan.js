@@ -116,6 +116,14 @@ const CreateDraft = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
   res.status(201).json({ draft: await DraftEventService.createDraft(req.params._id, req.body || {}, req.auth.user_id) });
 });
+// Bug 59 — rename a draft (metadata-only).
+const RenameDraft = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(
+    await DraftEventService.renameDraft(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id)
+  );
+});
+
 const ListDrafts = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
   res.status(200).json({ drafts: await DraftEventService.listDrafts(req.params._id) });
@@ -308,7 +316,7 @@ module.exports = {
   PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
-  CreateDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme,
+  CreateDraft, RenameDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem, SetCategoryNote,
   GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,

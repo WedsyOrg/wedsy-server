@@ -81,6 +81,21 @@ const createDraft = async (leadId, { name } = {}, actorId) => {
   return event.toObject();
 };
 
+// Bug 59 — draft rename. Metadata-only (never touches days/items/pricing), so
+// allowed even on a locked draft; the change log still records it.
+const renameDraft = async (leadId, eventId, { name } = {}, actorId) => {
+  if (!isId(leadId) || !isId(eventId)) throw err(400, "Invalid id");
+  const clean = String(name || "").trim();
+  if (!clean) throw err(400, "Give the draft a name.");
+  const event = await Event.findOne({ _id: eventId, leadId });
+  if (!event) throw err(404, "Draft not found on this lead");
+  const prev = event.draftName || event.name;
+  event.draftName = clean.slice(0, 120);
+  await event.save();
+  await planChangeLog.record(leadId, actorId, { op: "rename", kind: "draft", name: clean, from: prev });
+  return { eventId: String(event._id), name: event.draftName };
+};
+
 const listDrafts = async (leadId) => {
   if (!isId(leadId)) throw err(400, "Invalid lead id");
   const drafts = await Event.find({ leadId }).sort({ createdAt: 1 }).lean();
@@ -1006,7 +1021,7 @@ const addItemMulti = async (leadId, primaryEventId, dayId, input = {}, draftIds 
 };
 
 module.exports = {
-  createDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings, setEventTheme,
+  createDraft, renameDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings, setEventTheme,
   finalise, unlock, publishDraft, revokeDraft, publishedSnapshotFor,
   pushToBuild, copyItem, moveItem, addItemMulti,
   addDay, addItem, patchItem, removeItem, reorderItems,
