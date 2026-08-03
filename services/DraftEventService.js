@@ -493,9 +493,11 @@ const composeItem = async (input = {}, existing = null) => {
     if (!isId(decorId)) throw err(400, "Pass a decorId");
   }
   let decor = null;
-  const needDecor = !existing || input.productVariant !== undefined;
+  // Bug 74 — a change to EITHER selection axis (tier or variation, whichever
+  // field the FE used) re-resolves the decorPrice snapshot.
+  const needDecor = !existing || input.productVariant !== undefined || input.variant !== undefined;
   if (needDecor) {
-    decor = await Decor.findById(decorId || item.decor, { name: 1, category: 1, unit: 1, productTypes: 1 }).lean();
+    decor = await Decor.findById(decorId || item.decor, { name: 1, category: 1, unit: 1, productTypes: 1, productVariants: 1 }).lean();
     if (!decor) throw err(404, "Decor not found");
   }
 
@@ -548,12 +550,30 @@ const composeItem = async (input = {}, existing = null) => {
   };
   if (!out.category) throw err(400, "The item needs a category");
 
-  // decorPrice: resolve by productVariant name (else the first productType) —
-  // a NEW selection re-resolves; an untouched existing item keeps its snapshot.
+  // decorPrice snapshot (Bug 74) — TWO selection axes fold into ONE snapshot:
+  //   decorPrice = TIER sellingPrice + VARIATION priceModifier
+  // The FE's field usage is historically tangled (the tier select writes both
+  // fields; the group editor writes the variation into `variant`), so each
+  // axis is resolved by checking BOTH stored names against ITS OWN catalogue
+  // list — tier names and variation names are disjoint sets in practice:
+  //   tier      = productTypes match on productVariant, else variant, else [0]
+  //   variation = productVariants match on variant, else productVariant, else none
+  // item.priceModifier stays the planner's MANUAL lever — never written here,
+  // so the two can't clash (the law still reads them as separate operands).
+  // Re-resolution happens on any tier/variation change; an untouched existing
+  // item keeps its snapshot.
   if (needDecor) {
     const types = (decor && decor.productTypes) || [];
-    const hit = out.productVariant ? types.find((t) => t && t.name === out.productVariant) : null;
-    out.decorPrice = Number((hit || types[0] || {}).sellingPrice) || 0;
+    const tier =
+      (out.productVariant && types.find((t) => t && t.name === out.productVariant)) ||
+      (out.variant && types.find((t) => t && t.name === out.variant)) ||
+      types[0] || {};
+    const variations = (decor && decor.productVariants) || [];
+    const variation =
+      (out.variant && variations.find((v) => v && v.name === out.variant)) ||
+      (out.productVariant && variations.find((v) => v && v.name === out.productVariant)) ||
+      null;
+    out.decorPrice = (Number(tier.sellingPrice) || 0) + (variation ? Number(variation.priceModifier) || 0 : 0);
   } else {
     out.decorPrice = Number(item.decorPrice) || 0;
   }
