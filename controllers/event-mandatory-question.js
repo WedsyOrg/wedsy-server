@@ -55,6 +55,31 @@ const ensureMandatorySeed = async () => {
       await existing.save();
     }
   }
+  // Bug 69 — legacy duplicate cleanup. The old free-text questions ("Is
+  // transportation required?", "Generator (6Hrs) - Format - …") render as
+  // duplicates next to the seeded configured rows. Once a CONFIGURED question
+  // exists for a concept, its UNCONFIGURED look-alikes (title contains the
+  // concept word, config.type null/absent) are removed. Conservative:
+  // configured rows are never touched; no soft flag exists on this model, so
+  // removal is a hard delete. Idempotent — nothing matches on later runs.
+  const configured = await EventMandatoryQuestion.find(
+    { "config.type": { $in: ["note", "options"] } },
+    { title: 1 }
+  ).lean();
+  for (const concept of ["transport", "generator"]) {
+    if (!configured.some((q) => new RegExp(concept, "i").test(q.title))) continue;
+    const gone = await EventMandatoryQuestion.deleteMany({
+      title: { $regex: concept, $options: "i" },
+      $or: [
+        { config: { $exists: false } },
+        { "config.type": null },
+        { "config.type": { $exists: false } },
+      ],
+    });
+    if (gone.deletedCount) {
+      console.log(`[mandatory] Bug 69 dedupe: removed ${gone.deletedCount} legacy "${concept}" question(s)`);
+    }
+  }
 };
 
 const CreateNew = (req, res) => {

@@ -126,6 +126,21 @@ function loadFeMirror() {
     const totals = await DraftEventService.totalsFor(eventDoc);
     ok(totals.grandTotal === read.price, "grand total skips the alternative too");
     // FE day/grand sums must apply the same skip: includedInTotal !== false.
+
+    // ── 4: Bug 74 parity — the variation modifier folds into the decorPrice
+    // SNAPSHOT (tier + modifier), so the law and the mirror need no change.
+    const varDecor = await Decor.create({
+      category: "Stage", name: `${TAG}-vstage`, unit: "unit", tags: [], image: "v.jpg", thumbnail: "v.jpg", rating: 0,
+      productTypes: [{ name: "Standard", costPrice: 400, sellingPrice: 1000 }, { name: "Premium", costPrice: 2000, sellingPrice: 6000 }],
+      productVariants: [{ name: "Red drape", priceModifier: 4000, image: "https://x/red.jpg" }],
+    });
+    created.decors.push(varDecor._id);
+    const varItem = await DraftEventService.addItem(lead._id, draft._id, day._id, {
+      decorId: varDecor._id, quantity: 2, productVariant: "Premium", variant: "Red drape", includedInTotal: false,
+    }, admin._id);
+    ok(varItem.decorPrice === 10000, "variation modifier folded into the snapshot (6000 tier + 4000 mod)");
+    ok(varItem.price === 20000 && fe.clientLineTotal(varItem) === varItem.price,
+      "FE mirror stays rupee-exact — the fold lives in decorPrice, not the law");
   } catch (e) {
     fail++;
     console.error("UNEXPECTED ERROR:", e);
