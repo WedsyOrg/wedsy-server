@@ -210,7 +210,7 @@ const getDraftDetail = async (leadId, eventId) => {
   const decors = decorIds.length
     ? await Decor.find(
         { _id: { $in: decorIds } },
-        { name: 1, category: 1, thumbnail: 1, image: 1, "productInfo.id": 1, "productInfo.included": 1, productTypes: 1 }
+        { name: 1, category: 1, thumbnail: 1, image: 1, "productInfo.id": 1, "productInfo.included": 1, productTypes: 1, productVariants: 1 }
       ).lean()
     : [];
   const decorById = new Map(decors.map((d) => [String(d._id), d]));
@@ -260,6 +260,12 @@ const getDraftDetail = async (leadId, eventId) => {
       // Bug 34 — the product's REAL pricings (productTypes drive decorPrice
       // resolution by productVariant name) for the tier dropdown.
       pricings: (d.productTypes || []).map((t) => ({ name: (t && t.name) || "", price: Number(t && t.sellingPrice) || 0 })).filter((t) => t.name),
+      // Bug 67 — the productVariants axis DOES carry a per-variation image
+      // (productTypes/pricings do NOT — the FE keeps the product image for
+      // tiers). Choosing a variant can swap the thumbnail to variants[].image.
+      variants: (d.productVariants || [])
+        .map((v) => ({ name: (v && v.name) || "", priceModifier: Number(v && v.priceModifier) || 0, image: (v && v.image) || "" }))
+        .filter((v) => v.name),
       // Bug 40/44 — the item's multi-notes ({text, image}) round-trip.
       notes: (it.notes || []).map((nt) => ({ text: (nt && nt.text) || "", image: (nt && nt.image) || "" })),
       user_notes: it.user_notes || "",
@@ -291,6 +297,8 @@ const getDraftDetail = async (leadId, eventId) => {
     status: day.status || {},
     notes: day.notes || "",
     customItemsTitle: day.customItemsTitle || "",
+    // Bug 64c — per-(day, category) notes for the group-view sections.
+    categoryNotes: day.categoryNotes || [],
     // Bug 51+53 — true when this day is NOT on the lead's current discovery
     // list (the lead dropped the function, or the day was added by hand).
     // Never deleted server-side — the FE badges it; the planner decides.
@@ -652,18 +660,67 @@ const addCustomItem = async (leadId, eventId, dayId, { name, price, quantity, im
   return day.customItems[day.customItems.length - 1].toObject();
 };
 
-const addMandatoryItem = async (leadId, eventId, dayId, { title, description, price, image, itemRequired, includeInTotalSummary } = {}) => {
+// Bug 62/63 — resolve the Mandatory Section variant fields against the
+// question's config: the note capped at config.noteMaxLen (50 fallback), an
+// options selection validated per axis and resolved through priceMatrix into
+// the price SNAPSHOT (the matrix can change later; the row keeps its price).
+const resolveMandatoryVariant = async ({ questionId, note, selection, price } = {}, existingQuestionId = null) => {
+  const out = {};
+  const qid = questionId !== undefined ? questionId : existingQuestionId;
+  let question = null;
+  if (qid && isId(qid)) {
+    question = await require("../models/EventMandatoryQuestion").findById(qid).lean();
+    if (question && questionId !== undefined) out.questionId = questionId;
+  }
+  const cfg = (question && question.config) || {};
+  if (note !== undefined) {
+    const cap = cfg.type === "note" && cfg.noteMaxLen > 0 ? cfg.noteMaxLen : 50;
+    const clean = String(note || "").trim();
+    if (clean.length > cap) throw err(400, `The note is capped at ${cap} characters`);
+    out.note = clean;
+  }
+  if (selection !== undefined) {
+    const sel = {};
+    if (selection && typeof selection === "object") {
+      for (const [k, v] of Object.entries(selection)) sel[String(k)] = String(v);
+    }
+    if (cfg.type === "options" && (cfg.axes || []).length) {
+      for (const axis of cfg.axes) {
+        const pick = sel[axis.name];
+        if (pick && !(axis.options || []).includes(pick)) {
+          throw err(400, `"${pick}" is not a valid ${axis.name} option`);
+        }
+      }
+      const [a1, a2] = cfg.axes;
+      const p1 = a1 ? sel[a1.name] : undefined;
+      const p2 = a2 ? sel[a2.name] : undefined;
+      const m = cfg.priceMatrix || {};
+      const resolved = p1 !== undefined && p2 !== undefined ? m[p1] && m[p1][p2] : p1 !== undefined ? m[p1] : undefined;
+      if (Number.isFinite(Number(resolved))) out.price = Number(resolved);
+    }
+    out.selection = sel;
+  }
+  // an explicit price only lands when the matrix didn't resolve one
+  if (out.price === undefined && price !== undefined) out.price = Number(price) || 0;
+  return out;
+};
+
+const addMandatoryItem = async (leadId, eventId, dayId, { title, description, price, image, itemRequired, includeInTotalSummary, questionId, note, selection } = {}) => {
   const clean = String(title || "").trim();
   if (!clean) throw err(400, "The mandatory item needs a title");
   const event = await getDraft(leadId, eventId, { forWrite: true });
   const day = getDay(event, dayId);
+  const variant = await resolveMandatoryVariant({ questionId, note, selection, price });
   day.mandatoryItems.push({
     title: clean.slice(0, 200),
     description: String(description || ""),
-    price: Number(price) || 0,
+    price: variant.price !== undefined ? variant.price : Number(price) || 0,
     image: String(image || ""),
     itemRequired: !!itemRequired,
     includeInTotalSummary: !!includeInTotalSummary,
+    questionId: variant.questionId && isId(variant.questionId) ? variant.questionId : null,
+    note: variant.note || "",
+    selection: variant.selection || {},
   });
   await saveDraftWrite(event);
   return day.mandatoryItems[day.mandatoryItems.length - 1].toObject();
@@ -684,9 +741,43 @@ const patchSideItem = async (leadId, eventId, dayId, kind, itemId, fields = {}) 
     if (fields.title !== undefined) item.title = String(fields.title || "").slice(0, 200) || item.title;
     if (fields.itemRequired !== undefined) item.itemRequired = !!fields.itemRequired;
     if (fields.description !== undefined) item.description = String(fields.description || "");
+    // Bug 62/63 — variant fields; a matrix-resolved price OVERRIDES fields.price.
+    if (fields.questionId !== undefined || fields.note !== undefined || fields.selection !== undefined) {
+      const variant = await resolveMandatoryVariant(fields, item.questionId);
+      if (variant.questionId !== undefined) item.questionId = isId(variant.questionId) ? variant.questionId : null;
+      if (variant.note !== undefined) item.note = variant.note;
+      if (variant.selection !== undefined) {
+        item.selection = variant.selection;
+        item.markModified("selection");
+      }
+      if (variant.price !== undefined && fields.selection !== undefined) item.price = variant.price;
+    }
   }
   await saveDraftWrite(event);
   return item.toObject();
+};
+
+// Bug 64c — upsert ONE (day, category) note. Empty note removes the row.
+const setCategoryNote = async (leadId, eventId, dayId, { category, note } = {}, actorId = null) => {
+  const cat = String(category || "").trim();
+  if (!cat) throw err(400, "category is required");
+  const clean = String(note || "").trim().slice(0, 2000);
+  const event = await getDraft(leadId, eventId, { forWrite: true });
+  const day = getDay(event, dayId);
+  if (!day.categoryNotes) day.categoryNotes = [];
+  const existing = day.categoryNotes.find((c) => c.category === cat);
+  if (!clean) {
+    if (existing) existing.deleteOne();
+  } else if (existing) {
+    existing.note = clean;
+  } else {
+    day.categoryNotes.push({ category: cat, note: clean });
+  }
+  await saveDraftWrite(event);
+  await planChangeLog.record(leadId, actorId, {
+    op: "set_category_note", kind: "draft", name: event.draftName || event.name, dayId: String(dayId), category: cat,
+  });
+  return { categoryNotes: day.categoryNotes.map((c) => ({ category: c.category, note: c.note })) };
 };
 
 const removeSideItem = async (leadId, eventId, dayId, kind, itemId) => {
@@ -920,6 +1011,6 @@ module.exports = {
   pushToBuild, copyItem, moveItem, addItemMulti,
   addDay, addItem, patchItem, removeItem, reorderItems,
   addPackage, removePackage,
-  addCustomItem, addMandatoryItem, patchSideItem, removeSideItem,
+  addCustomItem, addMandatoryItem, patchSideItem, removeSideItem, setCategoryNote,
   DRAFT_CAP,
 };

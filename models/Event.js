@@ -195,6 +195,17 @@ const EventSchema = new mongoose.Schema(
             default: [],
           },
           customItemsTitle: {type: String, default: ""},
+          // Bug 64c — one note per (day, category) for the group-view
+          // sections (e.g. a Furniture note on Mehendi). Display only.
+          categoryNotes: {
+            type: [
+              {
+                category: {type: String, required: true},
+                note: {type: String, default: ""},
+              },
+            ],
+            default: [],
+          },
           mandatoryItems: {
             type: [
               {
@@ -208,6 +219,14 @@ const EventSchema = new mongoose.Schema(
                   default: false,
                   required: true,
                 },
+                // Bug 62/63 — the Mandatory Section's chosen variant fields:
+                // questionId links the settings question; note = the free-text
+                // answer (Transportation, capped by config.noteMaxLen); the
+                // selection = axis picks (e.g. {Size:"64Kw", Duration:"6hrs"}).
+                // price above stays the RESOLVED matrix snapshot.
+                questionId: {type: ObjectId, ref: "EventMandatoryQuestion", default: null},
+                note: {type: String, default: ""},
+                selection: {type: Object, default: {}},
               },
             ],
             default: [],

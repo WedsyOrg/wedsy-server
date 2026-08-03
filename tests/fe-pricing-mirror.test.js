@@ -24,8 +24,10 @@ function loadFeMirror() {
   src = src
     .replace(/^import type.*$/m, "")
     .replace(/export const/g, "const")
+    .replace(/: DraftItem\[\]/g, "")
     .replace(/: DraftItem\b/g, "")
     .replace(/: number\b/g, "")
+    .replace(/: boolean\b/g, "")
     .replace(/: unknown\b/g, "");
   // eslint-disable-next-line no-new-func
   const factory = new Function(`${src}; return { clientLineTotal, platformCost, flooringCost, addOnsSum };`);

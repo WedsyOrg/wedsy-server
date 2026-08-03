@@ -183,6 +183,14 @@ const AddCustomItem = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
   res.status(201).json({ item: await DraftEventService.addCustomItem(req.params._id, req.params.eventId, req.params.dayId, req.body || {}) });
 });
+// Bug 64c — one note per (day, category) for the group-view sections.
+const SetCategoryNote = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(
+    await DraftEventService.setCategoryNote(req.params._id, req.params.eventId, req.params.dayId, req.body || {}, req.auth.user_id)
+  );
+});
+
 const AddMandatoryItem = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
   res.status(201).json({ item: await DraftEventService.addMandatoryItem(req.params._id, req.params.eventId, req.params.dayId, req.body || {}) });
@@ -302,7 +310,7 @@ module.exports = {
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
   CreateDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
-  AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem,
+  AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem, SetCategoryNote,
   GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
   Moods, Reveal,
 };
