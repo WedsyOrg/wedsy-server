@@ -648,6 +648,9 @@ router.get("/:_id/plan/drafts", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListDrafts);
 router.get("/:_id/plan/drafts/:eventId", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GetDraft);
+// Bug 59 — draft rename (metadata-only).
+router.patch("/:_id/plan/drafts/:eventId", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.RenameDraft);
 // G3 — CP/SP earnings (admin-only; separate from the detail read by design).
 router.get("/:_id/plan/drafts/:eventId/earnings", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DraftEarnings);

@@ -190,6 +190,8 @@ const EventSchema = new mongoose.Schema(
                   required: true,
                 },
                 setupLocationImage: {type: String, default: ""},
+                // Bug 65 — the per-add-on note (edited via the note button).
+                notes: {type: String, default: ""},
               },
             ],
             default: [],
