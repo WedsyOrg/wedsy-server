@@ -1,16 +1,75 @@
 const EventMandatoryQuestion = require("../models/EventMandatoryQuestion");
 
+// Bug 62/63 — whitelist the structured config block (see the model). Junk is
+// coerced/dropped, never 500s. Returns undefined when no config was sent.
+const cleanConfig = (raw) => {
+  if (!raw || typeof raw !== "object") return undefined;
+  const type = ["note", "options"].includes(raw.type) ? raw.type : null;
+  return {
+    type,
+    noteMaxLen: Math.max(0, parseInt(raw.noteMaxLen, 10) || 0),
+    axes: Array.isArray(raw.axes)
+      ? raw.axes
+          .filter((a) => a && a.name)
+          .map((a) => ({
+            name: String(a.name),
+            options: Array.isArray(a.options) ? a.options.map(String) : [],
+          }))
+      : [],
+    priceMatrix: raw.priceMatrix && typeof raw.priceMatrix === "object" ? raw.priceMatrix : {},
+  };
+};
+
+// Bug 62/63 — day-one Mandatory Section seed. Idempotent adopt-by-title (the
+// dept-seed pattern): creates a missing question; upgrades an existing one
+// ONLY while its config.type is still unset — a founder-edited config is
+// never overwritten. Runs lazily on the list read, fire-safe.
+const SEED = [
+  {
+    title: "Transportation",
+    config: { type: "note", noteMaxLen: 50, axes: [], priceMatrix: {} },
+  },
+  {
+    title: "Generator",
+    config: {
+      type: "options",
+      noteMaxLen: 0,
+      axes: [
+        { name: "Size", options: ["64Kw", "128Kw"] },
+        { name: "Duration", options: ["6hrs", "12hrs"] },
+      ],
+      priceMatrix: {
+        "64Kw": { "6hrs": 8000, "12hrs": 15000 },
+        "128Kw": { "6hrs": 15000, "12hrs": 28000 },
+      },
+    },
+  },
+];
+const ensureMandatorySeed = async () => {
+  for (const q of SEED) {
+    const existing = await EventMandatoryQuestion.findOne({ title: q.title });
+    if (!existing) {
+      await EventMandatoryQuestion.create({ ...q, itemRequired: true });
+    } else if (!existing.config || !existing.config.type) {
+      existing.config = q.config;
+      await existing.save();
+    }
+  }
+};
+
 const CreateNew = (req, res) => {
-  const { title, image, description, price, itemRequired } = req.body;
+  const { title, image, description, price, itemRequired, config } = req.body;
   if (!title) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
+    const cfg = cleanConfig(config);
     new EventMandatoryQuestion({
       title,
       image,
       description,
       price,
       itemRequired,
+      ...(cfg !== undefined ? { config: cfg } : {}),
     })
       .save()
       .then((result) => {
@@ -22,7 +81,12 @@ const CreateNew = (req, res) => {
   }
 };
 
-const GetAll = (req, res) => {
+const GetAll = async (req, res) => {
+  try {
+    await ensureMandatorySeed();
+  } catch (e) {
+    console.error("[mandatory] seed failed:", e.message);
+  }
   EventMandatoryQuestion.find({})
     .then((result) => {
       res.send(result);
@@ -55,10 +119,13 @@ const Get = (req, res) => {
 
 const Update = (req, res) => {
   const { _id } = req.params;
-  const { title, image, description, price, itemRequired } = req.body;
+  const { title, image, description, price, itemRequired, config } = req.body;
   if (!title) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
+    // config is $set ONLY when the body carries one — the legacy settings
+    // screen PUTs without it, and must never wipe a founder-edited matrix.
+    const cfg = cleanConfig(config);
     EventMandatoryQuestion.findByIdAndUpdate(
       { _id },
       {
@@ -68,6 +135,7 @@ const Update = (req, res) => {
           description,
           price,
           itemRequired,
+          ...(cfg !== undefined ? { config: cfg } : {}),
         },
       }
     )

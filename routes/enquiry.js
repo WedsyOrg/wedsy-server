@@ -675,6 +675,9 @@ router.patch("/:_id/plan/drafts/:eventId/days/:dayId/custom-items/:itemId", Chec
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.PatchSideItem("custom"));
 router.delete("/:_id/plan/drafts/:eventId/days/:dayId/custom-items/:itemId", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeleteSideItem("custom"));
+// Bug 64c — per-(day, category) note for group-view sections.
+router.put("/:_id/plan/drafts/:eventId/days/:dayId/category-notes", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.SetCategoryNote);
 router.post("/:_id/plan/drafts/:eventId/days/:dayId/mandatory-items", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.AddMandatoryItem);
 router.patch("/:_id/plan/drafts/:eventId/days/:dayId/mandatory-items/:itemId", CheckAdminLogin,
