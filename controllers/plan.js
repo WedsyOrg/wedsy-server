@@ -128,6 +128,41 @@ const ListDrafts = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
   res.status(200).json({ drafts: await DraftEventService.listDrafts(req.params._id) });
 });
+// THE OPS SHEET — streamed .xlsx export. NOT wrap()'d: once streaming starts
+// the response can't fall back to JSON, so errors before the stream 4xx/5xx
+// normally and errors mid-stream tear the socket down.
+const ExportDraftXlsx = async (req, res) => {
+  try {
+    await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
+    const DraftExportService = require("../services/DraftExportService");
+    const lead = await Enquiry.findById(req.params._id, { name: 1 }).lean();
+    const detailName = await require("../services/DraftEventService")
+      .getDraft(req.params._id, req.params.eventId)
+      .then((e) => e.draftName || e.name)
+      .catch(() => "Draft");
+    const filename = `${(lead && lead.name) || "Lead"} — ${detailName} — build.xlsx`;
+    await DraftExportService.writeXlsx(
+      req.params._id,
+      req.params.eventId,
+      {
+        withPrice: req.query.withPrice !== "false",
+        includeExcluded: req.query.includeExcluded !== "false",
+      },
+      res,
+      filename
+    );
+  } catch (error) {
+    if (res.headersSent) {
+      console.error("[plan] export stream died mid-flight:", error.message);
+      res.destroy(error);
+    } else {
+      const status = error.status || 500;
+      if (status === 500) console.error("[plan] export failed:", error);
+      res.status(status).json({ message: status === 500 ? "Export failed — please retry." : error.message });
+    }
+  }
+};
+
 // ONE draft with full day→item detail (the list omits items). Roster/participant read.
 const GetDraft = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
@@ -316,7 +351,7 @@ module.exports = {
   PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
-  CreateDraft, RenameDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme,
+  CreateDraft, RenameDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme, ExportDraftXlsx,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem, SetCategoryNote,
   GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
