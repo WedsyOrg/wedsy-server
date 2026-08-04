@@ -692,6 +692,9 @@ router.delete("/:_id/plan/drafts/:eventId/days/:dayId/mandatory-items/:itemId", 
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DeleteSideItem("mandatory"));
 router.post("/:_id/plan/drafts/:eventId/discount", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.GrantDiscount);
+// Bug 80 — SET semantic: the discount becomes exactly {amount}; 0/omitted removes.
+router.put("/:_id/plan/drafts/:eventId/discount", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.SetDiscount);
 router.get("/:_id/plan/drafts/:eventId/discounts", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ListDiscounts);
 router.post("/:_id/plan/feed-decor-lane", CheckAdminLogin,
