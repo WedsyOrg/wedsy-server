@@ -140,11 +140,14 @@ const ExportDraftXlsx = async (req, res) => {
       .getDraft(req.params._id, req.params.eventId)
       .then((e) => e.draftName || e.name)
       .catch(() => "Draft");
-    const filename = `${(lead && lead.name) || "Lead"} — ${detailName} — build.xlsx`;
+    const layout = req.query.layout === "quote" ? "quote" : "ops";
+    const suffix = layout === "quote" ? "quote" : "build";
+    const filename = `${(lead && lead.name) || "Lead"} — ${detailName} — ${suffix}.xlsx`;
     await DraftExportService.writeXlsx(
       req.params._id,
       req.params.eventId,
       {
+        layout,
         withPrice: req.query.withPrice !== "false",
         includeExcluded: req.query.includeExcluded !== "false",
       },
