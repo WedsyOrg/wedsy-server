@@ -192,6 +192,9 @@ const EventSchema = new mongoose.Schema(
                 setupLocationImage: {type: String, default: ""},
                 // Bug 65 — the per-add-on note (edited via the note button).
                 notes: {type: String, default: ""},
+                // Build Present S4 — the live Included tag on add-ons: false =
+                // visible but excluded from every total (mirrors decorItems).
+                includedInTotal: {type: Boolean, default: true},
               },
             ],
             default: [],

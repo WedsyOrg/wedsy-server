@@ -772,6 +772,8 @@ const patchSideItem = async (leadId, eventId, dayId, kind, itemId, fields = {}) 
   if (kind === "custom") {
     if (fields.name !== undefined) item.name = String(fields.name || "").slice(0, 200) || item.name;
     if (fields.quantity !== undefined) item.quantity = Number(fields.quantity) || 1;
+    // Build Present S4 — the live Included tag persists here.
+    if (fields.includedInTotal !== undefined) item.includedInTotal = !!fields.includedInTotal;
   } else {
     if (fields.title !== undefined) item.title = String(fields.title || "").slice(0, 200) || item.title;
     if (fields.itemRequired !== undefined) item.itemRequired = !!fields.itemRequired;
