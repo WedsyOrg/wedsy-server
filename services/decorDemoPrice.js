@@ -135,7 +135,13 @@ const readStageMeasurements = (sm) => {
   const run = Number(sm.floralRunFt);
   if (!(width > 0) || !(run > 0)) return null;
   const confidence = Math.max(0, Math.min(1, Number(sm.confidence) || 0));
-  const rawHeight = Number(sm.rawHeightEstimateFt);
+  // The width:height ratio of the STRUCTURE is the primary height signal —
+  // scale-invariant, so it can't repeat the whole-image sofa-scaling failure
+  // (a sofa at 1/6 of FRAME height read as an 18ft build on an 11ft backdrop).
+  // When a ratio is present the raw height is re-derived here deterministically;
+  // the model's own sofa-scaled figure survives only when no ratio came back.
+  const ratio = Number(sm.widthToHeightRatio);
+  const rawHeight = ratio > 0 ? width / ratio : Number(sm.rawHeightEstimateFt);
   let reasoning = typeof sm.reasoning === "string" ? sm.reasoning : "";
   let estimatedHeightFt;
   if (rawHeight > 0) {
@@ -155,6 +161,7 @@ const readStageMeasurements = (sm) => {
     floralRunFt: Math.min(run, width),
     estimatedHeightFt,
     rawHeightEstimateFt: rawHeight > 0 ? rawHeight : null,
+    widthToHeightRatio: ratio > 0 ? ratio : null,
     reasoning,
     confidence,
   };

@@ -248,6 +248,45 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   const again = readStageMeasurements(m15);
   eq(again.reasoning.split("unusual").length - 1, 1, "re-validation doesn't duplicate the unusual note");
 
+  // ── Height from width:height ratio — structure-only measurement ────────────
+  // FOUNDER REGRESSION — second panel-backdrop pin: whole-image sofa scaling
+  // claimed ~18ft (the sofa was ~1/6 of FRAME height, 6 × 3ft) where the
+  // structure itself is only ~60% of the frame. A ~30ft backdrop at roughly
+  // 3:1 must derive ~10ft and snap to 10 — not 15.
+  const reg3 = readStageMeasurements({
+    backdropWidthFt: 30,
+    floralRunFt: 18,
+    widthToHeightRatio: 3,
+    rawHeightEstimateFt: 18, // the bad whole-image sofa figure — must be ignored
+    confidence: 0.8,
+    reasoning: "about 3x wider than tall",
+  });
+  eq(reg3.rawHeightEstimateFt, 10, "raw height re-derived from width/ratio (30/3) — sofa-scaled 18ft ignored");
+  eq(reg3.estimatedHeightFt, 10, "founder case snaps to 10, not 15");
+  eq(reg3.widthToHeightRatio, 3, "ratio carried in the measurement for staff visibility");
+  const reg3again = readStageMeasurements(reg3);
+  eq(reg3again.estimatedHeightFt, 10, "re-validation (override resend) stays at 10");
+
+  // Ratio at low confidence still falls back to the width prior, unchanged.
+  eq(
+    readStageMeasurements({ backdropWidthFt: 30, floralRunFt: 18, widthToHeightRatio: 3, confidence: 0.3 }).estimatedHeightFt,
+    12,
+    "low confidence → width prior (30ft → 12), ratio notwithstanding"
+  );
+
+  // No ratio returned → the sofa estimate still drives, as before.
+  const noRatio = readStageMeasurements({ backdropWidthFt: 24, floralRunFt: 12, rawHeightEstimateFt: 11.4, confidence: 0.8 });
+  eq(noRatio.rawHeightEstimateFt, 11.4, "no ratio → sofa estimate kept");
+  eq(noRatio.estimatedHeightFt, 12, "11.4ft raw snaps to 12");
+  eq(noRatio.widthToHeightRatio, null, "absent ratio stays null, never fabricated");
+
+  // A very wide 4:1 build still lands on a real build height (24/4 = 6 → 10).
+  eq(
+    readStageMeasurements({ backdropWidthFt: 24, floralRunFt: 24, widthToHeightRatio: 4, confidence: 0.8 }).estimatedHeightFt,
+    10,
+    "4:1 ratio derives 6ft raw → snaps to the 10ft build height"
+  );
+
   // CALIBRATION RE-RUN at the 10ft snapped height — figures must not move.
   const solid10 = buildDemoPrice(
     analysis("Stage", {
