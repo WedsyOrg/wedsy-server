@@ -136,6 +136,11 @@ const OCCASION_KEYWORDS = {
   varmala: ["varmala", "jaimala", "jai mala"],
   muhurtham: ["muhurtham", "muhurtam"],
 };
+// Verified against Sonnet 5's distribution (2026-08): it reports 55-85% on
+// detected occasions, so 0.5 still passes typical detections while blocking
+// weak guesses. Unlike the measurement gates, this one did NOT need
+// recalibration — occasion picks the pricing MODEL (haldi is ~2× cheaper), so
+// the bar for vision-alone stays deliberately at the bottom of that range.
 const OCCASION_CONF_MIN = 0.5;
 
 const pinTextOccasionCheck = (pinText) => {
@@ -177,13 +182,32 @@ const resolveOccasion = (pinText, visionOccasion) => {
 // estimate is SNAPPED to the nearest build height, never shipped raw.
 // Width sets the PRIOR (backdrops under 30ft → 10ft, 30ft+ → 12ft); the
 // snapped vision estimate beats the prior unless confidence is low. 15ft ships
-// only on a HIGH-confidence snap (founder: rare) and is flagged as unusual; a
-// medium-confidence 15 demotes to 12 — the taller COMMON height — because the
-// vision still says "tall", it just hasn't earned the rare answer.
+// only on an above-typical-confidence snap (founder: rare) and is flagged as
+// unusual; below that a 15 demotes to 12 — the taller COMMON height — because
+// the vision still says "tall", it just hasn't earned the rare answer.
+//
+// CONFIDENCE SCALE (recalibrated 2026-08 for Sonnet 5 — see the vision model
+// comparison): Sonnet reports 40-60% on measurements that are CORRECT, where
+// Haiku reported a falsely certain 72-80% on measurements that were wrong.
+// The old gates (low 0.5 / high 0.75) sat on Haiku's scale and would have
+// overridden Sonnet's correct heights with the prior on nearly every call.
+// On the new scale: <0.25 = the model itself signalled it had nothing to go
+// on; 0.5 = the top of Sonnet's typical range, so the rare 15ft answer must
+// beat typical. Stakes are also lower than when these gates were set: height
+// is ratio-derived (scale-invariant), never enters the price, and no longer
+// shows on the client line — a wrong gate flips 10↔12 in staff details.
 const BUILD_HEIGHTS = [10, 12, 15];
-const HEIGHT_CONF_LOW = 0.5; // below → trust the width prior
-const HEIGHT_CONF_HIGH = 0.75; // required to ship a 15ft height
+const HEIGHT_CONF_LOW = 0.25; // was 0.5 (Haiku scale) — below → trust the width prior
+const HEIGHT_CONF_HIGH = 0.5; // was 0.75 (Haiku scale) — required to ship a 15ft height
 const UNUSUAL_HEIGHT_NOTE = "15 ft build height — unusual (rare), verify with the client";
+
+// Below this, the WHOLE measurement (width / floral run) is flagged low-
+// confidence in the response. It still prices — Sonnet's one observed 0% came
+// attached to a perfectly reasonable measurement, and the ratio method needs
+// no reference object, so 0% ≠ wrong; the smoothed-ladder fallback would be
+// strictly less specific. The panel surfaces a "confirm with the client"
+// warning instead of silently trusting or silently discarding.
+const MEASUREMENT_CONF_WARN = 0.2;
 
 const snapBuildHeight = (raw) =>
   BUILD_HEIGHTS.reduce((best, h) => (Math.abs(h - raw) < Math.abs(best - raw) ? h : best));
@@ -243,6 +267,9 @@ const readStageMeasurements = (sm) => {
     widthToHeightRatio: ratio > 0 ? ratio : null,
     reasoning,
     confidence,
+    // Near-zero confidence: the measurement still prices, but flagged so the
+    // panel warns staff to confirm sizes rather than silently trusting it.
+    lowConfidence: confidence < MEASUREMENT_CONF_WARN,
   };
 };
 
@@ -526,4 +553,5 @@ module.exports = {
   BUILD_HEIGHTS,
   HEIGHT_CONF_LOW,
   HEIGHT_CONF_HIGH,
+  MEASUREMENT_CONF_WARN,
 };

@@ -209,39 +209,45 @@ const doc = (id, name, tiers, size) => normalizeComparable({
 }
 
 // ── 3g. Height model — snapped to the three real build heights (10/12/15) ────
+// Gate inputs use SONNET's confidence scale (recalibrated 2026-08): correct
+// measurements report ~40-60%, so 0.45 is "typical good", 0.55 is
+// above-typical, and 0.2 is the model signalling it had nothing to go on.
 {
   console.log("backdrop height model (snap 10/12/15, width prior, confidence gates):");
   const h = (raw, width, conf) =>
     resolveBackdropHeight({ rawHeightEstimateFt: raw, backdropWidthFt: width, confidence: conf }).estimatedHeightFt;
 
   // Nearest-neighbour snapping on the raw sofa-count estimate.
-  eq(h(8, 24, 0.8), 10, "8ft raw snaps to 10");
-  eq(h(13, 36, 0.8), 12, "13ft raw snaps to 12");
-  eq(h(11.5, 24, 0.8), 12, "11.5ft raw snaps to 12");
-  eq(h(15, 36, 0.9), 15, "genuinely-tall 15ft ships on HIGH confidence");
+  eq(h(8, 24, 0.45), 10, "8ft raw snaps to 10");
+  eq(h(13, 36, 0.45), 12, "13ft raw snaps to 12");
+  eq(h(11.5, 24, 0.45), 12, "11.5ft raw snaps to 12");
+  eq(h(15, 36, 0.55), 15, "genuinely-tall 15ft ships at above-typical confidence (≥0.5)");
   ok(
-    resolveBackdropHeight({ rawHeightEstimateFt: 15, backdropWidthFt: 36, confidence: 0.9 }).unusual,
+    resolveBackdropHeight({ rawHeightEstimateFt: 15, backdropWidthFt: 36, confidence: 0.55 }).unusual,
     "a shipped 15ft is flagged unusual (founder: rare)"
   );
 
-  // Width prior wins at low confidence; snapped vision wins at decent confidence.
-  eq(h(12, 24, 0.3), 10, "low confidence → width prior (24ft backdrop → 10ft)");
-  eq(h(15, 36, 0.3), 12, "low confidence → width prior (36ft backdrop → 12ft)");
-  eq(h(12, 24, 0.6), 12, "decent-confidence snapped vision beats the 10ft prior");
+  // Width prior wins only when the model signalled no basis (<0.25); Sonnet's
+  // typical 40-60% readings must NOT be overridden — they were the correct ones.
+  eq(h(12, 24, 0.2), 10, "near-zero confidence → width prior (24ft backdrop → 10ft)");
+  eq(h(15, 36, 0.2), 12, "near-zero confidence → width prior (36ft backdrop → 12ft)");
+  eq(h(12, 24, 0.45), 12, "Sonnet-typical confidence beats the 10ft prior (old 0.5 gate would have overridden this)");
   eq(h(0, 24, 0.9), 10, "no raw estimate → width prior regardless of confidence");
 
-  // Medium-confidence 15 demotes to 12 (the taller COMMON height), never ships.
-  eq(h(15, 36, 0.7), 12, "15 without high confidence demotes to 12");
+  // A 15 below above-typical confidence demotes to 12 (the taller COMMON height).
+  eq(h(15, 36, 0.45), 12, "15 at typical confidence demotes to 12");
 
-  // REGRESSION — the panel-backdrop pin from this build: vision claimed ~15ft
-  // raw on a ~24ft backdrop; the founder says the real build is 10ft. Under
-  // the height model it must land 10-12, never 15 (harness can't replay the
-  // photo through live vision, so the pin's characteristics are pinned here).
-  const regMedium = h(15, 24, 0.7);
-  ok(regMedium === 12, `panel-backdrop pin @ medium confidence lands 12 (got ${regMedium})`);
-  const regLow = h(15, 24, 0.4);
-  ok(regLow === 10, `panel-backdrop pin @ low confidence lands on the 10ft prior (got ${regLow})`);
-  ok(regMedium !== 15 && regLow !== 15, "the pin can no longer ship a 15ft height");
+  // REGRESSION — the panel-backdrop pins: Haiku claimed ~15ft raw with
+  // falsely-certain 0.7-0.8 confidence on founder-confirmed 10ft builds. The
+  // primary protection is now ratio-first derivation (3h below) plus the model
+  // swap itself — Sonnet returned 10/12 across all nine comparison images and
+  // reports ~0.4-0.6 when right. On the recalibrated scale, an untrustworthy
+  // tall claim arrives at ≤ typical confidence and must land 10-12, never 15.
+  const regTypical = h(15, 24, 0.45);
+  ok(regTypical === 12, `tall claim @ typical confidence lands 12 (got ${regTypical})`);
+  const regNoBasis = h(15, 24, 0.2);
+  ok(regNoBasis === 10, `tall claim @ near-zero confidence lands on the 10ft prior (got ${regNoBasis})`);
+  ok(regTypical !== 15 && regNoBasis !== 15, "a below-above-typical tall claim can never ship 15");
 
   // readStageMeasurements carries raw + snapped + the unusual note (once).
   const m15 = readStageMeasurements({
@@ -272,12 +278,25 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   const reg3again = readStageMeasurements(reg3);
   eq(reg3again.estimatedHeightFt, 10, "re-validation (override resend) stays at 10");
 
-  // Ratio at low confidence still falls back to the width prior, unchanged.
+  // Ratio at near-zero confidence still falls back to the width prior.
   eq(
-    readStageMeasurements({ backdropWidthFt: 30, floralRunFt: 18, widthToHeightRatio: 3, confidence: 0.3 }).estimatedHeightFt,
+    readStageMeasurements({ backdropWidthFt: 30, floralRunFt: 18, widthToHeightRatio: 3, confidence: 0.2 }).estimatedHeightFt,
     12,
-    "low confidence → width prior (30ft → 12), ratio notwithstanding"
+    "near-zero confidence → width prior (30ft → 12), ratio notwithstanding"
   );
+
+  // 0% confidence handled EXPLICITLY: the measurement still prices (Sonnet's
+  // observed 0% came with a reasonable measurement; the fallback ladder would
+  // be less specific) but is flagged so the panel warns staff.
+  const zeroConf = readStageMeasurements({ backdropWidthFt: 10, floralRunFt: 8, widthToHeightRatio: 2.5, confidence: 0 });
+  eq(zeroConf.lowConfidence, true, "0% confidence → lowConfidence flag set");
+  eq(zeroConf.floralRunFt, 8, "0% confidence measurement is kept, not discarded");
+  eq(zeroConf.estimatedHeightFt, 10, "0% confidence height falls to the width prior");
+  const typicalConf = readStageMeasurements({ backdropWidthFt: 10, floralRunFt: 8, widthToHeightRatio: 2.5, confidence: 0.45 });
+  eq(typicalConf.lowConfidence, false, "Sonnet-typical confidence is not flagged");
+  const zeroPriced = buildDemoPrice(analysis("Stage", { stageMeasurements: zeroConf }), []);
+  eq(zeroPriced.pricingModel, "floral-run", "0% confidence still prices by floral run");
+  eq(zeroPriced.stageMeasurements.lowConfidence, true, "flag reaches the panel response");
 
   // No ratio returned → the sofa estimate still drives, as before.
   const noRatio = readStageMeasurements({ backdropWidthFt: 24, floralRunFt: 12, rawHeightEstimateFt: 11.4, confidence: 0.8 });

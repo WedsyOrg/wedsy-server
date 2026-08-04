@@ -30,6 +30,15 @@ const downscaleToBase64 = async ({ imageBase64, imageUrl }) => {
 // Confidence gates for the vision → pricing handoff (env-overridable). Below a
 // gate we drop the low-confidence signal and fall back to the category band,
 // reporting each fallback in the response.
+// ⚠️ Calibration note (2026-08, Sonnet 5 switch): these three gate the DRAFT
+// path (/decor/analyse-image), not the live demo panel, and were tuned on
+// Haiku's confidence scale. Sonnet reports measurement confidence ~30-40
+// points lower than Haiku did for BETTER measurements, so SIZE_CONF_MIN in
+// particular is likely too strict now — but no Sonnet distribution has been
+// collected for size/complexity confidence specifically, so they are left at
+// their defaults (env-overridable) rather than guessed. Recalibrate from real
+// data before the draft path goes live. The demo-panel gates live in
+// services/decorDemoPrice.js and WERE recalibrated.
 const CATEGORY_CONF_MIN = Number(process.env.DECOR_VISION_CATEGORY_CONF_MIN) || 0.5;
 const SIZE_CONF_MIN = Number(process.env.DECOR_VISION_SIZE_CONF_MIN) || 0.5;
 const COMPLEXITY_CONF_MIN = Number(process.env.DECOR_VISION_COMPLEXITY_CONF_MIN) || 0.5;
