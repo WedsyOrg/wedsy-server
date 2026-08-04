@@ -350,6 +350,59 @@ const listDiscounts = async (leadId, eventId) => {
   return await DealDiscount.find({ leadId, eventId }).sort({ at: -1 }).lean();
 };
 
+// Bug 80 — the SET semantic (the OS path). The draft's discount becomes
+// EXACTLY the given amount: every live row (approved or still-pending) is
+// marked superseded and — when amount > 0 — ONE fresh approved row carries the
+// new value. amount 0/omitted removes the discount entirely (net === gross,
+// no live row). The old grant path (POST, sum-of-grants) is kept for its
+// remaining callers. No approval gate (off per batch 2; see grantDiscount's
+// re-link note); the plan_change entry records old → new + equivalentPct.
+const setDiscount = async (leadId, eventId, { amount } = {}, actorId) => {
+  const event = await DraftEventService.getDraft(leadId, eventId, { forWrite: true }); // 409 on locked
+  const totals = await DraftEventService.totalsFor(event);
+  const gross = totals.gross;
+  const amt = Math.round(Number(amount) || 0);
+  if (amt < 0) throw err(400, "A discount can't be negative.");
+  if (amt > gross) throw err(422, `₹${amt.toLocaleString("en-IN")} exceeds the draft's gross (₹${gross.toLocaleString("en-IN")}).`);
+  const previous = totals.discount;
+
+  await DealDiscount.updateMany(
+    { leadId, eventId, status: { $in: ["approved", "pending"] } },
+    { $set: { status: "superseded", decidedAt: new Date() } }
+  );
+  let doc = null;
+  if (amt > 0) {
+    doc = await DealDiscount.create({
+      leadId,
+      eventId,
+      amount: amt,
+      pct: 0,
+      status: "approved",
+      givenBy: actorId || null,
+      approvedBy: actorId || null,
+      at: new Date(),
+      decidedAt: new Date(),
+    });
+  }
+  const equivalentPct = gross > 0 ? (amt / gross) * 100 : 0;
+  await require("../utils/planChangeLog").record(leadId, actorId, {
+    op: "set_discount",
+    kind: "draft",
+    name: event.draftName || event.name,
+    from: previous,
+    to: amt,
+    equivalentPct: Math.round(equivalentPct * 10) / 10,
+  });
+  const after = await DraftEventService.totalsFor(event);
+  return {
+    discount: amt,
+    equivalentPct: Math.round(equivalentPct * 10) / 10,
+    gross: after.gross,
+    net: after.net,
+    discountId: doc ? String(doc._id) : null,
+  };
+};
+
 // ── P5: the décor-lane feed ──────────────────────────────────────────────────
 const feedDecorLane = async (leadId, eventId, actorId) => {
   const event = await DraftEventService.getDraft(leadId, eventId);
@@ -369,4 +422,4 @@ const feedDecorLane = async (leadId, eventId, actorId) => {
   return { laneId: String(lane._id), value, price: result.price };
 };
 
-module.exports = { publish, publishPresent, list, get, grantDiscount, decideDiscount, listDiscounts, feedDecorLane };
+module.exports = { publish, publishPresent, list, get, grantDiscount, setDiscount, decideDiscount, listDiscounts, feedDecorLane };

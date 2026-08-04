@@ -250,6 +250,14 @@ const DeleteSideItem = (kind) =>
   });
 
 // ── P5 ────────────────────────────────────────────────────────────────────────
+// Bug 80 — SET the discount to exactly the given amount (0 = remove).
+const SetDiscount = wrap(async (req, res) => {
+  await canWrite(req, req.params._id);
+  res.status(200).json(
+    await PlanSnapshotService.setDiscount(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id)
+  );
+});
+
 const GrantDiscount = wrap(async (req, res) => {
   await canWrite(req, req.params._id);
   res.status(201).json({ discount: await PlanSnapshotService.grantDiscount(req.params._id, req.params.eventId, req.body || {}, req.auth.user_id) });
@@ -354,6 +362,6 @@ module.exports = {
   CreateDraft, RenameDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme, ExportDraftXlsx,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem, SetCategoryNote,
-  GrantDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
+  GrantDiscount, SetDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
   Moods, Reveal,
 };

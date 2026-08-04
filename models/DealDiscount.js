@@ -10,7 +10,9 @@ const DealDiscountSchema = new mongoose.Schema(
     eventId: { type: ObjectId, ref: "Event", required: true, index: true },
     amount: { type: Number, default: 0 }, // rupees (resolved at grant time)
     pct: { type: Number, default: 0 }, // the requested percentage (0 = flat amount)
-    status: { type: String, enum: ["pending", "approved", "rejected"], default: "pending", index: true },
+    // Bug 80 — "superseded": replaced by a later SET (the PUT semantic). Kept
+    // as history rows; every totals read counts ONLY approved.
+    status: { type: String, enum: ["pending", "approved", "rejected", "superseded"], default: "pending", index: true },
     givenBy: { type: ObjectId, ref: "Admin", default: null },
     approvedBy: { type: ObjectId, ref: "Admin", default: null },
     at: { type: Date, default: Date.now },
