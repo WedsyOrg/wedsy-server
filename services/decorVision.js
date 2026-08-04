@@ -4,7 +4,13 @@
 // writes. The controller (POST /decor/analyse-image) pairs this with the Phase A
 // pricing engine (services/decorPricing.js) to attach a band + comparables.
 //
-// Model: Haiku 4.5. The SHARED rules go in a cached system block; a small
+// Model: configurable via DECOR_VISION_MODEL, default Sonnet 5. Haiku 4.5
+// failed at physical measurement four separate times (complexity ~70% premium,
+// size 40x20 in two-thirds of stage reads vs 2% reality, height 15ft on 10ft
+// builds, width 24-30ft on an 8-10ft haldi backdrop) while recognition stayed
+// excellent — this swap is a controlled single-variable test of measurement.
+// scripts/compare-vision-models.js runs the same images through both.
+// The SHARED rules go in a cached system block; a small
 // mode-specific schema block follows (uncached), so both modes share the same
 // cached prefix. Two modes:
 //   • demo — returns ONLY isDecorProduct, category, categoryConfidence, size,
@@ -20,7 +26,18 @@
 const Anthropic = require("@anthropic-ai/sdk");
 const { readStageMeasurements, OCCASIONS } = require("./decorDemoPrice");
 
-const MODEL = process.env.DECOR_VISION_MODEL || "claude-haiku-4-5-20251001";
+const MODEL = process.env.DECOR_VISION_MODEL || "claude-sonnet-5";
+
+// Model-capability guards — the ONLY request differences between models, both
+// forced by the API rather than chosen (everything else in this call is
+// identical so the model swap stays a controlled single-variable test):
+// - Sonnet 5 / Opus 4.7+ REJECT non-default sampling params (temperature: 0
+//   returns a 400); older models keep it.
+// - Sonnet 5 runs ADAPTIVE THINKING when `thinking` is omitted, which would
+//   spend our small max_tokens on thinking before the JSON — explicitly
+//   disabled to match the no-thinking behaviour of the Haiku pipeline.
+const NO_SAMPLING_PARAMS = /sonnet-5|opus-5|opus-4-[78]|fable|mythos/;
+const THINKING_DEFAULTS_ON = /sonnet-5|opus-5|opus-4-[78]/;
 
 // Category size vocabularies (Playbook Phase B — sizes covering ~92%). Only
 // Stage & Mandap truly vary; the rest collapse to their dominant size. Snapping
@@ -325,7 +342,9 @@ const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
   const message = await createWithRetry(client, {
     model: MODEL,
     max_tokens: useMode === "demo" ? 896 : 1024, // demo carries observations + min-width + stage-measurement reasoning
-    temperature: 0,
+    // See the model-capability guards above — API-forced, not tuning.
+    ...(NO_SAMPLING_PARAMS.test(MODEL) ? {} : { temperature: 0 }),
+    ...(THINKING_DEFAULTS_ON.test(MODEL) ? { thinking: { type: "disabled" } } : {}),
     system: [
       { type: "text", text: SHARED_RULES, cache_control: { type: "ephemeral" } },
       { type: "text", text: useMode === "demo" ? DEMO_SCHEMA_INSTR : FULL_SCHEMA_INSTR },
