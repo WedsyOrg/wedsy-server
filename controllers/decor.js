@@ -3,7 +3,7 @@ const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
 const { analyseImage } = require("../services/decorVision");
-const { buildDemoPrice, pinTextCategoryCheck } = require("../services/decorDemoPrice");
+const { buildDemoPrice, pinTextCategoryCheck, demoCategoryTiers } = require("../services/decorDemoPrice");
 const sharp = require("sharp");
 
 // Downscale a base64 or URL image before the vision call — cuts tokens/latency
@@ -873,7 +873,9 @@ const DemoPrice = async (req, res) => {
 
   let analysis;
   if (categoryOverride != null) {
-    if (!CATEGORY_TIERS[categoryOverride]) {
+    // demoCategoryTiers also admits demo-only categories (Haldi) that have no
+    // catalog taxonomy entry.
+    if (!demoCategoryTiers(categoryOverride)) {
       return res.status(400).send({ message: `Unknown décor category: ${JSON.stringify(categoryOverride)}` });
     }
     // Staff said what it is — no vision, so no confidence and no observations.

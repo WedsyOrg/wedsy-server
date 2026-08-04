@@ -10,6 +10,9 @@ const {
   SIZE_BUCKETS,
   DECOR_FLORAL_RATE_PER_FT,
   STAGE_TIER_DIVISORS,
+  DECOR_HALDI_RATE_PER_FT,
+  HALDI_TIER_DIVISORS,
+  demoCategoryTiers,
   readStageMeasurements,
   resolveBackdropHeight,
 } = require("../services/decorDemoPrice");
@@ -303,6 +306,43 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     []
   );
   range(garland10.ladder[0].prices.natural, 83500, 96000, "₹78,000 calibration holds at 10ft height");
+}
+
+// ── 3f. Haldi — its own pricing mode, not a discounted stage ─────────────────
+{
+  console.log("Haldi (own per-foot rate, tight tier spread, no artificial):");
+  // Founder calibration: an 8-10ft haldi backdrop is ₹20-25k mixed and
+  // ₹25-30k natural ≈ ₹3,000 per running floral foot natural (Stage: ₹6,250),
+  // natural ≈ 1.2× mixed (Stage runs 1.5×).
+  const nat9 = 9 * DECOR_HALDI_RATE_PER_FT;
+  ok(nat9 >= 25000 && nat9 <= 30000, `9ft natural base ₹${nat9} inside the founder band 25-30k`);
+  const mix9 = nat9 / HALDI_TIER_DIVISORS.mixed;
+  ok(mix9 >= 20000 && mix9 <= 25000, `9ft mixed base ₹${mix9} inside the founder band 20-25k`);
+  ok(DECOR_HALDI_RATE_PER_FT < DECOR_FLORAL_RATE_PER_FT, "haldi per-foot rate sits below the stage rate");
+
+  const r = buildDemoPrice(
+    analysis("Haldi", {
+      stageMeasurements: { backdropWidthFt: 9, floralRunFt: 9, rawHeightEstimateFt: 7, confidence: 0.8, reasoning: "small haldi backdrop" },
+    }),
+    []
+  );
+  eq(r.rejected, false, "Haldi is a priceable demo category");
+  eq(JSON.stringify(r.applicableTiers), JSON.stringify(["mixed", "natural"]), "mixed + natural only");
+  eq(r.ladder[0].prices.artificial, undefined, "NO artificial tier — never offered for haldi");
+  eq(r.pricingModel, "floral-run", "haldi prices by floral run");
+  eq(r.sized, false, "single price block, no size ladder");
+  range(r.ladder[0].prices.natural, 29000, 33000, "9ft natural = 27000 base, headroomed ±7%");
+  range(r.ladder[0].prices.mixed, 24000, 27500, "9ft mixed = natural / 1.2, headroomed ±7%");
+
+  // No measurement (e.g. a category override without vision) → the typical
+  // 8-10ft backdrop midpoint prices the row instead of an empty panel.
+  const fallback = buildDemoPrice(analysis("Haldi"), []);
+  range(fallback.ladder[0].prices.natural, 29000, 33000, "no measurement → priced at the 9ft default run");
+
+  // Demo-only category plumbing: Haldi resolves tiers, engine categories intact.
+  eq(JSON.stringify(demoCategoryTiers("Haldi")), JSON.stringify(["mixed", "natural"]), "demoCategoryTiers admits Haldi");
+  eq(JSON.stringify(demoCategoryTiers("Stage")), JSON.stringify(["artificial", "mixed", "natural"]), "engine categories unchanged");
+  eq(demoCategoryTiers("Sangeet"), null, "unknown occasions still rejected");
 }
 
 // ── 3d. Vision size signals — passthrough + postProcess normalization ────────

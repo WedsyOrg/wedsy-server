@@ -79,10 +79,12 @@ const STAGE_TIER_DIVISORS = { artificial: 2, mixed: 1.5, natural: 1 }; // fresh 
 // used by the area-anchored ladders.
 const STAGE_RANGE_SPREAD = Number(process.env.DECOR_STAGE_RANGE_SPREAD) || 0.07;
 
-const stageFloralPrices = (floralRunFt) => {
-  const fresh = floralRunFt * DECOR_FLORAL_RATE_PER_FT;
+// Shared floral-run pricing: natural = run × rate, other tiers via divisors,
+// each displayed as a ±spread range around the headroomed figure.
+const floralRunPrices = (floralRunFt, ratePerFt, divisors) => {
+  const fresh = floralRunFt * ratePerFt;
   const prices = {};
-  Object.entries(STAGE_TIER_DIVISORS).forEach(([tier, divisor]) => {
+  Object.entries(divisors).forEach(([tier, divisor]) => {
     const centre = (fresh / divisor) * DECOR_DEMO_HEADROOM;
     prices[tier] = {
       low: round500(centre * (1 - STAGE_RANGE_SPREAD)),
@@ -91,6 +93,31 @@ const stageFloralPrices = (floralRunFt) => {
   });
   return prices;
 };
+
+const stageFloralPrices = (floralRunFt) =>
+  floralRunPrices(floralRunFt, DECOR_FLORAL_RATE_PER_FT, STAGE_TIER_DIVISORS);
+
+// ── Haldi — its own pricing MODE, not a discounted stage (founder 2026-08) ───
+// Haldi setups are small events and clients spend less, so the per-foot RATE
+// itself drops — not just the total. Calibration: an 8-10ft haldi backdrop is
+// ₹20,000-25,000 mixed / ₹25,000-30,000 natural ≈ ₹3,000 per running floral
+// foot natural (vs the Stage rate of ₹6,250), with a much tighter tier spread:
+// natural ≈ 1.2× mixed where stages run 1.5×. NO ARTIFICIAL TIER — marigold
+// and traditional flowers look bad artificial; the founder never offers it.
+const DECOR_HALDI_RATE_PER_FT = Number(process.env.DECOR_HALDI_RATE_PER_FT) || 3000;
+const HALDI_TIER_DIVISORS = { mixed: 1.2, natural: 1 }; // natural / divisor
+// Typical haldi backdrop is 8-10ft (founder calibration) — the midpoint prices
+// the row when no vision measurement is available (e.g. a category override).
+const HALDI_DEFAULT_RUN_FT = 9;
+
+const haldiFloralPrices = (floralRunFt) =>
+  floralRunPrices(floralRunFt, DECOR_HALDI_RATE_PER_FT, HALDI_TIER_DIVISORS);
+
+// Haldi is DEMO-ONLY: an occasion-priced mode with no catalog taxonomy entry,
+// so its tier rule lives here beside the engine's category-aware tiers
+// (Mala & More natural-only · Phoolon Ki Chadar mixed+natural · Haldi mixed+natural).
+const DEMO_ONLY_TIERS = { Haldi: ["mixed", "natural"] };
+const demoCategoryTiers = (category) => CATEGORY_TIERS[category] || DEMO_ONLY_TIERS[category] || null;
 
 // ── Backdrop height model (founder 2026-08) ──────────────────────────────────
 // Only three heights are ever built: 10 / 12 / 15 ft. Anything else in a
@@ -286,7 +313,7 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
   }
 
   const category = analysis.category;
-  const tiers = CATEGORY_TIERS[category];
+  const tiers = demoCategoryTiers(category);
   if (!tiers) {
     return {
       rejected: true,
@@ -296,7 +323,8 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
 
   const comps = Array.isArray(comparables) ? comparables : [];
   const bandTier = bandTierOf(tiers);
-  const stageMeasurements = category === "Stage" ? readStageMeasurements(analysis.stageMeasurements) : null;
+  const floralRunCategory = category === "Stage" || category === "Haldi";
+  const stageMeasurements = floralRunCategory ? readStageMeasurements(analysis.stageMeasurements) : null;
   // Measured Stage replaces the size ladder with one floral-run price block.
   const buckets = stageMeasurements ? null : SIZE_BUCKETS[category];
   const sized = !!buckets;
@@ -304,7 +332,17 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
 
   let ladder;
   let anchor = null;
-  if (stageMeasurements) {
+  if (category === "Haldi") {
+    // Haldi always prices by floral run at its own rate; without a vision
+    // measurement it falls back to the typical 8-10ft backdrop (9ft midpoint)
+    // rather than dying — the founder's calibration band IS the default answer.
+    const run = stageMeasurements ? stageMeasurements.floralRunFt : HALDI_DEFAULT_RUN_FT;
+    const row = { size: null, prices: haldiFloralPrices(run) };
+    if (includeExamples) {
+      row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
+    }
+    ladder = [row];
+  } else if (stageMeasurements) {
     const row = { size: null, prices: stageFloralPrices(stageMeasurements.floralRunFt) };
     if (includeExamples) {
       row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
@@ -356,7 +394,7 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     // The vision backdrop measurement, echoed whatever the category so the
     // panel can resend it with a category override to Stage.
     stageMeasurements: readStageMeasurements(analysis.stageMeasurements),
-    ...(stageMeasurements ? { pricingModel: "floral-run" } : {}),
+    ...(stageMeasurements || category === "Haldi" ? { pricingModel: "floral-run" } : {}),
     applicableTiers: tiers,
     sized,
     upliftApplied: 1, // the ×1.20 draft-path uplift never applies to the demo
@@ -402,7 +440,12 @@ module.exports = {
   DECOR_FLORAL_RATE_PER_FT,
   STAGE_TIER_DIVISORS,
   STAGE_RANGE_SPREAD,
+  DECOR_HALDI_RATE_PER_FT,
+  HALDI_TIER_DIVISORS,
+  HALDI_DEFAULT_RUN_FT,
+  demoCategoryTiers,
   stageFloralPrices,
+  haldiFloralPrices,
   readStageMeasurements,
   resolveBackdropHeight,
   BUILD_HEIGHTS,
