@@ -63,8 +63,10 @@ const dayTotal = (day = {}) => {
     0
   );
   const packages = (day.packages || []).reduce((s, p) => s + n(p && p.price), 0);
+  // Build Present S4 — an add-on tagged out (includedInTotal === false) is
+  // visible but never summed, exactly like an excluded decor item.
   const custom = (day.customItems || []).reduce(
-    (s, c) => s + (c && !c.includeInTotalSummary ? n(c.price) : 0),
+    (s, c) => s + (c && !c.includeInTotalSummary && c.includedInTotal !== false ? n(c.price) : 0),
     0
   );
   const mandatory = (day.mandatoryItems || []).reduce(
@@ -96,7 +98,7 @@ const eventTotals = (event = {}) => {
   for (const d of event.eventDays || []) {
     const dayId = d && d._id ? String(d._id) : "";
     for (const c of (d && d.customItems) || []) {
-      if (c && c.includeInTotalSummary) {
+      if (c && c.includeInTotalSummary && c.includedInTotal !== false) {
         eventLevelItems.push({ dayId, kind: "custom", name: c.name || "", price: Math.round(n(c.price)) });
       }
     }
