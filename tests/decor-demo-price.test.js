@@ -11,6 +11,7 @@ const {
   DECOR_FLORAL_RATE_PER_FT,
   STAGE_TIER_DIVISORS,
   readStageMeasurements,
+  resolveBackdropHeight,
 } = require("../services/decorDemoPrice");
 const { normalizeComparable } = require("../services/decorPricing");
 
@@ -194,11 +195,75 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     "same width, garland-only build prices well below the solid wall"
   );
 
-  // Guards: floral run can't exceed the backdrop; height defaults to 12.
+  // Guards: floral run can't exceed the backdrop; a missing height estimate
+  // falls back to the width prior (20ft backdrop → 10ft).
   const capped = readStageMeasurements({ backdropWidthFt: 20, floralRunFt: 26, confidence: 0.9 });
   eq(capped.floralRunFt, 20, "floral run capped at backdrop width");
-  eq(capped.estimatedHeightFt, 12, "missing height defaults to 12ft");
+  eq(capped.estimatedHeightFt, 10, "missing height → width prior (under 30ft → 10ft)");
   eq(readStageMeasurements({ backdropWidthFt: 0, floralRunFt: 5 }), null, "invalid width → no measurement");
+}
+
+// ── 3g. Height model — snapped to the three real build heights (10/12/15) ────
+{
+  console.log("backdrop height model (snap 10/12/15, width prior, confidence gates):");
+  const h = (raw, width, conf) =>
+    resolveBackdropHeight({ rawHeightEstimateFt: raw, backdropWidthFt: width, confidence: conf }).estimatedHeightFt;
+
+  // Nearest-neighbour snapping on the raw sofa-count estimate.
+  eq(h(8, 24, 0.8), 10, "8ft raw snaps to 10");
+  eq(h(13, 36, 0.8), 12, "13ft raw snaps to 12");
+  eq(h(11.5, 24, 0.8), 12, "11.5ft raw snaps to 12");
+  eq(h(15, 36, 0.9), 15, "genuinely-tall 15ft ships on HIGH confidence");
+  ok(
+    resolveBackdropHeight({ rawHeightEstimateFt: 15, backdropWidthFt: 36, confidence: 0.9 }).unusual,
+    "a shipped 15ft is flagged unusual (founder: rare)"
+  );
+
+  // Width prior wins at low confidence; snapped vision wins at decent confidence.
+  eq(h(12, 24, 0.3), 10, "low confidence → width prior (24ft backdrop → 10ft)");
+  eq(h(15, 36, 0.3), 12, "low confidence → width prior (36ft backdrop → 12ft)");
+  eq(h(12, 24, 0.6), 12, "decent-confidence snapped vision beats the 10ft prior");
+  eq(h(0, 24, 0.9), 10, "no raw estimate → width prior regardless of confidence");
+
+  // Medium-confidence 15 demotes to 12 (the taller COMMON height), never ships.
+  eq(h(15, 36, 0.7), 12, "15 without high confidence demotes to 12");
+
+  // REGRESSION — the panel-backdrop pin from this build: vision claimed ~15ft
+  // raw on a ~24ft backdrop; the founder says the real build is 10ft. Under
+  // the height model it must land 10-12, never 15 (harness can't replay the
+  // photo through live vision, so the pin's characteristics are pinned here).
+  const regMedium = h(15, 24, 0.7);
+  ok(regMedium === 12, `panel-backdrop pin @ medium confidence lands 12 (got ${regMedium})`);
+  const regLow = h(15, 24, 0.4);
+  ok(regLow === 10, `panel-backdrop pin @ low confidence lands on the 10ft prior (got ${regLow})`);
+  ok(regMedium !== 15 && regLow !== 15, "the pin can no longer ship a 15ft height");
+
+  // readStageMeasurements carries raw + snapped + the unusual note (once).
+  const m15 = readStageMeasurements({
+    backdropWidthFt: 36, floralRunFt: 20, rawHeightEstimateFt: 14.5, confidence: 0.9, reasoning: "five sofa-heights",
+  });
+  eq(m15.estimatedHeightFt, 15, "14.5 raw @ high confidence snaps to 15");
+  eq(m15.rawHeightEstimateFt, 14.5, "raw estimate preserved for staff details");
+  ok(m15.reasoning.includes("unusual"), "unusual flag appended to reasoning");
+  const again = readStageMeasurements(m15);
+  eq(again.reasoning.split("unusual").length - 1, 1, "re-validation doesn't duplicate the unusual note");
+
+  // CALIBRATION RE-RUN at the 10ft snapped height — figures must not move.
+  const solid10 = buildDemoPrice(
+    analysis("Stage", {
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 24, rawHeightEstimateFt: 9, confidence: 0.85, reasoning: "solid wall" },
+    }),
+    []
+  );
+  eq(solid10.stageMeasurements.estimatedHeightFt, 10, "9ft raw on a 24ft backdrop → 10ft snapped");
+  range(solid10.ladder[0].prices.natural, 160500, 184500, "₹1,50,000 calibration holds at 10ft height");
+  const garland10 = buildDemoPrice(
+    analysis("Stage", {
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 12.5, rawHeightEstimateFt: 9, confidence: 0.85, reasoning: "garland + clusters" },
+    }),
+    []
+  );
+  range(garland10.ladder[0].prices.natural, 83500, 96000, "₹78,000 calibration holds at 10ft height");
 }
 
 // ── 3d. Vision size signals — passthrough + postProcess normalization ────────
@@ -212,7 +277,7 @@ const doc = (id, name, tiers, size) => normalizeComparable({
       complexity: { tier: "standard", confidence: 0.7, reasoning: "x" },
       minBuildWidth: { minWidthFt: 30, reasoning: "backdrop spans five to six sofas across", confidence: 0.8 },
       recommendedSize: { length: 29, width: 17 },
-      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 30, estimatedHeightFt: 0, reasoning: "r", confidence: 0.7 },
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 30, rawHeightEstimateFt: 13, reasoning: "r", confidence: 0.7 },
     },
     "demo"
   );
@@ -220,7 +285,8 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(p.minBuildWidth.confidence, 0.8, "min-width confidence kept");
   eq(p.recommendedSize, "30x16", "recommendedSize snapped to the Stage vocabulary (29x17 → 30x16)");
   eq(p.stageMeasurements.floralRunFt, 24, "postProcess caps floral run at backdrop width");
-  eq(p.stageMeasurements.estimatedHeightFt, 12, "postProcess defaults height to 12ft");
+  eq(p.stageMeasurements.estimatedHeightFt, 12, "postProcess snaps 13ft raw to the 12ft build height");
+  eq(p.stageMeasurements.rawHeightEstimateFt, 13, "raw height preserved for staff details");
   const empty = postProcess({ isDecorProduct: true, category: "Stage", size: {}, complexity: {} }, "demo");
   eq(empty.minBuildWidth, null, "absent minBuildWidth → null, never fabricated");
   eq(empty.recommendedSize, null, "absent recommendedSize → null, never snapped from nothing");

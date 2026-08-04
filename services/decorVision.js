@@ -18,6 +18,7 @@
 // stops over-picking 40x20; retry-with-backoff on 429/529.
 
 const Anthropic = require("@anthropic-ai/sdk");
+const { readStageMeasurements } = require("./decorDemoPrice");
 
 const MODEL = process.env.DECOR_VISION_MODEL || "claude-haiku-4-5-20251001";
 
@@ -132,12 +133,12 @@ const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
   "observations": string[],
   "minBuildWidth": { "minWidthFt": number, "reasoning": string, "confidence": number 0.0-1.0 },
   "recommendedSize": { "length": number, "width": number } | null,
-  "stageMeasurements": { "backdropWidthFt": number, "floralRunFt": number, "estimatedHeightFt": number, "reasoning": string, "confidence": number 0.0-1.0 } | null
+  "stageMeasurements": { "backdropWidthFt": number, "floralRunFt": number, "rawHeightEstimateFt": number, "reasoning": string, "confidence": number 0.0-1.0 } | null
 }
 "stageMeasurements" — for any backdrop-style installation (stage, backdrop, large photobooth wall), THREE separate measurements, each scaled from reference objects; null when there is no backdrop:
 - backdropWidthFt: total backdrop width in feet. Count sofas across — a sofa is ~5 ft wide (e.g. "fits five sofas across" ≈ 25 ft).
 - floralRunFt: how many of those running feet are GENUINELY a wall of flowers. This is the price driver, and it is NOT the width: garlands, top borders, clusters and scattered arrangements count as a FRACTION of the width they span, never the full width. A 24 ft backdrop with only a top garland and side clusters has roughly 12-13 running feet of true floral. Only a solid floral wall counts foot-for-foot. State your arithmetic in "reasoning".
-- estimatedHeightFt: backdrop height. Count sofa-heights vertically — a sofa back is ~3 ft, so a backdrop about 4 sofa-heights tall is 12. Default to 12; return 15 ONLY when the backdrop is clearly taller than that.
+- rawHeightEstimateFt: backdrop height, CONTINUOUS. Count sofa-heights vertically — a sofa back is ~3 ft, so about 4 sofa-heights is 12. Return your raw arithmetic (4.5 sofa-heights → 13.5); do NOT round to a standard size — the server snaps to the real build heights.
 Set confidence below 0.5 when nothing in frame gives reliable scale.
 "minBuildWidth" — the MINIMUM width in feet this design could physically be built at, scaled from reference objects visible in the photo: sofa ~5 ft wide, chair ~1.5 ft, adult ~5.5 ft tall, doorway ~7 ft tall. Count the objects the installation spans (e.g. "backdrop fits five to six sofas across, so it needs 30 ft") and state that count in "reasoning". This is a physical floor, not a size estimate — a design can be built LARGER than its minimum, never smaller. Set confidence below 0.5 when nothing in frame gives reliable scale.
 "recommendedSize" — the single size from the category's vocabulary this design best fits, or null when the category has no meaningful size.
@@ -252,25 +253,10 @@ const postProcess = (raw = {}, mode = "full") => {
       if (snapped) recommendedSize = `${snapped.length}x${snapped.width}`;
     }
 
-    // Backdrop measurements (drive Stage floral-run pricing). Floral run is
-    // capped at the backdrop width — it can never exceed what it sits on.
-    // Height defaults to 12 ft when the model didn't commit to one.
-    let stageMeasurements = null;
-    const sm = raw.stageMeasurements;
-    if (isDecorProduct && sm) {
-      const width = Number(sm.backdropWidthFt);
-      const run = Number(sm.floralRunFt);
-      if (width > 0 && run > 0) {
-        const height = Number(sm.estimatedHeightFt);
-        stageMeasurements = {
-          backdropWidthFt: width,
-          floralRunFt: Math.min(run, width),
-          estimatedHeightFt: height > 0 ? height : 12,
-          reasoning: asStr(sm.reasoning),
-          confidence: clamp01(sm.confidence),
-        };
-      }
-    }
+    // Backdrop measurements (drive Stage floral-run pricing). Shared validator:
+    // caps floral run at backdrop width and resolves the raw height through the
+    // 10/12/15 build-height model (snap + width prior + confidence gates).
+    const stageMeasurements = isDecorProduct ? readStageMeasurements(raw.stageMeasurements) : null;
 
     return { ...base, observations, minBuildWidth, recommendedSize, stageMeasurements };
   }

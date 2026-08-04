@@ -92,21 +92,71 @@ const stageFloralPrices = (floralRunFt) => {
   return prices;
 };
 
+// ── Backdrop height model (founder 2026-08) ──────────────────────────────────
+// Only three heights are ever built: 10 / 12 / 15 ft. Anything else in a
+// measurement is an artifact, not a design choice — the raw sofa-count
+// estimate is SNAPPED to the nearest build height, never shipped raw.
+// Width sets the PRIOR (backdrops under 30ft → 10ft, 30ft+ → 12ft); the
+// snapped vision estimate beats the prior unless confidence is low. 15ft ships
+// only on a HIGH-confidence snap (founder: rare) and is flagged as unusual; a
+// medium-confidence 15 demotes to 12 — the taller COMMON height — because the
+// vision still says "tall", it just hasn't earned the rare answer.
+const BUILD_HEIGHTS = [10, 12, 15];
+const HEIGHT_CONF_LOW = 0.5; // below → trust the width prior
+const HEIGHT_CONF_HIGH = 0.75; // required to ship a 15ft height
+const UNUSUAL_HEIGHT_NOTE = "15 ft build height — unusual (rare), verify with the client";
+
+const snapBuildHeight = (raw) =>
+  BUILD_HEIGHTS.reduce((best, h) => (Math.abs(h - raw) < Math.abs(best - raw) ? h : best));
+const widthHeightPrior = (width) => (width >= 30 ? 12 : 10);
+
+const resolveBackdropHeight = ({ rawHeightEstimateFt, backdropWidthFt, confidence }) => {
+  const prior = widthHeightPrior(Number(backdropWidthFt) || 0);
+  const raw = Number(rawHeightEstimateFt);
+  const conf = Math.max(0, Math.min(1, Number(confidence) || 0));
+  if (!(raw > 0) || conf < HEIGHT_CONF_LOW) {
+    return { estimatedHeightFt: prior, prior, unusual: false };
+  }
+  const snapped = snapBuildHeight(raw);
+  if (snapped === 15 && conf < HEIGHT_CONF_HIGH) {
+    return { estimatedHeightFt: 12, prior, unusual: false };
+  }
+  return { estimatedHeightFt: snapped, prior, unusual: snapped === 15 };
+};
+
 // Defensive read of the vision measurement (also arrives client-supplied on a
 // category override, so validate here, not just in the vision layer). Floral
-// run can never exceed the backdrop width.
+// run can never exceed the backdrop width; height always resolves through the
+// build-height model above. estimatedHeightFt is the snapped, price-driving
+// value; rawHeightEstimateFt is kept for staff details / drift debugging.
 const readStageMeasurements = (sm) => {
   if (!sm) return null;
   const width = Number(sm.backdropWidthFt);
   const run = Number(sm.floralRunFt);
   if (!(width > 0) || !(run > 0)) return null;
-  const height = Number(sm.estimatedHeightFt);
+  const confidence = Math.max(0, Math.min(1, Number(sm.confidence) || 0));
+  const rawHeight = Number(sm.rawHeightEstimateFt);
+  let reasoning = typeof sm.reasoning === "string" ? sm.reasoning : "";
+  let estimatedHeightFt;
+  if (rawHeight > 0) {
+    const resolved = resolveBackdropHeight({ rawHeightEstimateFt: rawHeight, backdropWidthFt: width, confidence });
+    estimatedHeightFt = resolved.estimatedHeightFt;
+    if (resolved.unusual && !reasoning.includes(UNUSUAL_HEIGHT_NOTE)) {
+      reasoning = reasoning ? `${reasoning} · ${UNUSUAL_HEIGHT_NOTE}` : UNUSUAL_HEIGHT_NOTE;
+    }
+  } else {
+    // No raw estimate (e.g. an older resent payload): accept only a real build
+    // height, otherwise fall back to the width prior.
+    const h = Number(sm.estimatedHeightFt);
+    estimatedHeightFt = BUILD_HEIGHTS.includes(h) ? h : widthHeightPrior(width);
+  }
   return {
     backdropWidthFt: width,
     floralRunFt: Math.min(run, width),
-    estimatedHeightFt: height > 0 ? height : 12,
-    reasoning: typeof sm.reasoning === "string" ? sm.reasoning : "",
-    confidence: Math.max(0, Math.min(1, Number(sm.confidence) || 0)),
+    estimatedHeightFt,
+    rawHeightEstimateFt: rawHeight > 0 ? rawHeight : null,
+    reasoning,
+    confidence,
   };
 };
 
@@ -347,4 +397,8 @@ module.exports = {
   STAGE_RANGE_SPREAD,
   stageFloralPrices,
   readStageMeasurements,
+  resolveBackdropHeight,
+  BUILD_HEIGHTS,
+  HEIGHT_CONF_LOW,
+  HEIGHT_CONF_HIGH,
 };
