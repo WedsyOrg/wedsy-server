@@ -13,6 +13,8 @@ const {
   DECOR_HALDI_RATE_PER_FT,
   HALDI_TIER_DIVISORS,
   demoCategoryTiers,
+  pinTextOccasionCheck,
+  resolveOccasion,
   readStageMeasurements,
   resolveBackdropHeight,
 } = require("../services/decorDemoPrice");
@@ -343,6 +345,58 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(JSON.stringify(demoCategoryTiers("Haldi")), JSON.stringify(["mixed", "natural"]), "demoCategoryTiers admits Haldi");
   eq(JSON.stringify(demoCategoryTiers("Stage")), JSON.stringify(["artificial", "mixed", "natural"]), "engine categories unchanged");
   eq(demoCategoryTiers("Sangeet"), null, "unknown occasions still rejected");
+}
+
+// ── 3h. Occasion detection — caption + vision drive the pricing model ────────
+{
+  console.log("occasion detection (caption + vision):");
+  // The live example that prompted this: captioned haldi, priced as a stage.
+  eq(pinTextOccasionCheck("Haldi decor asthetic"), "haldi", "'Haldi decor asthetic' caption detected");
+  eq(pinTextOccasionCheck("mehndi function stage"), "mehendi", "Hinglish spelling variant (mehndi) detected");
+  eq(pinTextOccasionCheck("beautiful decor ideas"), null, "no occasion keyword → null");
+
+  const vis = (value, confidence) => ({ value, confidence });
+  eq(resolveOccasion("Haldi decor asthetic", vis("haldi", 0.8)).source, "both", "caption + vision agree → both");
+  eq(resolveOccasion("Haldi decor asthetic", vis(null, 0)).value, "haldi", "caption alone is enough");
+  eq(resolveOccasion("", vis("haldi", 0.8)).source, "vision", "confident vision alone is used");
+  eq(resolveOccasion("", vis("haldi", 0.3)).value, null, "unconfident vision alone → nothing");
+  const conflict = resolveOccasion("sangeet night decor", vis("haldi", 0.9));
+  eq(conflict.value, "sangeet", "disagreement → the CAPTION wins");
+  eq(JSON.stringify(conflict.conflict), JSON.stringify({ caption: "sangeet", vision: "haldi" }), "conflict recorded for staff details");
+
+  // End to end: the haldi-captioned Stage pin re-prices at the haldi rate.
+  const sm = { backdropWidthFt: 9, floralRunFt: 9, rawHeightEstimateFt: 7, confidence: 0.8, reasoning: "small backdrop" };
+  const haldiPin = buildDemoPrice(analysis("Stage", { stageMeasurements: sm }), [], {
+    occasion: resolveOccasion("Haldi decor asthetic", vis("haldi", 0.8)),
+  });
+  eq(haldiPin.category, "Haldi", "Stage + haldi occasion re-labels to Haldi (dropdown-correctable)");
+  eq(JSON.stringify(haldiPin.applicableTiers), JSON.stringify(["mixed", "natural"]), "haldi tiers apply");
+  range(haldiPin.ladder[0].prices.natural, 29000, 33000, "priced at the haldi rate, not the stage rate");
+  eq(haldiPin.occasion.value, "haldi", "occasion surfaced in the response");
+  eq(haldiPin.occasion.source, "both", "with its source");
+
+  // Non-haldi occasion: surfaced, price untouched (stage rate).
+  const sangeetPin = buildDemoPrice(analysis("Stage", { stageMeasurements: sm }), [], {
+    occasion: resolveOccasion("sangeet night", vis(null, 0)),
+  });
+  eq(sangeetPin.category, "Stage", "sangeet does not change the pricing model");
+  range(sangeetPin.ladder[0].prices.natural, 60000, 69000, "stage rate applies (9ft × 6250, headroomed ±7%)");
+  eq(sangeetPin.occasion.value, "sangeet", "occasion still surfaced");
+
+  // Haldi caption on a Mandap: surfaced only — the model never flips.
+  const haldiMandap = buildDemoPrice(analysis("Mandap"), [], {
+    occasion: resolveOccasion("haldi ceremony", vis(null, 0)),
+  });
+  eq(haldiMandap.category, "Mandap", "only Stage re-labels on a haldi occasion");
+  eq(haldiMandap.occasion.value, "haldi", "occasion visible on the Mandap anyway");
+
+  // Nothing confident on a Stage → stage rate by default, and SAY so.
+  const unknown = buildDemoPrice(analysis("Stage", { stageMeasurements: sm }), [], {
+    occasion: resolveOccasion("beautiful decor", vis(null, 0.2)),
+  });
+  eq(unknown.occasion.value, null, "no occasion resolved");
+  eq(unknown.occasion.defaultedToStageRate, true, "explicitly flags the stage-rate default");
+  range(unknown.ladder[0].prices.natural, 60000, 69000, "higher-revenue stage rate assumed");
 }
 
 // ── 3d. Vision size signals — passthrough + postProcess normalization ────────

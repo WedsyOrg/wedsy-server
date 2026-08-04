@@ -119,6 +119,58 @@ const haldiFloralPrices = (floralRunFt) =>
 const DEMO_ONLY_TIERS = { Haldi: ["mixed", "natural"] };
 const demoCategoryTiers = (category) => CATEGORY_TIERS[category] || DEMO_ONLY_TIERS[category] || null;
 
+// ── Occasion detection (caption + vision, combined) ──────────────────────────
+// Occasion was extracted-but-never-priced-on while it was only a weak
+// statistical signal; haldi now carries its own RATE, so detection decides
+// which pricing model applies. Detected from BOTH sources: the pin caption
+// (explicit human text — wins a disagreement) and the vision model's visual
+// read (used alone only when confident).
+const OCCASIONS = ["haldi", "mehendi", "sangeet", "reception", "engagement", "nikah", "varmala", "muhurtham"];
+const OCCASION_KEYWORDS = {
+  haldi: ["haldi"],
+  mehendi: ["mehendi", "mehndi", "mehandi"],
+  sangeet: ["sangeet"],
+  reception: ["reception"],
+  engagement: ["engagement", "sagai"],
+  nikah: ["nikah", "nikaah"],
+  varmala: ["varmala", "jaimala", "jai mala"],
+  muhurtham: ["muhurtham", "muhurtam"],
+};
+const OCCASION_CONF_MIN = 0.5;
+
+const pinTextOccasionCheck = (pinText) => {
+  if (!pinText || typeof pinText !== "string") return null;
+  const t = pinText.toLowerCase();
+  for (const [occ, words] of Object.entries(OCCASION_KEYWORDS)) {
+    if (words.some((w) => t.includes(w))) return occ;
+  }
+  return null;
+};
+
+// resolveOccasion(pinText, visionOccasion) → { value, source, conflict }.
+//   agree → that occasion (source "both") · disagree → the CAPTION, with the
+//   conflict recorded for staff details · neither confident → value null (the
+//   caller prices at the stage rate — the higher-revenue assumption — and says
+//   so; the staff member corrects via the category dropdown).
+const resolveOccasion = (pinText, visionOccasion) => {
+  const caption = pinTextOccasionCheck(pinText);
+  const vision =
+    visionOccasion &&
+    OCCASIONS.includes(visionOccasion.value) &&
+    Number(visionOccasion.confidence) >= OCCASION_CONF_MIN
+      ? visionOccasion.value
+      : null;
+  if (!caption && !vision) return { value: null, source: null, conflict: null };
+  if (caption && vision && caption !== vision) {
+    return { value: caption, source: "caption", conflict: { caption, vision } };
+  }
+  return {
+    value: caption || vision,
+    source: caption && vision ? "both" : caption ? "caption" : "vision",
+    conflict: null,
+  };
+};
+
 // ── Backdrop height model (founder 2026-08) ──────────────────────────────────
 // Only three heights are ever built: 10 / 12 / 15 ft. Anything else in a
 // measurement is an artifact, not a design choice — the raw sofa-count
@@ -303,6 +355,7 @@ const rangesForCategory = (category, tiers, comps) => {
 //   opts.includeExamples: attach up to 3 scale/price-point examples per row
 const buildDemoPrice = (analysis, comparables, opts = {}) => {
   const includeExamples = !!opts.includeExamples;
+  const occasion = opts.occasion || null;
 
   // Rejection escape hatch — not a décor product → no pricing.
   if (!analysis || analysis.isDecorProduct === false) {
@@ -312,7 +365,14 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     return { rejected: true, reason };
   }
 
-  const category = analysis.category;
+  // A haldi occasion re-labels a Stage: same visual category, different
+  // pricing MODEL (the haldi rate). Only Stage flips — a haldi caption on a
+  // Mandap is surfaced but does not change the model. The panel's category
+  // dropdown (which now lists Haldi) is the correction path in both
+  // directions: overrides skip occasion resolution entirely.
+  const detectedCategory = analysis.category;
+  const category =
+    detectedCategory === "Stage" && occasion && occasion.value === "haldi" ? "Haldi" : detectedCategory;
   const tiers = demoCategoryTiers(category);
   if (!tiers) {
     return {
@@ -394,6 +454,18 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     // The vision backdrop measurement, echoed whatever the category so the
     // panel can resend it with a category override to Stage.
     stageMeasurements: readStageMeasurements(analysis.stageMeasurements),
+    // Detected occasion — visible and correctable in the panel. When nothing
+    // was confident on a Stage, the stage rate applied by default and we SAY so.
+    ...(occasion
+      ? {
+          occasion: {
+            value: occasion.value,
+            source: occasion.source,
+            conflict: occasion.conflict,
+            ...(category === "Stage" && !occasion.value ? { defaultedToStageRate: true } : {}),
+          },
+        }
+      : {}),
     ...(stageMeasurements || category === "Haldi" ? { pricingModel: "floral-run" } : {}),
     applicableTiers: tiers,
     sized,
@@ -444,6 +516,9 @@ module.exports = {
   HALDI_TIER_DIVISORS,
   HALDI_DEFAULT_RUN_FT,
   demoCategoryTiers,
+  OCCASIONS,
+  pinTextOccasionCheck,
+  resolveOccasion,
   stageFloralPrices,
   haldiFloralPrices,
   readStageMeasurements,

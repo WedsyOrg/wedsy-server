@@ -18,7 +18,7 @@
 // stops over-picking 40x20; retry-with-backoff on 429/529.
 
 const Anthropic = require("@anthropic-ai/sdk");
-const { readStageMeasurements } = require("./decorDemoPrice");
+const { readStageMeasurements, OCCASIONS } = require("./decorDemoPrice");
 
 const MODEL = process.env.DECOR_VISION_MODEL || "claude-haiku-4-5-20251001";
 
@@ -133,6 +133,7 @@ const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
   "observations": string[],
   "minBuildWidth": { "minWidthFt": number, "reasoning": string, "confidence": number 0.0-1.0 },
   "recommendedSize": { "length": number, "width": number } | null,
+  "occasion": { "value": one of ${JSON.stringify(OCCASIONS)} OR null, "confidence": number 0.0-1.0 },
   "stageMeasurements": { "backdropWidthFt": number, "floralRunFt": number, "widthToHeightRatio": number, "rawHeightEstimateFt": number, "reasoning": string, "confidence": number 0.0-1.0 } | null
 }
 "stageMeasurements" — for any backdrop-style installation (stage, backdrop, large photobooth wall); null when there is no backdrop:
@@ -151,6 +152,7 @@ Set confidence below 0.5 when nothing in frame gives reliable scale.
 - fabrication: "stock steel structure" | "custom FRP / fibre work"
 - signature props, named plainly when present: e.g. "chandeliers", "canopy", "signage"
 These are factual observations, NOT gradings — no quality words, no price implications, no invented detail.
+"occasion" — the EVENT this décor is for, judged from DISTINCTIVE visual signals only (e.g. haldi: marigold/yellow-dominated small daytime setup with traditional stringing and hanging work; mehendi: green/rustic garden styling; reception: grand formal stage). Return value null with low confidence when the signals are not distinctive — most decor photos are not attributable to an occasion.
 Do NOT include flowers, colors, fabric, suggestedName, description, tags, or included.`;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -260,7 +262,14 @@ const postProcess = (raw = {}, mode = "full") => {
     // 10/12/15 build-height model (snap + width prior + confidence gates).
     const stageMeasurements = isDecorProduct ? readStageMeasurements(raw.stageMeasurements) : null;
 
-    return { ...base, observations, minBuildWidth, recommendedSize, stageMeasurements };
+    // Detected occasion — vocabulary-gated; anything off-list becomes null.
+    const rawOcc = raw.occasion || {};
+    const occasion = {
+      value: isDecorProduct && OCCASIONS.includes(rawOcc.value) ? rawOcc.value : null,
+      confidence: clamp01(rawOcc.confidence),
+    };
+
+    return { ...base, observations, minBuildWidth, recommendedSize, stageMeasurements, occasion };
   }
 
   return {

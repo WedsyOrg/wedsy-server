@@ -3,7 +3,7 @@ const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
 const { analyseImage } = require("../services/decorVision");
-const { buildDemoPrice, pinTextCategoryCheck, demoCategoryTiers } = require("../services/decorDemoPrice");
+const { buildDemoPrice, pinTextCategoryCheck, demoCategoryTiers, resolveOccasion } = require("../services/decorDemoPrice");
 const sharp = require("sharp");
 
 // Downscale a base64 or URL image before the vision call — cuts tokens/latency
@@ -918,6 +918,10 @@ const DemoPrice = async (req, res) => {
   }
 
   const pinTextCheck = pinTextCategoryCheck(pinText, analysis.category);
+  // Occasion (caption + vision) decides which pricing model applies (haldi has
+  // its own rate). Deliberately NOT resolved on a category override — the
+  // dropdown is the correction path and must never be re-flipped.
+  const occasion = categoryOverride != null ? null : resolveOccasion(pinText, analysis.occasion);
 
   // Non-décor → reject, no pricing, no comparables.
   if (!analysis.isDecorProduct) {
@@ -932,7 +936,7 @@ const DemoPrice = async (req, res) => {
       "name productInfo.id productInfo.measurements productTypes image thumbnail"
     ).lean();
     const comparables = docs.map(normalizeComparable);
-    const out = buildDemoPrice(analysis, comparables, { includeExamples: !!includeExamples });
+    const out = buildDemoPrice(analysis, comparables, { includeExamples: !!includeExamples, occasion });
     return res.status(200).send({ ...out, ...(pinTextCheck ? { pinTextCheck } : {}) });
   } catch (error) {
     return res.status(400).send({ message: "error", error });
