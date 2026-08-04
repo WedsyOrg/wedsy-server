@@ -654,6 +654,9 @@ router.patch("/:_id/plan/drafts/:eventId", CheckAdminLogin,
 // G3 — CP/SP earnings (admin-only; separate from the detail read by design).
 router.get("/:_id/plan/drafts/:eventId/earnings", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DraftEarnings);
+// THE OPS SHEET — streamed .xlsx export (exceljs; ?withPrice&includeExcluded).
+router.get("/:_id/plan/drafts/:eventId/export.xlsx", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.ExportDraftXlsx);
 // Bug 35 — whole-event colour theme (display-only; items inherit, per-item
 // colours override).
 router.put("/:_id/plan/drafts/:eventId/theme", CheckAdminLogin,
