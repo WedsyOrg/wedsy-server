@@ -128,6 +128,20 @@ const ListDrafts = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
   res.status(200).json({ drafts: await DraftEventService.listDrafts(req.params._id) });
 });
+// The couple's display name for the CLIENT QUOTE download: "Groom & Bride"
+// when both are known, else the lead's own name — the same resolution the
+// quote sheet's hero uses. Sanitised for the filesystem (the path/reserved
+// characters and control codes go, runs of whitespace collapse); returns ""
+// when nothing survives, and the caller then keeps the legacy filename.
+const clientFileName = (lead) => {
+  const q = (lead && lead.qualificationData) || {};
+  const groom = String(q.groomName || "").trim();
+  const bride = String(q.brideName || "").trim();
+  const raw = groom && bride ? `${groom} & ${bride}` : String((lead && lead.name) || "");
+  // eslint-disable-next-line no-control-regex
+  return raw.replace(/[/\\:*?"<>|]/g, "").replace(/[\x00-\x1F\x7F]/g, "").replace(/\s+/g, " ").trim();
+};
+
 // THE OPS SHEET — streamed .xlsx export. NOT wrap()'d: once streaming starts
 // the response can't fall back to JSON, so errors before the stream 4xx/5xx
 // normally and errors mid-stream tear the socket down.
@@ -135,14 +149,22 @@ const ExportDraftXlsx = async (req, res) => {
   try {
     await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
     const DraftExportService = require("../services/DraftExportService");
-    const lead = await Enquiry.findById(req.params._id, { name: 1 }).lean();
+    const lead = await Enquiry.findById(req.params._id, {
+      name: 1,
+      "qualificationData.groomName": 1,
+      "qualificationData.brideName": 1,
+    }).lean();
     const detailName = await require("../services/DraftEventService")
       .getDraft(req.params._id, req.params.eventId)
       .then((e) => e.draftName || e.name)
       .catch(() => "Draft");
     const layout = req.query.layout === "quote" ? "quote" : "ops";
     const suffix = layout === "quote" ? "quote" : "build";
-    const filename = `${(lead && lead.name) || "Lead"} — ${detailName} — ${suffix}.xlsx`;
+    // The CLIENT QUOTE goes to the couple, so it downloads under their own name
+    // — the same source the sheet's hero uses. The ops filename is unchanged.
+    const legacyName = `${(lead && lead.name) || "Lead"} — ${detailName} — ${suffix}`;
+    const client = layout === "quote" ? clientFileName(lead) : "";
+    const filename = `${client || legacyName}.xlsx`;
     await DraftExportService.writeXlsx(
       req.params._id,
       req.params.eventId,
@@ -367,4 +389,5 @@ module.exports = {
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem, SetCategoryNote,
   GrantDiscount, SetDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,
   Moods, Reveal,
+  clientFileName, // exported for tests — the quote download's filename rule
 };

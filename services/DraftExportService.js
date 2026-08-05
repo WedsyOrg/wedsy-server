@@ -117,14 +117,14 @@ const paxResolver = (lead) => {
 // presentation of `price`, never a re-derivation of it.
 const QUOTE_SHEET = "Client Quote";
 const QUOTE_COLS = [
-  { header: "Date", width: 9 },
-  { header: "Event", width: 13 },
-  { header: "Category", width: 17 },
-  { header: "Image", width: 19 },
-  { header: "Item description", width: 31 },
-  { header: "Notes", width: 19 },
-  { header: "Notes Ref Image", width: 16 },
-  { header: "Pricing", width: 13 },
+  { header: "Date", width: 12 },
+  { header: "Event", width: 18 },
+  { header: "Category", width: 22 },
+  { header: "Image", width: 26 },
+  { header: "Item description", width: 48 },
+  { header: "Notes", width: 28 },
+  { header: "Notes Ref Image", width: 24 },
+  { header: "Pricing", width: 16 },
 ];
 // Excel's char-unit → pixel rule (px = round(chars × 7) + 5); needed because
 // image placement is in pixels but columns are sized in char units.
@@ -285,13 +285,22 @@ const describeParts = (it) => {
   if (it.variant && it.variant !== it.productVariant && it.variant !== "Standard") detail.push(it.variant);
   if (it.productVariant && it.productVariant !== "Standard" && it.productVariant !== it.variant) detail.push(it.productVariant);
   if (Number(it.quantity) > 1) detail.push(`Qty ${it.quantity}${it.unit ? ` ${it.unit}` : ""}`);
+  // The item's OWN included[] is the persisted truth; when the planner never
+  // filled it, fall back to the PRODUCT's spec list (Decor.productInfo.included,
+  // mapped onto the item as specIncluded) so the column is never bare. With
+  // neither, the "Included:" label is omitted entirely rather than left dangling.
+  const ownInc = (it.included || []).filter(Boolean);
+  const specInc = (it.specIncluded || []).filter(Boolean);
+  const baseInc = ownInc.length ? ownInc : specInc;
   const included = [];
   const colours = [it.primaryColor, it.secondaryColor, it.tertiaryColor].filter(Boolean);
   if (colours.length) included.push(colours.join(" · "));
-  for (const inc of (it.included || []).filter(Boolean)) included.push(inc);
+  for (const inc of baseInc) included.push(inc);
   for (const a of (it.addOns || []).filter((a) => a && a.name)) {
     included.push(Number(a.quantity) > 1 ? `${a.name} ×${a.quantity}` : a.name);
   }
+  // Gated on the COMPOSED list: a colour or an add-on alone still earns the
+  // line (add-ons are charged into the parent price, so they must be named).
   if (included.length) detail.push(`Included: ${included.join("; ")}`);
   if (it.setupLocation) detail.push(`Setup: ${it.setupLocation}`);
   return { head: it.name || "Item", detail };
@@ -338,9 +347,10 @@ const buildQuoteBody = async ({ wb, detail, totals, lead, images, usedNames, wit
 
   const ws = wb.addWorksheet(sheetNameFor(QUOTE_SHEET, usedNames), {
     views: [{ showGridLines: false }],
-    // exceljs treats width 9 as "not custom" and omits its <col> entry, so
-    // column A would fall back to Excel's 8.43 default. Declaring the sheet
-    // default as 9 pins A at exactly the spec'd width.
+    // exceljs treats width 9 as "not custom" and silently omits that column's
+    // <col> entry, dropping it to Excel's 8.43 default. No column is 9 wide
+    // any more, but the sheet default stays pinned as a guard: if one ever is,
+    // it still renders at 9 rather than collapsing.
     properties: { defaultColWidth: 9 },
     pageSetup: {
       orientation: "landscape",
@@ -558,14 +568,18 @@ const buildQuoteBody = async ({ wb, detail, totals, lead, images, usedNames, wit
   }
 
   // ── CLOSING (whole wedding) ──
-  const caption = dressRow(r, { height: 16, rowFont: MUTED_ITALIC });
-  ws.mergeCells(r, 1, r, 8);
-  caption.getCell(1).value = "Applies across all events";
-  r++;
+  // The caption only earns its row when there are TS lines to caption.
+  const tsItems = totals.eventLevelItems || [];
+  if (tsItems.length) {
+    const caption = dressRow(r, { height: 16, rowFont: MUTED_ITALIC });
+    ws.mergeCells(r, 1, r, 8);
+    caption.getCell(1).value = "Applies across all events";
+    r++;
+  }
 
   // TS items — server-filtered (mandatory needs itemRequired; custom needs
   // includedInTotal !== false). They appear HERE and nowhere else, counted once.
-  for (const ts of totals.eventLevelItems || []) {
+  for (const ts of tsItems) {
     const row = dressRow(r, { height: 20 });
     ws.mergeCells(r, 1, r, 2);
     ws.mergeCells(r, 3, r, 7);
@@ -576,12 +590,15 @@ const buildQuoteBody = async ({ wb, detail, totals, lead, images, usedNames, wit
   }
   renderedGrand += Number(totals.eventLevelTotal) || 0;
 
+  // A zero discount is not a line item — only a real one gets a row.
   const discount = Number(totals.discount) || 0;
-  const discountRow = dressRow(r, { height: 20 });
-  ws.mergeCells(r, 1, r, 7);
-  discountRow.getCell(1).value = "Discount";
-  money(discountRow.getCell(8), discount ? -discount : 0);
-  r++;
+  if (discount > 0) {
+    const discountRow = dressRow(r, { height: 20 });
+    ws.mergeCells(r, 1, r, 7);
+    discountRow.getCell(1).value = "Discount";
+    money(discountRow.getCell(8), -discount);
+    r++;
+  }
 
   const net = totals.net != null ? Number(totals.net) : Number(totals.grandTotal) || 0;
   const grandRow = dressRow(r, { height: 28, fill: Q_GRADIENT, rowFont: font({ bold: true, size: 13, color: { argb: Q_WHITE } }) });

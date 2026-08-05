@@ -44,7 +44,7 @@ const countRows = (ws, col, needle) => { let n = 0; ws.eachRow((r) => { if (Stri
 // value on every slave row, so slaves must not be counted twice.
 const countBlocks = (ws, col, needle) => { let n = 0; ws.eachRow((r) => { const c = r.getCell(col); if (!c.isMerged || c.master === c) { if (String(c.value ?? "").includes(needle)) n++; } }); return n; };
 const HEADERS = ["Date", "Event", "Category", "Image", "Item description", "Notes", "Notes Ref Image", "Pricing"];
-const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
+const WIDTHS = [12, 18, 22, 26, 48, 28, 24, 16];
 
 (async () => {
   let imgServer = null;
@@ -75,11 +75,16 @@ const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
       },
     });
     created.leads.push(lead._id);
-    const mkDecor = (cat, name, sell, img) => Decor.create({ category: cat, name, unit: "unit", tags: [], image: img || "x.jpg", thumbnail: img || "x.jpg", rating: 0, productInfo: { id: "code123" }, productTypes: [{ name: "Standard", costPrice: 100, sellingPrice: sell }] });
+    const mkDecor = (cat, name, sell, img, specIncluded) => Decor.create({ category: cat, name, unit: "unit", tags: [], image: img || "x.jpg", thumbnail: img || "x.jpg", rating: 0, productInfo: { id: "code123", included: specIncluded || [] }, productTypes: [{ name: "Standard", costPrice: 100, sellingPrice: sell }] });
     const dStage = await mkDecor(catStage.name, `${TAG}-stage`, 10000, IMG);
     const dFurn = await mkDecor(catFurn.name, `${TAG}-chairs`, 3000);
     const dSofa = await mkDecor(catFurn.name, `${TAG}-sofa`, 4000);
-    created.decors.push(dStage._id, dFurn._id, dSofa._id);
+    // a product whose SPEC list is the only source of "included" — the item
+    // itself is added with no included[] at all
+    const dSpec = await mkDecor(catStage.name, `${TAG}-specprop`, 1500, "", ["Frame", "Drape"]);
+    // no spec list at all — only an add-on can fill the Included: line
+    const dBare = await mkDecor(catStage.name, `${TAG}-bareprop`, 900);
+    created.decors.push(dStage._id, dFurn._id, dSofa._id, dSpec._id, dBare._id);
 
     const draft = await DraftEventService.createDraft(lead._id, { name: "Quote" }, admin._id);
     created.events.push(draft._id);
@@ -97,6 +102,9 @@ const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
     }, admin._id);
     await DraftEventService.addItem(lead._id, draft._id, dayId, { decorId: dFurn._id, quantity: 10 }, admin._id);
     await DraftEventService.addItem(lead._id, draft._id, dayId, { decorId: dSofa._id, quantity: 2 }, admin._id);
+    await DraftEventService.addItem(lead._id, draft._id, dayId, { decorId: dSpec._id, quantity: 1 }, admin._id); // no included[] — spec list must fill in
+    // no included[], no spec list, no colours — the add-on alone must earn the Included: line
+    await DraftEventService.addItem(lead._id, draft._id, dayId, { decorId: dBare._id, quantity: 1, addOns: [{ name: "Ribbon", price: 300, quantity: 1 }] }, admin._id);
     await DraftEventService.addItem(lead._id, draft._id, dayId, { decorId: dStage._id, quantity: 1, includedInTotal: false }, admin._id);
     await DraftEventService.setCategoryNote(lead._id, draft._id, dayId, { category: catFurn.name, note: "white covers throughout" }, admin._id);
     await DraftEventService.addCustomItem(lead._id, draft._id, dayId, { name: "LED wall", price: 700 });                                   // ES
@@ -186,6 +194,15 @@ const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
     ok(!desc.includes("gate 2 entry"), "…and NOT the notes (they live in F/G now)");
     ok(!cellText(ws).some((t) => t.includes("code123")), "product code omitted from the quote layout");
 
+    // Included: falls back to the PRODUCT's spec list when the item has none
+    const specDesc = String(findRow(ws, 5, `${TAG}-specprop`).getCell(5).value || "");
+    ok(specDesc.includes("Included: Frame; Drape"),
+      "an item with an empty included[] still gets an Included: line from specIncluded");
+    // gated on the COMPOSED list, so an add-on alone is enough
+    const bareDesc = String(findRow(ws, 5, `${TAG}-bareprop`).getCell(5).value || "");
+    ok(bareDesc.includes("Included: Ribbon"),
+      "no includes, no spec list, no colours — one add-on still renders an Included: line naming it");
+
     // ── PLATFORM/FLOORING sub-row ──
     const subRow = findRow(ws, 3, "↳ Platform");
     ok(!!subRow, "a ↳ Platform sub-row sits directly beneath the item");
@@ -230,7 +247,7 @@ const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
     ok(Number(etRow.getCell(8).value) === serverDayTotal, `event total (₹${etRow.getCell(8).value}) === the server's per-event total (₹${serverDayTotal})`);
 
     // every rendered included line sums to the server's event total
-    const lineSum = STAGE_LINE + 30000 + 8000 /* sofa 2×4000 */ + 700 + 8000;
+    const lineSum = STAGE_LINE + 30000 + 8000 /* sofa 2×4000 */ + 1500 /* spec prop */ + 1200 /* bare prop 900 + Ribbon 300 */ + 700 + 8000;
     ok(lineSum === serverDayTotal, `Σ rendered lines (₹${lineSum}) === the server's event total (₹${serverDayTotal})`);
 
     // ── CLOSING ──
@@ -242,10 +259,9 @@ const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
       && merges.includes(`A${tsRow.number}:B${tsRow.number}`) && merges.includes(`C${tsRow.number}:G${tsRow.number}`),
       "…as its own line: label A:B, desc C:G, amount H");
     ok(Number(tsRow.getCell(8).value) === 1200, "…carrying the server's TS price");
-    const discRow = findRow(ws, 1, "Discount");
-    ok(!!discRow && discRow.number > tsRow.number, "closing: a Discount row after the TS lines");
+    ok(!findRow(ws, 1, "Discount"), "closing: no Discount row when the discount is zero");
     const grandRow = findRow(ws, 1, "GRAND TOTAL");
-    ok(!!grandRow && grandRow.number === discRow.number + 1, "closing: GRAND TOTAL is the last row");
+    ok(!!grandRow && grandRow.number === tsRow.number + 1, "closing: GRAND TOTAL is the last row");
     const gFill = grandRow.getCell(1).fill || {};
     ok(gFill.type === "gradient" && merges.includes(`A${grandRow.number}:G${grandRow.number}`)
       && grandRow.getCell(1).font.size === 13 && grandRow.getCell(1).font.bold === true,
@@ -258,6 +274,30 @@ const WIDTHS = [9, 13, 17, 19, 31, 19, 16, 13];
     // Arial + centred throughout
     ok(ws.getCell(sr, 5).font.name === "Arial" && ws.getCell(sr, 5).alignment.horizontal === "center" && ws.getCell(sr, 5).alignment.wrapText === true,
       "Arial throughout, everything centered, wrap on");
+
+    // ── a draft with NO whole-wedding items: the caption earns no row ──
+    const plain = await DraftEventService.createDraft(lead._id, { name: "Plain" }, admin._id);
+    created.events.push(plain._id);
+    const plainDay = (await DraftEventService.getDraftDetail(lead._id, plain._id)).days[0].dayId;
+    await DraftEventService.addItem(lead._id, plain._id, plainDay, { decorId: dFurn._id, quantity: 4 }, admin._id);
+    const wbPlain = await roundTrip(await DraftExportService.buildWorkbook(lead._id, plain._id, { layout: "quote", withPrice: true, includeExcluded: true }));
+    const wsPlain = wbPlain.worksheets[0];
+    ok(!findRow(wsPlain, 1, "Applies across all events"), "no TS items → the caption row is suppressed");
+    ok(!findRow(wsPlain, 1, "Discount"), "no discount → the Discount row is suppressed");
+    const plainGrand = findRow(wsPlain, 1, "GRAND TOTAL");
+    ok(!!plainGrand && Number(plainGrand.getCell(8).value) === 12000, "…GRAND TOTAL always renders (₹12,000)");
+    ok(plainGrand.number === findRow(wsPlain, 1, "Event Total").number + 1, "…and follows the event total directly");
+
+    // ── FIX 4: the quote downloads under the client's name ──
+    const { clientFileName } = require("../controllers/plan");
+    ok(clientFileName({ name: "ignored", qualificationData: { groomName: "Arjun", brideName: "Meera" } }) === "Arjun & Meera",
+      "filename: both names → “Groom & Bride”");
+    ok(clientFileName({ name: "Walk-in Lead", qualificationData: { groomName: "Arjun", brideName: "" } }) === "Walk-in Lead",
+      "filename: a missing name falls back to the lead's own name");
+    ok(clientFileName({ name: 'a/b\\c:d*e?f"g<h>i|j' }) === "abcdefghij", "filename: path/reserved characters stripped");
+    ok(clientFileName({ name: "  Arjun \n\t  Meera  " }) === "Arjun Meera", "filename: whitespace collapsed and trimmed");
+    ok(clientFileName({ name: "A\u0007B\u001FC" }) === "ABC", "filename: control characters stripped");
+    ok(clientFileName({}) === "" && clientFileName({ name: "///" }) === "", "filename: resolves empty → caller keeps the legacy name");
 
     // ── withPrice=false: column H blank, layout intact ──
     const wb2 = await roundTrip(await DraftExportService.buildWorkbook(lead._id, draft._id, { layout: "quote", withPrice: false, includeExcluded: true }));
