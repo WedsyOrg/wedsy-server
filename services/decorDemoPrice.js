@@ -86,7 +86,10 @@ const STAGE_RANGE_SPREAD = Number(process.env.DECOR_STAGE_RANGE_SPREAD) || 0.07;
 // is charged as built surface area (width × height) at a rate set by GEOMETRY.
 // Calibration: a 60×12 blocky steel build is 720 sq ft × ₹390 ≈ ₹2.8L of
 // structure, which with modest floral reaches the founder's ₹4L quote for that
-// design.
+// design. That ₹4L reference is a QUOTE — it already carries the negotiating
+// margin — so the rate derived from it does NOT take DECOR_DEMO_HEADROOM on
+// top; see floralRunPrices. Any re-derivation of these rates must preserve
+// that: a rate taken from a quoted figure is already headroomed.
 const STRUCTURE_MIN_WIDTH_FT = 30;
 const DECOR_STRUCTURE_RATE_STEEL = Number(process.env.DECOR_STRUCTURE_RATE_STEEL) || 390;
 const DECOR_STRUCTURE_RATE_FRP = Number(process.env.DECOR_STRUCTURE_RATE_FRP) || 500;
@@ -118,16 +121,23 @@ const structureCharge = (m) => {
 };
 
 // Shared floral-run pricing: natural = run × rate, other tiers via divisors,
-// each displayed as a ±spread range around the headroomed figure. The
-// structure charge is a FLAT addend — fabrication does not vary with the floral
-// tier — summed in BEFORE the headroom and spread so both carry the same
-// treatment, and so the client sees ONE number rather than two line items.
+// each displayed as a ±spread range around the headroomed figure.
+//
+// HEADROOM APPLIES TO THE FLORAL COMPONENT ONLY. The floral rates were derived
+// from actual CHARGED catalogue prices, so negotiating headroom is a genuine
+// addition on top. The structure rate was derived from the founder's ₹4L
+// reference for a 60×12 build — and that reference is itself a QUOTE, so it
+// already contains the negotiating margin. Multiplying it again double-counts.
+// The structure charge is therefore a FLAT addend: added after headroom, but
+// still inside the ±spread so the client sees ONE number rather than two line
+// items. It is not tier-scaled either — fabrication does not vary with the
+// floral tier.
 const floralRunPrices = (floralRunFt, ratePerFt, divisors, structure) => {
   const fresh = floralRunFt * ratePerFt;
   const structureCost = structure && structure.applies ? structure.cost : 0;
   const prices = {};
   Object.entries(divisors).forEach(([tier, divisor]) => {
-    const centre = (fresh / divisor + structureCost) * DECOR_DEMO_HEADROOM;
+    const centre = (fresh / divisor) * DECOR_DEMO_HEADROOM + structureCost;
     prices[tier] = {
       low: round500(centre * (1 - STAGE_RANGE_SPREAD)),
       high: round500(centre * (1 + STAGE_RANGE_SPREAD)),

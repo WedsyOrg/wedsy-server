@@ -576,24 +576,36 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     confidence: 0.6,
   });
 
-  // FOUNDER'S ₹4L QUOTE: a 60×12 blocky build with modest floral. Structure is
-  // ₹2.8L of that, so the ₹4L point implies ~12.5ft of floral run (21% of the
-  // 60ft span) once the ×1.15 headroom is on both parts. Coverage across the
-  // whole "modest" reading (~20-30%) is pinned here rather than one lucky
-  // point, because the founder's figure is a quote, not a measurement.
+  // HEADROOM APPLIES TO FLORAL ONLY. The floral rates came from actually
+  // CHARGED catalogue prices, so ×1.15 is a real addition; the structure rate
+  // was derived from the founder's ₹4L QUOTE, which already carries the
+  // negotiating margin, so headrooming it again would double-count. This test
+  // pins the exact formula rather than a band, because the distinction is
+  // invisible in a range and easy to "tidy" away later.
   const big = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(12, 5, "blocky") }), []);
   eq(big.structure.cost, 280800, "60ft × 12ft blocky → ₹2.8L of structure");
   eq(big.ladder.length, 1, "still ONE row — structure is never a second line item");
   eq(big.stageMeasurements.floralRunFt, 12.5, "21% coverage of a 60ft span → 12.5ft of floral run");
-  ok(
-    big.ladder[0].prices.natural.low < 400000 && big.ladder[0].prices.natural.high > 400000,
-    `21% floral on a 60×12 blocky build straddles the founder's ₹4L quote (${JSON.stringify(big.ladder[0].prices.natural)})`
+  const r500 = (v) => Math.round(v / 500) * 500;
+  const expectedCentre = 12.5 * DECOR_FLORAL_RATE_PER_FT * 1.15 + 280800; // floral headroomed, structure NOT
+  range(
+    big.ladder[0].prices.natural,
+    r500(expectedCentre * 0.93),
+    r500(expectedCentre * 1.07),
+    "structure enters the centre at face value, floral at ×1.15"
   );
-  // The top of "modest" (29% coverage) sits just above ₹4L, not wildly past it.
-  const bigger = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(12, 7, "blocky") }), []);
   ok(
-    bigger.ladder[0].prices.natural.low > 400000 && bigger.ladder[0].prices.natural.low < 430000,
-    `29% floral lands just above ₹4L (${JSON.stringify(bigger.ladder[0].prices.natural)})`
+    big.ladder[0].prices.natural.low < r500((12.5 * DECOR_FLORAL_RATE_PER_FT + 280800) * 1.15 * 0.93),
+    "and prices strictly below the double-counted figure headroom-on-both would give"
+  );
+
+  // FOUNDER'S ₹4L QUOTE: 60×12 blocky with modest floral. Structure is ₹2.8L of
+  // it, so the ₹4L point sits around 29% coverage of the 60ft span.
+  const bigger = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(12, 7, "blocky") }), []);
+  eq(bigger.stageMeasurements.floralRunFt, 17.5, "29% coverage of a 60ft span → 17.5ft of floral run");
+  ok(
+    bigger.ladder[0].prices.natural.low < 400000 && bigger.ladder[0].prices.natural.high > 400000,
+    `29% floral on a 60×12 blocky build straddles the founder's ₹4L quote (${JSON.stringify(bigger.ladder[0].prices.natural)})`
   );
 
   // The same build in FRP costs more, purely on geometry.
