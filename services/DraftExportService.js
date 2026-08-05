@@ -5,6 +5,8 @@
 // (DraftEventService.totalsFor via getDraftDetail) or stored line prices.
 // Images are best-effort: any fetch failure leaves the cell blank; capped
 // concurrency + a global time budget guard the whole pass.
+const fs = require("fs");
+const path = require("path");
 const ExcelJS = require("exceljs");
 const DraftEventService = require("./DraftEventService");
 const Enquiry = require("../models/Enquiry");
@@ -107,229 +109,492 @@ const paxResolver = (lead) => {
 };
 
 // ── CLIENT QUOTE layout (?layout=quote) ──────────────────────────────────────
-// Cost-bucket columns per row (the row's money lands in exactly ONE bucket),
-// event + category cells merged, client-language descriptions. Totals ALWAYS
-// come from the server's totals object; bucket sums reconcile to the event
-// total and the grand total to the rupee.
-const BUCKET_ORDER = ["Decor", "Furniture", "Lighting & Sound", "Logistics", "Others"];
-// ── THE BUCKET MAPPING — the single place to change routing. ──
-// Named-category rules run FIRST (a group category literally named
-// "Furniture"/"Lighting" wins); then a single-view décor category → Decor;
-// everything else → Others. Non-décor rows route by kind (see mapperFrom).
-const CATEGORY_NAME_RULES = [
-  { re: /furnitur/i, bucket: "Furniture" },
-  { re: /light|sound|audio/i, bucket: "Lighting & Sound" },
+// ONE continuous branded sheet — no per-event tabs, no summary tab. Hero band,
+// a single header row, every event's items running straight into the next, and
+// the whole-wedding closing block last. DISPLAY ONLY: every rupee shown is the
+// server's own number (totals.days[].total / totals.eventLevelItems /
+// totals.net) or the item's stored `price`; the platform/flooring split is a
+// presentation of `price`, never a re-derivation of it.
+const QUOTE_SHEET = "Client Quote";
+const QUOTE_COLS = [
+  { header: "Date", width: 9 },
+  { header: "Event", width: 13 },
+  { header: "Category", width: 17 },
+  { header: "Image", width: 19 },
+  { header: "Item description", width: 31 },
+  { header: "Notes", width: 19 },
+  { header: "Notes Ref Image", width: 16 },
+  { header: "Pricing", width: 13 },
 ];
-const loadBucketMapper = async () => {
-  const cats = await Category.find({}, { name: 1, adminEventToolView: 1 }).lean().catch(() => []);
-  const singleView = new Set(cats.filter((c) => c.adminEventToolView !== "group").map((c) => c.name));
-  const forCategory = (name) => {
-    for (const r of CATEGORY_NAME_RULES) if (r.re.test(name || "")) return r.bucket;
-    if (singleView.has(name)) return "Decor"; // single-view décor
-    return "Others";
-  };
-  // kind: "decor" | "package" | "custom" | "mandatory"
-  return (kind, category) => {
-    if (kind === "mandatory") return "Logistics";
-    if (kind === "package") return "Decor";
-    if (kind === "custom") return "Others";
-    return forCategory(category); // décor item, by its category
-  };
+// Excel's char-unit → pixel rule (px = round(chars × 7) + 5); needed because
+// image placement is in pixels but columns are sized in char units.
+const COL_PX = QUOTE_COLS.map((c) => Math.round(c.width * 7) + 5);
+const PT_PX = 4 / 3; // points → pixels (96dpi)
+
+// STYLE TOKENS — sampled from assets/logo-black.png.
+const Q_MAROON = "FF842B2E"; // header fill + event-total start
+const Q_DEEP = "FF5D2021"; // grand total + gradient end
+const Q_BRIGHT = "FFAD373B"; // gradient start
+const Q_INK = "FF1C1815";
+const Q_MUTED = "FF6B655E";
+const Q_BORDER = "FFD9D3C9";
+const Q_WHITE = "FFFFFFFF";
+const Q_MONEY = '"₹"#,##,##0;-"₹"#,##,##0;"—"'; // Indian grouping; zero renders as —
+const Q_GRADIENT = {
+  type: "gradient",
+  gradient: "angle",
+  degree: 0,
+  stops: [
+    { position: 0, color: { argb: Q_BRIGHT } },
+    { position: 1, color: { argb: Q_DEEP } },
+  ],
+};
+const LOGO_PATH = path.join(__dirname, "../assets/logo-black.png");
+const LOGO_W = 340;
+const LOGO_H = 88; // 1220×315 → 3.873:1; 340×88 preserves it (no squash)
+
+const ITEM_ROW_PT = 78; // an item/note row — tall enough for a large image
+const SUB_ROW_PT = 18; // the ↳ Platform / ↳ Flooring sub-row
+const FLAT_ROW_PT = 24; // package / custom / mandatory rows (no image)
+const IMG_PAD = 4;
+
+// ── image geometry ───────────────────────────────────────────────────────────
+// Natural pixel size straight off the buffer — no image library. Unknown
+// format → null, and the caller then fills the box (never distorts a known one).
+const imageSize = (buffer, extension) => {
+  try {
+    if (extension === "png" && buffer.length > 24 && buffer.toString("ascii", 12, 16) === "IHDR") {
+      return { w: buffer.readUInt32BE(16), h: buffer.readUInt32BE(20) };
+    }
+    if (extension === "gif" && buffer.length > 10) {
+      return { w: buffer.readUInt16LE(6), h: buffer.readUInt16LE(8) };
+    }
+    if (extension === "jpeg") {
+      let p = 2;
+      while (p + 9 < buffer.length) {
+        if (buffer[p] !== 0xff) { p++; continue; }
+        const marker = buffer[p + 1];
+        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+          return { h: buffer.readUInt16BE(p + 5), w: buffer.readUInt16BE(p + 7) };
+        }
+        if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { p += 2; continue; }
+        p += 2 + buffer.readUInt16BE(p + 2);
+      }
+    }
+  } catch {
+    /* unreadable header — fall through to null */
+  }
+  return null;
 };
 
-// Client-language description composed from OUR data — never product codes.
-const describeItem = (it) => {
-  const lines = [it.name || "Item"];
-  if (it.variant && it.variant !== it.productVariant) lines.push(it.variant); // variation
-  if (it.productVariant && it.productVariant !== "Standard" && it.productVariant !== it.variant) lines.push(it.productVariant); // tier
-  const d = it.dimensions || {};
-  if (it.platform) lines.push(`Platform ${d.length || 0} × ${d.breadth || 0} × ${d.height || 0} ft`);
-  if (it.flooring) lines.push(`${it.flooring} flooring`);
+// Fit-to-cell, aspect preserved, centred in the (possibly merged) cell box.
+// col/row are 0-based/1-based exactly as exceljs wants them.
+const placeImage = (wb, ws, img, { col, row, spanRows, rowPt }) => {
+  if (!img || !img.buffer) return false;
+  const boxW = COL_PX[col] - IMG_PAD * 2;
+  const rowPx = rowPt * PT_PX;
+  const boxH = spanRows * rowPx - IMG_PAD * 2;
+  if (boxW <= 0 || boxH <= 0) return false;
+  const natural = imageSize(img.buffer, img.extension) || { w: boxW, h: boxH };
+  const scale = Math.min(boxW / natural.w, boxH / natural.h);
+  const w = Math.max(1, natural.w * scale);
+  const h = Math.max(1, natural.h * scale);
+  const imageId = wb.addImage({ buffer: img.buffer, extension: img.extension });
+  ws.addImage(imageId, {
+    tl: {
+      col: col + (IMG_PAD + (boxW - w) / 2) / COL_PX[col],
+      row: row - 1 + (IMG_PAD + (boxH - h) / 2) / rowPx,
+    },
+    ext: { width: w, height: h },
+    editAs: "oneCell",
+  });
+  return true;
+};
+
+// ── hero copy ────────────────────────────────────────────────────────────────
+const Q_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const parseDay = (s) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(s || ""));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+const shortDate = (s) => {
+  const d = parseDay(s);
+  return d ? `${d.getDate()} ${Q_MONTHS[d.getMonth()]}` : String(s || "—");
+};
+const longDate = (s) => {
+  const d = parseDay(s);
+  return d ? `${d.getDate()} ${Q_MONTHS[d.getMonth()]} ${d.getFullYear()}` : String(s || "");
+};
+const dateRangeOf = (days) => {
+  const dated = (days || []).map((d) => d && d.date).filter((s) => parseDay(s)).sort();
+  if (!dated.length) return "";
+  const a = dated[0];
+  const b = dated[dated.length - 1];
+  return a === b ? longDate(a) : `${longDate(a)} – ${longDate(b)}`;
+};
+// "Groom & Bride"; either name missing → the lead's own name.
+const coupleNameOf = (lead) => {
+  const q = (lead && lead.qualificationData) || {};
+  const groom = String(q.groomName || "").trim();
+  const bride = String(q.brideName || "").trim();
+  if (groom && bride) return `${groom} & ${bride}`;
+  return String((lead && lead.name) || "").trim() || "Wedsy Client";
+};
+// pax lives per FUNCTION as a free string ("250", "~300 pax"); the hero shows
+// the biggest one that parses, and nothing at all when none do.
+const maxPaxOf = (lead) => {
+  let max = 0;
+  for (const d of (lead && lead.qualificationData && lead.qualificationData.eventDays) || []) {
+    for (const fn of (d && d.functions) || []) {
+      const n = Number(String((fn && fn.pax) || "").replace(/[^0-9.]/g, ""));
+      if (Number.isFinite(n) && n > max) max = n;
+    }
+  }
+  return max || null;
+};
+
+// ── per-item money split (DISPLAY of the stored price, not a recompute) ──────
+// The legs mirror eventDecorPricing.lineTotal exactly so the sub-row can be
+// labelled correctly; the sub-row's VALUE is the remainder of the stored price,
+// so parent + sub ≡ item.price to the rupee whatever the util rounded.
+const priceLegs = (it) => {
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+  const qty = num(it.quantity);
+  const dim = it.dimensions || {};
+  const L = num(dim.length);
+  const B = num(dim.breadth);
+  const H = num(dim.height);
+  const pathwayMult = it.category === "Pathway" ? qty : 1;
+  const addOns = (Array.isArray(it.addOns) ? it.addOns : []).reduce(
+    (s, a) => s + num(a && a.price) * (a && a.quantity !== undefined ? num(a.quantity) : 1),
+    0
+  );
+  const product = Math.round(qty * (num(it.decorPrice) + num(it.priceModifier) + num(it.priceAdj)) + addOns);
+  const platformLeg = (it.platform ? L * B * num(it.platformRate) : 0) * pathwayMult;
+  const flooringLeg = (L + H) * (B + H) * num(it.flooringRate) * pathwayMult;
+  const line = num(it.price);
+  return { product, extra: line - product, platformLeg, flooringLeg, line };
+};
+
+// The E column: the item's name, then its descriptive sub-components. Notes are
+// deliberately ABSENT — they render one-per-row in F with their image in G.
+const describeParts = (it) => {
+  const detail = [];
+  if (it.variant && it.variant !== it.productVariant && it.variant !== "Standard") detail.push(it.variant);
+  if (it.productVariant && it.productVariant !== "Standard" && it.productVariant !== it.variant) detail.push(it.productVariant);
+  if (Number(it.quantity) > 1) detail.push(`Qty ${it.quantity}${it.unit ? ` ${it.unit}` : ""}`);
+  const included = [];
   const colours = [it.primaryColor, it.secondaryColor, it.tertiaryColor].filter(Boolean);
-  if (colours.length) lines.push(`Colours: ${colours.join(" · ")}`);
-  const inc = (it.included || []).filter(Boolean);
-  if (inc.length) lines.push(`Includes: ${inc.join("; ")}`);
-  const addons = (it.addOns || []).filter((a) => a && a.name).map((a) => (Number(a.quantity) > 1 ? `${a.name} ×${a.quantity}` : a.name));
-  if (addons.length) lines.push(`Add-ons: ${addons.join("; ")}`);
-  const notes = (it.notes || []).map((n) => n && n.text).filter(Boolean);
-  if (notes.length) lines.push(notes.join("; "));
-  if (it.setupLocation) lines.push(`Setup: ${it.setupLocation}`);
-  return lines.join("\n");
+  if (colours.length) included.push(colours.join(" · "));
+  for (const inc of (it.included || []).filter(Boolean)) included.push(inc);
+  for (const a of (it.addOns || []).filter((a) => a && a.name)) {
+    included.push(Number(a.quantity) > 1 ? `${a.name} ×${a.quantity}` : a.name);
+  }
+  if (included.length) detail.push(`Included: ${included.join("; ")}`);
+  if (it.setupLocation) detail.push(`Setup: ${it.setupLocation}`);
+  return { head: it.name || "Item", detail };
+};
+const singleDesc = (it) => {
+  const { head, detail } = describeParts(it);
+  return [head, ...detail].join("\n");
+};
+const groupDesc = (it) => {
+  const { head, detail } = describeParts(it);
+  return detail.length ? `${head} — ${detail.join(" · ")}` : head;
+};
+// The sub-row's E: size + flooring type, one line.
+const platformDesc = (it) => {
+  const d = it.dimensions || {};
+  const bits = [];
+  if (it.platform) bits.push(`${d.length || 0} × ${d.breadth || 0} × ${d.height || 0} ft`);
+  else if (d.length || d.breadth) bits.push(`${d.length || 0} × ${d.breadth || 0} ft`);
+  if (it.flooring) bits.push(`${it.flooring} flooring`);
+  return bits.join(" · ") || "Platform & flooring";
 };
 const quoteMandatoryDesc = (mi) => {
   const sel = mi.selection && typeof mi.selection === "object" ? Object.values(mi.selection).filter(Boolean) : [];
   if (sel.length) return `${mi.title} — ${sel.join(", ")}`;
   if (mi.note) return `${mi.title} — ${mi.note}`;
-  return mi.title;
+  return mi.title || "Item";
+};
+const PACKAGE_VARIANT = {
+  artificialFlowers: "Artificial flowers",
+  naturalFlowers: "Natural flowers",
+  mixedFlowers: "Mixed flowers",
 };
 
-// A day's quote rows + per-bucket totals (included rows only). Bucket totals
-// reconcile to the server's dayTotal exactly: add-ons fold into their parent
-// décor item (client-clean, no stray negative lines), so
-//   Σ decor.price (incl add-ons) + packages + custom(ES) + mandatory(ES,req)
-// = the server's day total. Excluded décor items are shown (when asked) but
-// never summed.
-const quoteRowsForDay = (day, includeExcluded, mapper, byCategory) => {
-  const rows = [];
-  const bucketTotals = Object.fromEntries(BUCKET_ORDER.map((b) => [b, 0]));
-  const push = (r) => {
-    if (!r.excluded && r.amount) bucketTotals[r.bucket] += Math.round(Number(r.amount) || 0);
-    rows.push(r);
-  };
-  // décor GROUPED by category (in OS render order) so each category's rows are
-  // contiguous and the Category cell can merge down its own items.
-  const decor = (day.decorItems || []).filter((it) => includeExcluded || it.includedInTotal !== false);
-  const cats = [...new Set(decor.map((it) => it.category || "Décor"))].sort(byCategory);
-  for (const cat of cats) {
-    for (const it of decor.filter((x) => (x.category || "Décor") === cat)) {
-      push({
-        category: cat,
-        description: describeItem(it),
-        qty: it.quantity || 1,
-        bucket: mapper("decor", cat),
-        amount: Number(it.price) || 0,
-        excluded: it.includedInTotal === false,
-        imageUrl: it.thumbnail || "",
-      });
-    }
-  }
-  for (const p of day.packages || []) {
-    push({ category: "Packages", description: `Décor package${p.variant ? ` (${p.variant})` : ""}`, qty: 1, bucket: mapper("package"), amount: Number(p.price) || 0, excluded: false, imageUrl: "" });
-  }
-  for (const c of day.customItems || []) {
-    if (c.includeInTotalSummary) continue; // TS → whole-wedding summary, not the event sheet
-    push({ category: "Additional", description: c.name || "Custom item", qty: c.quantity != null ? c.quantity : 1, bucket: mapper("custom"), amount: Number(c.price) || 0, excluded: false, imageUrl: "" });
-  }
-  for (const mi of day.mandatoryItems || []) {
-    if (!mi.itemRequired || mi.includeInTotalSummary) continue; // only ES required rows hit the day total
-    push({ category: "Logistics", description: quoteMandatoryDesc(mi), qty: 1, bucket: mapper("mandatory"), amount: Number(mi.price) || 0, excluded: false, imageUrl: "" });
-  }
-  return { rows, bucketTotals };
+// Categories rendered in "group" mode in the admin event tool — everything
+// else (including a category with no view set) renders "single".
+const groupViewSet = async () => {
+  const cats = await Category.find({}, { name: 1, adminEventToolView: 1 }).lean().catch(() => []);
+  return new Set(cats.filter((c) => c.adminEventToolView === "group").map((c) => c.name));
 };
 
-const buildQuoteBody = async ({ wb, detail, totals, paxOf, images, usedNames, withPrice, includeExcluded }) => {
-  const mapper = await loadBucketMapper();
+const buildQuoteBody = async ({ wb, detail, totals, lead, images, usedNames, withPrice, includeExcluded }) => {
   const byCategory = await categoryOrderer();
+  const isGroupView = await groupViewSet();
 
-  // Summary sheet FIRST (filled last, once the whole-wedding mix is known).
-  const summary = wb.addWorksheet(sheetNameFor("Summary", usedNames));
-  const mix = Object.fromEntries(BUCKET_ORDER.map((b) => [b, 0]));
-  const perEvent = [];
+  const ws = wb.addWorksheet(sheetNameFor(QUOTE_SHEET, usedNames), {
+    views: [{ showGridLines: false }],
+    // exceljs treats width 9 as "not custom" and omits its <col> entry, so
+    // column A would fall back to Excel's 8.43 default. Declaring the sheet
+    // default as 9 pins A at exactly the spec'd width.
+    properties: { defaultColWidth: 9 },
+    pageSetup: {
+      orientation: "landscape",
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 1,
+      margins: { left: 0.2, right: 0.2, top: 0.2, bottom: 0.2, header: 0, footer: 0 },
+    },
+  });
+  ws.columns = QUOTE_COLS.map((c) => ({ width: c.width }));
+
+  const CENTER = { horizontal: "center", vertical: "middle", wrapText: true };
+  const font = (extra = {}) => ({ name: "Arial", size: 10, color: { argb: Q_INK }, ...extra });
+  const MUTED = font({ color: { argb: Q_MUTED } });
+  const MUTED_ITALIC = font({ color: { argb: Q_MUTED }, italic: true, size: 9 });
+  const solid = (argb) => ({ type: "pattern", pattern: "solid", fgColor: { argb } });
+  const thin = { style: "thin", color: { argb: Q_BORDER } };
+  const BORDER = { top: thin, left: thin, bottom: thin, right: thin };
+  // Borders + centring land on FILLED rows only; the hero band above stays bare.
+  const dressRow = (rowNumber, { height, fill, rowFont } = {}) => {
+    const row = ws.getRow(rowNumber);
+    if (height) row.height = height;
+    for (let c = 1; c <= QUOTE_COLS.length; c++) {
+      const cell = row.getCell(c);
+      cell.alignment = CENTER;
+      cell.border = BORDER;
+      cell.font = rowFont || font();
+      if (fill) cell.fill = fill;
+    }
+    return row;
+  };
+  // withPrice=false blanks column H and keeps the layout intact.
+  const money = (cell, value, { muted = false } = {}) => {
+    if (!withPrice) return;
+    cell.value = Math.round(Number(value) || 0);
+    cell.numFmt = Q_MONEY;
+    if (muted) cell.font = { ...(cell.font || {}), color: { argb: Q_MUTED }, italic: true };
+  };
+
+  // ── HERO (rows 2–4) ──
+  ws.getRow(1).height = 6;
+  ws.getRow(2).height = 26;
+  ws.getRow(3).height = 20;
+  ws.getRow(4).height = 20; // 66pt == 88px == the logo's height
+  ws.getRow(5).height = 6; // 8px spacer
+  try {
+    const logo = fs.readFileSync(LOGO_PATH);
+    const logoId = wb.addImage({ buffer: logo, extension: "png" });
+    ws.addImage(logoId, { tl: { col: 0, row: 1 }, ext: { width: LOGO_W, height: LOGO_H }, editAs: "oneCell" });
+  } catch (e) {
+    console.error("[quote] logo unavailable:", e.message); // flag, never fake
+  }
+  const heroLine = (rowNumber, text, cellFont) => {
+    ws.mergeCells(rowNumber, 7, rowNumber, 8);
+    const cell = ws.getCell(rowNumber, 7);
+    cell.value = text;
+    cell.alignment = { horizontal: "right", vertical: "middle" };
+    cell.font = cellFont;
+  };
+  const pax = maxPaxOf(lead);
+  heroLine(2, coupleNameOf(lead), font({ size: 14, bold: true, color: { argb: Q_MAROON } }));
+  heroLine(3, dateRangeOf(detail.days), MUTED);
+  heroLine(4, `Décor Quote${pax ? ` · ${pax} guests` : ""}`, MUTED);
+
+  // ── HEADER (row 6) ──
+  const header = ws.getRow(6);
+  QUOTE_COLS.forEach((c, i) => { header.getCell(i + 1).value = c.header; });
+  dressRow(6, { height: 22, fill: solid(Q_MAROON), rowFont: font({ bold: true, size: 10.5, color: { argb: Q_WHITE } }) });
+
+  let r = 7;
+  let renderedGrand = 0;
+
+  // One flat row (packages / custom / mandatory / any image-less line).
+  const flatRow = ({ desc, note, amount, excluded }) => {
+    const row = dressRow(r, { height: FLAT_ROW_PT, rowFont: excluded ? MUTED : font() });
+    row.getCell(5).value = excluded ? `${desc}\nNot included` : desc;
+    if (note) row.getCell(6).value = note;
+    money(row.getCell(8), amount, { muted: excluded });
+    r++;
+  };
+  // The ↳ Platform / ↳ Flooring sub-row. Its H is the REMAINDER of the stored
+  // price, so parent + sub is the item's full line exactly.
+  const subRow = (it, legs, excluded) => {
+    if (legs.platformLeg + legs.flooringLeg <= 0) return;
+    const row = dressRow(r, { height: SUB_ROW_PT, rowFont: MUTED_ITALIC });
+    row.getCell(3).value = legs.platformLeg > 0 ? "↳ Platform" : "↳ Flooring";
+    row.getCell(5).value = platformDesc(it);
+    money(row.getCell(8), legs.extra, { muted: true });
+    r++;
+  };
 
   for (const day of detail.days || []) {
-    const ws = wb.addWorksheet(sheetNameFor(day.name, usedNames));
-    const cols = [{ width: 16 }, { width: 16 }, { width: 14 }, { width: 46 }, { width: 6 }];
-    if (withPrice) for (const b of BUCKET_ORDER) cols.push({ width: b.length > 10 ? 15 : 12 });
-    ws.columns = cols;
+    const eventFirstRow = r;
+    let eventRendered = 0;
 
-    const t1 = ws.addRow([day.name || "Event"]);
-    t1.font = { bold: true, size: 13 };
-    ws.addRow([`Date: ${day.date || "—"}    Time: ${day.time || "—"}    Venue: ${day.venue || "—"}    Pax: ${paxOf(day)}`]);
-    ws.addRow([]);
-    const headerCells = ["Event", "Category", "Image", "Description", "Qty", ...(withPrice ? BUCKET_ORDER : [])];
-    const header = ws.addRow(headerCells);
-    header.font = { bold: true };
-    header.fill = BAND_FILL;
-    ws.views = [{ state: "frozen", ySplit: header.number }];
+    const decor = (day.decorItems || []).filter((it) => includeExcluded || it.includedInTotal !== false);
+    const cats = [...new Set(decor.map((it) => it.category || "Décor"))].sort(byCategory);
 
-    const { rows, bucketTotals } = quoteRowsForDay(day, includeExcluded, mapper, byCategory);
-    const firstDataRow = header.number + 1;
-    const catRanges = []; // { cat, start, end } for the Category merge
-    for (const qr of rows) {
-      const cells = [day.name || "Event", qr.category, "", qr.description, qr.qty];
-      // the row's money lands in exactly ONE bucket; excluded rows still show
-      // it (struck) but are never summed into bucketTotals.
-      if (withPrice) for (const b of BUCKET_ORDER) cells.push(b === qr.bucket ? Math.round(Number(qr.amount) || 0) : "");
-      const row = ws.addRow(cells);
-      row.height = 64;
-      row.alignment = { vertical: "top" };
-      row.getCell(4).alignment = { wrapText: true, vertical: "top" };
-      if (withPrice) for (let i = 0; i < BUCKET_ORDER.length; i++) row.getCell(6 + i).numFmt = RUPEE_FMT;
-      if (qr.excluded) strikeRow(row);
-      // category run tracking
-      const last = catRanges[catRanges.length - 1];
-      if (last && last.cat === qr.category) last.end = row.number;
-      else catRanges.push({ cat: qr.category, start: row.number, end: row.number });
-      // embed image
-      const img = qr.imageUrl && images.get(qr.imageUrl);
-      if (img) {
-        const imageId = wb.addImage({ buffer: img.buffer, extension: img.extension });
-        ws.addImage(imageId, { tl: { col: 2, row: row.number - 1 }, ext: { width: 88, height: 84 }, editAs: "oneCell" });
+    for (const cat of cats) {
+      const items = decor.filter((it) => (it.category || "Décor") === cat);
+      const catFirstRow = r;
+
+      if (isGroupView.has(cat)) {
+        // GROUP — the category name merges down every item; each item is a row.
+        for (const it of items) {
+          const legs = priceLegs(it);
+          const excluded = it.includedInTotal === false;
+          const row = dressRow(r, { height: ITEM_ROW_PT, rowFont: excluded ? MUTED : font() });
+          row.getCell(5).value = excluded ? `${groupDesc(it)}\nNot included` : groupDesc(it);
+          money(row.getCell(8), legs.product, { muted: excluded });
+          if (it.thumbnail) placeImage(wb, ws, images.get(it.thumbnail), { col: 3, row: r, spanRows: 1, rowPt: ITEM_ROW_PT });
+          r++;
+          subRow(it, legs, excluded);
+          if (!excluded) { eventRendered += legs.line; }
+        }
+        const catLastRow = r - 1;
+        if (catLastRow > catFirstRow) {
+          ws.mergeCells(catFirstRow, 3, catLastRow, 3);
+          ws.mergeCells(catFirstRow, 6, catLastRow, 6); // the category's COMMON note
+          ws.mergeCells(catFirstRow, 7, catLastRow, 7); // G mirrors the merge (group notes carry no image)
+        }
+        ws.getCell(catFirstRow, 3).value = cat;
+        const catNote = (day.categoryNotes || []).find((c) => c && c.category === cat);
+        if (catNote && catNote.note) ws.getCell(catFirstRow, 6).value = catNote.note;
+      } else {
+        // SINGLE — one detail block per item; notes one-per-row in F with that
+        // note's ONE ref image in G on the SAME row.
+        for (const it of items) {
+          const legs = priceLegs(it);
+          const excluded = it.includedInTotal === false;
+          const notes = (it.notes || []).filter((n) => n && (n.text || n.image));
+          const span = Math.max(1, notes.length);
+          const blockFirst = r;
+          for (let i = 0; i < span; i++) {
+            const row = dressRow(r, { height: ITEM_ROW_PT, rowFont: excluded ? MUTED : font() });
+            if (i === 0) {
+              row.getCell(3).value = cat;
+              row.getCell(5).value = excluded ? `${singleDesc(it)}\nNot included` : singleDesc(it);
+              money(row.getCell(8), legs.product, { muted: excluded });
+            }
+            if (notes[i] && notes[i].text) row.getCell(6).value = notes[i].text;
+            r++;
+          }
+          const blockLast = blockFirst + span - 1;
+          if (span > 1) for (const c of [3, 4, 5, 8]) ws.mergeCells(blockFirst, c, blockLast, c);
+          if (it.thumbnail) placeImage(wb, ws, images.get(it.thumbnail), { col: 3, row: blockFirst, spanRows: span, rowPt: ITEM_ROW_PT });
+          notes.forEach((n, i) => {
+            if (n.image) placeImage(wb, ws, images.get(n.image), { col: 6, row: blockFirst + i, spanRows: 1, rowPt: ITEM_ROW_PT });
+          });
+          subRow(it, legs, excluded);
+          if (!excluded) { eventRendered += legs.line; }
+        }
+        const catLastRow = r - 1;
+        if (catLastRow >= catFirstRow) ws.getCell(catFirstRow, 3).value = cat;
       }
     }
-    const lastDataRow = ws.rowCount;
 
-    // merges: Event down all data rows; Category down its own run
-    if (lastDataRow >= firstDataRow) {
-      ws.mergeCells(firstDataRow, 1, lastDataRow, 1);
-      ws.getCell(firstDataRow, 1).alignment = { vertical: "middle" };
-      ws.getCell(firstDataRow, 1).font = { bold: true };
-      for (const r of catRanges) {
-        if (r.end > r.start) ws.mergeCells(r.start, 2, r.end, 2);
-        ws.getCell(r.start, 2).alignment = { vertical: "middle" };
+    // Packages / ES custom / ES mandatory — they are part of the server's event
+    // total, so they must be on the sheet for it to reconcile.
+    const extras = [
+      { cat: "Packages", entries: (day.packages || []).map((p) => ({
+        desc: `Décor package${p && p.variant ? ` (${PACKAGE_VARIANT[p.variant] || p.variant})` : ""}`,
+        note: (p && p.user_notes) || "", amount: Number(p && p.price) || 0, excluded: false,
+      })) },
+      { cat: day.customItemsTitle || "Additional", entries: (day.customItems || [])
+        .filter((c) => c && !c.includeInTotalSummary)
+        .filter((c) => includeExcluded || c.includedInTotal !== false)
+        .map((c) => ({
+          desc: `${c.name || "Custom item"}${Number(c.quantity) > 1 ? ` ×${c.quantity}` : ""}`,
+          note: c.notes || "", amount: Number(c.price) || 0, excluded: c.includedInTotal === false,
+        })) },
+      { cat: "Logistics", entries: (day.mandatoryItems || [])
+        .filter((mi) => mi && mi.itemRequired && !mi.includeInTotalSummary)
+        .map((mi) => ({ desc: quoteMandatoryDesc(mi), note: mi.description || "", amount: Number(mi.price) || 0, excluded: false })) },
+    ];
+    for (const block of extras) {
+      if (!block.entries.length) continue;
+      const blockFirst = r;
+      for (const e of block.entries) {
+        flatRow(e);
+        if (!e.excluded) eventRendered += e.amount;
       }
+      const blockLast = r - 1;
+      if (blockLast > blockFirst) ws.mergeCells(blockFirst, 3, blockLast, 3);
+      ws.getCell(blockFirst, 3).value = block.cat;
     }
 
-    if (withPrice) {
-      // BUCKET TOTALS row — per-column sums (included rows only)
-      const btCells = ["", "Bucket totals", "", "", ""];
-      for (const b of BUCKET_ORDER) btCells.push(bucketTotals[b] || 0);
-      const bt = ws.addRow(btCells);
-      bt.font = { bold: true };
-      bt.fill = TOTAL_FILL;
-      for (let i = 0; i < BUCKET_ORDER.length; i++) bt.getCell(6 + i).numFmt = RUPEE_FMT;
-      // EVENT TOTAL — the server's own per-day total (never recomputed)
-      const serverRow = (totals.days || []).find((d) => d.dayId === day.dayId) || {};
-      const et = ws.addRow(["", "EVENT TOTAL", "", "", "", serverRow.total || 0]);
-      et.font = { bold: true };
-      et.fill = TOTAL_FILL;
-      ws.mergeCells(et.number, 6, et.number, 5 + BUCKET_ORDER.length);
-      et.getCell(6).numFmt = RUPEE_FMT;
-      et.getCell(6).alignment = { horizontal: "left" };
-      perEvent.push({ name: day.name || "Event", total: serverRow.total || 0 });
-      for (const b of BUCKET_ORDER) mix[b] += bucketTotals[b] || 0;
-    } else {
-      perEvent.push({ name: day.name || "Event", total: null });
+    const eventLastRow = r - 1;
+    const serverRow = (totals.days || []).find((d) => d.dayId === day.dayId) || {};
+    const eventTotal = Number(serverRow.total) || 0;
+    if (eventLastRow < eventFirstRow && !eventTotal) continue; // an empty, costless day adds nothing
+
+    // Date + Event identify the whole block.
+    if (eventLastRow >= eventFirstRow) {
+      if (eventLastRow > eventFirstRow) {
+        ws.mergeCells(eventFirstRow, 1, eventLastRow, 1);
+        ws.mergeCells(eventFirstRow, 2, eventLastRow, 2);
+      }
+      ws.getCell(eventFirstRow, 1).value = shortDate(day.date);
+      ws.getCell(eventFirstRow, 2).value = day.name || "Event";
+      ws.getCell(eventFirstRow, 2).font = font({ bold: true });
     }
+
+    // EVENT TOTAL — the server's per-day number, verbatim.
+    const totalRow = dressRow(r, { height: 24, fill: Q_GRADIENT, rowFont: font({ bold: true, size: 11, color: { argb: Q_WHITE } }) });
+    ws.mergeCells(r, 1, r, 7);
+    totalRow.getCell(1).value = `${day.name || "Event"} — Event Total`;
+    money(totalRow.getCell(8), eventTotal);
+    r++;
+
+    if (withPrice && Math.abs(eventRendered - eventTotal) > 1) {
+      console.warn(`[quote] "${day.name}" rendered ₹${eventRendered} vs server ₹${eventTotal} — showing the server's figure`);
+    }
+    renderedGrand += eventTotal;
   }
 
-  // ── fill the Summary sheet ──
-  summary.columns = [{ width: 30 }, { width: 18 }, { width: 16 }];
-  const title = summary.addRow([`${detail.name || "Draft"} — Quote`]);
-  title.font = { bold: true, size: 14 };
-  summary.addRow([]);
-  const head = summary.addRow(withPrice ? ["Event", "Total"] : ["Event"]);
-  head.font = { bold: true };
-  head.fill = BAND_FILL;
-  for (const e of perEvent) {
-    const r = summary.addRow(withPrice ? [e.name, e.total] : [e.name]);
-    if (withPrice) r.getCell(2).numFmt = RUPEE_FMT;
+  // ── CLOSING (whole wedding) ──
+  const caption = dressRow(r, { height: 16, rowFont: MUTED_ITALIC });
+  ws.mergeCells(r, 1, r, 8);
+  caption.getCell(1).value = "Applies across all events";
+  r++;
+
+  // TS items — server-filtered (mandatory needs itemRequired; custom needs
+  // includedInTotal !== false). They appear HERE and nowhere else, counted once.
+  for (const ts of totals.eventLevelItems || []) {
+    const row = dressRow(r, { height: 20 });
+    ws.mergeCells(r, 1, r, 2);
+    ws.mergeCells(r, 3, r, 7);
+    row.getCell(1).value = ts.kind === "mandatory" ? "Mandatory" : "Additional";
+    row.getCell(3).value = ts.name || "Item";
+    money(row.getCell(8), Number(ts.price) || 0);
+    r++;
   }
-  if (withPrice) {
-    summary.addRow([]);
-    const mh = summary.addRow(["Bucket mix (whole wedding)", ""]);
-    mh.font = { bold: true };
-    mh.fill = BAND_FILL;
-    for (const b of BUCKET_ORDER) {
-      const r = summary.addRow([b, mix[b] || 0]);
-      r.getCell(2).numFmt = RUPEE_FMT;
-    }
-    summary.addRow([]);
-    for (const ts of totals.eventLevelItems || []) {
-      const r = summary.addRow([`${ts.name} (whole wedding)`, ts.price]);
-      r.getCell(2).numFmt = RUPEE_FMT;
-    }
-    const sub = summary.addRow(["Subtotal", totals.gross || 0]);
-    sub.font = { bold: true };
-    sub.getCell(2).numFmt = RUPEE_FMT;
-    if (totals.discount) {
-      const dRow = summary.addRow(["Discount", -totals.discount]);
-      dRow.getCell(2).numFmt = RUPEE_FMT;
-    }
-    const grand = summary.addRow(["Grand total", totals.net != null ? totals.net : totals.grandTotal || 0]);
-    grand.font = { bold: true };
-    grand.fill = TOTAL_FILL;
-    grand.getCell(2).numFmt = RUPEE_FMT;
+  renderedGrand += Number(totals.eventLevelTotal) || 0;
+
+  const discount = Number(totals.discount) || 0;
+  const discountRow = dressRow(r, { height: 20 });
+  ws.mergeCells(r, 1, r, 7);
+  discountRow.getCell(1).value = "Discount";
+  money(discountRow.getCell(8), discount ? -discount : 0);
+  r++;
+
+  const net = totals.net != null ? Number(totals.net) : Number(totals.grandTotal) || 0;
+  const grandRow = dressRow(r, { height: 28, fill: Q_GRADIENT, rowFont: font({ bold: true, size: 13, color: { argb: Q_WHITE } }) });
+  ws.mergeCells(r, 1, r, 7);
+  grandRow.getCell(1).value = "GRAND TOTAL";
+  money(grandRow.getCell(8), net);
+  r++;
+
+  // Reconcile — Σ event totals + Σ TS − discount must be the server's net (which
+  // clamps at 0). We print the server's figure either way and flag a drift.
+  const expected = Math.max(0, renderedGrand - discount);
+  if (withPrice && Math.abs(expected - net) > 1) {
+    console.warn(`[quote] grand total reconcile drift: composed ₹${expected} vs server net ₹${net}`);
   }
 };
 
@@ -342,11 +607,13 @@ const buildWorkbook = async (leadId, eventId, { withPrice = true, includeExclude
   const paxOf = paxResolver(lead);
   const totals = detail.totals || {};
 
-  // image pass (product thumbnails + setup photos), before any sheet work
+  // image pass (product thumbnails + setup photos + per-note ref images),
+  // before any sheet work
   const urls = [];
   for (const day of detail.days || []) {
     for (const it of day.decorItems || []) {
       urls.push(it.thumbnail, it.setupLocationImage);
+      for (const nt of it.notes || []) urls.push(nt && nt.image);
     }
   }
   const images = await fetchImages(urls);
@@ -357,7 +624,7 @@ const buildWorkbook = async (leadId, eventId, { withPrice = true, includeExclude
 
   // CLIENT QUOTE layout is self-contained; the OPS layout below is unchanged.
   if (layout === "quote") {
-    await buildQuoteBody({ wb, detail, totals, paxOf, images, usedNames, withPrice, includeExcluded });
+    await buildQuoteBody({ wb, detail, totals, lead, images, usedNames, withPrice, includeExcluded });
     return wb;
   }
 
