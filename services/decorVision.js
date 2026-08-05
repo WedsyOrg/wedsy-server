@@ -151,14 +151,27 @@ const DEMO_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
   "minBuildWidth": { "minWidthFt": number, "reasoning": string, "confidence": number 0.0-1.0 },
   "recommendedSize": { "length": number, "width": number } | null,
   "occasion": { "value": one of ${JSON.stringify(OCCASIONS)} OR null, "confidence": number 0.0-1.0 },
-  "stageMeasurements": { "backdropWidthFt": number, "floralRunFt": number, "widthToHeightRatio": number, "rawHeightEstimateFt": number, "reasoning": string, "confidence": number 0.0-1.0 } | null
+  "stageMeasurements": { "sceneType": string, "repeatingElements": { "count": number, "type": string, "estimatedWidthEachFt": number }, "spanWidthFt": number, "backdropWidthFt": number, "floralRunFt": number, "widthToHeightRatio": number, "rawHeightEstimateFt": number, "reasoning": string, "confidence": number 0.0-1.0 } | null
 }
-"stageMeasurements" — for any backdrop-style installation (stage, backdrop, large photobooth wall); null when there is no backdrop:
-- backdropWidthFt: total backdrop width in feet. Count sofas across — a sofa is ~5 ft wide (e.g. "fits five sofas across" ≈ 25 ft).
+"stageMeasurements" — for any backdrop-style installation (stage, backdrop, large photobooth wall); null when there is no backdrop.
+WIDTH IS COUNTED, NOT EYEBALLED. Counting discrete units is reliable; judging a continuous span in feet is not — it has been wrong by +60% on small builds and -55% on large ones. Work through these three in order:
+- sceneType — classify THE SHOT, not the build. One of: "closeup_single_element" | "stage_fills_frame" | "wide_venue_shot" | "full_venue_with_grounds".
+  · closeup_single_element — one element (a single panel, one arch, a sofa vignette) fills the frame; no venue context at all.
+  · stage_fills_frame — the whole installation fills the frame edge to edge with little venue around it; typically one seating group in front.
+  · wide_venue_shot — the installation PLUS clear venue context: multiple seating clusters, an aisle, side walls, ceiling.
+  · full_venue_with_grounds — lawn, walkways, distant guests, the whole venue or its grounds in frame.
+  This is a scene choice, not a measurement: pick it from what is in frame and do NOT adjust it to agree with your width. A genuinely 50-60 ft build CANNOT be photographed close — it forces a wide or full-venue shot. A 10-12 ft haldi backdrop fills the frame with one sofa in front.
+- repeatingElements — the repeating ARCHITECTURAL UNIT the backdrop is built from: panels, bays, arches, columns, pillars, drapes.
+  · count: how many of those units span the backdrop. COUNT THEM, including partly-occluded ones at the edges. This is the reliable half of the estimate — spend your effort here.
+  · type: what the unit is — "panels", "bays", "arches", "columns", "pillars".
+  · estimatedWidthEachFt: the width of ONE unit. Judge it against a reference standing at THE SAME DEPTH as that unit — a chair on the stage, a person beside the panel, a doorway in the same plane. NEVER scale a foreground object against a distant backdrop: the foreground object is nearer and reads far larger in frame, and that is exactly what makes wide shots come out too small. If nothing sits at that depth, reason from the build: a full-height decorative panel is rarely under 4 ft or over 12 ft, and a structural bay of a large multi-bay facade is typically 8-12 ft.
+  If there is genuinely no repeating unit (one continuous floral wall), set count=1 and estimatedWidthEachFt to the whole width.
+- spanWidthFt: your whole-span impression in feet — how wide the backdrop simply LOOKS. Count sofas across if that helps (a sofa is ~5 ft wide). This is a CROSS-CHECK ONLY and does not set the answer.
+- backdropWidthFt = count × estimatedWidthEachFt. COMPUTE it from the two numbers above; do not re-guess it and do not reconcile it with spanWidthFt. If the three signals disagree — say a full_venue_with_grounds shot whose units multiply out to 24 ft — LEAVE THEM DISAGREEING and name the disagreement in "reasoning". Never split the difference: an averaged number is wrong in a new way and hides that anything was wrong.
 - floralRunFt: how many of those running feet are GENUINELY a wall of flowers. This is the price driver, and it is NOT the width: garlands, top borders, clusters and scattered arrangements count as a FRACTION of the width they span, never the full width. A 24 ft backdrop with only a top garland and side clusters has roughly 12-13 running feet of true floral. Only a solid floral wall counts foot-for-foot. State your arithmetic in "reasoning".
 - HEIGHT = the BUILT STRUCTURE ONLY, measured to the TOP EDGE of the backdrop panels/frames. Founder's rule: "mostly the panel height. Floral could be lower, or floral and panel could be the same height." Measure to the PANEL TOP. Explicitly IGNORE everything above the structure — venue background, trees, sky, ceiling, hanging lights not mounted on the build. Ignore floral spires that shoot above the panel line (still measure to the panel top). Ignore the platform/steps below the structure. NEVER scale the whole photo frame — only the structure itself.
 - widthToHeightRatio (the PRIMARY height signal): judge how many times WIDER the backdrop structure is than it is TALL — "about 3x wider than it is tall" → 3.0. Ratios are scale-invariant: no reference object needed, immune to camera angle, framing and lens.
-- rawHeightEstimateFt = backdropWidthFt / widthToHeightRatio. As a SANITY CHECK ONLY, also count sofa-heights (~3 ft each) against the structure; if the sofa-derived height disagrees with the ratio-derived height by more than ~40%, LOWER your confidence rather than picking one. State both estimates and the ratio in "reasoning". Do NOT round to a standard size — the server snaps to the real build heights.
+- rawHeightEstimateFt = spanWidthFt / widthToHeightRatio. Use the SPAN here, not the counted backdropWidthFt — the height read is accurate as it stands and the width rebuild must not disturb it. As a SANITY CHECK ONLY, also count sofa-heights (~3 ft each) against the structure; if the sofa-derived height disagrees with the ratio-derived height by more than ~40%, LOWER your confidence rather than picking one. State both estimates and the ratio in "reasoning". Do NOT round to a standard size — the server snaps to the real build heights.
 Set confidence below 0.5 when nothing in frame gives reliable scale.
 "minBuildWidth" — the MINIMUM width in feet this design could physically be built at, scaled from reference objects visible in the photo: sofa ~5 ft wide, chair ~1.5 ft, adult ~5.5 ft tall, doorway ~7 ft tall. Count the objects the installation spans (e.g. "backdrop fits five to six sofas across, so it needs 30 ft") and state that count in "reasoning". This is a physical floor, not a size estimate — a design can be built LARGER than its minimum, never smaller. Set confidence below 0.5 when nothing in frame gives reliable scale.
 "recommendedSize" — the single size from the category's vocabulary this design best fits, or null when the category has no meaningful size.
@@ -341,7 +354,7 @@ const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const message = await createWithRetry(client, {
     model: MODEL,
-    max_tokens: useMode === "demo" ? 896 : 1024, // demo carries observations + min-width + stage-measurement reasoning
+    max_tokens: useMode === "demo" ? 1024 : 1024, // demo carries observations + min-width + the three-part width working
     // See the model-capability guards above — API-forced, not tuning.
     ...(NO_SAMPLING_PARAMS.test(MODEL) ? {} : { temperature: 0 }),
     ...(THINKING_DEFAULTS_ON.test(MODEL) ? { thinking: { type: "disabled" } } : {}),

@@ -227,14 +227,88 @@ const resolveBackdropHeight = ({ rawHeightEstimateFt, backdropWidthFt, confidenc
   return { estimatedHeightFt: snapped, prior, unusual: snapped === 15 };
 };
 
+// ── Backdrop WIDTH model (rebuilt 2026-08) ───────────────────────────────────
+// The single span estimate was unreliable in BOTH directions against ground
+// truth: a 10ft haldi backdrop read 16ft (+60%), a 50-60ft build read 24ft
+// (-55%), and identical images re-run varied ±10%. The reasoning traces showed
+// why: the model COUNTS correctly and SIZES wrongly. On the 50-60ft build it
+// said "about 5 dark panels plus lanterns, roughly 24 ft wide" — 5 panels was
+// right, ~5ft each was not (they are 10-12ft). Counting is discrete and has
+// never failed; span estimation is continuous and always does.
+//
+// So width is now COMPUTED, not estimated: count × width-of-one-unit, with the
+// unit judged against a reference at the SAME DEPTH (a foreground sofa against
+// a distant backdrop is what compresses wide shots). The old span guess is
+// demoted to `spanWidthFt` — a cross-check that never sets the answer.
+//
+// HEIGHT IS DELIBERATELY UNTOUCHED. It was correct 10/10/12 against ground
+// truth 10/10/12, and it derives from width ÷ ratio — so re-basing it on the
+// new width would silently break the one signal that works. Height therefore
+// keeps deriving from the SPAN estimate (and the span sets the height prior),
+// exactly as before this rebuild. Do not "tidy" these two onto one width.
+const SCENE_TYPES = [
+  "closeup_single_element",
+  "stage_fills_frame",
+  "wide_venue_shot",
+  "full_venue_with_grounds",
+];
+// Scene type is an INDEPENDENT size sanity band — scene classification is a
+// discrete choice, which the model is reliable at, and a 50-60ft build simply
+// cannot be photographed close. The band a scene IMPLIES is what staff are
+// shown; the band that raises a DISPUTE is the opposite one, so the 25-30ft
+// zone between them stays neutral. Disputing on the implied edge instead would
+// flag every reading in that zone under every scene type at once.
+const NARROW_BAND_MAX_FT = 25; // closeup / fills-frame imply under this
+const WIDE_BAND_MIN_FT = 30; // wide / full-venue imply over this
+const SCENE_WIDTH_BANDS = {
+  closeup_single_element: { maxFt: NARROW_BAND_MAX_FT },
+  stage_fills_frame: { maxFt: NARROW_BAND_MAX_FT },
+  wide_venue_shot: { minFt: WIDE_BAND_MIN_FT },
+  full_venue_with_grounds: { minFt: WIDE_BAND_MIN_FT },
+};
+
+const readRepeatingElements = (re) => {
+  if (!re) return null;
+  const count = Math.round(Number(re.count));
+  const each = Number(re.estimatedWidthEachFt);
+  if (!(count > 0) || !(each > 0)) return null;
+  const type = typeof re.type === "string" && re.type.trim() ? re.type.trim() : "units";
+  return { count, type, estimatedWidthEachFt: each };
+};
+
+// CROSS-CHECK, NEVER AVERAGE. When the scene band and the computed width
+// disagree we keep the computed width and RECORD the disagreement — averaging
+// two disagreeing estimates yields a number that is wrong in a new way and
+// hides that anything was wrong.
+const sceneWidthCheck = (rawSceneType, widthFt) => {
+  const sceneType = SCENE_TYPES.includes(rawSceneType) ? rawSceneType : null;
+  const band = sceneType ? SCENE_WIDTH_BANDS[sceneType] : null;
+  if (!band || !(widthFt > 0)) return { sceneType, sceneWidthBand: null, widthDisputed: false };
+  // Fires only when the computed width lands squarely in the OTHER band — a
+  // close-up that measures 40ft, or a full-venue shot that measures 24ft.
+  const widthDisputed =
+    band.maxFt != null ? widthFt >= WIDE_BAND_MIN_FT : widthFt <= NARROW_BAND_MAX_FT;
+  return { sceneType, sceneWidthBand: band, widthDisputed };
+};
+
 // Defensive read of the vision measurement (also arrives client-supplied on a
 // category override, so validate here, not just in the vision layer). Floral
 // run can never exceed the backdrop width; height always resolves through the
 // build-height model above. estimatedHeightFt is the snapped, price-driving
 // value; rawHeightEstimateFt is kept for staff details / drift debugging.
+// The returned object is designed to ROUND-TRIP through this function: the
+// panel resends it verbatim on a category override.
 const readStageMeasurements = (sm) => {
   if (!sm) return null;
-  const width = Number(sm.backdropWidthFt);
+  // The span guess. New payloads send it as spanWidthFt; older ones (and a
+  // resent pre-rebuild measurement) only have backdropWidthFt, which WAS the
+  // span estimate — so falling back to it keeps those heights identical too.
+  const spanRaw = Number(sm.spanWidthFt);
+  const span = spanRaw > 0 ? spanRaw : Number(sm.backdropWidthFt);
+  const repeating = readRepeatingElements(sm.repeatingElements);
+  // count × width-each is the answer; the span only stands in when there is no
+  // usable unit count at all.
+  const width = repeating ? repeating.count * repeating.estimatedWidthEachFt : span;
   const run = Number(sm.floralRunFt);
   if (!(width > 0) || !(run > 0)) return null;
   const confidence = Math.max(0, Math.min(1, Number(sm.confidence) || 0));
@@ -244,11 +318,15 @@ const readStageMeasurements = (sm) => {
   // When a ratio is present the raw height is re-derived here deterministically;
   // the model's own sofa-scaled figure survives only when no ratio came back.
   const ratio = Number(sm.widthToHeightRatio);
-  const rawHeight = ratio > 0 ? width / ratio : Number(sm.rawHeightEstimateFt);
+  // HEIGHT STAYS ON THE SPAN (see the width-model note above): the 10/10/12
+  // ground-truth match came from span ÷ ratio, and the width rebuild must not
+  // move it. Only when there is no span at all does the computed width stand in.
+  const heightBasisWidth = span > 0 ? span : width;
+  const rawHeight = ratio > 0 ? heightBasisWidth / ratio : Number(sm.rawHeightEstimateFt);
   let reasoning = typeof sm.reasoning === "string" ? sm.reasoning : "";
   let estimatedHeightFt;
   if (rawHeight > 0) {
-    const resolved = resolveBackdropHeight({ rawHeightEstimateFt: rawHeight, backdropWidthFt: width, confidence });
+    const resolved = resolveBackdropHeight({ rawHeightEstimateFt: rawHeight, backdropWidthFt: heightBasisWidth, confidence });
     estimatedHeightFt = resolved.estimatedHeightFt;
     if (resolved.unusual && !reasoning.includes(UNUSUAL_HEIGHT_NOTE)) {
       reasoning = reasoning ? `${reasoning} · ${UNUSUAL_HEIGHT_NOTE}` : UNUSUAL_HEIGHT_NOTE;
@@ -257,10 +335,20 @@ const readStageMeasurements = (sm) => {
     // No raw estimate (e.g. an older resent payload): accept only a real build
     // height, otherwise fall back to the width prior.
     const h = Number(sm.estimatedHeightFt);
-    estimatedHeightFt = BUILD_HEIGHTS.includes(h) ? h : widthHeightPrior(width);
+    estimatedHeightFt = BUILD_HEIGHTS.includes(h) ? h : widthHeightPrior(heightBasisWidth);
   }
+  const scene = sceneWidthCheck(sm.sceneType, width);
   return {
     backdropWidthFt: width,
+    // How the width was arrived at, and both of the signals that were weighed
+    // against it — the panel shows the working so staff can correct it at a
+    // glance ("those panels are 12 ft"), which a bare "24 ft" never allows.
+    widthBasis: repeating ? "repeating-elements" : "span",
+    repeatingElements: repeating,
+    spanWidthFt: span > 0 ? span : null,
+    sceneType: scene.sceneType,
+    sceneWidthBand: scene.sceneWidthBand,
+    widthDisputed: scene.widthDisputed,
     floralRunFt: Math.min(run, width),
     estimatedHeightFt,
     rawHeightEstimateFt: rawHeight > 0 ? rawHeight : null,
@@ -549,6 +637,9 @@ module.exports = {
   stageFloralPrices,
   haldiFloralPrices,
   readStageMeasurements,
+  sceneWidthCheck,
+  SCENE_TYPES,
+  SCENE_WIDTH_BANDS,
   resolveBackdropHeight,
   BUILD_HEIGHTS,
   HEIGHT_CONF_LOW,

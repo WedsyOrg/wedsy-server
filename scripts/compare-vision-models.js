@@ -49,6 +49,13 @@ const rowsFor = (a) => {
     category: `${a.category || "—"} (${pct(a.categoryConfidence)})`,
     occasion: `${occ.value || "—"} (${pct(occ.confidence)})`,
     backdropWidthFt: num(sm.backdropWidthFt),
+    // The width working, so a wrong total is attributable to the count or to
+    // the per-unit size — the two fail very differently.
+    "width working": sm.repeatingElements
+      ? `${sm.repeatingElements.count} ${sm.repeatingElements.type} × ${sm.repeatingElements.estimatedWidthEachFt}ft`
+      : `span only`,
+    sceneType: `${sm.sceneType || "—"}${sm.widthDisputed ? " ⚠DISPUTED" : ""}`,
+    "spanWidthFt (cross-check)": num(sm.spanWidthFt),
     floralRunFt: num(sm.floralRunFt),
     widthToHeightRatio: num(sm.widthToHeightRatio),
     rawHeightEstimateFt: num(sm.rawHeightEstimateFt),
@@ -109,7 +116,8 @@ const pad = (s) => String(s).padEnd(COL).slice(0, COL);
     const perModel = MODELS.map((m) => rowsFor(results[file][m]));
     console.log(`${pad("field").slice(0, 24).padEnd(24)}${MODELS.map(pad).join("")}`);
     const fields = [
-      "category", "occasion", "backdropWidthFt", "floralRunFt", "widthToHeightRatio",
+      "category", "occasion", "backdropWidthFt", "width working", "sceneType",
+      "spanWidthFt (cross-check)", "floralRunFt", "widthToHeightRatio",
       "rawHeightEstimateFt", "estimatedHeightFt (snapped)", "measurement confidence", "latency ms",
     ];
     for (const f of fields) {

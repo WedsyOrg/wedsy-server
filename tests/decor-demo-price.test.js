@@ -329,6 +329,145 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   range(garland10.ladder[0].prices.natural, 83500, 96000, "₹78,000 calibration holds at 10ft height");
 }
 
+// ── 3i. Width model — COUNTED, cross-checked against the scene, never averaged ─
+// Ground-truth failures this replaces: a 10ft haldi backdrop read 16ft (+60%),
+// a 50-60ft build read 24ft (-55%), two 60ft renders read 24ft and 30ft.
+{
+  console.log("backdrop width model (count × width-each, scene cross-check):");
+  const base = { floralRunFt: 20, confidence: 0.6 };
+
+  // The headline case: the model counted 5 panels correctly and sized them at
+  // ~5ft when they are 10-12ft. The count is what we price on now.
+  const counted = readStageMeasurements({
+    ...base,
+    spanWidthFt: 24,
+    repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: 11 },
+    sceneType: "full_venue_with_grounds",
+  });
+  eq(counted.backdropWidthFt, 55, "width = count × width-each, not the span guess");
+  eq(counted.widthBasis, "repeating-elements", "basis recorded");
+  eq(counted.spanWidthFt, 24, "the demoted span guess is kept, not discarded");
+  eq(counted.widthDisputed, false, "55ft agrees with a full-venue shot (over ~30ft)");
+
+  // No repeating unit at all → the span stands in, and says so.
+  const spanOnly = readStageMeasurements({ ...base, spanWidthFt: 18, sceneType: "stage_fills_frame" });
+  eq(spanOnly.backdropWidthFt, 18, "no unit count → span is the fallback");
+  eq(spanOnly.widthBasis, "span", "fallback basis recorded");
+  eq(spanOnly.repeatingElements, null, "absent unit count stays null, never fabricated");
+
+  // A single continuous floral wall is count=1 — still the counted path.
+  eq(
+    readStageMeasurements({ ...base, spanWidthFt: 16, repeatingElements: { count: 1, type: "wall", estimatedWidthEachFt: 12 } })
+      .backdropWidthFt,
+    12,
+    "one continuous wall (count=1) still computes from the unit width"
+  );
+
+  // CROSS-CHECK, DON'T AVERAGE: the disputed width is returned AS COMPUTED.
+  const disputed = readStageMeasurements({
+    ...base,
+    spanWidthFt: 24,
+    repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: 4.8 },
+    sceneType: "full_venue_with_grounds",
+  });
+  eq(disputed.backdropWidthFt, 24, "disputed width is returned as computed, NOT averaged with the band");
+  eq(disputed.widthDisputed, true, "full-venue shot vs 24ft → disputed");
+  eq(disputed.sceneWidthBand.minFt, 30, "the contradicting band is recorded alongside");
+  ok(
+    disputed.backdropWidthFt !== (24 + 30) / 2 && disputed.backdropWidthFt !== 30,
+    "never splits the difference toward the band"
+  );
+
+  // The other direction: a close-up that computes far too wide.
+  const closeupTooWide = readStageMeasurements({
+    ...base,
+    spanWidthFt: 16,
+    repeatingElements: { count: 4, type: "panels", estimatedWidthEachFt: 10 },
+    sceneType: "closeup_single_element",
+  });
+  eq(closeupTooWide.widthDisputed, true, "close-up vs 40ft → disputed (band is under ~25ft)");
+  eq(closeupTooWide.backdropWidthFt, 40, "still returns the computed width when disputed");
+
+  // The 25-30ft gap is the "either is plausible" zone — no dispute either way.
+  eq(
+    readStageMeasurements({ ...base, repeatingElements: { count: 4, type: "bays", estimatedWidthEachFt: 7 }, sceneType: "stage_fills_frame" })
+      .widthDisputed,
+    false,
+    "28ft in the gap does not dispute a fills-frame shot"
+  );
+  eq(
+    readStageMeasurements({ ...base, repeatingElements: { count: 4, type: "bays", estimatedWidthEachFt: 7 }, sceneType: "wide_venue_shot" })
+      .widthDisputed,
+    false,
+    "28ft in the gap does not dispute a wide shot either"
+  );
+
+  // An off-vocabulary or missing sceneType can never dispute.
+  eq(
+    readStageMeasurements({ ...base, repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: 5 }, sceneType: "banquet_hall" })
+      .sceneType,
+    null,
+    "off-vocabulary sceneType → null"
+  );
+  eq(
+    readStageMeasurements({ ...base, repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: 5 } }).widthDisputed,
+    false,
+    "no sceneType → nothing to dispute against"
+  );
+
+  // Garbage unit counts fall back rather than producing a 0ft backdrop.
+  eq(
+    readStageMeasurements({ ...base, spanWidthFt: 20, repeatingElements: { count: 0, type: "panels", estimatedWidthEachFt: 6 } })
+      .backdropWidthFt,
+    20,
+    "count of 0 → falls back to the span"
+  );
+
+  // HEIGHT MUST NOT MOVE. It derives from span ÷ ratio and was 10/10/12 against
+  // ground truth 10/10/12 — re-basing it on the counted width would break the
+  // one signal that works. Same span + ratio → same height at any counted width.
+  const heightAt = (each) =>
+    readStageMeasurements({
+      ...base,
+      spanWidthFt: 24,
+      widthToHeightRatio: 2.4,
+      repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: each },
+    }).estimatedHeightFt;
+  eq(heightAt(5), 10, "span 24 ÷ 2.4 → 10ft, as before the rebuild");
+  eq(heightAt(11), 10, "counted width 55ft does NOT drag the height up — still 10ft");
+  eq(
+    readStageMeasurements({ ...base, spanWidthFt: 24, widthToHeightRatio: 2.4 }).rawHeightEstimateFt,
+    10,
+    "raw height stays on the span with no unit count present"
+  );
+
+  // Floral run is capped by the COUNTED width, so a corrected-down width
+  // corrects the price down with it.
+  eq(
+    readStageMeasurements({
+      floralRunFt: 16,
+      confidence: 0.6,
+      spanWidthFt: 16,
+      repeatingElements: { count: 1, type: "wall", estimatedWidthEachFt: 10 },
+    }).floralRunFt,
+    10,
+    "floral run capped at the counted width (16ft haldi read → 10ft real)"
+  );
+
+  // ROUND-TRIP: the panel resends this object verbatim on a category override.
+  const again = readStageMeasurements(counted);
+  eq(again.backdropWidthFt, counted.backdropWidthFt, "round-trips: width stable");
+  eq(again.estimatedHeightFt, counted.estimatedHeightFt, "round-trips: height stable");
+  eq(again.widthBasis, counted.widthBasis, "round-trips: basis stable");
+  eq(again.widthDisputed, counted.widthDisputed, "round-trips: dispute flag stable");
+
+  // Pre-rebuild payloads (backdropWidthFt only) still read as the span.
+  const legacy = readStageMeasurements({ backdropWidthFt: 24, floralRunFt: 12, widthToHeightRatio: 2.4, confidence: 0.6 });
+  eq(legacy.backdropWidthFt, 24, "legacy payload: backdropWidthFt read as the span");
+  eq(legacy.estimatedHeightFt, 10, "legacy payload: height unchanged");
+  eq(legacy.widthBasis, "span", "legacy payload: basis is span");
+}
+
 // ── 3f. Haldi — its own pricing mode, not a discounted stage ─────────────────
 {
   console.log("Haldi (own per-foot rate, tight tier spread, no artificial):");
