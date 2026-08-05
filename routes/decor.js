@@ -12,6 +12,18 @@ const largeJson = bodyParser.json({ limit: "50mb" });
 router.post("/ai-analyze", largeJson, CheckAdminLogin, decor.AiAnalyze);
 router.post("/ai-regenerate", CheckAdminLogin, decor.AiRegenerate);
 
+// Phase A — pricing engine. Internal / team-only (JSON in, no image). Literal
+// path — MUST stay above the "/:_id" routes so it isn't captured as an id.
+router.post("/suggest-price", CheckAdminLogin, decor.SuggestPrice);
+
+// Phase B — vision layer. base64 images can be several MB → largeJson. Literal
+// path, above "/:_id". Admin-gated.
+router.post("/analyse-image", largeJson, CheckAdminLogin, decor.AnalyseImage);
+
+// Demo panel — live client pricing (vision demo → category → price ladder).
+// largeJson for base64 images; literal path above "/:_id"; admin-gated.
+router.post("/demo-price", largeJson, CheckAdminLogin, decor.DemoPrice);
+
 router.post("/", CheckAdminLogin, decor.CreateNew);
 router.get("/", decor.GetAll);
 // S3 — curation reorder (literal path — MUST stay above /:_id).
