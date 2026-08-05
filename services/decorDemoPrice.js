@@ -79,13 +79,55 @@ const STAGE_TIER_DIVISORS = { artificial: 2, mixed: 1.5, natural: 1 }; // fresh 
 // used by the area-anchored ladders.
 const STAGE_RANGE_SPREAD = Number(process.env.DECOR_STAGE_RANGE_SPREAD) || 0.07;
 
+// ── Structure charge (founder 2026-08) ───────────────────────────────────────
+// UNDER 30ft there is NO structure charge at all: those builds come out of
+// existing inventory, nothing is fabricated, and floral run × rate is the
+// entire price. At 30ft AND ABOVE the structure is built from scratch, so it
+// is charged as built surface area (width × height) at a rate set by GEOMETRY.
+// Calibration: a 60×12 blocky steel build is 720 sq ft × ₹390 ≈ ₹2.8L of
+// structure, which with modest floral reaches the founder's ₹4L quote for that
+// design.
+const STRUCTURE_MIN_WIDTH_FT = 30;
+const DECOR_STRUCTURE_RATE_STEEL = Number(process.env.DECOR_STRUCTURE_RATE_STEEL) || 390;
+const DECOR_STRUCTURE_RATE_FRP = Number(process.env.DECOR_STRUCTURE_RATE_FRP) || 500;
+const STRUCTURE_RATES = { blocky: DECOR_STRUCTURE_RATE_STEEL, curved_ornate: DECOR_STRUCTURE_RATE_FRP };
+
+// Always returns an object — staff details must be able to say WHICH SIDE of
+// the 30ft threshold a build fell on, which a bare null cannot express.
+const structureCharge = (m) => {
+  if (!m) return null;
+  const widthFt = Number(m.backdropWidthFt);
+  const heightFt = Number(m.estimatedHeightFt);
+  if (!(widthFt > 0)) return null;
+  if (widthFt < STRUCTURE_MIN_WIDTH_FT || !(heightFt > 0)) {
+    return { applies: false, thresholdFt: STRUCTURE_MIN_WIDTH_FT, widthFt };
+  }
+  const geometry = readStructureGeometry(m.structureGeometry);
+  const ratePerSqFt = STRUCTURE_RATES[geometry];
+  const areaSqFt = widthFt * heightFt;
+  return {
+    applies: true,
+    thresholdFt: STRUCTURE_MIN_WIDTH_FT,
+    widthFt,
+    heightFt,
+    areaSqFt,
+    geometry,
+    ratePerSqFt,
+    cost: areaSqFt * ratePerSqFt,
+  };
+};
+
 // Shared floral-run pricing: natural = run × rate, other tiers via divisors,
-// each displayed as a ±spread range around the headroomed figure.
-const floralRunPrices = (floralRunFt, ratePerFt, divisors) => {
+// each displayed as a ±spread range around the headroomed figure. The
+// structure charge is a FLAT addend — fabrication does not vary with the floral
+// tier — summed in BEFORE the headroom and spread so both carry the same
+// treatment, and so the client sees ONE number rather than two line items.
+const floralRunPrices = (floralRunFt, ratePerFt, divisors, structure) => {
   const fresh = floralRunFt * ratePerFt;
+  const structureCost = structure && structure.applies ? structure.cost : 0;
   const prices = {};
   Object.entries(divisors).forEach(([tier, divisor]) => {
-    const centre = (fresh / divisor) * DECOR_DEMO_HEADROOM;
+    const centre = (fresh / divisor + structureCost) * DECOR_DEMO_HEADROOM;
     prices[tier] = {
       low: round500(centre * (1 - STAGE_RANGE_SPREAD)),
       high: round500(centre * (1 + STAGE_RANGE_SPREAD)),
@@ -94,8 +136,8 @@ const floralRunPrices = (floralRunFt, ratePerFt, divisors) => {
   return prices;
 };
 
-const stageFloralPrices = (floralRunFt) =>
-  floralRunPrices(floralRunFt, DECOR_FLORAL_RATE_PER_FT, STAGE_TIER_DIVISORS);
+const stageFloralPrices = (floralRunFt, structure) =>
+  floralRunPrices(floralRunFt, DECOR_FLORAL_RATE_PER_FT, STAGE_TIER_DIVISORS, structure);
 
 // ── Haldi — its own pricing MODE, not a discounted stage (founder 2026-08) ───
 // Haldi setups are small events and clients spend less, so the per-foot RATE
@@ -110,8 +152,8 @@ const HALDI_TIER_DIVISORS = { mixed: 1.2, natural: 1 }; // natural / divisor
 // the row when no vision measurement is available (e.g. a category override).
 const HALDI_DEFAULT_RUN_FT = 9;
 
-const haldiFloralPrices = (floralRunFt) =>
-  floralRunPrices(floralRunFt, DECOR_HALDI_RATE_PER_FT, HALDI_TIER_DIVISORS);
+const haldiFloralPrices = (floralRunFt, structure) =>
+  floralRunPrices(floralRunFt, DECOR_HALDI_RATE_PER_FT, HALDI_TIER_DIVISORS, structure);
 
 // Haldi is DEMO-ONLY: an occasion-priced mode with no catalog taxonomy entry,
 // so its tier rule lives here beside the engine's category-aware tiers
@@ -291,6 +333,41 @@ const sceneWidthCheck = (rawSceneType, widthFt) => {
   return { sceneType, sceneWidthBand: band, widthDisputed };
 };
 
+// ── Floral run follows the corrected width ───────────────────────────────────
+// The model judges the floral run against the width it BELIEVES, so a run in
+// feet is only meaningful next to that span — pinning the run while correcting
+// the width left the panel right and the quote wrong (a 50-60ft build read as
+// 24ft still priced ~24ft of florals). The trustworthy signal is the COVERAGE
+// FRACTION: "roughly four-fifths of this backdrop is a solid floral wall" is
+// scale-invariant in exactly the way widthToHeightRatio is for height, so it
+// survives a width correction that the raw foot figure cannot.
+//
+// Rescaling is skipped when the width was not corrected (width === span), so
+// the untouched path stays bit-identical rather than picking up float drift.
+const floralCoverage = (sm, reportedRun, span, width) => {
+  const stored = Number(sm.floralCoverageFraction);
+  const derived = span > 0 && reportedRun > 0 ? reportedRun / span : null;
+  const raw = stored > 0 ? stored : derived;
+  // A run reported wider than its own span is a model slip, not 120% coverage.
+  const fraction = raw != null ? Math.min(1, raw) : null;
+  if (fraction == null || width === span) {
+    return { floralRunFt: Math.min(reportedRun, width), fraction };
+  }
+  // One decimal keeps the figure legible and makes the round-trip exact.
+  const rescaled = Math.round(fraction * width * 10) / 10;
+  return { floralRunFt: Math.min(rescaled, width), fraction };
+};
+
+// ── Structure geometry (founder 2026-08) ─────────────────────────────────────
+// GEOMETRY decides the fabrication rate, NOT material identification. Founder,
+// verbatim: "anywhere rounded or waves or any uneven surface is there then we
+// might need FRP; block structures we do not." The model cannot reliably tell
+// FRP from MDF by looking at a surface, but it reliably tells a rectilinear
+// panel wall from a carved arch — so we ask it the question it can answer.
+// Unknown defaults to "blocky", the cheaper and commoner of the two.
+const STRUCTURE_GEOMETRIES = ["blocky", "curved_ornate"];
+const readStructureGeometry = (g) => (STRUCTURE_GEOMETRIES.includes(g) ? g : "blocky");
+
 // Defensive read of the vision measurement (also arrives client-supplied on a
 // category override, so validate here, not just in the vision layer). Floral
 // run can never exceed the backdrop width; height always resolves through the
@@ -338,6 +415,7 @@ const readStageMeasurements = (sm) => {
     estimatedHeightFt = BUILD_HEIGHTS.includes(h) ? h : widthHeightPrior(heightBasisWidth);
   }
   const scene = sceneWidthCheck(sm.sceneType, width);
+  const coverage = floralCoverage(sm, run, span, width);
   return {
     backdropWidthFt: width,
     // How the width was arrived at, and both of the signals that were weighed
@@ -349,7 +427,12 @@ const readStageMeasurements = (sm) => {
     sceneType: scene.sceneType,
     sceneWidthBand: scene.sceneWidthBand,
     widthDisputed: scene.widthDisputed,
-    floralRunFt: Math.min(run, width),
+    structureGeometry: readStructureGeometry(sm.structureGeometry),
+    floralRunFt: coverage.floralRunFt,
+    // The FRACTION is the durable signal, not the foot figure — stored so a
+    // resent measurement rescales from the original fraction instead of
+    // re-dividing an already-rescaled run by the span (which would compound).
+    floralCoverageFraction: coverage.fraction,
     estimatedHeightFt,
     rawHeightEstimateFt: rawHeight > 0 ? rawHeight : null,
     widthToHeightRatio: ratio > 0 ? ratio : null,
@@ -500,6 +583,9 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
   const bandTier = bandTierOf(tiers);
   const floralRunCategory = category === "Stage" || category === "Haldi";
   const stageMeasurements = floralRunCategory ? readStageMeasurements(analysis.stageMeasurements) : null;
+  // Fabrication charge for builds at/over 30ft. Width-driven, so it is a
+  // no-op for haldi (8-10ft backdrops) without needing a category exception.
+  const structure = structureCharge(stageMeasurements);
   // Measured Stage replaces the size ladder with one floral-run price block.
   const buckets = stageMeasurements ? null : SIZE_BUCKETS[category];
   const sized = !!buckets;
@@ -512,13 +598,13 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     // measurement it falls back to the typical 8-10ft backdrop (9ft midpoint)
     // rather than dying — the founder's calibration band IS the default answer.
     const run = stageMeasurements ? stageMeasurements.floralRunFt : HALDI_DEFAULT_RUN_FT;
-    const row = { size: null, prices: haldiFloralPrices(run) };
+    const row = { size: null, prices: haldiFloralPrices(run, structure) };
     if (includeExamples) {
       row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
     }
     ladder = [row];
   } else if (stageMeasurements) {
-    const row = { size: null, prices: stageFloralPrices(stageMeasurements.floralRunFt) };
+    const row = { size: null, prices: stageFloralPrices(stageMeasurements.floralRunFt, structure) };
     if (includeExamples) {
       row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
     }
@@ -569,6 +655,11 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     // The vision backdrop measurement, echoed whatever the category so the
     // panel can resend it with a category override to Stage.
     stageMeasurements: readStageMeasurements(analysis.stageMeasurements),
+    // The fabrication breakdown is STAFF-DETAILS material only — the client
+    // sees one combined "estimated build" figure, never floral and structure
+    // as two line items. Present (with applies:false) even below the 30ft
+    // threshold, so staff details can say which side of it the build fell on.
+    structure,
     // Detected occasion — visible and correctable in the panel. When nothing
     // was confident on a Stage, the stage rate applied by default and we SAY so.
     ...(occasion
@@ -581,7 +672,14 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
           },
         }
       : {}),
-    ...(stageMeasurements || category === "Haldi" ? { pricingModel: "floral-run" } : {}),
+    // The per-foot rate rides along so staff details can show the arithmetic
+    // behind the single combined figure, not just its result.
+    ...(stageMeasurements || category === "Haldi"
+      ? {
+          pricingModel: "floral-run",
+          floralRatePerFt: category === "Haldi" ? DECOR_HALDI_RATE_PER_FT : DECOR_FLORAL_RATE_PER_FT,
+        }
+      : {}),
     applicableTiers: tiers,
     sized,
     upliftApplied: 1, // the ×1.20 draft-path uplift never applies to the demo
@@ -637,6 +735,12 @@ module.exports = {
   stageFloralPrices,
   haldiFloralPrices,
   readStageMeasurements,
+  structureCharge,
+  STRUCTURE_MIN_WIDTH_FT,
+  STRUCTURE_RATES,
+  STRUCTURE_GEOMETRIES,
+  DECOR_STRUCTURE_RATE_STEEL,
+  DECOR_STRUCTURE_RATE_FRP,
   sceneWidthCheck,
   SCENE_TYPES,
   SCENE_WIDTH_BANDS,

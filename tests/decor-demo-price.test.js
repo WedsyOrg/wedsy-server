@@ -16,6 +16,7 @@ const {
   pinTextOccasionCheck,
   resolveOccasion,
   readStageMeasurements,
+  structureCharge,
   resolveBackdropHeight,
 } = require("../services/decorDemoPrice");
 const { normalizeComparable } = require("../services/decorPricing");
@@ -466,6 +467,164 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(legacy.backdropWidthFt, 24, "legacy payload: backdropWidthFt read as the span");
   eq(legacy.estimatedHeightFt, 10, "legacy payload: height unchanged");
   eq(legacy.widthBasis, "span", "legacy payload: basis is span");
+}
+
+// ── 3j. Floral run follows the corrected width (coverage fraction) ───────────
+// The model judges the run against the span it BELIEVES, so pinning the run
+// while correcting the width left the panel right and the quote wrong.
+{
+  console.log("floral run rescales with the corrected width:");
+  const base = { confidence: 0.6 };
+
+  // The headline case: 20ft of run on a 24ft span is 83% coverage; on the
+  // corrected 55ft width that is ~46ft of florals, not 24.
+  const up = readStageMeasurements({
+    ...base,
+    spanWidthFt: 24,
+    floralRunFt: 20,
+    repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: 11 },
+  });
+  eq(up.backdropWidthFt, 55, "width corrected to 55ft");
+  eq(up.floralRunFt, 45.8, "20ft run on a 24ft span (83%) rescales to ~45.8ft on 55ft");
+  ok(up.floralCoverageFraction > 0.83 && up.floralCoverageFraction < 0.834, "coverage fraction recorded");
+
+  // Downward: a 16ft haldi read corrected to 10ft rescales down with it.
+  const down = readStageMeasurements({
+    ...base,
+    spanWidthFt: 16,
+    floralRunFt: 12,
+    repeatingElements: { count: 1, type: "wall", estimatedWidthEachFt: 10 },
+  });
+  eq(down.backdropWidthFt, 10, "width corrected down to 10ft");
+  eq(down.floralRunFt, 7.5, "12ft run on a 16ft span (75%) rescales down to 7.5ft on 10ft");
+
+  // A solid wall stays a solid wall at any corrected width — and never exceeds it.
+  const solid = readStageMeasurements({
+    ...base,
+    spanWidthFt: 24,
+    floralRunFt: 24,
+    repeatingElements: { count: 4, type: "bays", estimatedWidthEachFt: 10 },
+  });
+  eq(solid.floralRunFt, 40, "100% coverage stays 100% at the corrected width");
+  eq(solid.floralCoverageFraction, 1, "fraction clamped at 1");
+
+  // A run reported wider than its own span is a model slip, not 120% coverage.
+  const overRun = readStageMeasurements({ ...base, spanWidthFt: 20, floralRunFt: 26 });
+  eq(overRun.floralCoverageFraction, 1, "run > span clamps to full coverage, never above");
+  eq(overRun.floralRunFt, 20, "and still caps at the width");
+
+  // Uncorrected width must stay bit-identical — no rescale, no float drift.
+  const untouched = readStageMeasurements({ ...base, spanWidthFt: 24, floralRunFt: 12.5 });
+  eq(untouched.floralRunFt, 12.5, "width never corrected → run passes through exactly");
+
+  // ROUND-TRIP: the stored fraction is used instead of re-dividing an already
+  // rescaled run by the span, which would compound on every resend.
+  eq(readStageMeasurements(up).floralRunFt, 45.8, "round-trips: run does not compound");
+  eq(readStageMeasurements(readStageMeasurements(up)).floralRunFt, 45.8, "round-trips twice, still stable");
+  eq(readStageMeasurements(down).floralRunFt, 7.5, "round-trips: downward correction stable too");
+}
+
+// ── 3k. Structure charge — fabrication above 30ft, geometry sets the rate ────
+{
+  console.log("structure charge (30ft threshold, geometry-driven rate):");
+
+  // UNDER 30ft: no structure charge at all — built from existing inventory.
+  const under = structureCharge({ backdropWidthFt: 29, estimatedHeightFt: 12 });
+  eq(under.applies, false, "29ft → no structure charge (built from inventory)");
+  eq(under.thresholdFt, 30, "the threshold is recorded so staff details can name it");
+  ok(under.cost === undefined, "no cost figure at all below the threshold");
+
+  // AT/ABOVE 30ft: built surface area × the geometry rate.
+  const at30 = structureCharge({ backdropWidthFt: 30, estimatedHeightFt: 10, structureGeometry: "blocky" });
+  eq(at30.applies, true, "30ft is inclusive — the threshold is 'AND ABOVE'");
+  eq(at30.cost, 300 * 390, "30×10 blocky = 300 sq ft × ₹390");
+
+  // FOUNDER CALIBRATION: 60×12 blocky = 720 sq ft × ₹390 ≈ ₹2.8L.
+  const cal = structureCharge({ backdropWidthFt: 60, estimatedHeightFt: 12, structureGeometry: "blocky" });
+  eq(cal.areaSqFt, 720, "60×12 = 720 sq ft of built surface");
+  eq(cal.ratePerSqFt, 390, "blocky → the steel rate");
+  eq(cal.cost, 280800, "720 × ₹390 = ₹2,80,800 (founder: ~₹2.8L)");
+
+  // Geometry, not material, picks the rate.
+  const frp = structureCharge({ backdropWidthFt: 60, estimatedHeightFt: 12, structureGeometry: "curved_ornate" });
+  eq(frp.ratePerSqFt, 500, "curved/ornate → the FRP rate");
+  eq(frp.cost, 360000, "720 × ₹500 = ₹3,60,000");
+
+  // Unknown / absent geometry defaults to the cheaper, commoner blocky rate.
+  eq(structureCharge({ backdropWidthFt: 40, estimatedHeightFt: 10 }).geometry, "blocky", "absent geometry → blocky");
+  eq(
+    structureCharge({ backdropWidthFt: 40, estimatedHeightFt: 10, structureGeometry: "carved_marble" }).geometry,
+    "blocky",
+    "off-vocabulary geometry → blocky, never a fabricated rate"
+  );
+
+  // Geometry round-trips through the measurement read (panel resend).
+  eq(
+    readStageMeasurements({ spanWidthFt: 40, floralRunFt: 20, structureGeometry: "curved_ornate", confidence: 0.6 })
+      .structureGeometry,
+    "curved_ornate",
+    "geometry survives the measurement read"
+  );
+
+  // ── End-to-end: ONE combined figure, structure never a separate line ───────
+  const sm = (each, run, geometry) => ({
+    spanWidthFt: 24,
+    floralRunFt: run,
+    repeatingElements: { count: 5, type: "panels", estimatedWidthEachFt: each },
+    widthToHeightRatio: 2,
+    structureGeometry: geometry,
+    confidence: 0.6,
+  });
+
+  // FOUNDER'S ₹4L QUOTE: a 60×12 blocky build with modest floral. Structure is
+  // ₹2.8L of that, so the ₹4L point implies ~12.5ft of floral run (21% of the
+  // 60ft span) once the ×1.15 headroom is on both parts. Coverage across the
+  // whole "modest" reading (~20-30%) is pinned here rather than one lucky
+  // point, because the founder's figure is a quote, not a measurement.
+  const big = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(12, 5, "blocky") }), []);
+  eq(big.structure.cost, 280800, "60ft × 12ft blocky → ₹2.8L of structure");
+  eq(big.ladder.length, 1, "still ONE row — structure is never a second line item");
+  eq(big.stageMeasurements.floralRunFt, 12.5, "21% coverage of a 60ft span → 12.5ft of floral run");
+  ok(
+    big.ladder[0].prices.natural.low < 400000 && big.ladder[0].prices.natural.high > 400000,
+    `21% floral on a 60×12 blocky build straddles the founder's ₹4L quote (${JSON.stringify(big.ladder[0].prices.natural)})`
+  );
+  // The top of "modest" (29% coverage) sits just above ₹4L, not wildly past it.
+  const bigger = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(12, 7, "blocky") }), []);
+  ok(
+    bigger.ladder[0].prices.natural.low > 400000 && bigger.ladder[0].prices.natural.low < 430000,
+    `29% floral lands just above ₹4L (${JSON.stringify(bigger.ladder[0].prices.natural)})`
+  );
+
+  // The same build in FRP costs more, purely on geometry.
+  const curved = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(12, 7, "curved_ornate") }), []);
+  ok(
+    curved.ladder[0].prices.natural.low > big.ladder[0].prices.natural.low,
+    "curved/ornate geometry prices above blocky on an otherwise identical build"
+  );
+
+  // Structure does NOT vary by floral tier — fabrication is fabrication. The
+  // artificial/natural GAP is pure floral, so it must be unchanged by structure.
+  const gapWith = big.ladder[0].prices.natural.low - big.ladder[0].prices.artificial.low;
+  const noStruct = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(4.8, 7, "blocky") }), []);
+  const gapWithout = noStruct.ladder[0].prices.natural.low - noStruct.ladder[0].prices.artificial.low;
+  eq(noStruct.structure.applies, false, "the 24ft version falls below the threshold");
+  ok(gapWith > 0 && gapWithout > 0, "both keep a real tier gap");
+
+  // A sub-30ft build prices EXACTLY as it did before the structure charge existed.
+  const preStructure = buildDemoPrice(
+    analysis("Stage", { stageMeasurements: { backdropWidthFt: 24, floralRunFt: 24, rawHeightEstimateFt: 9, confidence: 0.85, reasoning: "solid wall" } }),
+    []
+  );
+  range(preStructure.ladder[0].prices.natural, 160500, 184500, "24ft solid wall unchanged by the structure charge");
+
+  // Haldi never attracts a structure charge — its backdrops are 8-10ft.
+  const haldi = buildDemoPrice(
+    analysis("Stage", { stageMeasurements: { backdropWidthFt: 9, floralRunFt: 9, rawHeightEstimateFt: 7, confidence: 0.8, reasoning: "small" } }),
+    [],
+    { occasion: { value: "haldi", source: "caption", conflict: null } }
+  );
+  eq(haldi.structure.applies, false, "a 9ft haldi backdrop is far below the threshold");
 }
 
 // ── 3f. Haldi — its own pricing mode, not a discounted stage ─────────────────
