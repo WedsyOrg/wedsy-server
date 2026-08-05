@@ -255,6 +255,34 @@ const EventSchema = new mongoose.Schema(
       ],
       default: [],
     },
+    // ── Draft item-deletion tombstones + persisted undo/redo (additive) ──────
+    // A deleted decor item is NEVER hard-removed: it MOVES here as a tombstone
+    // carrying its full subdoc snapshot plus the {dayId, index} it sat at, so
+    // undo restores it to the exact day and position. `restored` marks a
+    // tombstone undo has already put back — it stays on the doc so redo knows
+    // the batch's exact membership, and is pruned once its batchId falls off
+    // both stacks. The snapshot keeps the item's SNAPSHOT rates, so a restored
+    // item reprices identically and never picks up today's config.
+    deletedItems: {
+      type: [
+        {
+          itemId: {type: String, required: true},
+          dayId: {type: String, required: true},
+          index: {type: Number, default: 0},
+          snapshot: {type: Object, default: {}},
+          deletedAt: {type: Date, default: Date.now},
+          deletedBy: {type: ObjectId, ref: "Admin", default: null},
+          op: {type: String, enum: ["single", "bulk-not-included"], default: "single"},
+          batchId: {type: String, required: true},
+          restored: {type: Boolean, default: false},
+        },
+      ],
+      default: [],
+    },
+    // Ordered batchIds — a bulk remove is ONE batch, so it undoes in one step.
+    // Capped at 50 (oldest dropped); a NEW delete clears redoStack.
+    undoStack: {type: [String], default: []},
+    redoStack: {type: [String], default: []},
     status: {
       finalized: {type: Boolean, default: false},
       approved: {type: Boolean, default: false},

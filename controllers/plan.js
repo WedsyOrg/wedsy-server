@@ -128,6 +128,53 @@ const ListDrafts = wrap(async (req, res) => {
   await assertInScopeOrRoster(req.params._id, req.scopeFilter, req.auth.user_id, READ);
   res.status(200).json({ drafts: await DraftEventService.listDrafts(req.params._id) });
 });
+// ── Draft item-deletion undo/redo + duplicate ────────────────────────────────
+// Each handler carries its own try/catch (not just wrap()) per the build spec:
+// a failure here must never leave the draft half-mutated silently.
+const draftOp = (fn) => async (req, res) => {
+  try {
+    await canWrite(req, req.params._id);
+    const out = await fn(req);
+    res.status(200).json(out);
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error("[plan] draft op failed:", error);
+    res.status(status).json({ message: status === 500 ? "Could not update the draft — please retry." : error.message });
+  }
+};
+// Bulk: drop every decor alternative across all days as ONE undo step.
+const RemoveNotIncluded = draftOp(async (req) =>
+  DraftEventService.removeNotIncluded(req.params._id, req.params.eventId, req.auth.user_id)
+);
+const UndoDraftDelete = draftOp(async (req) => {
+  const result = await DraftEventService.undoDelete(req.params._id, req.params.eventId);
+  return { ...result, draft: await DraftEventService.getDraftDetail(req.params._id, req.params.eventId) };
+});
+const RedoDraftDelete = draftOp(async (req) => {
+  const result = await DraftEventService.redoDelete(req.params._id, req.params.eventId);
+  return { ...result, draft: await DraftEventService.getDraftDetail(req.params._id, req.params.eventId) };
+});
+// Duplicate: includeNotIncluded defaults FALSE — alternatives are dropped unless
+// the caller explicitly asks for them.
+const DuplicateDraft = async (req, res) => {
+  try {
+    await canWrite(req, req.params._id);
+    const body = req.body || {};
+    res.status(201).json(
+      await DraftEventService.duplicateDraft(
+        req.params._id,
+        req.params.eventId,
+        { name: body.name, includeNotIncluded: body.includeNotIncluded === true || body.includeNotIncluded === "true" },
+        req.auth.user_id
+      )
+    );
+  } catch (error) {
+    const status = error.status || 500;
+    if (status === 500) console.error("[plan] duplicate draft failed:", error);
+    res.status(status).json({ message: status === 500 ? "Could not duplicate the draft — please retry." : error.message });
+  }
+};
+
 // The couple's display name for the CLIENT QUOTE download: "Groom & Bride"
 // when both are known, else the lead's own name — the same resolution the
 // quote sheet's hero uses. Sanitised for the filesystem (the path/reserved
@@ -384,7 +431,8 @@ module.exports = {
   PushToBuild, CopyItem, MoveItem, LogWorkCompose, LogWorkCommit,
   Publish, ListSnapshots, GetSnapshot,
   InternalSnapshots, InternalSnapshot, InternalReactLook, InternalReactMood,
-  CreateDraft, RenameDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme, ExportDraftXlsx,
+  CreateDraft, DuplicateDraft, RenameDraft, ListDrafts, GetDraft, DraftEarnings, SetEventTheme, ExportDraftXlsx,
+  RemoveNotIncluded, UndoDraftDelete, RedoDraftDelete,
   AddDay, AddItem, PatchItem, DeleteItem, ReorderItems, AddPackage, DeletePackage,
   AddCustomItem, AddMandatoryItem, PatchSideItem, DeleteSideItem, SetCategoryNote,
   GrantDiscount, SetDiscount, ListDiscounts, DecideDiscount, FeedDecorLane,

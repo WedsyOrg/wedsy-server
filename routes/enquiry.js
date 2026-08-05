@@ -651,6 +651,18 @@ router.get("/:_id/plan/drafts/:eventId", CheckAdminLogin,
 // Bug 59 — draft rename (metadata-only).
 router.patch("/:_id/plan/drafts/:eventId", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.RenameDraft);
+// Deep-copy a draft. Body: { name?, includeNotIncluded? } — the flag defaults
+// FALSE, so decor alternatives are dropped unless explicitly asked for.
+router.post("/:_id/plan/drafts/:eventId/duplicate", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DuplicateDraft);
+// Item-deletion undo/redo. Deletes tombstone rather than hard-remove, so every
+// removal is recoverable; a bulk remove is ONE undo step.
+router.post("/:_id/plan/drafts/:eventId/items/remove-not-included", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.RemoveNotIncluded);
+router.post("/:_id/plan/drafts/:eventId/undo", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.UndoDraftDelete);
+router.post("/:_id/plan/drafts/:eventId/redo", CheckAdminLogin,
+  requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.RedoDraftDelete);
 // G3 — CP/SP earnings (admin-only; separate from the detail read by design).
 router.get("/:_id/plan/drafts/:eventId/earnings", CheckAdminLogin,
   requirePermission("leads:view:own", { ownerField: "assignedTo" }), plan.DraftEarnings);

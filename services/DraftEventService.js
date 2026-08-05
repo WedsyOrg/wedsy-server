@@ -59,6 +59,63 @@ const seedDaysFromDiscovery = (lead) => {
     });
 };
 
+// DUPLICATE — deep-copy a draft into a fresh one. Every subdoc _id is stripped
+// so the copy owns independent rows. includeNotIncluded (default FALSE) decides
+// whether decor ALTERNATIVES ride along. Tombstones and undo/redo stacks are
+// never copied: a duplicate starts clean. Lock/publish state is never inherited.
+const duplicateDraft = async (leadId, eventId, { name, includeNotIncluded = false } = {}, actorId = null) =>
+  withVersionRetry(async () => {
+    const source = await getDraft(leadId, eventId); // read-only; couple events already blocked
+    const lead = await Enquiry.findById(leadId, { name: 1 }).lean();
+    if (!lead) throw err(404, "Enquiry not found");
+    const existing = await Event.countDocuments({ leadId });
+    if (existing >= DRAFT_CAP) throw err(422, `${DRAFT_CAP} drafts is the cap — retire one before duplicating.`);
+
+    const src = source.toObject();
+    const clean = String(name || `${src.draftName || src.name || "Draft"} (copy)`).trim().slice(0, 120);
+    if (!clean) throw err(400, "Name the duplicate.");
+    const strip = (o) => {
+      const c = { ...(o || {}) };
+      delete c._id;
+      return c;
+    };
+    const keep = (it) => includeNotIncluded || (it && it.includedInTotal !== false);
+    const eventDays = (src.eventDays || []).map((day) => {
+      const d = strip(day);
+      d.decorItems = (day.decorItems || []).filter(keep).map((it) => {
+        const c = strip(it);
+        c.addOns = (it.addOns || []).map(strip);
+        c.notes = (it.notes || []).map(strip);
+        return c;
+      });
+      d.packages = (day.packages || []).map((p) => {
+        const c = strip(p);
+        c.decorItems = (p.decorItems || []).map(strip);
+        return c;
+      });
+      d.customItems = (day.customItems || []).map(strip);
+      d.mandatoryItems = (day.mandatoryItems || []).map(strip);
+      d.categoryNotes = (day.categoryNotes || []).map(strip);
+      return d;
+    });
+
+    const copy = await Event.create({
+      user: src.user || null,
+      leadId,
+      draftName: clean,
+      name: `${lead.name} — ${clean}`.slice(0, 200),
+      eventDays,
+      eventTheme: src.eventTheme || {},
+      deletedItems: [],
+      undoStack: [],
+      redoStack: [],
+    });
+    await planChangeLog.record(leadId, actorId, {
+      op: "add", kind: "draft", name: clean, draftName: clean,
+    });
+    return { draft: copy.toObject() };
+  });
+
 const createDraft = async (leadId, { name } = {}, actorId) => {
   if (!isId(leadId)) throw err(400, "Invalid lead id");
   const clean = String(name || "").trim();
@@ -341,6 +398,10 @@ const getDraftDetail = async (leadId, eventId) => {
       secondaryColor: (doc.eventTheme && doc.eventTheme.secondaryColor) || "",
       tertiaryColor: (doc.eventTheme && doc.eventTheme.tertiaryColor) || "",
     },
+    // Undo/redo affordances for the FE's buttons (the stacks themselves and the
+    // tombstones stay server-side).
+    canUndo: (doc.undoStack || []).length > 0,
+    canRedo: (doc.redoStack || []).length > 0,
     totals: await totalsFor(doc),
     days,
   };
@@ -457,6 +518,80 @@ const draftEarnings = async (leadId, eventId) => {
 const saveDraftWrite = async (event) => {
   if (event.published) event.hasUnpublishedChanges = true;
   await event.save();
+};
+
+// ── Item-deletion tombstones + persisted undo/redo ───────────────────────────
+// Draft mutations are read-whole-doc → mutate-in-memory → .save(), which carries
+// Mongoose's optimistic __v guard; two overlapping eventDays writes on one draft
+// throw VersionError. Undo/redo hammer exactly that pattern, so the NEW
+// mutations run through here. The retried fn MUST re-read the draft itself — a
+// retry against the stale in-memory doc would just fail again. Scoped to the new
+// paths on purpose; the existing call sites are untouched.
+const withVersionRetry = async (fn, { attempts = 3 } = {}) => {
+  let last = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const clash = e && (e.name === "VersionError" || /No matching document found/i.test(e.message || ""));
+      if (!clash) throw e; // a 404/409/422 is a real answer — never retried
+      last = e;
+    }
+  }
+  throw last;
+};
+
+const STACK_CAP = 50;
+const newBatchId = () => new mongoose.Types.ObjectId().toString();
+const capPush = (event, key, batchId) => {
+  const next = [...(event[key] || []), batchId];
+  event[key] = next.length > STACK_CAP ? next.slice(-STACK_CAP) : next;
+};
+// Once a batchId has fallen off BOTH stacks it can never be undone or redone,
+// so its tombstones are dead weight — drop them to keep the doc bounded.
+const pruneTombstones = (event) => {
+  const live = new Set([...(event.undoStack || []), ...(event.redoStack || [])].map(String));
+  event.deletedItems = (event.deletedItems || []).filter((t) => t && live.has(String(t.batchId)));
+};
+// Move ONE decor item out of its day into deletedItems[]. Never a hard $pull —
+// the tombstone IS the recoverability.
+const tombstoneItem = (event, day, item, { batchId, op, actorId }) => {
+  const index = day.decorItems.findIndex((i) => String(i._id) === String(item._id));
+  const snapshot = item.toObject ? item.toObject() : { ...item };
+  event.deletedItems.push({
+    itemId: String(item._id),
+    dayId: String(day._id),
+    index: index < 0 ? day.decorItems.length : index,
+    snapshot,
+    deletedAt: new Date(),
+    deletedBy: isId(actorId) ? actorId : null,
+    op,
+    batchId,
+    restored: false,
+  });
+  item.deleteOne();
+  return snapshot;
+};
+const stacksOf = (event) => ({
+  canUndo: (event.undoStack || []).length > 0,
+  canRedo: (event.redoStack || []).length > 0,
+});
+// Re-remove a batch's items (redo). Tombstones are reused in place: the index is
+// re-read from the CURRENT array so a later undo still lands correctly.
+const retombstoneBatch = (event, batchId) => {
+  let removed = 0;
+  for (const t of (event.deletedItems || []).filter((x) => String(x.batchId) === String(batchId))) {
+    const day = event.eventDays.id(t.dayId);
+    if (!day) continue; // the day went away — nothing to re-remove
+    const item = day.decorItems.id(t.itemId);
+    if (!item) continue;
+    t.index = day.decorItems.findIndex((i) => String(i._id) === String(t.itemId));
+    t.restored = false;
+    t.deletedAt = new Date();
+    item.deleteOne();
+    removed++;
+  }
+  return removed;
 };
 
 const planChangeLog = require("../utils/planChangeLog");
@@ -620,19 +755,100 @@ const patchItem = async (leadId, eventId, dayId, itemId, input = {}, actorId = n
   return item.toObject();
 };
 
-const removeItem = async (leadId, eventId, dayId, itemId, actorId = null) => {
-  const event = await getDraft(leadId, eventId, { forWrite: true });
-  const day = getDay(event, dayId);
-  const item = day.decorItems.id(itemId);
-  if (!item) throw err(404, "Item not found");
-  const what = { name: item.category, price: item.price };
-  item.deleteOne();
-  await saveDraftWrite(event);
-  await planChangeLog.record(leadId, actorId, {
-    op: "delete", kind: "item", ...what, draftName: event.draftName || event.name, dayName: day.name,
+// Every delete now routes through the tombstone path, so ANY deleted item is
+// recoverable. Shape is unchanged for existing callers ({ ok: true } plus the
+// additive batch/stack fields).
+const removeItem = async (leadId, eventId, dayId, itemId, actorId = null) =>
+  withVersionRetry(async () => {
+    const event = await getDraft(leadId, eventId, { forWrite: true });
+    const day = getDay(event, dayId);
+    const item = day.decorItems.id(itemId);
+    if (!item) throw err(404, "Item not found");
+    const what = { name: item.category, price: item.price };
+    const batchId = newBatchId();
+    tombstoneItem(event, day, item, { batchId, op: "single", actorId });
+    capPush(event, "undoStack", batchId);
+    event.redoStack = []; // a NEW delete abandons the redo branch
+    pruneTombstones(event);
+    await saveDraftWrite(event);
+    await planChangeLog.record(leadId, actorId, {
+      op: "delete", kind: "item", ...what, draftName: event.draftName || event.name, dayName: day.name,
+    });
+    return { ok: true, batchId, ...stacksOf(event) };
   });
-  return { ok: true };
-};
+
+// BULK — every decor alternative (includedInTotal === false) across ALL days, in
+// ONE batch, so it undoes in a single step. Decor only: custom / mandatory / ES
+// rows are never touched.
+const removeNotIncluded = async (leadId, eventId, actorId = null) =>
+  withVersionRetry(async () => {
+    const event = await getDraft(leadId, eventId, { forWrite: true });
+    const batchId = newBatchId();
+    let removed = 0;
+    for (const day of event.eventDays || []) {
+      // collect the ids FIRST — deleting mutates the array under the iterator
+      const doomed = (day.decorItems || [])
+        .filter((i) => i && i.includedInTotal === false)
+        .map((i) => String(i._id));
+      for (const id of doomed) {
+        const item = day.decorItems.id(id);
+        if (!item) continue;
+        tombstoneItem(event, day, item, { batchId, op: "bulk-not-included", actorId });
+        removed++;
+      }
+    }
+    if (!removed) return { removed: 0, ...stacksOf(event) }; // nothing to undo — no batch, no stack push
+    capPush(event, "undoStack", batchId);
+    event.redoStack = [];
+    pruneTombstones(event);
+    await saveDraftWrite(event);
+    await planChangeLog.record(leadId, actorId, {
+      op: "delete", kind: "item", name: `${removed} not-included item(s)`, price: 0,
+      draftName: event.draftName || event.name,
+    });
+    return { removed, batchId, ...stacksOf(event) };
+  });
+
+// UNDO — pop the top batch, splice every one of its items back at {dayId,index}.
+// Restores in REVERSE deletion order: each removal shifted the indices of the
+// ones after it, and unwinding backwards puts them all back exactly.
+const undoDelete = async (leadId, eventId) =>
+  withVersionRetry(async () => {
+    const event = await getDraft(leadId, eventId, { forWrite: true });
+    const batchId = (event.undoStack || [])[(event.undoStack || []).length - 1];
+    if (!batchId) return { ok: true, restored: 0, ...stacksOf(event) }; // empty stack — 200 no-op
+    const batch = (event.deletedItems || []).filter((t) => String(t.batchId) === String(batchId) && !t.restored);
+    let restored = 0;
+    for (let i = batch.length - 1; i >= 0; i--) {
+      const t = batch[i];
+      const day = event.eventDays.id(t.dayId);
+      if (!day) continue; // the day is gone — skip rather than throw
+      const snap = t.snapshot && t.snapshot.toObject ? t.snapshot.toObject() : { ...(t.snapshot || {}) };
+      const idx = Math.max(0, Math.min(Number(t.index) || 0, day.decorItems.length)); // clamp if the array shrank
+      day.decorItems.splice(idx, 0, snap);
+      t.restored = true;
+      restored++;
+    }
+    event.undoStack = (event.undoStack || []).slice(0, -1);
+    capPush(event, "redoStack", batchId);
+    pruneTombstones(event);
+    await saveDraftWrite(event);
+    return { ok: true, restored, batchId, ...stacksOf(event) };
+  });
+
+// REDO — pop the top redo batch and re-run its delete (back to tombstones).
+const redoDelete = async (leadId, eventId) =>
+  withVersionRetry(async () => {
+    const event = await getDraft(leadId, eventId, { forWrite: true });
+    const batchId = (event.redoStack || [])[(event.redoStack || []).length - 1];
+    if (!batchId) return { ok: true, removed: 0, ...stacksOf(event) }; // empty stack — 200 no-op
+    const removed = retombstoneBatch(event, batchId);
+    event.redoStack = (event.redoStack || []).slice(0, -1);
+    capPush(event, "undoStack", batchId);
+    pruneTombstones(event);
+    await saveDraftWrite(event);
+    return { ok: true, removed, batchId, ...stacksOf(event) };
+  });
 
 const reorderItems = async (leadId, eventId, dayId, { ids } = {}) => {
   if (!Array.isArray(ids) || !ids.length) throw err(400, "Pass the ordered item ids");
@@ -1043,7 +1259,8 @@ const addItemMulti = async (leadId, primaryEventId, dayId, input = {}, draftIds 
 };
 
 module.exports = {
-  createDraft, renameDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings, setEventTheme,
+  createDraft, duplicateDraft, renameDraft, listDrafts, getDraftDetail, getDraft, totalsFor, draftEarnings, setEventTheme,
+  removeNotIncluded, undoDelete, redoDelete, withVersionRetry,
   finalise, unlock, publishDraft, revokeDraft, publishedSnapshotFor,
   pushToBuild, copyItem, moveItem, addItemMulti,
   addDay, addItem, patchItem, removeItem, reorderItems,
