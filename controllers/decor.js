@@ -814,6 +814,182 @@ const SuggestPrice = (req, res) => {
     });
 };
 
+// ─── Client response shaping — the pricing METHOD never leaves the server ────
+// The vision/demo SERVICES stay fully expressive: rates, multipliers, thresholds
+// and derivation prose all remain on the returned object, so internal callers
+// (A2S Phase C, admin views) and the engine's own tests keep reading everything.
+// This serializer is the ONLY thing that reaches the wire, and it trims the
+// payload to operational outputs — a saved response must not be enough to
+// reverse-derive the pricing engine.
+//
+// STRIPPED (method): every rate constant (*RatePerFt / ratePerSqFt), tier
+// ladders and divisors, the uplift and headroom multipliers, the structure
+// threshold and its floral/structure split, pricingModel, the reference anchor,
+// observedBand percentiles, occasion source internals, numeric confidence gates,
+// comparables' per-tier prices, and ALL derivation prose.
+// TRANSFORMED: method-revealing signals become operational booleans —
+// confirmWidth (staff must verify the width before quoting), structureHeavy
+// (limited negotiating margin, without saying what triggered it), lowConfidence.
+// KEPT: the outputs staff actually work from — category, observations, measured
+// VALUES, the price ladder, and the corrections loop (repeatingElements lets
+// staff say "those panels are 12 ft"; an occasion conflict warns that the
+// caption and the image disagree).
+
+// Width at or under which staff need not re-measure. Deliberately NOT the
+// structure threshold — this is a "go confirm it" prompt, not a pricing edge.
+const CONFIRM_WIDTH_FT = 25;
+// Defensive net: any key whose value narrates HOW a number was produced, at any
+// depth, is dropped after shaping — so a service that later adds nested prose
+// can never leak it through a field this serializer forwards wholesale.
+const PROSE_KEYS = new Set(["reasoning"]);
+const deepStripProse = (value) => {
+  if (Array.isArray(value)) return value.map(deepStripProse);
+  if (value && typeof value === "object" && !(value instanceof Date)) {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (PROSE_KEYS.has(k)) continue;
+      out[k] = deepStripProse(v);
+    }
+    return out;
+  }
+  return value;
+};
+
+// Measurements: the NUMBERS staff read and correct — never the derivation.
+// repeatingElements survives because the correction loop is the point; the
+// basis label, the competing span, the scene/geometry inputs, the pre-snap raw
+// height, the ratio divisor, the coverage fraction and the prose do not.
+const shapeMeasurements = (m) => {
+  if (!m) return null;
+  const out = {};
+  if (m.backdropWidthFt != null) out.backdropWidthFt = m.backdropWidthFt;
+  if (m.estimatedHeightFt != null) out.estimatedHeightFt = m.estimatedHeightFt;
+  if (m.floralRunFt != null) out.floralRunFt = m.floralRunFt;
+  const re = m.repeatingElements;
+  if (re && re.count != null && re.estimatedWidthEachFt != null) {
+    out.repeatingElements = { count: re.count, estimatedWidthEachFt: re.estimatedWidthEachFt };
+  }
+  return out;
+};
+// Raw confidence is stripped, so this boolean carries the whole "verify it" job.
+const needsWidthConfirm = (m) =>
+  !!m && (Number(m.backdropWidthFt) > CONFIRM_WIDTH_FT || m.lowConfidence === true);
+// The detected occasion and — operationally — that the caption and the image
+// disagreed. The source ranking and the stage-rate default stay server-side.
+const shapeOccasion = (o) => ({
+  value: o.value != null ? o.value : null,
+  ...(o.conflict ? { conflict: o.conflict } : {}),
+});
+// Examples are a "show me one" affordance: name, image and the size label. No
+// product code, and no price — price-browsing belongs in OS, not this payload.
+const shapeExample = (e) => ({
+  ...(e.name != null ? { name: e.name } : {}),
+  ...(e.image != null ? { image: e.image } : {}),
+  ...(e.size != null ? { size: e.size } : {}),
+});
+// The ladder row keeps its size label and its tier→{low,high} prices. `area` is
+// dropped: with the size already present it only feeds the area exponent.
+const shapeLadderRow = (row) => ({
+  size: row.size != null ? row.size : null,
+  prices: row.prices || {},
+  ...(row.examplesAtThisSize
+    ? { examplesAtThisSize: (row.examplesAtThisSize || []).map(shapeExample) }
+    : {}),
+});
+
+const shapeDemoPrice = (out) => {
+  if (!out || typeof out !== "object") return out;
+  // Rejections carry client-safe wording only.
+  if (out.rejected) {
+    return deepStripProse({
+      rejected: true,
+      ...(out.reason ? { reason: out.reason } : {}),
+      ...(out.pinTextCheck ? { pinTextCheck: out.pinTextCheck } : {}),
+    });
+  }
+  const m = out.stageMeasurements || null;
+  return deepStripProse({
+    rejected: false,
+    category: out.category,
+    categoryConfidence: out.categoryConfidence,
+    observations: Array.isArray(out.observations) ? out.observations : [],
+    ...(out.minBuildWidth && out.minBuildWidth.minWidthFt != null
+      ? { minBuildWidth: { minWidthFt: out.minBuildWidth.minWidthFt } }
+      : {}),
+    ...(out.recommendedSize ? { recommendedSize: out.recommendedSize } : {}),
+    ...(m ? { stageMeasurements: shapeMeasurements(m) } : {}),
+    // Operational signals in place of the threshold / rate / split.
+    structureHeavy: !!(out.structure && out.structure.applies),
+    confirmWidth: needsWidthConfirm(m),
+    lowConfidence: !!(m && m.lowConfidence),
+    ...(out.occasion ? { occasion: shapeOccasion(out.occasion) } : {}),
+    applicableTiers: out.applicableTiers,
+    ladder: (out.ladder || []).map(shapeLadderRow),
+    ...(out.pinTextCheck ? { pinTextCheck: out.pinTextCheck } : {}),
+  });
+};
+
+// The vision analysis: descriptive output and measured values. `complexity` goes
+// entirely — its tier is the ladder's band-position input — as does every
+// confidence gate that decided whether a signal was used.
+const shapeAnalysis = (a) => {
+  if (!a || typeof a !== "object") return a;
+  const m = a.stageMeasurements || null;
+  return {
+    isDecorProduct: a.isDecorProduct,
+    category: a.category != null ? a.category : null,
+    categoryConfidence: a.categoryConfidence,
+    ...(a.style ? { style: a.style } : {}),
+    ...(a.size && (a.size.length > 0 || a.size.width > 0)
+      ? { size: { length: a.size.length, width: a.size.width } }
+      : {}),
+    ...(Array.isArray(a.observations) ? { observations: a.observations } : {}),
+    ...(a.minBuildWidth && a.minBuildWidth.minWidthFt != null
+      ? { minBuildWidth: { minWidthFt: a.minBuildWidth.minWidthFt } }
+      : {}),
+    ...(a.recommendedSize ? { recommendedSize: a.recommendedSize } : {}),
+    ...(m ? { stageMeasurements: shapeMeasurements(m) } : {}),
+    ...(a.occasion ? { occasion: shapeOccasion(a.occasion) } : {}),
+    // Listing copy (full mode) — descriptive, carries no pricing method.
+    ...(a.flowers ? { flowers: a.flowers } : {}),
+    ...(a.colors ? { colors: a.colors } : {}),
+    ...(a.fabric ? { fabric: a.fabric } : {}),
+    ...(a.suggestedName ? { suggestedName: a.suggestedName } : {}),
+    ...(a.description ? { description: a.description } : {}),
+    ...(a.tags ? { tags: a.tags } : {}),
+    ...(a.included ? { included: a.included } : {}),
+  };
+};
+// The priced outputs only: the band percentiles, the uplift, the size-exponent
+// basis, the complexity factor and the comparables table never ship.
+const shapePricing = (p) => {
+  if (!p || typeof p !== "object") return null;
+  return {
+    category: p.category,
+    applicableTiers: p.applicableTiers,
+    ...(p.suggested != null ? { suggested: p.suggested } : {}),
+    ...(p.suggestedBand ? { suggestedBand: p.suggestedBand } : {}),
+    ...(p.priceRange ? { priceRange: p.priceRange } : {}),
+  };
+};
+// `fallbacks[]` narrated which gate fired AND printed its value; it collapses to
+// one boolean meaning "degraded — verify before quoting".
+const shapeAnalyseImage = (payload = {}) => {
+  const { analysis, pricing, fallbacks, rejected } = payload;
+  const m = analysis && analysis.stageMeasurements;
+  return deepStripProse({
+    analysis: shapeAnalysis(analysis),
+    pricing: shapePricing(pricing),
+    ...(rejected ? { rejected: true } : {}),
+    lowConfidence: (Array.isArray(fallbacks) && fallbacks.length > 0) || !!(m && m.lowConfidence),
+    confirmWidth: needsWidthConfirm(m),
+  });
+};
+
+// The single boundary every décor AI response passes through.
+const shapeClientResponse = (kind, payload) =>
+  kind === "demo-price" ? shapeDemoPrice(payload) : shapeAnalyseImage(payload);
+
 // ─── Phase B — vision layer ──────────────────────────────────────────────────
 // POST /decor/analyse-image  { imageBase64? | imageUrl? | image?, source? }
 // Read-only. Runs the vision model, then the Phase A engine on VISIBLE +
@@ -850,7 +1026,7 @@ const AnalyseImage = async (req, res) => {
 
   // Rejection escape hatch: not a décor product → no pricing, no comparables.
   if (!analysis.isDecorProduct) {
-    return res.status(200).send({ analysis, pricing: null, rejected: true });
+    return res.status(200).send(shapeClientResponse("analyse-image", { analysis, pricing: null, rejected: true }));
   }
 
   const cat = analysis.category;
@@ -887,11 +1063,11 @@ const AnalyseImage = async (req, res) => {
     : undefined;
 
   if (!applicable) {
-    return res.status(200).send({
+    return res.status(200).send(shapeClientResponse("analyse-image", {
       analysis,
       pricing: null,
       fallbacks: [...fallbacks, `category "${cat}" is not in the pricing model — no price computed`],
-    });
+    }));
   }
 
   try {
@@ -916,7 +1092,7 @@ const AnalyseImage = async (req, res) => {
       comparables
     );
 
-    return res.status(200).send({ analysis, pricing, fallbacks });
+    return res.status(200).send(shapeClientResponse("analyse-image", { analysis, pricing, fallbacks }));
   } catch (error) {
     return res.status(400).send({ message: "error", error });
   }
@@ -990,7 +1166,7 @@ const DemoPrice = async (req, res) => {
   // Non-décor → reject, no pricing, no comparables.
   if (!analysis.isDecorProduct) {
     const out = buildDemoPrice(analysis, [], { includeExamples: false });
-    return res.status(200).send({ ...out, ...(pinTextCheck ? { pinTextCheck } : {}) });
+    return res.status(200).send(shapeClientResponse("demo-price", { ...out, ...(pinTextCheck ? { pinTextCheck } : {}) }));
   }
 
   try {
@@ -1001,7 +1177,7 @@ const DemoPrice = async (req, res) => {
     ).lean();
     const comparables = docs.map(normalizeComparable);
     const out = buildDemoPrice(analysis, comparables, { includeExamples: !!includeExamples, occasion });
-    return res.status(200).send({ ...out, ...(pinTextCheck ? { pinTextCheck } : {}) });
+    return res.status(200).send(shapeClientResponse("demo-price", { ...out, ...(pinTextCheck ? { pinTextCheck } : {}) }));
   } catch (error) {
     return res.status(400).send({ message: "error", error });
   }
@@ -1236,4 +1412,8 @@ Return ONLY valid JSON:
   }
 };
 
-module.exports = { CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder, SuggestPrice, AnalyseImage, DemoPrice };
+module.exports = {
+  CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder, SuggestPrice, AnalyseImage, DemoPrice,
+  // exported for the response-contract test — the wire-shaping boundary
+  shapeClientResponse, shapeDemoPrice, shapeAnalyseImage,
+};
