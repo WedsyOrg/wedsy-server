@@ -12,14 +12,40 @@ const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 const { hasCapability } = require("../utils/venueRbac");
 const { resolveCreateAssignment, validateAssignable, pickRoundRobinAssignee } = require("../utils/venueLeadAssign");
 const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../utils/venueLeadScope");
+const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
+const VenueTask = require("../models/VenueTask");
+const VenueFollowUp = require("../models/VenueFollowUp");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const VenueOwner = require("../models/VenueOwner");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
 const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow } = require("../utils/venueInput");
+const { venueDateKey } = require("../utils/venueTime");
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
 const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
+
+// Resolve activity `actor` ids to display names in one round trip per
+// collection. An actor is a VenueTeamMember id or a VenueOwner id; entries with
+// no actor are genuine system writes and stay unnamed (the client renders
+// those as "System"). Ids that no longer resolve — a deleted member — also
+// come back null rather than dropping the entry: the history stays.
+const attachActorNames = async (activities) => {
+  const list = activities || [];
+  const ids = [...new Set(list.map((a) => a.actor).filter(Boolean).map(String))];
+  if (!ids.length) return list;
+  const [members, owners] = await Promise.all([
+    VenueTeamMember.find({ _id: { $in: ids } }).select("name").lean(),
+    VenueOwner.find({ _id: { $in: ids } }).select("name").lean(),
+  ]);
+  const names = new Map();
+  for (const o of owners) names.set(String(o._id), o.name);
+  // Members win on id collision (they are the more specific principal).
+  for (const m of members) names.set(String(m._id), m.name);
+  return list.map((a) => ({ ...a, actorName: a.actor ? names.get(String(a.actor)) || null : null }));
+};
 const toMemberIdOrNull = (v) => (mongoose.isValidObjectId(v) ? v : null);
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
@@ -81,9 +107,10 @@ function sanitizeContacts(list) {
 function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
   if (!Array.isArray(list)) return { ok: false, message: "functions must be an array" };
   if (list.length > MAX_FUNCTIONS) return { ok: false, message: `functions is too long (max ${MAX_FUNCTIONS})` };
-  const dayStart = (d) => new Date(d).setHours(0, 0, 0, 0);
-  const lo = checkIn && checkOut ? dayStart(checkIn) : null;
-  const hi = checkIn && checkOut ? dayStart(checkOut) : null;
+  // Venue-calendar-day (IST) comparison — mirrors the model hook so the 400 and
+  // the save-time invalidate can never disagree, on any server timezone.
+  const lo = checkIn && checkOut ? venueDateKey(checkIn) : null;
+  const hi = checkIn && checkOut ? venueDateKey(checkOut) : null;
   const out = [];
   for (let i = 0; i < list.length; i++) {
     const f = list[i] || {};
@@ -98,7 +125,7 @@ function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
     if (!dV.ok) return { ok: false, message: dV.message };
     if (!dV.value) return { ok: false, message: `functions[${i}].date is required` };
     if (lo !== null) {
-      const day = dayStart(dV.value);
+      const day = venueDateKey(dV.value);
       if (day < lo || day > hi) {
         return { ok: false, message: `functions[${i}].date must fall within the check-in/check-out window` };
       }
@@ -251,9 +278,32 @@ const createEnquiry = async (req, res) => {
     const gcPub = optCount(guestCount, "guestCount"); if (!gcPub.ok) return res.status(400).json({ message: gcPub.message });
     const evPub = optNumber(estimatedValue, "estimatedValue"); if (!evPub.ok) return res.status(400).json({ message: evPub.message });
 
-    const venue = await Venue.findOne({ slug }).select("_id name phone status").lean();
+    const venue = await Venue.findOne({ slug }).select("_id name phone status settings").lean();
     if (!venue) {
       return res.status(404).json({ message: "Venue not found" });
+    }
+
+    // ── Auto-assign inbound leads (product map dead-end #5, J1) ──
+    // Without this an inbound enquiry lands unassigned, and an unassigned lead
+    // is INVISIBLE to every member without leads_view_all — so a scoped Sales
+    // team never sees the leads the website generates. This is the day-one
+    // team blocker the product map calls out.
+    //
+    // Venue-scoped round-robin only: utils/venueLeadAssign is deliberately
+    // standalone and must never import services/LeadAssignmentService (that one
+    // is Admin/Enquiry-scoped and cross-team locked). No creator to default to
+    // here — this is a public, unauthenticated endpoint — so it is explicit
+    // request (never accepted publicly) → round-robin → unassigned.
+    let inboundAssign = { assignedTo: null, via: null, auto: false };
+    if (venue.settings && venue.settings.autoAssignLeads) {
+      try {
+        const pick = await pickRoundRobinAssignee(venue._id);
+        if (pick) inboundAssign = { assignedTo: pick, via: "round_robin", auto: true };
+      } catch (assignErr) {
+        // Intake must never die: an assignment failure leaves the lead
+        // unassigned and visible to owners/managers rather than losing it.
+        console.error("Auto-assign failed for inbound enquiry:", assignErr.message);
+      }
     }
 
     let notesArray = [];
@@ -282,10 +332,28 @@ const createEnquiry = async (req, res) => {
       stage: "new", // forced server-side; client cannot set stage on the public endpoint
       estimatedValue: evPub.value != null ? evPub.value : 0,
       notes: notesArray,
-      followUpDate: fuPub.value,
-      activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
+      // Mirror of the follow-ups module — seeded below when the caller sent one.
+      // Invariant #1 (>=1 contact): the public path never seeded contacts[], so
+      // every inbound web lead arrived contact-less while manually-created ones
+      // did not. The couple themselves are the primary contact.
+      contacts: [{ name: effectiveName, phone: effectivePhone, role: "other", isPrimary: true }],
+      assignedTo: inboundAssign.assignedTo,
+      activities: [
+        { type: "created", description: "Lead created", timestamp: new Date() },
+        ...(inboundAssign.assignedTo
+          ? [{ type: "auto_assigned", description: "Auto-assigned (round-robin)", via: inboundAssign.via, timestamp: new Date() }]
+          : []),
+      ],
       status: "new",
     });
+
+    if (fuPub.value) {
+      try {
+        await applyLegacyFollowUpWrite({ lead: enquiry, venueId: venue._id, dueAt: fuPub.value, note: "", actorId: null });
+      } catch (fuErr) {
+        console.error("Failed to seed follow-up for enquiry:", fuErr.message);
+      }
+    }
 
     // Seed the communication log with the initial 'enquiry' interaction so the
     // timeline isn't empty on first contact. Never let this break enquiry creation.
@@ -380,6 +448,13 @@ const getEnquiryById = async (req, res) => {
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
     const json = enquiry.toJSON();
+
+    // Attribution: activities stamp `actor` with the acting principal's id (a
+    // VenueTeamMember when a member is logged in, else the owner anchor).
+    // Resolve those to names — without this the workbench has nothing to
+    // render and every entry reads "System", so "who moved this lead?" is
+    // unanswerable even though the audit data is right there.
+    json.activities = await attachActorNames(json.activities);
 
     // S1b: resolve space subdoc ids to display names for the functions grid.
     const spaceName = new Map((venue.spaces || []).map((s) => [String(s._id), s.name]));
@@ -584,8 +659,10 @@ const updateEnquiry = async (req, res) => {
     }
     if (evV.value !== undefined) enquiry.estimatedValue = evV.value;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
-    if (followUpDate !== undefined) enquiry.followUpDate = fuV.value;
-    if (followUpNote !== undefined) enquiry.followUpNote = cleanStr(followUpNote).slice(0, MAXLEN.text);
+    // followUpDate/followUpNote are no longer written directly: they are a
+    // mirror of the next OPEN row in the follow-ups module. The legacy body
+    // shape still works — it now edits/creates/closes that row (and the mirror
+    // is recomputed from it) so the two can never diverge.
     // S3 profile-field edits (keep name/phone mirrors in sync with the couple
     // fields so dedup + WhatsApp keep working).
     if (coupleName !== undefined) { enquiry.coupleName = cleanStr(coupleName); enquiry.name = cleanStr(coupleName); }
@@ -635,6 +712,21 @@ const updateEnquiry = async (req, res) => {
     }
 
     await enquiry.save();
+
+    // Route the legacy follow-up fields through the module, then refresh the
+    // in-memory mirror so the response body matches what was persisted.
+    if (followUpDate !== undefined || followUpNote !== undefined) {
+      await applyLegacyFollowUpWrite({
+        lead: enquiry,
+        venueId: venue._id,
+        dueAt: followUpDate === undefined ? undefined : fuV.value,
+        note: followUpNote === undefined ? undefined : cleanStr(followUpNote).slice(0, MAXLEN.text),
+        actorId: actorIdOf(req),
+      });
+      const fresh = await VenueEnquiry.findById(enquiry._id).select("followUpDate followUpNote").lean();
+      enquiry.followUpDate = fresh.followUpDate;
+      enquiry.followUpNote = fresh.followUpNote;
+    }
 
     // Phase 3.1: moving a lead to "booked" auto-creates a draft booking (idempotent,
     // one per enquiry). Failure here must not fail the stage update.
@@ -796,13 +888,28 @@ const createManualLead = async (req, res) => {
       stage: stage || "new",
       estimatedValue: evV.value != null ? evV.value : 0,
       notes: notesArray,
-      followUpDate: fuV.value,
-      followUpNote: cleanStr(followUpNote).slice(0, MAXLEN.text),
+      // followUpDate/followUpNote are the module's mirror — seeded just below
+      // by applyLegacyFollowUpWrite so the row and the mirror are born together.
       assignedTo: assign.assignedTo,
       contacts: contactRows,
       activities,
       status: "new",
     });
+
+    // A follow-up supplied at create time becomes a real follow-up row (and,
+    // through it, the lead's next-touch mirror).
+    if (fuV.value || cleanStr(followUpNote)) {
+      await applyLegacyFollowUpWrite({
+        lead: enquiry,
+        venueId: venue._id,
+        dueAt: fuV.value || undefined,
+        note: cleanStr(followUpNote).slice(0, MAXLEN.text),
+        actorId: actorIdOf(req),
+      });
+      const fresh = await VenueEnquiry.findById(enquiry._id).select("followUpDate followUpNote").lean();
+      enquiry.followUpDate = fresh.followUpDate;
+      enquiry.followUpNote = fresh.followUpNote;
+    }
 
     // S1a matchedLead: dedup NEVER blocks or reassigns (EDGE 2 — a matching
     // create keeps its own record and owner); it only surfaces the banner so
@@ -835,12 +942,48 @@ const deleteEnquiry = async (req, res) => {
     }
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+
+    // Invariant #12 — "deleting a lead releases nothing silently". A deleted
+    // lead disappears from every view, but the things it was holding do not
+    // disappear with it: a live hold keeps real calendar inventory blocked, and
+    // linked tasks/follow-ups become orphaned work nobody owns. We deliberately
+    // do NOT auto-release the hold (that would silently free a contested date
+    // someone may still want) — we surface it so the caller must decide.
+    const [liveHolds, openTasks, openFollowUps, booking] = await Promise.all([
+      VenueHold.find({ venue: venue._id, linkedEnquiry: enquiry._id, status: { $in: ["requested", "approved"] } })
+        .select("_id status dates expiresAt")
+        .lean(),
+      VenueTask.countDocuments({ linkedEnquiry: enquiry._id, status: "open" }),
+      VenueFollowUp.countDocuments({ lead: enquiry._id, status: "open" }),
+      VenueBooking.findOne({ enquiry: enquiry._id }).select("_id").lean(),
+    ]);
+
+    // A lead that already became a booking must not be deletable — the booking,
+    // its payments and its blocked calendar rows would be orphaned from the
+    // history that explains them.
+    if (booking) {
+      return res.status(409).json({
+        message: "This lead has a confirmed booking — cancel the booking first",
+        bookingId: booking._id,
+      });
+    }
+
     enquiry.deleted = true;
     enquiry.deletedAt = new Date();
     enquiry.deletedBy = actorIdOf(req);
     enquiry.activities.push({ type: "deleted", description: "Lead deleted", actor: actorIdOf(req), timestamp: new Date() });
     await enquiry.save();
-    return res.status(200).json({ success: true });
+
+    return res.status(200).json({
+      success: true,
+      // The caller shows these as explicit next actions rather than letting a
+      // date stay blocked for a lead nobody can see any more.
+      releasedNothing: {
+        holds: liveHolds.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt })),
+        openTasks,
+        openFollowUps,
+      },
+    });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -852,6 +995,14 @@ const deleteEnquiry = async (req, res) => {
 // defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
 // errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
 async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
+  // Imported / sheet-synced leads hit the same invisibility trap as inbound
+  // web enquiries: unassigned means invisible to every member without
+  // leads_view_all. Precedence matches the assignment contract — an explicit
+  // per-row assignedTo wins, else round-robin when the venue opted in, else
+  // unassigned. Round-robin is recomputed per row so a 200-row import spreads
+  // across the team instead of landing entirely on one person.
+  const importVenue = await Venue.findById(venueId).select("settings").lean();
+  const autoAssignOn = Boolean(importVenue && importVenue.settings && importVenue.settings.autoAssignLeads);
   // S1a: dedup keys on ANY contact phone, not just the couplePhone mirror.
   // Full-digit keys (legacy behaviour) plus every contact's digits. EDGE 2
   // holds: a duplicate row is SKIPPED outright, so its assignedTo can never
@@ -893,6 +1044,16 @@ async function importLeadRows(venueId, rows, { activityDescription = "Lead impor
       const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
 
       const notesStr = toStr(row.notes);
+      let rowAssignee = toMemberIdOrNull(toStr(row.assignedTo));
+      if (rowAssignee) {
+        // Keep the existing best-effort behaviour: a bad id leaves the row
+        // unassigned rather than 422-ing a whole import.
+        const v = await validateAssignable(venueId, rowAssignee);
+        rowAssignee = v.ok ? v.id : null;
+      }
+      if (!rowAssignee && autoAssignOn) {
+        rowAssignee = await pickRoundRobinAssignee(venueId);
+      }
       await VenueEnquiry.create({
         venueId,
         name: coupleName,
@@ -907,10 +1068,16 @@ async function importLeadRows(venueId, rows, { activityDescription = "Lead impor
         estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
         notes: notesStr ? [{ text: notesStr }] : [],
         followUpDate: toDateOrNull(row.followUpDate),
-        // Bulk best-effort: keep a valid member id, else leave unassigned. (The
-        // migration reconciles legacy name/id values; import doesn't 422 rows.)
-        assignedTo: toMemberIdOrNull(toStr(row.assignedTo)),
-        activities: [{ type: "created", description: activityDescription, timestamp: new Date() }],
+        // Bulk best-effort: a valid member id (explicit or round-robin), else
+        // unassigned. (The migration reconciles legacy name/id values; import
+        // doesn't 422 rows.)
+        assignedTo: rowAssignee || null,
+        activities: [
+          { type: "created", description: activityDescription, timestamp: new Date() },
+          ...(rowAssignee && !toMemberIdOrNull(toStr(row.assignedTo))
+            ? [{ type: "auto_assigned", description: "Auto-assigned (round-robin)", via: "round_robin", timestamp: new Date() }]
+            : []),
+        ],
         status: "new",
       });
 

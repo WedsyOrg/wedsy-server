@@ -14,6 +14,21 @@ const { validateAssignable } = require("../utils/venueLeadAssign");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optDate, cleanStr, MAXLEN } = require("../utils/venueInput");
 
+// A lead-linked task's lifecycle belongs on the LEAD's timeline too — otherwise
+// "what happened on this lead?" silently omits every task ever completed on it.
+// Best-effort: a timeline write must never fail the task operation itself.
+async function noteOnLead(task, type, description, actorId) {
+  if (!task.linkedEnquiry) return;
+  try {
+    await VenueEnquiry.updateOne(
+      { _id: task.linkedEnquiry, deleted: { $ne: true } },
+      { $push: { activities: { type, description, actor: actorId, timestamp: new Date() } } }
+    );
+  } catch (e) {
+    console.warn(`[venueTask] timeline write failed for lead ${task.linkedEnquiry}: ${e.message}`);
+  }
+}
+
 const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
 
 // Resolve + own the venue from the slug. Returns the venue or sends the error.
@@ -126,6 +141,7 @@ const createTask = async (req, res) => {
       linkedEnquiry: link.id,
       createdBy: actorIdOf(req),
     });
+    await noteOnLead(task, "task_created", `Task added: ${task.title}`, actorIdOf(req));
     return res.status(201).json({ task });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -198,10 +214,15 @@ const completeTask = async (req, res) => {
     const owned = await resolveOwnedTask(req, res);
     if (!owned) return;
     const { task } = owned;
+    if (task.status === "done") {
+      // Double-click guard: re-completing must not write a second timeline entry.
+      return res.status(200).json({ task, alreadyDone: true });
+    }
     task.status = "done";
     task.completedAt = new Date();
     task.completedBy = actorIdOf(req);
     await task.save();
+    await noteOnLead(task, "task_completed", `Task completed: ${task.title}`, actorIdOf(req));
     return res.status(200).json({ task });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -214,10 +235,12 @@ const reopenTask = async (req, res) => {
     const owned = await resolveOwnedTask(req, res);
     if (!owned) return;
     const { task } = owned;
+    if (task.status === "open") return res.status(200).json({ task, alreadyOpen: true });
     task.status = "open";
     task.completedAt = undefined;
     task.completedBy = undefined;
     await task.save();
+    await noteOnLead(task, "task_reopened", `Task reopened: ${task.title}`, actorIdOf(req));
     return res.status(200).json({ task });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -229,7 +252,9 @@ const deleteTask = async (req, res) => {
   try {
     const owned = await resolveOwnedTask(req, res);
     if (!owned) return;
-    await owned.task.deleteOne();
+    const { task } = owned;
+    await noteOnLead(task, "task_deleted", `Task deleted: ${task.title}`, actorIdOf(req));
+    await task.deleteOne();
     return res.status(200).json({ success: true });
   } catch (err) {
     return res.status(500).json({ message: err.message });

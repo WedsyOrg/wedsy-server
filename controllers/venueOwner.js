@@ -12,6 +12,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueInvoice = require("../models/VenueInvoice");
 const { SendOTP, VerifyOTP } = require("../utils/otp");
 const enrichVenue = require("../utils/enrichVenue");
+const { endOfVenueDay } = require("../utils/venueTime");
 
 // Helper — mask phone number: 9876543210 → 98•••••210
 const maskPhone = (phone) => {
@@ -668,7 +669,8 @@ const portfolioOverview = async (req, res) => {
 
     const now = new Date();
     const d7 = new Date(now.getTime() - 7 * 86400000);
-    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    // Venue-local (IST) end-of-day — see utils/venueTime.
+    const endOfToday = endOfVenueDay(now);
 
     const rows = await Promise.all(
       owned.map(async (i) => {

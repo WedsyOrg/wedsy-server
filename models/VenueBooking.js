@@ -25,6 +25,14 @@ const VenueBookingSchema = new mongoose.Schema(
       },
     ],
     specialRequirements: { type: String, default: "" },
+    // Booking→Rooms handoff (product-map dead-end #6, "the Rooms island"): the
+    // lead says "we need 20 rooms" and Rooms/PMS never hears about it. Carried
+    // onto the booking at creation so the accommodation requirement survives
+    // the lead→booking graduation and the PMS can show a real shortfall
+    // instead of the owner re-reading the enquiry. Snapshot, not a live join:
+    // the reads cross-check the lead so a later change to the requirement is
+    // still reflected.
+    roomsRequired: { type: Number, default: 0 },
     // MB-CRM-2 S2 (additive): the agreement chosen in the Confirm Booking
     // wizard — a document-engine doc id (generated from template or an
     // attached signed scan). Loose ObjectId on purpose: the docs engine has
