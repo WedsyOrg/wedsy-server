@@ -71,6 +71,30 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(tMember.createdBy && tMember.createdBy.name === "Priya the Rep", "the timeline resolves the MEMBER's name (populate could not — createdBy is polymorphic)");
     ok(tOwner.createdBy && tOwner.createdBy.name === "Rajesh the Owner", "…and the owner's name from the other collection");
 
+    // The same question asked of the lead's OWN timeline. Activity rows stamp
+    // `actor` correctly, but the detail read handed back a bare id, so the
+    // workbench had no name to render and labelled every entry "System" —
+    // including the ones a person had just performed. Its own lead, so the
+    // task/hold counts the later sections assert on stay untouched.
+    const attrLead = await VenueEnquiry.create({ venueId: venue._id, coupleName: `${TAG} Attrib`, couplePhone: "9000902", stage: "contacted", assignedTo: member._id });
+    await call(tasks.createTask, memberReq({ body: { title: "Member's task", linkedEnquiry: String(attrLead._id) } }));
+    await call(tasks.createTask, ownerReq({ body: { title: "Owner's task", linkedEnquiry: String(attrLead._id) } }));
+    await VenueEnquiry.updateOne(
+      { _id: attrLead._id },
+      { $push: { activities: { type: "imported", description: "Imported from sheet", timestamp: new Date() } } },
+    );
+
+    const detail = await call(enq.getEnquiryById, ownerReq({ params: { enquiryId: String(attrLead._id) } }));
+    const acts = detail.body.enquiry.activities;
+    const byMemberAct = acts.find((a) => a.description === "Task added: Member's task");
+    const byOwnerAct = acts.find((a) => a.description === "Task added: Owner's task");
+    const unattributed = acts.find((a) => a.type === "imported");
+    ok(byMemberAct && byMemberAct.actorName === "Priya the Rep",
+      "THE FIX: the lead timeline names the MEMBER who acted (was: a bare id the UI rendered as \"System\")");
+    ok(byOwnerAct && byOwnerAct.actorName === "Rajesh the Owner", "…and the owner's own action carries the owner's name");
+    ok(unattributed && unattributed.actorName === null,
+      "a genuinely actor-less entry stays unnamed, so \"System\" keeps meaning system");
+
     // ── B. task lifecycle on the lead timeline ──
     console.log("\n[B. a lead-linked task's lifecycle is lead history]");
     const t1 = await call(tasks.createTask, ownerReq({ body: { title: "Send the brochure", linkedEnquiry: String(lead._id) } }));

@@ -15,6 +15,8 @@ const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../
 const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
 const VenueTask = require("../models/VenueTask");
 const VenueFollowUp = require("../models/VenueFollowUp");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const VenueOwner = require("../models/VenueOwner");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
@@ -24,6 +26,26 @@ const { venueDateKey } = require("../utils/venueTime");
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
 const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
+
+// Resolve activity `actor` ids to display names in one round trip per
+// collection. An actor is a VenueTeamMember id or a VenueOwner id; entries with
+// no actor are genuine system writes and stay unnamed (the client renders
+// those as "System"). Ids that no longer resolve — a deleted member — also
+// come back null rather than dropping the entry: the history stays.
+const attachActorNames = async (activities) => {
+  const list = activities || [];
+  const ids = [...new Set(list.map((a) => a.actor).filter(Boolean).map(String))];
+  if (!ids.length) return list;
+  const [members, owners] = await Promise.all([
+    VenueTeamMember.find({ _id: { $in: ids } }).select("name").lean(),
+    VenueOwner.find({ _id: { $in: ids } }).select("name").lean(),
+  ]);
+  const names = new Map();
+  for (const o of owners) names.set(String(o._id), o.name);
+  // Members win on id collision (they are the more specific principal).
+  for (const m of members) names.set(String(m._id), m.name);
+  return list.map((a) => ({ ...a, actorName: a.actor ? names.get(String(a.actor)) || null : null }));
+};
 const toMemberIdOrNull = (v) => (mongoose.isValidObjectId(v) ? v : null);
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
@@ -426,6 +448,13 @@ const getEnquiryById = async (req, res) => {
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
 
     const json = enquiry.toJSON();
+
+    // Attribution: activities stamp `actor` with the acting principal's id (a
+    // VenueTeamMember when a member is logged in, else the owner anchor).
+    // Resolve those to names — without this the workbench has nothing to
+    // render and every entry reads "System", so "who moved this lead?" is
+    // unanswerable even though the audit data is right there.
+    json.activities = await attachActorNames(json.activities);
 
     // S1b: resolve space subdoc ids to display names for the functions grid.
     const spaceName = new Map((venue.spaces || []).map((s) => [String(s._id), s.name]));
