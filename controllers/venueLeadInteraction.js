@@ -3,6 +3,7 @@ const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { optDate, cleanStr, MAXLEN } = require("../utils/venueInput");
 const { hasCapability } = require("../utils/venueRbac");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
+const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
 
 const INTERACTION_TYPES = ["call", "whatsapp", "email", "site_visit", "meeting", "enquiry", "note"];
 
@@ -129,13 +130,26 @@ const quickLog = async (req, res) => {
       advancedTo = target;
     }
 
-    // Capture the next follow-up in the same tap (a lead with no next step is
-    // the most dangerous object in the system).
-    if (followUpDate !== undefined) enquiry.followUpDate = fu.value;
-    if (followUpNote !== undefined) enquiry.followUpNote = cleanStr(followUpNote).slice(0, MAXLEN.text);
     enquiry.activities.push({ type: "quick_log", description: `Logged ${type}`, timestamp: new Date() });
 
     await enquiry.save();
+
+    // Capture the next follow-up in the same tap (a lead with no next step is
+    // the most dangerous object in the system). This now writes a real
+    // follow-up row; the lead's followUpDate/followUpNote are its mirror.
+    if (followUpDate !== undefined || followUpNote !== undefined) {
+      await applyLegacyFollowUpWrite({
+        lead: enquiry,
+        venueId: venue._id,
+        dueAt: followUpDate === undefined ? undefined : fu.value,
+        note: followUpNote === undefined ? undefined : cleanStr(followUpNote).slice(0, MAXLEN.text),
+        actorId: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null,
+        type: type === "note" ? "call" : type,
+      });
+      const fresh = await require("../models/VenueEnquiry").findById(enquiry._id).select("followUpDate followUpNote").lean();
+      enquiry.followUpDate = fresh.followUpDate;
+      enquiry.followUpNote = fresh.followUpNote;
+    }
     return res.status(201).json({ interaction, enquiry: enquiry.toJSON(), advancedTo });
   } catch (err) {
     return res.status(500).json({ message: err.message });

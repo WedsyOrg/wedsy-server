@@ -12,6 +12,7 @@ const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 const { hasCapability } = require("../utils/venueRbac");
 const { resolveCreateAssignment, validateAssignable, pickRoundRobinAssignee } = require("../utils/venueLeadAssign");
 const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../utils/venueLeadScope");
+const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
@@ -284,10 +285,18 @@ const createEnquiry = async (req, res) => {
       stage: "new", // forced server-side; client cannot set stage on the public endpoint
       estimatedValue: evPub.value != null ? evPub.value : 0,
       notes: notesArray,
-      followUpDate: fuPub.value,
+      // Mirror of the follow-ups module — seeded below when the caller sent one.
       activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
       status: "new",
     });
+
+    if (fuPub.value) {
+      try {
+        await applyLegacyFollowUpWrite({ lead: enquiry, venueId: venue._id, dueAt: fuPub.value, note: "", actorId: null });
+      } catch (fuErr) {
+        console.error("Failed to seed follow-up for enquiry:", fuErr.message);
+      }
+    }
 
     // Seed the communication log with the initial 'enquiry' interaction so the
     // timeline isn't empty on first contact. Never let this break enquiry creation.
@@ -586,8 +595,10 @@ const updateEnquiry = async (req, res) => {
     }
     if (evV.value !== undefined) enquiry.estimatedValue = evV.value;
     if (lostReason !== undefined) enquiry.lostReason = lostReason;
-    if (followUpDate !== undefined) enquiry.followUpDate = fuV.value;
-    if (followUpNote !== undefined) enquiry.followUpNote = cleanStr(followUpNote).slice(0, MAXLEN.text);
+    // followUpDate/followUpNote are no longer written directly: they are a
+    // mirror of the next OPEN row in the follow-ups module. The legacy body
+    // shape still works — it now edits/creates/closes that row (and the mirror
+    // is recomputed from it) so the two can never diverge.
     // S3 profile-field edits (keep name/phone mirrors in sync with the couple
     // fields so dedup + WhatsApp keep working).
     if (coupleName !== undefined) { enquiry.coupleName = cleanStr(coupleName); enquiry.name = cleanStr(coupleName); }
@@ -637,6 +648,21 @@ const updateEnquiry = async (req, res) => {
     }
 
     await enquiry.save();
+
+    // Route the legacy follow-up fields through the module, then refresh the
+    // in-memory mirror so the response body matches what was persisted.
+    if (followUpDate !== undefined || followUpNote !== undefined) {
+      await applyLegacyFollowUpWrite({
+        lead: enquiry,
+        venueId: venue._id,
+        dueAt: followUpDate === undefined ? undefined : fuV.value,
+        note: followUpNote === undefined ? undefined : cleanStr(followUpNote).slice(0, MAXLEN.text),
+        actorId: actorIdOf(req),
+      });
+      const fresh = await VenueEnquiry.findById(enquiry._id).select("followUpDate followUpNote").lean();
+      enquiry.followUpDate = fresh.followUpDate;
+      enquiry.followUpNote = fresh.followUpNote;
+    }
 
     // Phase 3.1: moving a lead to "booked" auto-creates a draft booking (idempotent,
     // one per enquiry). Failure here must not fail the stage update.
@@ -798,13 +824,28 @@ const createManualLead = async (req, res) => {
       stage: stage || "new",
       estimatedValue: evV.value != null ? evV.value : 0,
       notes: notesArray,
-      followUpDate: fuV.value,
-      followUpNote: cleanStr(followUpNote).slice(0, MAXLEN.text),
+      // followUpDate/followUpNote are the module's mirror — seeded just below
+      // by applyLegacyFollowUpWrite so the row and the mirror are born together.
       assignedTo: assign.assignedTo,
       contacts: contactRows,
       activities,
       status: "new",
     });
+
+    // A follow-up supplied at create time becomes a real follow-up row (and,
+    // through it, the lead's next-touch mirror).
+    if (fuV.value || cleanStr(followUpNote)) {
+      await applyLegacyFollowUpWrite({
+        lead: enquiry,
+        venueId: venue._id,
+        dueAt: fuV.value || undefined,
+        note: cleanStr(followUpNote).slice(0, MAXLEN.text),
+        actorId: actorIdOf(req),
+      });
+      const fresh = await VenueEnquiry.findById(enquiry._id).select("followUpDate followUpNote").lean();
+      enquiry.followUpDate = fresh.followUpDate;
+      enquiry.followUpNote = fresh.followUpNote;
+    }
 
     // S1a matchedLead: dedup NEVER blocks or reassigns (EDGE 2 — a matching
     // create keeps its own record and owner); it only surfaces the banner so

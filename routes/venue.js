@@ -108,6 +108,20 @@ router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
 router.get("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), getCrmSettings);
 router.patch("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), updateCrmSettings);
 
+// ── Follow-ups module — lead-derived, so reads are scoped through the parent
+//    lead (404 never 403) and writes need the coarse "leads" capability.
+//    DELETE is leads_delete: cancel is the everyday close, delete is for rows
+//    created in error only.
+const followUps = require("../controllers/venueFollowUp");
+router.get("/:slug/follow-ups", venueOwnerAuth, followUps.listFollowUps);
+router.post("/:slug/follow-ups", venueOwnerAuth, requireCapability("leads"), followUps.createFollowUp);
+router.get("/:slug/follow-ups/:followUpId", venueOwnerAuth, followUps.getFollowUp);
+router.patch("/:slug/follow-ups/:followUpId", venueOwnerAuth, requireCapability("leads"), followUps.updateFollowUp);
+router.post("/:slug/follow-ups/:followUpId/complete", venueOwnerAuth, requireCapability("leads"), followUps.completeFollowUp);
+router.post("/:slug/follow-ups/:followUpId/cancel", venueOwnerAuth, requireCapability("leads"), followUps.cancelFollowUp);
+router.post("/:slug/follow-ups/:followUpId/reopen", venueOwnerAuth, requireCapability("leads"), followUps.reopenFollowUp);
+router.delete("/:slug/follow-ups/:followUpId", venueOwnerAuth, requireCapability("leads_delete"), followUps.deleteFollowUp);
+
 // ── MB-CRM S0c: CRM tasks (standalone or lead-linked) ──
 router.get("/:slug/tasks", venueOwnerAuth, tasks.listTasks);
 router.post("/:slug/tasks", venueOwnerAuth, tasks.createTask);
