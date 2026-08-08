@@ -254,9 +254,32 @@ const createEnquiry = async (req, res) => {
     const gcPub = optCount(guestCount, "guestCount"); if (!gcPub.ok) return res.status(400).json({ message: gcPub.message });
     const evPub = optNumber(estimatedValue, "estimatedValue"); if (!evPub.ok) return res.status(400).json({ message: evPub.message });
 
-    const venue = await Venue.findOne({ slug }).select("_id name phone status").lean();
+    const venue = await Venue.findOne({ slug }).select("_id name phone status settings").lean();
     if (!venue) {
       return res.status(404).json({ message: "Venue not found" });
+    }
+
+    // ── Auto-assign inbound leads (product map dead-end #5, J1) ──
+    // Without this an inbound enquiry lands unassigned, and an unassigned lead
+    // is INVISIBLE to every member without leads_view_all — so a scoped Sales
+    // team never sees the leads the website generates. This is the day-one
+    // team blocker the product map calls out.
+    //
+    // Venue-scoped round-robin only: utils/venueLeadAssign is deliberately
+    // standalone and must never import services/LeadAssignmentService (that one
+    // is Admin/Enquiry-scoped and cross-team locked). No creator to default to
+    // here — this is a public, unauthenticated endpoint — so it is explicit
+    // request (never accepted publicly) → round-robin → unassigned.
+    let inboundAssign = { assignedTo: null, via: null, auto: false };
+    if (venue.settings && venue.settings.autoAssignLeads) {
+      try {
+        const pick = await pickRoundRobinAssignee(venue._id);
+        if (pick) inboundAssign = { assignedTo: pick, via: "round_robin", auto: true };
+      } catch (assignErr) {
+        // Intake must never die: an assignment failure leaves the lead
+        // unassigned and visible to owners/managers rather than losing it.
+        console.error("Auto-assign failed for inbound enquiry:", assignErr.message);
+      }
     }
 
     let notesArray = [];
@@ -286,7 +309,13 @@ const createEnquiry = async (req, res) => {
       estimatedValue: evPub.value != null ? evPub.value : 0,
       notes: notesArray,
       // Mirror of the follow-ups module — seeded below when the caller sent one.
-      activities: [{ type: "created", description: "Lead created", timestamp: new Date() }],
+      assignedTo: inboundAssign.assignedTo,
+      activities: [
+        { type: "created", description: "Lead created", timestamp: new Date() },
+        ...(inboundAssign.assignedTo
+          ? [{ type: "auto_assigned", description: "Auto-assigned (round-robin)", via: inboundAssign.via, timestamp: new Date() }]
+          : []),
+      ],
       status: "new",
     });
 
@@ -895,6 +924,14 @@ const deleteEnquiry = async (req, res) => {
 // defaults stage/source, and creates VenueEnquiry docs. Returns { created, skipped,
 // errors:[{row, reason}] }. Bad rows are caught per-row and never abort the run.
 async function importLeadRows(venueId, rows, { activityDescription = "Lead imported" } = {}) {
+  // Imported / sheet-synced leads hit the same invisibility trap as inbound
+  // web enquiries: unassigned means invisible to every member without
+  // leads_view_all. Precedence matches the assignment contract — an explicit
+  // per-row assignedTo wins, else round-robin when the venue opted in, else
+  // unassigned. Round-robin is recomputed per row so a 200-row import spreads
+  // across the team instead of landing entirely on one person.
+  const importVenue = await Venue.findById(venueId).select("settings").lean();
+  const autoAssignOn = Boolean(importVenue && importVenue.settings && importVenue.settings.autoAssignLeads);
   // S1a: dedup keys on ANY contact phone, not just the couplePhone mirror.
   // Full-digit keys (legacy behaviour) plus every contact's digits. EDGE 2
   // holds: a duplicate row is SKIPPED outright, so its assignedTo can never
@@ -936,6 +973,16 @@ async function importLeadRows(venueId, rows, { activityDescription = "Lead impor
       const stage = stageRaw && STAGE_ENUM.includes(stageRaw) ? stageRaw : "new";
 
       const notesStr = toStr(row.notes);
+      let rowAssignee = toMemberIdOrNull(toStr(row.assignedTo));
+      if (rowAssignee) {
+        // Keep the existing best-effort behaviour: a bad id leaves the row
+        // unassigned rather than 422-ing a whole import.
+        const v = await validateAssignable(venueId, rowAssignee);
+        rowAssignee = v.ok ? v.id : null;
+      }
+      if (!rowAssignee && autoAssignOn) {
+        rowAssignee = await pickRoundRobinAssignee(venueId);
+      }
       await VenueEnquiry.create({
         venueId,
         name: coupleName,
@@ -950,10 +997,16 @@ async function importLeadRows(venueId, rows, { activityDescription = "Lead impor
         estimatedValue: toNumberOrNull(row.expectedValue) || 0, // expectedValue → estimatedValue
         notes: notesStr ? [{ text: notesStr }] : [],
         followUpDate: toDateOrNull(row.followUpDate),
-        // Bulk best-effort: keep a valid member id, else leave unassigned. (The
-        // migration reconciles legacy name/id values; import doesn't 422 rows.)
-        assignedTo: toMemberIdOrNull(toStr(row.assignedTo)),
-        activities: [{ type: "created", description: activityDescription, timestamp: new Date() }],
+        // Bulk best-effort: a valid member id (explicit or round-robin), else
+        // unassigned. (The migration reconciles legacy name/id values; import
+        // doesn't 422 rows.)
+        assignedTo: rowAssignee || null,
+        activities: [
+          { type: "created", description: activityDescription, timestamp: new Date() },
+          ...(rowAssignee && !toMemberIdOrNull(toStr(row.assignedTo))
+            ? [{ type: "auto_assigned", description: "Auto-assigned (round-robin)", via: "round_robin", timestamp: new Date() }]
+            : []),
+        ],
         status: "new",
       });
 
