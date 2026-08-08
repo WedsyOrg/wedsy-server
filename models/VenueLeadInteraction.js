@@ -13,8 +13,13 @@ const VenueLeadInteractionSchema = new mongoose.Schema(
       required: true,
     },
     note: { type: String, default: "" },
-    // VenueOwner who logged it; null for the auto-seeded "enquiry" interaction.
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "VenueOwner" },
+    // WHO logged it. Deliberately un-ref'd: the actor may be the VenueOwner
+    // anchor OR a VenueTeamMember, so a single ref would be a lie for half the
+    // rows (and populate() would silently null them). createdByType says which
+    // collection to resolve against; controllers/venueLeadInteraction resolves
+    // the display name from both. Null for the auto-seeded "enquiry" row.
+    createdBy: { type: mongoose.Schema.Types.ObjectId },
+    createdByType: { type: String, enum: ["owner", "member"], default: "owner" },
     // MB-CRM S0a audit: how an auto-seeded assignment interaction arose, e.g.
     // "round_robin" | "create_override". Only stamped on assignment interactions.
     via: { type: String },

@@ -13,6 +13,8 @@ const { hasCapability } = require("../utils/venueRbac");
 const { resolveCreateAssignment, validateAssignable, pickRoundRobinAssignee } = require("../utils/venueLeadAssign");
 const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
+const VenueTask = require("../models/VenueTask");
+const VenueFollowUp = require("../models/VenueFollowUp");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
@@ -309,6 +311,10 @@ const createEnquiry = async (req, res) => {
       estimatedValue: evPub.value != null ? evPub.value : 0,
       notes: notesArray,
       // Mirror of the follow-ups module — seeded below when the caller sent one.
+      // Invariant #1 (>=1 contact): the public path never seeded contacts[], so
+      // every inbound web lead arrived contact-less while manually-created ones
+      // did not. The couple themselves are the primary contact.
+      contacts: [{ name: effectiveName, phone: effectivePhone, role: "other", isPrimary: true }],
       assignedTo: inboundAssign.assignedTo,
       activities: [
         { type: "created", description: "Lead created", timestamp: new Date() },
@@ -907,12 +913,48 @@ const deleteEnquiry = async (req, res) => {
     }
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+
+    // Invariant #12 — "deleting a lead releases nothing silently". A deleted
+    // lead disappears from every view, but the things it was holding do not
+    // disappear with it: a live hold keeps real calendar inventory blocked, and
+    // linked tasks/follow-ups become orphaned work nobody owns. We deliberately
+    // do NOT auto-release the hold (that would silently free a contested date
+    // someone may still want) — we surface it so the caller must decide.
+    const [liveHolds, openTasks, openFollowUps, booking] = await Promise.all([
+      VenueHold.find({ venue: venue._id, linkedEnquiry: enquiry._id, status: { $in: ["requested", "approved"] } })
+        .select("_id status dates expiresAt")
+        .lean(),
+      VenueTask.countDocuments({ linkedEnquiry: enquiry._id, status: "open" }),
+      VenueFollowUp.countDocuments({ lead: enquiry._id, status: "open" }),
+      VenueBooking.findOne({ enquiry: enquiry._id }).select("_id").lean(),
+    ]);
+
+    // A lead that already became a booking must not be deletable — the booking,
+    // its payments and its blocked calendar rows would be orphaned from the
+    // history that explains them.
+    if (booking) {
+      return res.status(409).json({
+        message: "This lead has a confirmed booking — cancel the booking first",
+        bookingId: booking._id,
+      });
+    }
+
     enquiry.deleted = true;
     enquiry.deletedAt = new Date();
     enquiry.deletedBy = actorIdOf(req);
     enquiry.activities.push({ type: "deleted", description: "Lead deleted", actor: actorIdOf(req), timestamp: new Date() });
     await enquiry.save();
-    return res.status(200).json({ success: true });
+
+    return res.status(200).json({
+      success: true,
+      // The caller shows these as explicit next actions rather than letting a
+      // date stay blocked for a lead nobody can see any more.
+      releasedNothing: {
+        holds: liveHolds.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt })),
+        openTasks,
+        openFollowUps,
+      },
+    });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
