@@ -254,9 +254,14 @@ router.post("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.cre
 router.patch("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.updateRole);
 router.delete("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.deleteRole);
 
-// ── MB-V2 P1: planner site visits, owner side (leads capability) ──
+// ── Site visits: planner-created AND owner-created, full lifecycle. Reads are
+//    scoped through the parent lead (a visit carries the couple's name/phone),
+//    writes need "leads", delete needs leads_delete (cancel is the everyday
+//    close and keeps history).
 router.get("/:slug/site-visits", venueOwnerAuth, requireCapability("leads"), siteVisits.listOwnSiteVisits);
+router.post("/:slug/site-visits", venueOwnerAuth, requireCapability("leads"), siteVisits.createOwnSiteVisit);
 router.patch("/:slug/site-visits/:visitId", venueOwnerAuth, requireCapability("leads"), siteVisits.updateOwnSiteVisit);
+router.delete("/:slug/site-visits/:visitId", venueOwnerAuth, requireCapability("leads_delete"), siteVisits.deleteOwnSiteVisit);
 
 // ── D3 date-inventory + holds ──
 // Create accepts BOTH tokens: admin JWT = wedsy-side concierge request,
