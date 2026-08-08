@@ -16,6 +16,7 @@ const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
 const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow } = require("../utils/venueInput");
+const { venueDateKey } = require("../utils/venueTime");
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
@@ -81,9 +82,10 @@ function sanitizeContacts(list) {
 function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
   if (!Array.isArray(list)) return { ok: false, message: "functions must be an array" };
   if (list.length > MAX_FUNCTIONS) return { ok: false, message: `functions is too long (max ${MAX_FUNCTIONS})` };
-  const dayStart = (d) => new Date(d).setHours(0, 0, 0, 0);
-  const lo = checkIn && checkOut ? dayStart(checkIn) : null;
-  const hi = checkIn && checkOut ? dayStart(checkOut) : null;
+  // Venue-calendar-day (IST) comparison — mirrors the model hook so the 400 and
+  // the save-time invalidate can never disagree, on any server timezone.
+  const lo = checkIn && checkOut ? venueDateKey(checkIn) : null;
+  const hi = checkIn && checkOut ? venueDateKey(checkOut) : null;
   const out = [];
   for (let i = 0; i < list.length; i++) {
     const f = list[i] || {};
@@ -98,7 +100,7 @@ function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
     if (!dV.ok) return { ok: false, message: dV.message };
     if (!dV.value) return { ok: false, message: `functions[${i}].date is required` };
     if (lo !== null) {
-      const day = dayStart(dV.value);
+      const day = venueDateKey(dV.value);
       if (day < lo || day > hi) {
         return { ok: false, message: `functions[${i}].date must fall within the check-in/check-out window` };
       }

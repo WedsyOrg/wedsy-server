@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { venueDateKey } = require("../utils/venueTime");
 
 const VenueEnquirySchema = new mongoose.Schema(
   {
@@ -172,12 +173,14 @@ VenueEnquirySchema.pre("validate", function (next) {
   // fine). Mirrored by the controller so callers get a clean 400 first; this
   // is the defense-in-depth backstop.
   if (this.checkIn && this.checkOut && Array.isArray(this.functions)) {
-    const dayStart = (d) => new Date(d).setHours(0, 0, 0, 0);
-    const lo = dayStart(this.checkIn);
-    const hi = dayStart(this.checkOut);
+    // Compared on the VENUE's calendar day (IST), so the same lead validates
+    // identically on a UTC prod box and an IST laptop. setHours() here would
+    // make the verdict depend on the server's timezone.
+    const lo = venueDateKey(this.checkIn);
+    const hi = venueDateKey(this.checkOut);
     for (const fn of this.functions) {
       if (fn && fn.date) {
-        const day = dayStart(fn.date);
+        const day = venueDateKey(fn.date);
         if (day < lo || day > hi) {
           this.invalidate("functions", "every function date must fall within the check-in/check-out window");
           break;

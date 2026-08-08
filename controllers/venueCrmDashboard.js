@@ -16,17 +16,17 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueTask = require("../models/VenueTask");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { canViewAllLeads, scopedLeadFilter } = require("../utils/venueLeadScope");
+const { venueDayBounds } = require("../utils/venueTime");
 
 const DAY = 24 * 60 * 60 * 1000;
 const COLD_GAP_MS = 7 * DAY;
 const REVIVAL_TYPES = new Set(["call", "whatsapp", "site_visit", "note"]);
 const TERMINAL = new Set(["booked", "lost"]);
 
+// "Today" is the venue's calendar day (IST), not the server's. On a UTC box
+// server-local bounds mis-bucket every follow-up between 00:00 and 05:30 IST.
 function dayBounds() {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start.getTime() + DAY - 1);
-  return { start, end };
+  return venueDayBounds();
 }
 const leadName = (l) => l.coupleName || l.name || "Lead";
 
