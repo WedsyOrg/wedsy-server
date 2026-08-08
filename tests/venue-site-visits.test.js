@@ -51,6 +51,12 @@ const freshLead = (id) => VenueEnquiry.findById(id).lean();
     let lead = await freshLead(leadA._id);
     ok(lead.stage === "site_visit_scheduled", "…and the lead really moved");
     ok(lead.activities.some((a) => a.type === "site_visit_scheduled"), "…and it is on the lead's timeline");
+    // The description is frozen at write time, so it must name the venue's own
+    // wall clock — it used to bake the raw UTC instant, putting "10:00" in the
+    // history of a visit every other surface showed as 3:30 PM.
+    const schedAct = lead.activities.find((a) => a.type === "site_visit_scheduled");
+    ok(schedAct.description === `Site visit scheduled for ${T.venueDateTimeLabel(when)}`,
+      "…worded in venue-local time, not UTC");
 
     ok((await call(sv.createOwnSiteVisit, ownerReq(venue, { body: { scheduledAt: when.toISOString() } }))).code === 400, "create without a lead → 400");
     ok((await call(sv.createOwnSiteVisit, ownerReq(venue, { body: { leadId: String(leadA._id) } }))).code === 400, "create without a time → 400");

@@ -39,6 +39,18 @@ const ownerReq = (venue) => ({ params: { slug: venue.slug }, query: {}, body: {}
     ok(T.venueDueBucket(new Date("2026-09-15T00:00:00Z"), inWindow) === "later", "a month out is later");
     ok(T.venueDueBucket(null, inWindow) === null && T.venueDueBucket("nonsense", inWindow) === null, "null / unparseable → no bucket (never a false 'overdue')");
 
+    // Timeline copy is a frozen string, so it has to name the venue's wall
+    // clock too. A 3:30 PM IST visit stored as 10:00 UTC was written into the
+    // lead's history as "10:00" while the visit card beside it said 3:30 PM.
+    ok(T.venueDateTimeLabel(new Date("2026-08-12T10:00:00Z")) === "2026-08-12 15:30",
+      "a 15:30 IST instant is labelled 15:30, not the 10:00 UTC behind it");
+    ok(T.venueDateTimeLabel(new Date("2026-08-09T19:00:00Z")) === "2026-08-10 00:30",
+      "…and inside the broken window the label rolls to the next IST day");
+    ok(T.venueDateLabel(new Date("2026-08-09T19:00:00Z")) === "2026-08-10",
+      "the date-only label (follow-up copy) rolls with it");
+    ok(T.venueDateLabel(new Date("2026-08-09T18:00:00Z")) === "2026-08-09",
+      "…and 23:30 IST is still the same IST day");
+
     // The real property: the answer must not depend on the box's TZ. Prod runs
     // UTC, this laptop runs IST — both must agree. Child processes, since Node
     // caches the zone at startup.

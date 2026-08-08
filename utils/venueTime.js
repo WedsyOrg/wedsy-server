@@ -120,9 +120,27 @@ function venueDueBucket(instant, now = new Date(), tz = VENUE_TZ) {
   return "later";
 }
 
+// Human-readable venue-local labels for timeline copy. Activity descriptions
+// are frozen strings — whatever they say is what staff read forever — so they
+// must name the same wall clock as every other surface. Formatting the raw UTC
+// instant made a 3:30 PM visit read "2026-08-12 10:00" on the timeline while
+// the visit card next to it said 3:30 PM.
+function venueDateLabel(instant, tz = VENUE_TZ) {
+  return venueDateKey(new Date(instant), tz);
+}
+
+function venueDateTimeLabel(instant, tz = VENUE_TZ) {
+  const p = tzParts(new Date(instant), tz);
+  const hh = String(p.hour).padStart(2, "0");
+  const mm = String(p.minute).padStart(2, "0");
+  return `${venueDateKey(new Date(instant), tz)} ${hh}:${mm}`;
+}
+
 module.exports = {
   VENUE_TZ,
   venueDateKey,
+  venueDateLabel,
+  venueDateTimeLabel,
   venueDayStartFromKey,
   startOfVenueDay,
   endOfVenueDay,

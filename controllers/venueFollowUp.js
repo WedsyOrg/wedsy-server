@@ -17,7 +17,7 @@ const { hasCapability } = require("../utils/venueRbac");
 const { validateAssignable } = require("../utils/venueLeadAssign");
 const { resolveScopedEnquiry, scopedLeadFilter } = require("../utils/venueLeadScope");
 const { syncLeadNextFollowUp, scopedFollowUpLeadIds } = require("../utils/venueFollowUp");
-const { venueDayBounds, addVenueDays, venueDueBucket } = require("../utils/venueTime");
+const { venueDayBounds, addVenueDays, venueDueBucket, venueDateLabel } = require("../utils/venueTime");
 const { optDate, optStr, cleanStr, MAXLEN } = require("../utils/venueInput");
 
 const TYPE_ENUM = ["call", "whatsapp", "email", "site_visit", "meeting", "other"];
@@ -275,7 +275,7 @@ const createFollowUp = async (req, res) => {
 
     lead.activities.push({
       type: "followup_scheduled",
-      description: `Follow-up scheduled (${followUp.type}) for ${new Date(followUp.dueAt).toISOString().slice(0, 10)}`,
+      description: `Follow-up scheduled (${followUp.type}) for ${venueDateLabel(followUp.dueAt)}`,
       actor: actorIdOf(req),
       timestamp: new Date(),
     });
@@ -346,7 +346,7 @@ const updateFollowUp = async (req, res) => {
       followUp.reschedules.push({ from: followUp.dueAt, to: v.value.dueAt, at: new Date(), by: actorIdOf(req) });
       lead.activities.push({
         type: "followup_rescheduled",
-        description: `Follow-up moved to ${new Date(v.value.dueAt).toISOString().slice(0, 10)}`,
+        description: `Follow-up moved to ${venueDateLabel(v.value.dueAt)}`,
         actor: actorIdOf(req),
         timestamp: new Date(),
       });
@@ -420,7 +420,7 @@ const completeFollowUp = async (req, res) => {
       });
       lead.activities.push({
         type: "followup_scheduled",
-        description: `Next follow-up scheduled (${next.type}) for ${new Date(next.dueAt).toISOString().slice(0, 10)}`,
+        description: `Next follow-up scheduled (${next.type}) for ${venueDateLabel(next.dueAt)}`,
         actor: actorIdOf(req),
         timestamp: new Date(),
       });

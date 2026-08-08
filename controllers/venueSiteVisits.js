@@ -21,7 +21,7 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const { resolveScopedEnquiry, scopedLeadFilter } = require("../utils/venueLeadScope");
 const { hasCapability } = require("../utils/venueRbac");
 const { optDate, optStr, MAXLEN } = require("../utils/venueInput");
-const { venueDayBounds, venueDueBucket } = require("../utils/venueTime");
+const { venueDayBounds, venueDueBucket, venueDateTimeLabel } = require("../utils/venueTime");
 
 const STATUSES = ["scheduled", "confirmed", "completed", "cancelled"];
 // A visit's outcome moves the pipeline: booking a walk-through is what
@@ -158,7 +158,7 @@ const createOwnSiteVisit = async (req, res) => {
     const advanced = await syncLeadStage(req, lead, "scheduled");
     lead.activities.push({
       type: "site_visit_scheduled",
-      description: `Site visit scheduled for ${when.value.toISOString().slice(0, 16).replace("T", " ")}`,
+      description: `Site visit scheduled for ${venueDateTimeLabel(when.value)}`,
       actor: actorIdOf(req),
       timestamp: new Date(),
     });
@@ -203,7 +203,7 @@ const updateOwnSiteVisit = async (req, res) => {
       if (visit.scheduledAt && visit.scheduledAt.getTime() !== when.value.getTime()) {
         lead.activities.push({
           type: "site_visit_rescheduled",
-          description: `Site visit moved to ${when.value.toISOString().slice(0, 16).replace("T", " ")}`,
+          description: `Site visit moved to ${venueDateTimeLabel(when.value)}`,
           actor: actorIdOf(req),
           timestamp: new Date(),
         });
