@@ -32,7 +32,7 @@ const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner 
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
-const { createAllotments, listAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
+const { createAllotments, listAllotments, planAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
 const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
@@ -188,6 +188,10 @@ router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing
 
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
+// Booking→Rooms handoff: propose free rooms covering the lead's accommodation
+// requirement across the real stay window. Read-only — the owner posts the plan
+// back to POST /allotments above, so there stays exactly ONE creation path.
+router.get("/:slug/bookings/:bookingId/allotments/plan", venueOwnerAuth, requireCapability("leads"), planAllotments);
 router.patch("/:slug/allotments/:allotmentId", venueOwnerAuth, requireCapability("leads"), updateAllotment);
 
 // ── D6 per-wedding room workflow — rooms_checkin capability (tablet flow) ──

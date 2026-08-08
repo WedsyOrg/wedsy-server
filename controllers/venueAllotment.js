@@ -13,6 +13,7 @@ const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRoomNight = require("../models/VenueRoomNight");
+const VenueEnquiry = require("../models/VenueEnquiry");
 const { reqStr, optStr, optDate } = require("../utils/venueInput");
 
 async function resolveOwnedVenue(req, res, select = "_id rooms") {
@@ -156,17 +157,128 @@ const createAllotments = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+/**
+ * Booking→Rooms handoff (product-map dead-end #6).
+ *
+ * Resolve the accommodation requirement for a booking and the stay window it
+ * should span. The window is the REAL event window — the lead's
+ * checkIn→checkOut when set, else the booking's own day range. There are no
+ * fixed-duration presets anywhere in this product: duration is computed from
+ * the window, never chosen from a list.
+ *
+ * Returns { roomsNeeded, allotted, shortfall, window, leadId } or null when the
+ * booking has no originating lead.
+ */
+async function roomsRequirementFor(venue, booking) {
+  const lead = booking.enquiry
+    ? await VenueEnquiry.findById(booking.enquiry).select("requirements checkIn checkOut eventDate coupleName name guestCount").lean()
+    : null;
+
+  // Live lead value wins over the booking snapshot, so editing the requirement
+  // on the lead after booking still reaches the PMS.
+  const roomsNeeded =
+    (lead && lead.requirements && lead.requirements.roomsNeeded) || booking.roomsRequired || 0;
+
+  const dayDates = (booking.days || []).map((d) => d.date).filter(Boolean).map((d) => new Date(d));
+  let from = lead && lead.checkIn ? new Date(lead.checkIn) : dayDates.length ? new Date(Math.min(...dayDates)) : null;
+  let to = lead && lead.checkOut ? new Date(lead.checkOut) : dayDates.length ? new Date(Math.max(...dayDates)) : null;
+  // A single-day event still needs one night of inventory.
+  if (from && to && to <= from) to = new Date(from.getTime() + 86400000);
+
+  const allotted = await VenueRoomAllotment.countDocuments({
+    venue: venue._id,
+    booking: booking._id,
+    status: { $in: ["allotted", "checked_in", "checked_out"] },
+  });
+
+  return {
+    roomsNeeded,
+    allotted,
+    shortfall: Math.max(0, roomsNeeded - allotted),
+    window: from && to ? { from, to, nights: nightKeys(from, to).length } : null,
+    leadId: booking.enquiry || null,
+    coupleName: (lead && (lead.coupleName || lead.name)) || booking.coupleName || "",
+  };
+}
+
 // GET /venues/:slug/bookings/:bookingId/allotments — open read.
+// Also answers "what did the couple actually ask for?" so Rooms/PMS is no
+// longer an island the lead's requirement never reaches.
 const listAllotments = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
+    const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
+      .select("_id enquiry days roomsRequired coupleName")
+      .lean();
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
     const allotments = await VenueRoomAllotment.find({ venue: venue._id, booking: req.params.bookingId })
       .sort({ checkInAt: 1 })
       .lean();
     const roomsById = Object.fromEntries((venue.rooms || []).map((r) => [String(r._id), r]));
     for (const a of allotments) a.roomDetail = roomsById[String(a.room)] || null;
-    return res.status(200).json({ allotments });
+
+    const requirement = await roomsRequirementFor(venue, booking);
+    return res.status(200).json({ allotments, requirement });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// GET /venues/:slug/bookings/:bookingId/allotments/plan — the actionable half
+// of the handoff. Proposes concrete FREE rooms covering the shortfall across
+// the real stay window, without writing anything. The owner reviews and posts
+// the plan back to the existing POST /allotments, so there is exactly one
+// allotment-creation path and its atomic night-claiming still guards against
+// double-booking.
+const planAllotments = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
+      .select("_id enquiry days roomsRequired coupleName couplePhone")
+      .lean();
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    const requirement = await roomsRequirementFor(venue, booking);
+    if (!requirement.window) {
+      return res.status(409).json({ message: "This booking has no event dates yet — set the event window before planning rooms", requirement });
+    }
+    if (requirement.shortfall === 0) {
+      return res.status(200).json({ requirement, plan: [], unavailable: 0, message: "Accommodation requirement is already covered" });
+    }
+
+    const { from, to } = requirement.window;
+    const nights = nightKeys(from, to);
+
+    // A room is offerable when it holds none of the required nights.
+    const taken = new Set(
+      (await VenueRoomNight.find({ venue: venue._id, night: { $in: nights } }).select("room night").lean())
+        .map((n) => String(n.room))
+    );
+    const free = (venue.rooms || [])
+      .filter((r) => r.isActive !== false && !taken.has(String(r._id)))
+      // Smallest suitable room first, so a 20-room block does not eat the suites.
+      .sort((a, b) => (a.capacity || 0) - (b.capacity || 0) || String(a.name).localeCompare(String(b.name)));
+
+    const plan = free.slice(0, requirement.shortfall).map((r) => ({
+      room: r._id,
+      roomName: r.name,
+      type: r.type,
+      capacity: r.capacity,
+      guestName: requirement.coupleName ? `${requirement.coupleName} — guest` : "Guest",
+      guestPhone: booking.couplePhone || "",
+      checkInAt: from,
+      checkOutAt: to,
+    }));
+
+    return res.status(200).json({
+      requirement,
+      plan,
+      // Honest about what could NOT be covered, rather than silently planning
+      // fewer rooms than the couple asked for.
+      unavailable: Math.max(0, requirement.shortfall - plan.length),
+      nights: nights.length,
+    });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -264,4 +376,4 @@ const occupancy = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { createAllotments, listAllotments, updateAllotment, occupancy };
+module.exports = { createAllotments, listAllotments, planAllotments, updateAllotment, occupancy, roomsRequirementFor };

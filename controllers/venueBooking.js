@@ -43,6 +43,9 @@ async function createDraftBookingForEnquiry(venueId, enquiry, ownerId) {
       couplePhone: enquiry.couplePhone || enquiry.phone || "",
       days: enquiry.eventDate ? [{ date: enquiry.eventDate, guestCount: enquiry.guestCount || 0 }] : [],
       totalValue: enquiry.estimatedValue || 0,
+      // Carry the accommodation requirement across the lead→booking boundary
+      // so Rooms/PMS inherits it (dead-end #6).
+      roomsRequired: (enquiry.requirements && enquiry.requirements.roomsNeeded) || 0,
       status: "confirmed",
       createdBy: ownerId,
     });
