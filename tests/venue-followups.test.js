@@ -96,6 +96,28 @@ const mirror = async (id) => VenueEnquiry.findById(id).select("followUpDate foll
     console.log("\n[complete]");
     const openRow = await VenueFollowUp.findOne({ lead: lead._id, dueAt: yesterday });
     const nextDue = T.addVenueDays(new Date(), 4);
+
+    // A rejected chained-next must write NOTHING. Validating it after the
+    // completion save used to persist the row as done with no timeline entry
+    // and a mirror still pointing at the closed follow-up — and the caller's
+    // retry then hit the 409 already-done guard, so it could never recover.
+    const mirrorBefore = await VenueEnquiry.findById(lead._id).select("followUpDate followUpNote").lean();
+    const actsBefore = (await VenueEnquiry.findById(lead._id).lean()).activities.length;
+    const badNext = await call(fu.completeFollowUp, ownerReq(venue, {
+      params: { followUpId: String(openRow._id) },
+      body: { outcome: "should not stick", next: { dueAt: nextDue.toISOString(), type: "carrier_pigeon" } },
+    }));
+    ok(badNext.code === 400, "complete with an invalid chained next → 400");
+    const untouched = await VenueFollowUp.findById(openRow._id).lean();
+    ok(untouched.status === "open", "…and the follow-up is STILL OPEN (the completion was not written)");
+    ok(!untouched.completedAt && !untouched.completedBy && !untouched.outcome, "…with no completion stamp or outcome");
+    const mirrorAfter = await VenueEnquiry.findById(lead._id).select("followUpDate followUpNote").lean();
+    ok(String(mirrorAfter.followUpDate) === String(mirrorBefore.followUpDate) && mirrorAfter.followUpNote === mirrorBefore.followUpNote,
+      "…and the lead's next-touch mirror is untouched (no phantom next step)");
+    ok((await VenueEnquiry.findById(lead._id).lean()).activities.length === actsBefore, "…and nothing landed on the lead's timeline");
+    ok((await VenueFollowUp.countDocuments({ lead: lead._id, dueAt: nextDue })) === 0, "…and no chained row was created");
+    // The caller fixes the payload and retries — no 409, because nothing was written.
+
     const done = await call(fu.completeFollowUp, ownerReq(venue, {
       params: { followUpId: String(openRow._id) },
       body: { outcome: "Spoke to the father — wants a revised quote", next: { dueAt: nextDue.toISOString(), type: "call", note: "Walk through quote v2" } },

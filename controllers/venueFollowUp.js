@@ -387,6 +387,24 @@ const completeFollowUp = async (req, res) => {
     const outcomeV = optStr(body.outcome, "outcome", MAXLEN.text);
     if (!outcomeV.ok) return res.status(400).json({ message: outcomeV.message });
 
+    // Validate the chained next touch BEFORE anything is written — the same
+    // ordering updateFollowUp uses. Validating after the completion save meant
+    // a rejected `next` payload left the follow-up persisted as done with no
+    // timeline entry and an unsynced mirror still pointing at the closed row;
+    // the caller's natural retry then hit the 409 already-done guard above and
+    // could never recover. Now a bad payload writes nothing: fix it and retry.
+    const chaining = Boolean(body.next && body.next.dueAt);
+    let nextPlan = null;
+    if (chaining) {
+      const nv = validateFollowUpBody(body.next, { requireDue: true });
+      if (!nv.ok) return res.status(nv.status).json({ message: nv.message });
+      const assignee = await resolveFollowUpAssignee(req, venue._id, body.next.assignedTo, {
+        fallback: followUp.assignedTo || lead.assignedTo || req.venueOwner.memberId || null,
+      });
+      if (!assignee.ok) return res.status(assignee.status).json({ message: assignee.message });
+      nextPlan = { ...nv.value, assignedTo: assignee.id || null };
+    }
+
     followUp.status = "done";
     followUp.completedAt = new Date();
     followUp.completedBy = actorIdOf(req);
@@ -402,20 +420,15 @@ const completeFollowUp = async (req, res) => {
       timestamp: new Date(),
     });
 
-    // Chain the next touch in the same request when the caller supplies one.
+    // Everything below is already-validated writes, so the only remaining
+    // failure mode is infrastructural — and syncLeadNextFollowUp recomputes the
+    // mirror from the rows on any later write to this lead, so it self-heals.
     let next = null;
-    if (body.next && body.next.dueAt) {
-      const nv = validateFollowUpBody(body.next, { requireDue: true });
-      if (!nv.ok) return res.status(nv.status).json({ message: nv.message });
-      const assignee = await resolveFollowUpAssignee(req, venue._id, body.next.assignedTo, {
-        fallback: followUp.assignedTo || lead.assignedTo || req.venueOwner.memberId || null,
-      });
-      if (!assignee.ok) return res.status(assignee.status).json({ message: assignee.message });
+    if (nextPlan) {
       next = await VenueFollowUp.create({
         venue: venue._id,
         lead: lead._id,
-        ...nv.value,
-        assignedTo: assignee.id || null,
+        ...nextPlan,
         createdBy: actorIdOf(req),
       });
       lead.activities.push({
