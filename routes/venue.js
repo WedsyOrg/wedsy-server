@@ -32,7 +32,7 @@ const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner 
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
-const { createAllotments, listAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
+const { createAllotments, listAllotments, planAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
 const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
 const { venueOwnerAuth } = require("../middlewares/venueOwnerAuth");
 const { requireCapability, requireCapabilityOrAdmin } = require("../middlewares/venueRole");
@@ -108,6 +108,20 @@ router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
 router.get("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), getCrmSettings);
 router.patch("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), updateCrmSettings);
 
+// ── Follow-ups module — lead-derived, so reads are scoped through the parent
+//    lead (404 never 403) and writes need the coarse "leads" capability.
+//    DELETE is leads_delete: cancel is the everyday close, delete is for rows
+//    created in error only.
+const followUps = require("../controllers/venueFollowUp");
+router.get("/:slug/follow-ups", venueOwnerAuth, followUps.listFollowUps);
+router.post("/:slug/follow-ups", venueOwnerAuth, requireCapability("leads"), followUps.createFollowUp);
+router.get("/:slug/follow-ups/:followUpId", venueOwnerAuth, followUps.getFollowUp);
+router.patch("/:slug/follow-ups/:followUpId", venueOwnerAuth, requireCapability("leads"), followUps.updateFollowUp);
+router.post("/:slug/follow-ups/:followUpId/complete", venueOwnerAuth, requireCapability("leads"), followUps.completeFollowUp);
+router.post("/:slug/follow-ups/:followUpId/cancel", venueOwnerAuth, requireCapability("leads"), followUps.cancelFollowUp);
+router.post("/:slug/follow-ups/:followUpId/reopen", venueOwnerAuth, requireCapability("leads"), followUps.reopenFollowUp);
+router.delete("/:slug/follow-ups/:followUpId", venueOwnerAuth, requireCapability("leads_delete"), followUps.deleteFollowUp);
+
 // ── MB-CRM S0c: CRM tasks (standalone or lead-linked) ──
 router.get("/:slug/tasks", venueOwnerAuth, tasks.listTasks);
 router.post("/:slug/tasks", venueOwnerAuth, tasks.createTask);
@@ -174,6 +188,10 @@ router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing
 
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
+// Booking→Rooms handoff: propose free rooms covering the lead's accommodation
+// requirement across the real stay window. Read-only — the owner posts the plan
+// back to POST /allotments above, so there stays exactly ONE creation path.
+router.get("/:slug/bookings/:bookingId/allotments/plan", venueOwnerAuth, requireCapability("leads"), planAllotments);
 router.patch("/:slug/allotments/:allotmentId", venueOwnerAuth, requireCapability("leads"), updateAllotment);
 
 // ── D6 per-wedding room workflow — rooms_checkin capability (tablet flow) ──
@@ -240,9 +258,14 @@ router.post("/:slug/roles", venueOwnerAuth, requireCapability("team"), roles.cre
 router.patch("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.updateRole);
 router.delete("/:slug/roles/:roleId", venueOwnerAuth, requireCapability("team"), roles.deleteRole);
 
-// ── MB-V2 P1: planner site visits, owner side (leads capability) ──
+// ── Site visits: planner-created AND owner-created, full lifecycle. Reads are
+//    scoped through the parent lead (a visit carries the couple's name/phone),
+//    writes need "leads", delete needs leads_delete (cancel is the everyday
+//    close and keeps history).
 router.get("/:slug/site-visits", venueOwnerAuth, requireCapability("leads"), siteVisits.listOwnSiteVisits);
+router.post("/:slug/site-visits", venueOwnerAuth, requireCapability("leads"), siteVisits.createOwnSiteVisit);
 router.patch("/:slug/site-visits/:visitId", venueOwnerAuth, requireCapability("leads"), siteVisits.updateOwnSiteVisit);
+router.delete("/:slug/site-visits/:visitId", venueOwnerAuth, requireCapability("leads_delete"), siteVisits.deleteOwnSiteVisit);
 
 // ── D3 date-inventory + holds ──
 // Create accepts BOTH tokens: admin JWT = wedsy-side concierge request,

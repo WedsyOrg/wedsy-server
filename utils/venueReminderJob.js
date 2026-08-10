@@ -11,6 +11,7 @@
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueOwner = require("../models/VenueOwner");
 const { sendWhatsAppText } = require("./whatsapp");
+const { venueDayBounds } = require("./venueTime");
 
 const TERMINAL_STAGES = ["booked", "lost"];
 
@@ -24,8 +25,9 @@ async function runDailyFollowUpReminders() {
   try {
     const logOnly = process.env.REMINDERS_LOG_ONLY !== "false"; // default true
     const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    // "Due today" means the VENUE's today (IST), not the server's — otherwise
+    // the morning digest fires against the wrong calendar day. utils/venueTime.
+    const { start: startOfToday, end: endOfToday } = venueDayBounds(now);
 
     // Count of leads due today, grouped by venue.
     const dueToday = await VenueEnquiry.aggregate([

@@ -1,10 +1,22 @@
 const Venue = require("../models/Venue");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const VenueOwner = require("../models/VenueOwner");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const { optDate, cleanStr, MAXLEN } = require("../utils/venueInput");
 const { hasCapability } = require("../utils/venueRbac");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
+const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
 
 const INTERACTION_TYPES = ["call", "whatsapp", "email", "site_visit", "meeting", "enquiry", "note"];
+
+// WHO is acting. Before this, every interaction was stamped with the venue
+// OWNER's id even when a team member logged it, so the timeline answered "who
+// called this couple?" with the owner's name on every single row — useless in
+// the multi-user CRM this product is. The actor is now recorded honestly.
+const actorOf = (req) => ({
+  createdBy: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null,
+  createdByType: req.venueOwner.memberId ? "member" : "owner",
+});
 
 // S0e quick-log: the one-tap touches and where each auto-advances the pipeline.
 // Only ever moves FORWARD (never past the current stage) and never off a
@@ -52,7 +64,7 @@ const addInteraction = async (req, res) => {
       venue: owned.venue._id,
       type,
       note: typeof note === "string" ? note.trim() : "",
-      createdBy: req.venueOwner.venueOwnerId,
+      ...actorOf(req),
     });
 
     return res.status(201).json({ interaction });
@@ -69,8 +81,21 @@ const getInteractions = async (req, res) => {
 
     const interactions = await VenueLeadInteraction.find({ enquiry: owned.enquiry._id })
       .sort({ createdAt: -1 })
-      .populate("createdBy", "name")
       .lean();
+
+    // Resolve actor names across BOTH collections — populate() cannot, because
+    // createdBy is polymorphic (owner anchor or team member).
+    const memberIds = interactions.filter((i) => i.createdByType === "member" && i.createdBy).map((i) => i.createdBy);
+    const ownerIds = interactions.filter((i) => i.createdByType !== "member" && i.createdBy).map((i) => i.createdBy);
+    const [members, owners] = await Promise.all([
+      memberIds.length ? VenueTeamMember.find({ _id: { $in: memberIds } }).select("name").lean() : [],
+      ownerIds.length ? VenueOwner.find({ _id: { $in: ownerIds } }).select("name").lean() : [],
+    ]);
+    const nameById = new Map([...members, ...owners].map((d) => [String(d._id), d.name || ""]));
+    for (const i of interactions) {
+      // Shape kept identical to the old populate output so the UI needs no change.
+      i.createdBy = i.createdBy ? { _id: i.createdBy, name: nameById.get(String(i.createdBy)) || "" } : null;
+    }
 
     return res.status(200).json({ interactions, total: interactions.length });
   } catch (err) {
@@ -108,7 +133,7 @@ const quickLog = async (req, res) => {
       venue: venue._id,
       type,
       note: noteText,
-      createdBy: req.venueOwner.venueOwnerId,
+      ...actorOf(req),
     });
 
     // Auto-advance (forward-only, non-terminal), unless the caller overrides —
@@ -129,13 +154,26 @@ const quickLog = async (req, res) => {
       advancedTo = target;
     }
 
-    // Capture the next follow-up in the same tap (a lead with no next step is
-    // the most dangerous object in the system).
-    if (followUpDate !== undefined) enquiry.followUpDate = fu.value;
-    if (followUpNote !== undefined) enquiry.followUpNote = cleanStr(followUpNote).slice(0, MAXLEN.text);
     enquiry.activities.push({ type: "quick_log", description: `Logged ${type}`, timestamp: new Date() });
 
     await enquiry.save();
+
+    // Capture the next follow-up in the same tap (a lead with no next step is
+    // the most dangerous object in the system). This now writes a real
+    // follow-up row; the lead's followUpDate/followUpNote are its mirror.
+    if (followUpDate !== undefined || followUpNote !== undefined) {
+      await applyLegacyFollowUpWrite({
+        lead: enquiry,
+        venueId: venue._id,
+        dueAt: followUpDate === undefined ? undefined : fu.value,
+        note: followUpNote === undefined ? undefined : cleanStr(followUpNote).slice(0, MAXLEN.text),
+        actorId: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null,
+        type: type === "note" ? "call" : type,
+      });
+      const fresh = await require("../models/VenueEnquiry").findById(enquiry._id).select("followUpDate followUpNote").lean();
+      enquiry.followUpDate = fresh.followUpDate;
+      enquiry.followUpNote = fresh.followUpNote;
+    }
     return res.status(201).json({ interaction, enquiry: enquiry.toJSON(), advancedTo });
   } catch (err) {
     return res.status(500).json({ message: err.message });

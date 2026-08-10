@@ -5,6 +5,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueInvoice = require("../models/VenueInvoice");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRunsheetItem = require("../models/VenueRunsheetItem");
+const { venueDayBounds } = require("../utils/venueTime");
 
 // Stages that no longer need follow-up.
 const TERMINAL_STAGES = ["booked", "lost"];
@@ -69,8 +70,8 @@ const getDashboardOverview = async (req, res) => {
 
     // ── Follow-ups: non-terminal leads with a follow-up date due today or overdue ──
     const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    // Venue-local (IST) day, not server-local — see utils/venueTime.
+    const { start: startOfToday, end: endOfToday } = venueDayBounds(now);
     const baseFilter = { venueId, deleted: { $ne: true }, stage: { $nin: TERMINAL_STAGES } };
 
     const [overdue, dueToday] = await Promise.all([
@@ -94,7 +95,13 @@ const getDashboardOverview = async (req, res) => {
     const revenue = { confirmedValue, received, pending: confirmedValue - received };
 
     // ── Today (Phase 5 PMS): expected check-ins/outs + runsheet items due ──
-    // UTC day window to match the allotment/runsheet day quantisation.
+    // Deliberately UTC here, unlike the follow-up counts above: VenueRoomNight
+    // .night and VenueRunsheetItem.day are midnight-UTC DAY KEYS, and
+    // venueAllotment.nightKeys() derives an allotment's nights from the UTC
+    // calendar day. Bucketing this block by IST would desync it from the
+    // stored keys. The PMS day-key quantisation is UTC end-to-end and
+    // internally consistent; re-keying it to IST is a data migration, not a
+    // read-side fix. See utils/venueTime's header note on keys vs instants.
     const utcDayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
     const utcDayEnd = new Date(utcDayStart.getTime() + 86400000);
     // "Quote accepted — confirm booking" (D8 review add): accepted quotes

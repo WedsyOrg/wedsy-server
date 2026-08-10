@@ -165,7 +165,8 @@ const bulkWhatsApp = async (req, res) => {
           venue: venue._id,
           type: "whatsapp",
           note: messageBody,
-          createdBy: req.venueOwner.venueOwnerId,
+          createdBy: actorIdOf(req),
+          createdByType: req.venueOwner.memberId ? "member" : "owner",
         });
         sent += 1;
       } catch (e) {
