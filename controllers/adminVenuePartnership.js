@@ -642,7 +642,12 @@ const listLeadAssists = async (req, res) => {
         .populate("adminId", "name email")
         // Read-only projection of the CRM lead. Deliberately narrow: enough to
         // recognise the couple, nothing that turns this into a second CRM.
-        .populate("enquiry", "name phone eventDate status stage createdAt")
+        //
+        // eventDate is NESTED at qualificationData.eventDate — selecting a bare
+        // "eventDate" silently returns nothing, which reads as "no date" rather
+        // than as a bug. `stage` is the top-level lifecycle field; the other
+        // `status` on this model belongs to callCompletion and is not it.
+        .populate("enquiry", "name phone stage createdAt qualificationData.eventDate")
         .lean(),
       VenueLeadAssist.countDocuments(filter),
     ]);
