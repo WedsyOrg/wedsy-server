@@ -95,6 +95,13 @@ router.post("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_as
 router.patch("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:edit:all"), partnership.updateLeadAssist);
 router.delete("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:delete:all"), partnership.deleteLeadAssist);
 
+// Bulk Track A actions. Gated only by venues:view here because the handler
+// re-checks the specific capability per action — one route that can do either
+// of two jobs cannot be honestly described by a single requirePermission.
+// Track B is deliberately absent: granting access designates a named person's
+// phone for a named venue, and batching that is how the wrong people get in.
+router.post("/bulk", CheckAdminLogin, requirePermission("venues:view:all"), partnership.bulk);
+
 // The Monday worklist — committed targets AND the venues behind each.
 router.get("/worklist", CheckAdminLogin, requirePermission("venues:view:all"), partnership.getWorklist);
 router.put("/worklist", CheckAdminLogin, requirePermission("venues:assign:all"), partnership.upsertWorkTarget);

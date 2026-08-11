@@ -24,6 +24,9 @@ const VenueWorkTarget = require("../models/VenueWorkTarget");
 // so a narrower entry point (a test, a script, a worker) cannot 500 on it.
 require("../models/Enquiry");
 const { logActivity, snap } = require("../utils/venueActivity");
+// Bulk re-checks capability per action, so it needs the gate primitives directly.
+const { permissionSatisfies, permissionsForAdmin } = require("../middlewares/requirePermission");
+const AdminRepository = require("../repositories/AdminRepository");
 const tracks = require("../utils/venueTracks");
 const T = require("../utils/venueTime");
 
@@ -728,6 +731,87 @@ const deleteLeadAssist = async (req, res) => {
   }
 };
 
+// ── POST /bulk — Track A actions across a selection ─────────────────────────
+// Enrich and verify are the two Track A moves that are genuinely repetitive
+// ("these forty are all missing pricing"), so they get a bulk path. Track B is
+// deliberately NOT bulkable: granting partner access designates a specific
+// person's phone as the login for a specific venue, and doing that forty at a
+// time is exactly how the wrong people get accounts.
+//
+// Capability is re-checked here per action, because ONE route cannot be gated
+// by a single requirePermission when it can perform either of two jobs.
+const bulk = async (req, res) => {
+  try {
+    const { action, slugs } = req.body;
+    if (!["verify", "unverify", "enrich"].includes(action)) {
+      return res.status(400).json({ message: "action must be verify|unverify|enrich" });
+    }
+    if (!Array.isArray(slugs) || slugs.length === 0) {
+      return res.status(400).json({ message: "slugs must be a non-empty array" });
+    }
+    if (slugs.length > 200) {
+      return res.status(400).json({ message: "At most 200 venues per bulk action" });
+    }
+
+    const required = action === "enrich" ? "venues_enrich:edit:all" : "venues_verify:edit:all";
+    const { allowed } = permissionSatisfies(await permissionsForAdmin(await AdminRepository.findById(req.auth.user_id)), required);
+    if (!allowed) return res.status(403).json({ message: "Forbidden", required });
+
+    const venues = await Venue.find({ slug: { $in: slugs } }).select("_id slug verified enrichment").lean();
+    const found = new Set(venues.map((v) => v.slug));
+    const missing = [...new Set(slugs)].filter((s) => !found.has(s));
+    if (missing.length) return res.status(400).json({ message: "Unknown venue slug(s)", missing });
+
+    const now = new Date();
+    const actorId = req.auth.user_id;
+    const notes = str(req.body.notes, 2000);
+
+    let set;
+    if (action === "enrich") {
+      const completeness = req.body.completeness;
+      if (completeness !== undefined) {
+        const n = Number(completeness);
+        if (!Number.isFinite(n) || n < 0 || n > 100) {
+          return res.status(400).json({ message: "completeness must be a number between 0 and 100" });
+        }
+      }
+      set = { "enrichment.lastEnrichedBy": actorId, "enrichment.lastEnrichedAt": now };
+      if (completeness !== undefined) set["enrichment.completeness"] = Number(completeness);
+      if (Array.isArray(req.body.missingFields)) {
+        set["enrichment.missingFields"] = req.body.missingFields.map((f) => str(f, 80)).filter(Boolean).slice(0, 100);
+      }
+    } else {
+      set = {
+        "verified.isVerified": action === "verify",
+        "verified.verifiedBy": actorId,
+        "verified.verifiedAt": now,
+        "verified.notes": notes,
+      };
+    }
+
+    const ids = venues.map((v) => v._id);
+    const r = await Venue.updateMany({ _id: { $in: ids } }, { $set: set });
+
+    const actor = adminActor(req);
+    logActivity(
+      venues.map((v) => ({
+        venue: v._id,
+        actorType: actor.type,
+        actorId: actor.id,
+        actorName: actor.name,
+        action: action === "enrich" ? "venue_enriched" : action === "verify" ? "venue_verified" : "venue_unverified",
+        entity: action === "enrich" ? "enrichment" : "verification",
+        new: snap({ bulk: true, notes }),
+        severity: action === "enrich" ? "normal" : "high",
+      }))
+    );
+
+    return res.status(200).json({ action, matched: venues.length, modified: r.modifiedCount });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 // ── worklist ────────────────────────────────────────────────────────────────
 
 // Monday 00:00 venue-local. Deliberately IST rather than UTC: the week is a
@@ -888,6 +972,7 @@ const deleteWorkTarget = async (req, res) => {
 
 module.exports = {
   getPartnership,
+  bulk,
   setVerified,
   setEnrichment,
   grantAccess,
