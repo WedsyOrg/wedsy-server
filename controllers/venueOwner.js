@@ -443,6 +443,26 @@ async function loginAsIdentity(identity) {
     const venueOwner = identity.doc;
     venueOwner.lastLoginAt = new Date();
     await venueOwner.save();
+    // MB-OSV S0 — stamp the venue's FIRST owner sign-in. This is the second
+    // half of the partner badge: granting access is what we did, signing in is
+    // what they did, and a badge that lights on the first alone would call an
+    // unopened account a partnership.
+    //
+    // Deliberately here in the existing funnel and nowhere else — this is the
+    // one path every owner login (single-identity, multi-identity select, and
+    // switch-venue) already runs through. Auth itself is untouched: still OTP.
+    //
+    // The filter makes it write-once and race-safe, so concurrent logins can
+    // never move the date; a failure is logged and swallowed because a badge
+    // must never be able to block a sign-in.
+    try {
+      await Venue.updateOne(
+        { _id: venueOwner.venueId._id, "partner.firstOwnerLoginAt": null },
+        { $set: { "partner.firstOwnerLoginAt": new Date() } }
+      );
+    } catch (err) {
+      console.warn(`[venueTracks] firstOwnerLoginAt stamp failed for venue ${venueOwner.venueId._id}: ${err.message}`);
+    }
     // Fire-and-forget enrichment; never block the login response.
     setImmediate(() => {
       enrichVenue(venueOwner.venueId._id).catch((err) =>
