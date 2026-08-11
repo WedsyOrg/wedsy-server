@@ -24,6 +24,15 @@ const INTAKE_LEAD_PHONE = "919180000005";
 // logs with notes + a note event) so the continuity e2e can prove the command
 // center surfaces the qualifier's record, "qualified by X", and the timeline.
 const CONTINUITY_LEAD_PHONE = "919180000006";
+// MB-OSV — venue-department fixtures. Four venues spanning the two-track
+// matrix so the venue e2e can assert the facets and the 360 without ever
+// mutating a lead fixture. Slugs carry the marker so teardown is exact.
+const VENUE_SLUGS = {
+  raw: "browser-e2e-venue-raw",
+  verified: "browser-e2e-venue-verified",
+  granted: "browser-e2e-venue-granted",
+  partner: "browser-e2e-venue-partner",
+};
 
 (async () => {
   const cmd = process.argv[2];
@@ -67,6 +76,24 @@ const CONTINUITY_LEAD_PHONE = "919180000006";
     await Admin.deleteMany({ phone: ADMIN_PHONE });
     await Role.deleteMany({ name: `${MARKER} Founder` });
     await Department.deleteMany({ name: `${MARKER} Dept` });
+    // MB-OSV venue fixtures + everything hanging off them.
+    const Venue = require("../models/Venue");
+    const VenueOwner = require("../models/VenueOwner");
+    const VenuePartnerVisit = require("../models/VenuePartnerVisit");
+    const VenueLeadAssist = require("../models/VenueLeadAssist");
+    const VenueWorkTarget = require("../models/VenueWorkTarget");
+    const VenueActivity = require("../models/VenueActivity");
+    const slugs = Object.values(VENUE_SLUGS);
+    const vs = await Venue.find({ slug: { $in: slugs } }).select("_id").lean();
+    const vids = vs.map((v) => v._id);
+    if (vids.length) {
+      await VenueOwner.deleteMany({ venueId: { $in: vids } });
+      await VenuePartnerVisit.deleteMany({ venue: { $in: vids } });
+      await VenueLeadAssist.deleteMany({ venue: { $in: vids } });
+      await VenueActivity.deleteMany({ venue: { $in: vids } });
+      await Venue.deleteMany({ _id: { $in: vids } });
+    }
+    await VenueWorkTarget.deleteMany({});
   };
 
   if (cmd === "teardown") {
@@ -185,8 +212,60 @@ const CONTINUITY_LEAD_PHONE = "919180000006";
   // "qualified" event, instantiates the journey (idempotent).
   await LeadLifecycleService.qualifyLead(contLead._id, admin._id);
 
+  // ── MB-OSV venue fixtures ────────────────────────────────────────────────
+  // One venue per interesting two-track combination. `granted` is the important
+  // one: access granted, never signed in — the state the partner badge must
+  // refuse to light for.
+  const Venue = require("../models/Venue");
+  const vNow = new Date();
+  // Delete-then-create rather than upsert: setDefaultsOnInsert materialises the
+  // empty `location` default, which the 2dsphere index rejects as invalid
+  // GeoJSON. Venue.create() is also how every venue test builds fixtures.
+  const mkVenue = async (slug, name, extra) => {
+    await Venue.deleteOne({ slug });
+    return Venue.create({ name, slug, city: "Bengaluru", zone: "south", venueType: "resort", status: "published", dataCompleteness: 50, ...extra });
+  };
+
+  const vRaw = await mkVenue(VENUE_SLUGS.raw, `${MARKER} Raw Venue`, {
+    entryPoint: "scraped",
+    verified: { isVerified: false },
+    enrichment: { completeness: 0, missingFields: ["pricing", "photos"] },
+    partner: {},
+  });
+  const vVerified = await mkVenue(VENUE_SLUGS.verified, `${MARKER} Verified Venue`, {
+    entryPoint: "walk_up",
+    verified: { isVerified: true, verifiedAt: vNow, verifiedBy: admin._id, notes: "Checked by e2e fixture" },
+    enrichment: { completeness: 95, missingFields: [], lastEnrichedAt: vNow, lastEnrichedBy: admin._id },
+    partner: {},
+  });
+  const vGranted = await mkVenue(VENUE_SLUGS.granted, `${MARKER} Granted Venue`, {
+    entryPoint: "claimed",
+    verified: { isVerified: false },
+    partner: {
+      accessGrantedAt: vNow,
+      accessGrantedBy: admin._id,
+      accessGrantTrigger: "wedsy_select",
+      primaryPhone: "919180000101",
+      onboarding: { status: "in_progress" },
+    },
+  });
+  const vPartner = await mkVenue(VENUE_SLUGS.partner, `${MARKER} Partner Venue`, {
+    entryPoint: "claimed",
+    verified: { isVerified: true, verifiedAt: vNow, verifiedBy: admin._id },
+    enrichment: { completeness: 90, missingFields: [], lastEnrichedAt: vNow },
+    partner: {
+      accessGrantedAt: vNow,
+      accessGrantedBy: admin._id,
+      accessGrantTrigger: "claim_approval",
+      primaryPhone: "919180000102",
+      firstOwnerLoginAt: vNow,
+      terms: { unconditional: false, commissionPercent: 7, inHousePlanner: false, decorRights: false },
+      onboarding: { status: "in_progress", stages: [{ key: "kickoff_call", label: "Kick-off call", done: true, completedAt: vNow }] },
+    },
+  });
+
   await mongoose.disconnect();
   console.log(
-    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id), intakeLeadId: String(intakeLead._id), continuityLeadId: String(contLead._id) })
+    JSON.stringify({ token, leadId: String(lead._id), conversationId: String(conversation._id), qualifiedLeadId: String(qLead._id), intakeLeadId: String(intakeLead._id), continuityLeadId: String(contLead._id), venues: VENUE_SLUGS, venueIds: { raw: String(vRaw._id), verified: String(vVerified._id), granted: String(vGranted._id), partner: String(vPartner._id) } })
   );
 })();
