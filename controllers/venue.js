@@ -1,4 +1,5 @@
 const VenueService = require("../services/VenueService");
+const { verifiedBadge, partnerBadge } = require("../utils/venueTracks");
 
 const getVenues = async (req, res) => {
   try {
@@ -22,9 +23,15 @@ const getVenues = async (req, res) => {
       maxPrice: trimmed(maxPrice),
       sort: trimmed(sort),
     });
-    // Stable per-venue isVerified on the browse list (same derivation + API name
-    // as the detail response) so cards are future-proof for the OS boolean.
-    const venues = (result.venues || []).map((v) => ({ ...v, isVerified: v.status === "verified" }));
+    // MB-OSV S0 — the two derived badges, same implementation as the detail
+    // response and the admin reads (utils/venueTracks). `isVerified` keeps its
+    // API name exactly as promised when it was derived from status, so the
+    // couple-side frontend needed no change; only the derivation moved.
+    const venues = (result.venues || []).map((v) => ({
+      ...v,
+      isVerified: verifiedBadge(v),
+      isPartner: partnerBadge(v),
+    }));
     return res.status(200).json({ ...result, venues });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -62,12 +69,17 @@ const getVenueBySlug = async (req, res) => {
       delete venue.googleReviews;
       delete venue.googleReviewsRefreshedAt;
     }
-    // Stable public verification flag. Derived from status today (same as the
-    // dashboard); when Wedsy OS ships a real orthogonal boolean, only this
-    // derivation changes — the `isVerified` API name stays, so the couple-side
-    // frontend needs zero change.
-    const isVerified = (venue && venue.status === "verified") || false;
-    return res.status(200).json({ venue, isVerified });
+    // MB-OSV S0 — this is the change that comment anticipated. Verification is
+    // now a real orthogonal boolean (verified.isVerified) instead of a reading
+    // of the publication status, and the derivation lives in ONE place for the
+    // public read, the browse list and every admin surface. The `isVerified`
+    // API name is unchanged, so the couple-side frontend needed zero change.
+    //
+    // isPartner joins it: granted access AND a first owner sign-in. The two are
+    // independent — a venue can carry either badge without the other.
+    const isVerified = verifiedBadge(venue);
+    const isPartner = partnerBadge(venue);
+    return res.status(200).json({ venue, isVerified, isPartner });
   } catch (err) {
     if (err.message === "Venue not found") {
       return res.status(404).json({ message: "Venue not found" });

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const venueTracks = require("../utils/venueTracks");
 
 // ---------------------------------------------------------------------------
 // coverPhoto durability guard
@@ -224,7 +225,91 @@ const VenueSchema = new mongoose.Schema({
   seoKeywords: [String],
   dataCompleteness: { type: Number, default: 1 },
   featured: { type: Boolean, default: false },
+  // PUBLICATION LIFECYCLE ONLY (MB-OSV S0). This field used to answer two
+  // unrelated questions — "is the listing publishable?" and "has Wedsy verified
+  // this venue?" — which made verified-but-draft unrepresentable and coupled
+  // revoking verification to demoting the listing. Verification now lives in
+  // `verified` below; partnership lives in `partner`.
+  //
+  // "verified" / "pending_outreach" / "outreach_sent" are LEGACY conflated
+  // values, retained so existing documents keep validating. New writes must
+  // NEVER set status = "verified" — set verified.isVerified instead.
+  // scripts/backfill-venue-tracks.js migrates the legacy value forward.
   status: { type: String, enum: ["draft", "published", "pending_outreach", "outreach_sent", "verified", "rejected"], default: "draft" },
+
+  // ── TRACK A (data) — ours alone, no venue involvement ──────────────────────
+  // Terminal state of the enrichment track. Setting it is an OS call and says
+  // nothing about whether the venue is a commercial partner.
+  verified: {
+    // NO default, deliberately. Mongoose applies defaults to missing paths when
+    // it hydrates a document, so `default: false` would hand back a hard false
+    // for every pre-S0 venue and silently defeat the legacy
+    // status === "verified" fallback in utils/venueTracks.verifiedBadge.
+    // Undefined means "never answered"; the fallback reads the old field.
+    // After scripts/backfill-venue-tracks.js every document holds a real
+    // boolean and the fallback stops being reachable.
+    isVerified: { type: Boolean },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+    verifiedAt: { type: Date },
+    notes: { type: String, default: "", maxlength: 2000 },
+  },
+  // Track A progression. The raw → enriching → enriched stage is DERIVED from
+  // these fields (utils/venueTracks.enrichmentStage), never stored.
+  //
+  // Distinct from the legacy `dataCompleteness` above: that is the listing's
+  // auto-computed fill rate, this is the OS team's curated score over the
+  // fields that actually matter to a couple. Both are kept; neither overwrites
+  // the other.
+  enrichment: {
+    completeness: { type: Number, default: 0, min: 0, max: 100 },
+    missingFields: [{ type: String }],
+    lastEnrichedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+    lastEnrichedAt: { type: Date },
+  },
+  // How this venue entered the directory. Drives the directory entry-point
+  // facet; "" is the not-yet-classified sentinel for pre-S0 rows.
+  entryPoint: { type: String, enum: ["scraped", "claimed", "walk_up", ""], default: "" },
+
+  // ── TRACK B (partnership) — the commercial relationship ────────────────────
+  // Independent of Track A in both directions: a venue may be verified and
+  // never approached, or a signed partner nobody has data-checked.
+  partner: {
+    accessGrantedAt: { type: Date },
+    accessGrantedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+    // Which door the venue came through. Both triggers run the SAME
+    // grant-access action — this only records provenance.
+    accessGrantTrigger: { type: String, enum: ["claim_approval", "wedsy_select"] },
+    // DESIGNATED at grant time, never inferred from venue.contact — the person
+    // who actually holds the login may not be the number on the listing.
+    primaryPhone: { type: String, default: "" },
+    primaryEmail: { type: String, default: "" },
+    // Stamped by the EXISTING owner-auth funnel (controllers/venueOwner.js
+    // loginAsIdentity) on the first successful sign-in. Half of the partner
+    // badge conjunction — see utils/venueTracks.partnerBadge.
+    firstOwnerLoginAt: { type: Date },
+    terms: {
+      // Wedsy's default commercial posture: no strings. A venue is a partner
+      // without owing anything until someone deliberately says otherwise.
+      unconditional: { type: Boolean, default: true },
+      commissionPercent: { type: Number, default: null, min: 0, max: 100 },
+      inHousePlanner: { type: Boolean, default: false },
+      decorRights: { type: Boolean, default: false },
+    },
+    onboarding: {
+      status: { type: String, enum: ["not_started", "in_progress", "complete"], default: "not_started" },
+      stages: [{
+        key: { type: String, required: true },
+        label: { type: String, default: "" },
+        done: { type: Boolean, default: false },
+        completedAt: { type: Date },
+        completedBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
+        notes: { type: String, default: "", maxlength: 2000 },
+      }],
+      // Scan-upload only — no e-sign. Uses the existing /file/upload path.
+      agreementDocUrl: { type: String, default: "" },
+      ownerId: { type: mongoose.Schema.Types.ObjectId, ref: "VenueOwner" },
+    },
+  },
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: "Vendor" },
   // Phase 3 (3.3) invoicing profile — venue-owned, editable from listing/settings.
   gstin: { type: String, default: "" },
@@ -293,8 +378,25 @@ VenueSchema.index({ location: "2dsphere" }, { sparse: true });
 VenueSchema.index({ slug: 1 });
 VenueSchema.index({ status: 1 });
 VenueSchema.index({ city: 1, venueType: 1 });
+// MB-OSV S0 — the two tracks are filtered independently in the OS directory,
+// so each gets its own index rather than a compound one across both.
+VenueSchema.index({ "verified.isVerified": 1 });
+VenueSchema.index({ "partner.accessGrantedAt": 1 });
+VenueSchema.index({ "partner.firstOwnerLoginAt": 1 });
+VenueSchema.index({ "partner.onboarding.status": 1 });
+VenueSchema.index({ entryPoint: 1 });
 
 const VenueModel = mongoose.model("Venue", VenueSchema);
+
+// MB-OSV S0 — derived two-track badges. Exposed as statics so every read path
+// (admin directory, Venue-360, the couple-facing wedsy.in read) computes them
+// from ONE implementation. Never stored on the document: a denormalised copy
+// is a second source of truth that silently rots.
+VenueModel.verifiedBadge = venueTracks.verifiedBadge;
+VenueModel.partnerBadge = venueTracks.partnerBadge;
+VenueModel.enrichmentStage = venueTracks.enrichmentStage;
+VenueModel.partnerStage = venueTracks.partnerStage;
+VenueModel.trackSummary = venueTracks.trackSummary;
 
 // Exposed so scripts/verify-coverphoto-guard.js can exercise the coverPhoto
 // guard — both the predicate and the exact function registered as the update

@@ -7,7 +7,9 @@ const availability = require("../controllers/adminVenueAvailability");
 const leads = require("../controllers/adminVenueLeads");
 const planner = require("../controllers/adminVenuePlanner");
 const chat = require("../controllers/adminVenueChat");
+const partnership = require("../controllers/adminVenuePartnership");
 const { CheckAdminLogin } = require("../middlewares/auth");
+const { requirePermission } = require("../middlewares/requirePermission");
 
 // MB-V2 P0 — Wedsy-internal venue workspace (Wedsy OS "Venues" module).
 // All operational venue data (not admin/user management), so these are
@@ -67,8 +69,68 @@ router.get("/chats/:conversationId", CheckAdminLogin, chat.getThread);
 router.post("/chats/:conversationId/intervene", CheckAdminLogin, chat.sendIntervention);
 router.post("/chats/:conversationId/nudge", CheckAdminLogin, chat.nudgeVenue);
 
+// ── MB-OSV S0 — the two-track partnership surface ───────────────────────────
+// Every route below is admin-JWT gated (CheckAdminLogin) AND capability-gated
+// (requirePermission). This is never the venue-owner boundary: an owner token
+// carries no isAdmin claim and dies at CheckAdminLogin before the capability
+// check is ever consulted.
+//
+// The venues_* split mirrors the jobs, not today's staffing — one person holds
+// all of these right now, and separating them later is an assignment change
+// rather than a redesign.
+//
+// LITERAL PATHS FIRST. Anything that would otherwise be swallowed by the
+// /:slug/* params below has to be declared above them.
+
+// Partner visits — internal Track B calls. Distinct from the couple-facing
+// /site-visits routes above; see models/VenuePartnerVisit.js.
+router.get("/partner-visits", CheckAdminLogin, requirePermission("venues_visit:view:all"), partnership.listPartnerVisits);
+router.patch("/partner-visits/:id", CheckAdminLogin, requirePermission("venues_visit:edit:all"), partnership.updatePartnerVisit);
+router.delete("/partner-visits/:id", CheckAdminLogin, requirePermission("venues_visit:delete:all"), partnership.deletePartnerVisit);
+
+// "Leads I'm on" — the venue-owned assist join. Nothing here writes to the
+// CRM's Enquiry model.
+// `ownerField: "adminId"` makes requirePermission build req.scopeFilter, which
+// these handlers apply. The read populates couple name + phone off the CRM
+// lead, so an unscoped read would let a venues_leads_assist holder see contact
+// details for couples the CRM denies them at leads:view:own.
+//
+// Required scope is :own — the gate widens it to whatever the caller actually
+// holds (own → team → department → all) and builds the matching filter. Asking
+// for :all here would have locked the surface to founders instead.
+router.get("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_assist:view:own", { ownerField: "adminId" }), partnership.listLeadAssists);
+router.post("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_assist:create:own", { ownerField: "adminId" }), partnership.createLeadAssist);
+router.patch("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:edit:own", { ownerField: "adminId" }), partnership.updateLeadAssist);
+router.delete("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:delete:own", { ownerField: "adminId" }), partnership.deleteLeadAssist);
+
+// Bulk Track A actions. Gated only by venues:view here because the handler
+// re-checks the specific capability per action — one route that can do either
+// of two jobs cannot be honestly described by a single requirePermission.
+// Track B is deliberately absent: granting access designates a named person's
+// phone for a named venue, and batching that is how the wrong people get in.
+router.post("/bulk", CheckAdminLogin, requirePermission("venues:view:all"), partnership.bulk);
+
+// The Monday worklist — committed targets AND the venues behind each.
+router.get("/worklist", CheckAdminLogin, requirePermission("venues:view:all"), partnership.getWorklist);
+router.put("/worklist", CheckAdminLogin, requirePermission("venues:assign:all"), partnership.upsertWorkTarget);
+router.delete("/worklist/:id", CheckAdminLogin, requirePermission("venues:assign:all"), partnership.deleteWorkTarget);
+
 router.get("/:slug/summary", CheckAdminLogin, ops.venueSummary);
 router.get("/:slug/enquiries", CheckAdminLogin, ops.listVenueEnquiries);
 router.get("/:slug/activity", CheckAdminLogin, ops.listVenueActivity);
+
+// Per-venue partnership reads/writes.
+router.get("/:slug/partnership", CheckAdminLogin, requirePermission("venues:view:all"), partnership.getPartnership);
+// Track A.
+router.patch("/:slug/enrichment", CheckAdminLogin, requirePermission("venues_enrich:edit:all"), partnership.setEnrichment);
+router.patch("/:slug/verify", CheckAdminLogin, requirePermission("venues_verify:edit:all"), partnership.setVerified);
+// Track B — one grant-access action, two triggers.
+router.post("/:slug/grant-access", CheckAdminLogin, requirePermission("venues_onboard:create:all"), partnership.grantAccess);
+router.patch("/:slug/partner/terms", CheckAdminLogin, requirePermission("venues_onboard:edit:all"), partnership.setTerms);
+router.patch("/:slug/partner/onboarding", CheckAdminLogin, requirePermission("venues_onboard:edit:all"), partnership.updateOnboarding);
+router.put("/:slug/partner/onboarding/stages/:key", CheckAdminLogin, requirePermission("venues_onboard:edit:all"), partnership.upsertOnboardingStage);
+router.delete("/:slug/partner/onboarding/stages/:key", CheckAdminLogin, requirePermission("venues_onboard:edit:all"), partnership.removeOnboardingStage);
+router.get("/:slug/partner-visits", CheckAdminLogin, requirePermission("venues_visit:view:all"), partnership.listPartnerVisits);
+router.post("/:slug/partner-visits", CheckAdminLogin, requirePermission("venues_visit:create:all"), partnership.createPartnerVisit);
 
 module.exports = router;

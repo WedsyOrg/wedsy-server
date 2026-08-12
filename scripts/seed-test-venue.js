@@ -312,7 +312,11 @@ async function run() {
   if (VenueTeamMember) {
     const MULTI_PHONE = "8888888888";
     venue2 = await Venue.findOne({ slug: "test-palace-two" });
-    const v2 = { name: "Test Palace Two", slug: "test-palace-two", status: "verified", city: "Bangalore", venueType: "banquet_hall", invoicePrefix: "TP2-", gstin: "29ABCDE1234F1Z5", pan: "ABCDE1234F" };
+    // MB-OSV: seeded as a PUBLISHED venue carrying the Track A boolean instead
+    // of the legacy status:"verified" that conflated the two. Every consumer
+    // reads the same value either way (verifiedBadge honours both), so this is
+    // behaviour-neutral — it just stops the seed teaching the retired shape.
+    const v2 = { name: "Test Palace Two", slug: "test-palace-two", status: "published", verified: { isVerified: true }, city: "Bangalore", venueType: "banquet_hall", invoicePrefix: "TP2-", gstin: "29ABCDE1234F1Z5", pan: "ABCDE1234F" };
     if (!venue2) venue2 = await Venue.create(v2);
     else { Object.assign(venue2, v2); await venue2.save(); }
 

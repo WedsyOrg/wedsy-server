@@ -18,6 +18,7 @@ const VenueInvoice = require("../models/VenueInvoice");
 const VenueContract = require("../models/VenueContract");
 const VenueConversation = require("../models/VenueConversation");
 const VenueHold = require("../models/VenueHold");
+const tracks = require("../utils/venueTracks");
 
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const CLAIM_STATES = ["claimed", "pending", "unclaimed"];
@@ -26,6 +27,70 @@ const intParam = (v, def, max) => {
   const n = parseInt(v, 10);
   if (!Number.isFinite(n) || n < 0) return def;
   return max ? Math.min(n, max) : n;
+};
+
+// MB-OSV S2 — the two-track derivations, expressed for the aggregation layer.
+// These MUST stay in lockstep with utils/venueTracks.js, which is the JS
+// implementation every non-pipeline read uses; the S2 test asserts the two
+// agree venue-by-venue rather than trusting that they do.
+const PARTNER_STAGES = ["none", "access_granted", "live", "onboarding_complete"];
+
+// verified.isVerified when present, else the legacy status === "verified".
+const verifiedBadgeExpr = {
+  $cond: [
+    { $eq: [{ $type: "$verified.isVerified" }, "bool"] },
+    "$verified.isVerified",
+    { $eq: ["$status", "verified"] },
+  ],
+};
+
+// A conjunction, exactly as in venueTracks.partnerBadge: we granted access AND
+// they actually signed in.
+const partnerBadgeExpr = {
+  $and: [
+    { $ne: [{ $ifNull: ["$partner.accessGrantedAt", null] }, null] },
+    { $ne: [{ $ifNull: ["$partner.firstOwnerLoginAt", null] }, null] },
+  ],
+};
+
+const ENRICHED_MIN = tracks.ENRICHED_MIN_COMPLETENESS;
+const enrichmentStageExpr = {
+  $cond: [
+    { $eq: [{ $ifNull: ["$enrichment.lastEnrichedAt", null] }, null] },
+    "raw",
+    {
+      $cond: [
+        {
+          $and: [
+            { $gte: [{ $ifNull: ["$enrichment.completeness", 0] }, ENRICHED_MIN] },
+            { $eq: [{ $size: { $ifNull: ["$enrichment.missingFields", []] } }, 0] },
+          ],
+        },
+        "enriched",
+        "enriching",
+      ],
+    },
+  ],
+};
+
+const partnerStageExpr = {
+  $cond: [
+    { $eq: [{ $ifNull: ["$partner.accessGrantedAt", null] }, null] },
+    "none",
+    {
+      $cond: [
+        { $eq: [{ $ifNull: ["$partner.firstOwnerLoginAt", null] }, null] },
+        "access_granted",
+        {
+          $cond: [
+            { $eq: [{ $ifNull: ["$partner.onboarding.status", "not_started"] }, "complete"] },
+            "onboarding_complete",
+            "live",
+          ],
+        },
+      ],
+    },
+  ],
 };
 
 // claimed := an active VenueOwner exists (or legacy vendorId is set);
@@ -45,11 +110,33 @@ const claimStateExpr = {
 
 const directory = async (req, res) => {
   try {
-    const { search, zone, status, venueType, claimState, sort } = req.query;
+    const {
+      search, zone, status, venueType, claimState, sort,
+      // MB-OSV S2 — Track A and Track B facets. Deliberately INDEPENDENT
+      // filters: the point of the two-track split is that "verified but never
+      // approached" and "live partner nobody has data-checked" are both real
+      // states someone needs to be able to find.
+      enrichmentStage, verified, partnerStage, onboardingStatus, entryPoint,
+    } = req.query;
     const limit = intParam(req.query.limit, 20, 100);
     const skip = intParam(req.query.skip, 0);
     if (claimState && !CLAIM_STATES.includes(claimState)) {
       return res.status(400).json({ message: "Unknown claimState" });
+    }
+    if (enrichmentStage && !tracks.ENRICHMENT_STAGES.includes(enrichmentStage)) {
+      return res.status(400).json({ message: "Unknown enrichmentStage" });
+    }
+    if (verified && !["true", "false"].includes(verified)) {
+      return res.status(400).json({ message: "verified must be true|false" });
+    }
+    if (partnerStage && !PARTNER_STAGES.includes(partnerStage)) {
+      return res.status(400).json({ message: "Unknown partnerStage" });
+    }
+    if (onboardingStatus && !tracks.ONBOARDING_STATUSES.includes(onboardingStatus)) {
+      return res.status(400).json({ message: "Unknown onboardingStatus" });
+    }
+    if (entryPoint && !tracks.ENTRY_POINTS.includes(entryPoint)) {
+      return res.status(400).json({ message: "Unknown entryPoint" });
     }
     const sortMap = {
       completeness: { dataCompleteness: 1, _id: 1 },
@@ -66,6 +153,17 @@ const directory = async (req, res) => {
     if (zone) match.zone = String(zone).slice(0, 40);
     if (status) match.status = String(status).slice(0, 40);
     if (venueType) match.venueType = String(venueType).slice(0, 40);
+    if (entryPoint) match.entryPoint = entryPoint;
+    // Verified matches the DERIVED badge, legacy fallback included — filtering
+    // on the raw boolean alone would hide every venue the backfill hasn't
+    // reached yet, which is the opposite of what an ops filter is for.
+    if (verified === "true") {
+      match.$or = [{ "verified.isVerified": true }, { "verified.isVerified": { $exists: false }, status: "verified" }];
+    } else if (verified === "false") {
+      match["verified.isVerified"] = { $ne: true };
+      match.status = match.status || { $ne: "verified" };
+    }
+    if (onboardingStatus) match["partner.onboarding.status"] = onboardingStatus;
 
     const [result] = await Venue.aggregate([
       { $match: match },
@@ -96,8 +194,23 @@ const directory = async (req, res) => {
           as: "pendingClaims",
         },
       },
-      { $addFields: { claimState: claimStateExpr } },
+      {
+        $addFields: {
+          claimState: claimStateExpr,
+          // MB-OSV S2 — the two tracks, DERIVED in the pipeline so the list and
+          // the 360 answer from the same rules (utils/venueTracks) and no
+          // denormalised copy can drift.
+          verifiedBadge: verifiedBadgeExpr,
+          partnerBadge: partnerBadgeExpr,
+          enrichmentStage: enrichmentStageExpr,
+          partnerStage: partnerStageExpr,
+        },
+      },
       ...(claimState ? [{ $match: { claimState } }] : []),
+      // Stage filters run AFTER the derivation, since that is the only place
+      // these values exist.
+      ...(enrichmentStage ? [{ $match: { enrichmentStage } }] : []),
+      ...(partnerStage ? [{ $match: { partnerStage } }] : []),
       {
         $facet: {
           rows: [
@@ -109,6 +222,9 @@ const directory = async (req, res) => {
                 name: 1, slug: 1, venueType: 1, city: 1, zone: 1, status: 1,
                 dataCompleteness: 1, claimState: 1, googleRating: 1,
                 googleReviewCount: 1, updatedAt: 1,
+                entryPoint: { $ifNull: ["$entryPoint", ""] },
+                verifiedBadge: 1, partnerBadge: 1,
+                enrichmentStage: 1, partnerStage: 1,
                 owner: { $arrayElemAt: ["$activeOwners", 0] },
                 enquiryCount: { $size: { $ifNull: ["$enquiries", []] } },
               },

@@ -18,6 +18,22 @@ const RESOURCES = [
   "settings_kiara",
   "settings_moods",
   "settings_planner",
+  // ── MB-OSV — the OS Venue department ──────────────────────────────────────
+  // One resource per venue-team job, so the work can be split by assignment
+  // later without redesigning the vocabulary. One person holds all of these
+  // today; that is a staffing fact, not a schema constraint.
+  //   venues              — see the venue department at all (directory, 360)
+  //   venues_enrich       — Track A: fill in and score venue data
+  //   venues_verify       — Track A terminal: the verification call
+  //   venues_visit        — Track B: log partner visits
+  //   venues_onboard      — Track B: grant access, set terms, advance onboarding
+  //   venues_leads_assist — the "Leads I'm on" join
+  "venues",
+  "venues_enrich",
+  "venues_verify",
+  "venues_visit",
+  "venues_onboard",
+  "venues_leads_assist",
 ];
 const ACTIONS = ["view", "create", "edit", "delete", "assign", "export", "approve"];
 const SCOPES = ["own", "team", "department", "all"];
