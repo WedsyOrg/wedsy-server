@@ -4,6 +4,7 @@ const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
 const AdminNotificationService = require("./AdminNotificationService");
+const LeadOwnershipService = require("./LeadOwnershipService");
 const Admin = require("../models/Admin");
 const { filterAssignableIds } = require("../utils/assignable");
 
@@ -430,17 +431,19 @@ const updateAssignedTo = async (enquiryId, assignedTo, updatedBy) => {
       throw err;
     }
   }
-  const updated = await EnquiryRepository.updateAssignedToById(
-    enquiryId,
-    assignedTo,
-    updatedBy
-  );
-  if (!updated) {
+  // Routed through the ownership choke-point so the new owner is notified.
+  // skipTargetValidation: the assignable checks above are the same ones
+  // LeadOwnershipService would run — no need to re-query the admin.
+  const { lead } = await LeadOwnershipService.reassignOwner(enquiryId, assignedTo, updatedBy, {
+    reason: "manual_assign",
+    skipTargetValidation: true,
+  });
+  if (!lead) {
     const err = new Error("Enquiry not found");
     err.status = 404;
     throw err;
   }
-  return updated;
+  return lead;
 };
 
 module.exports = {

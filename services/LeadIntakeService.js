@@ -152,12 +152,13 @@ const afterCreate = async (enquiryId, { explicitAssignee = null, actorId = null 
         console.warn(
           `LeadIntakeService.afterCreate: explicit assignee ${explicitAssignee} no longer assignable — falling back to auto-assign`
         );
-        assignee = await LeadAssignmentService.assignLead(enquiryId);
+        assignee = await LeadAssignmentService.assignLead(enquiryId, { notify: false });
       }
     } else {
       // assignLead returns the chosen admin (auto mode) or null (triage / disabled /
       // no capacity). We branch the new-lead notification on this outcome.
-      assignee = await LeadAssignmentService.assignLead(enquiryId);
+      // notify:false — notifyNewLead below already tells this assignee (`new_lead`).
+      assignee = await LeadAssignmentService.assignLead(enquiryId, { notify: false });
     }
   } catch (e) {
     console.error("LeadIntakeService.afterCreate failed:", e.message);

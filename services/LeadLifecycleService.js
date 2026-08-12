@@ -785,10 +785,16 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
   }
 
   const fromById = new Map(inScope.map((l) => [String(l._id), l.assignedTo]));
-  await Enquiry.updateMany(
-    { _id: { $in: leadIds } },
-    { $set: { assignedTo: target._id, updatedBy: actorId || null } }
-  );
+  // Routed through the ownership choke-point so every transferred lead notifies
+  // its new owner. This replaces the single updateMany with a per-lead write —
+  // the journey-event loop below was already O(n), so the shape is unchanged.
+  // skipTargetValidation: `target` was re-checked against the assignable rule above.
+  for (const id of leadIds) {
+    await require("./LeadOwnershipService").reassignOwner(id, target._id, actorId, {
+      reason: "bulk_transfer",
+      skipTargetValidation: true,
+    });
+  }
   for (const id of leadIds) {
     await LeadInternalEventService.record({
       leadId: id,

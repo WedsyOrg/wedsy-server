@@ -56,7 +56,7 @@ const pickAssignee = async () => {
 // Auto-assign a freshly-created lead. Nobody available → lead stays unassigned and
 // an "assignment_failed" event makes it scream on the founder dashboard's untouched list.
 // Never throws (intake must not fail because assignment did).
-const doAssignLead = async (enquiryId) => {
+const doAssignLead = async (enquiryId, { notify = true } = {}) => {
   try {
     if (!(await SettingsService.get("assignment.autoAssignEnabled"))) {
       return null; // auto-assignment switched off in Settings — lead stays unassigned
@@ -86,7 +86,15 @@ const doAssignLead = async (enquiryId) => {
       });
       return null;
     }
-    await Enquiry.findByIdAndUpdate(enquiryId, { $set: { assignedTo: assignee._id } });
+    // Routed through the ownership choke-point. skipTargetValidation: pickAssignee
+    // already selected from assignableFilter(). notify is suppressed on the lead-
+    // creation path, where LeadIntakeService.notifyNewLead already sends `new_lead`
+    // — without that the new owner would get two rows for one event.
+    await require("./LeadOwnershipService").reassignOwner(enquiryId, assignee._id, null, {
+      notify,
+      reason: "auto_assign",
+      skipTargetValidation: true,
+    });
     await Admin.findByIdAndUpdate(assignee._id, { $set: { lastAssignedAt: new Date() } });
     await LeadInternalEventService.record({
       leadId: enquiryId,
@@ -106,8 +114,8 @@ const doAssignLead = async (enquiryId) => {
 // round-robin. Single node process today; a multi-instance deploy would need an
 // atomic DB claim instead (noted in the lifecycle report).
 let assignmentQueue = Promise.resolve();
-const assignLead = (enquiryId) => {
-  const task = assignmentQueue.then(() => doAssignLead(enquiryId));
+const assignLead = (enquiryId, opts = {}) => {
+  const task = assignmentQueue.then(() => doAssignLead(enquiryId, opts));
   assignmentQueue = task.catch(() => {});
   return task;
 };

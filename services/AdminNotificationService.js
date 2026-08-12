@@ -54,6 +54,24 @@ const listMine = async (adminId, { unreadOnly = false, limit = 50 } = {}) => {
     .lean();
 };
 
+// Retire a recipient's UNREAD rows of one type for one lead. Used when a fact
+// stops being true for them — e.g. a lead moves off its previous owner, whose
+// "assigned to you" row is now stale. Marks read (never deletes) so the trail
+// survives. Fire-and-safe like the rest of this service.
+const clearUnread = async (adminId, { type, leadId } = {}) => {
+  try {
+    if (!adminId || !type || !leadId) return 0;
+    const res = await AdminNotification.updateMany(
+      { adminId, type, leadId, read: false },
+      { $set: { read: true } }
+    );
+    return res.modifiedCount || 0;
+  } catch (e) {
+    console.error("AdminNotificationService.clearUnread failed:", e.message);
+    return 0;
+  }
+};
+
 const markRead = async (adminId, notificationId) =>
   await AdminNotification.findOneAndUpdate(
     { _id: notificationId, adminId },
@@ -67,4 +85,4 @@ const markAllRead = async (adminId) =>
 const unreadCount = async (adminId) =>
   await AdminNotification.countDocuments({ adminId, read: false });
 
-module.exports = { notify, notifyOnce, listMine, markRead, markAllRead, unreadCount };
+module.exports = { notify, notifyOnce, clearUnread, listMine, markRead, markAllRead, unreadCount };
