@@ -73,6 +73,10 @@ const VENUE_SLUGS = {
     await Enquiry.deleteMany({ phone: { $in: [LEAD_PHONE, QUALIFIED_LEAD_PHONE, INTAKE_LEAD_PHONE, CONTINUITY_LEAD_PHONE] } });
     await WAConversation.deleteMany({ phone: LEAD_PHONE });
     await WAAgentMessage.deleteMany({ phone: LEAD_PHONE });
+    const fixtureAdminForTargets = await Admin.findOne({ phone: ADMIN_PHONE }).select("_id").lean();
+    if (fixtureAdminForTargets) {
+      await require("../models/VenueWorkTarget").deleteMany({ assignee: fixtureAdminForTargets._id });
+    }
     await Admin.deleteMany({ phone: ADMIN_PHONE });
     await Role.deleteMany({ name: `${MARKER} Founder` });
     await Department.deleteMany({ name: `${MARKER} Dept` });
@@ -90,10 +94,17 @@ const VENUE_SLUGS = {
       await VenueOwner.deleteMany({ venueId: { $in: vids } });
       await VenuePartnerVisit.deleteMany({ venue: { $in: vids } });
       await VenueLeadAssist.deleteMany({ venue: { $in: vids } });
-      await VenueActivity.deleteMany({ venue: { $in: vids } });
       await Venue.deleteMany({ _id: { $in: vids } });
     }
-    await VenueWorkTarget.deleteMany({});
+    // VenueActivity is deliberately NOT cleaned: the model refuses every
+    // mutating op (D10, append-only) and that guard exists precisely so no
+    // caller can quietly grow delete powers over the audit spine. A handful of
+    // orphaned fixture rows is the correct price; the feed joins on venue and
+    // simply stops showing them.
+    //
+    // Work targets are scoped to the fixture admin — an unfiltered deleteMany
+    // here would wipe real Monday commitments out of the dev database.
+    // (work targets are cleaned above, before the admin row goes away)
   };
 
   if (cmd === "teardown") {
