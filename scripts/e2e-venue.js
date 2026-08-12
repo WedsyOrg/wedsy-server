@@ -1034,7 +1034,10 @@ async function run() {
 
   // ================= Couple-side: isVerified, view beacon, availability, browse =================
   if (process.env.E2E_COUPLE === "1") {
-    // isVerified on public detail (derived from status; test-palace is published -> false)
+    // isVerified on public detail. MB-OSV: this is now the Track A boolean
+    // (verified.isVerified) via utils/venueTracks, NOT a reading of `status`.
+    // test-palace is published and unverified -> false, which is precisely the
+    // distinction the two-track split made representable.
     const det = await api("GET", `/venues/${SLUG}`, {});
     check("couple: public detail exposes isVerified (false for published)", det.status === 200 && det.json.isVerified === false && det.json.venue, `isVerified ${det.json && det.json.isVerified}`);
 

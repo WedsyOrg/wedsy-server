@@ -6,6 +6,7 @@ const VenueInvoice = require("../models/VenueInvoice");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRunsheetItem = require("../models/VenueRunsheetItem");
 const { venueDayBounds } = require("../utils/venueTime");
+const { verifiedBadge } = require("../utils/venueTracks");
 
 // Stages that no longer need follow-up.
 const TERMINAL_STAGES = ["booked", "lost"];
@@ -19,7 +20,11 @@ const getDashboardOverview = async (req, res) => {
     const { venueId, venueOwnerId } = req.venueOwner;
 
     const venue = await Venue.findById(venueId)
-      .select("status photos coverPhoto featurePhoto pricing contact blockedDates")
+      // MB-OSV: `verified` MUST be selected. verifiedBadge() falls back to the
+      // legacy status === "verified" when the subdoc is absent, so omitting it
+      // here would silently reinstate the exact bug this read was fixed for —
+      // and it would look correct in every test that seeds a legacy venue.
+      .select("status verified photos coverPhoto featurePhoto pricing contact blockedDates")
       .lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
 
@@ -66,7 +71,11 @@ const getDashboardOverview = async (req, res) => {
     const percent = Math.round((completed / total) * 100);
 
     // ── Verification (read-only, derived; Wedsy OS/admin is the single writer) ──
-    const isVerified = venue.status === "verified";
+    // MB-OSV: reads the Track A boolean through the canonical derivation, not
+    // the publication status. The OS writes verified.isVerified and leaves
+    // `status` alone, so the old `status === "verified"` test reported a
+    // freshly verified venue as unverified to its own owner — indefinitely.
+    const isVerified = verifiedBadge(venue);
 
     // ── Follow-ups: non-terminal leads with a follow-up date due today or overdue ──
     const now = new Date();
