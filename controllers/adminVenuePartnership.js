@@ -627,6 +627,23 @@ const listLeadAssists = async (req, res) => {
     if (req.query.adminId && isId(req.query.adminId)) filter.adminId = req.query.adminId;
     else if (req.query.all !== "1") filter.adminId = req.auth.user_id;
     if (req.query.status) filter.status = str(req.query.status, 20);
+
+    // RBAC scope, INTERSECTED with whatever the caller asked for.
+    //
+    // This read populates couple name + phone off the CRM lead. Without the
+    // gate's scopeFilter, any holder of venues_leads_assist:view:* could pass
+    // ?all=1 (or name another adminId) and read contact details for every
+    // assisted couple — including leads the CRM would refuse them at
+    // leads:view:own. The capability grants access to the ASSIST surface; it
+    // was never meant to widen whose couples you can see.
+    //
+    // $and rather than Object.assign on purpose: assigning would overwrite an
+    // explicit ?adminId with the caller's own and silently answer a question
+    // they did not ask. Intersecting returns nothing for an out-of-scope
+    // request, which is the honest answer. requirePermission resolves the
+    // filter to {} at scope "all", so an all-scoped admin is unaffected.
+    const scopeFilter = req.scopeFilter || {};
+    const query = Object.keys(scopeFilter).length ? { $and: [filter, scopeFilter] } : filter;
     if (req.query.slug) {
       const venue = await Venue.findOne({ slug: req.query.slug }).select("_id").lean();
       if (!venue) return res.status(404).json({ message: "Venue not found" });
@@ -634,7 +651,7 @@ const listLeadAssists = async (req, res) => {
     }
 
     const [assists, total] = await Promise.all([
-      VenueLeadAssist.find(filter)
+      VenueLeadAssist.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -649,7 +666,7 @@ const listLeadAssists = async (req, res) => {
         // `status` on this model belongs to callCompletion and is not it.
         .populate("enquiry", "name phone stage createdAt qualificationData.eventDate")
         .lean(),
-      VenueLeadAssist.countDocuments(filter),
+      VenueLeadAssist.countDocuments(query),
     ]);
     return res.status(200).json({ assists, total });
   } catch (err) {
@@ -665,6 +682,13 @@ const createLeadAssist = async (req, res) => {
 
     const venue = await Venue.findOne({ slug }).select("_id name slug").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
+
+    // The enquiry must actually resolve. Without this an assist could point at
+    // a lead that never existed (or was deleted), and the row would render as
+    // "Lead unavailable" forever with no way to tell a typo from a deletion.
+    const Enquiry = mongoose.model("Enquiry");
+    const lead = await Enquiry.findById(enquiryId).select("_id").lean();
+    if (!lead) return res.status(404).json({ message: "Lead not found" });
 
     const allowed = VenueLeadAssist.schema.path("role").enumValues;
     const chosen = role || "recommending";
@@ -699,7 +723,10 @@ const createLeadAssist = async (req, res) => {
 const updateLeadAssist = async (req, res) => {
   try {
     if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid assist id" });
-    const assist = await VenueLeadAssist.findById(req.params.id);
+    // Scope applies to by-id writes too — fetching by id would otherwise let a
+    // scoped admin edit somebody else's assist, which is the same hole as the
+    // unscoped list one route over.
+    const assist = await VenueLeadAssist.findOne({ _id: req.params.id, ...(req.scopeFilter || {}) });
     if (!assist) return res.status(404).json({ message: "Assist not found" });
 
     if (req.body.role !== undefined) {
@@ -727,7 +754,9 @@ const updateLeadAssist = async (req, res) => {
 const deleteLeadAssist = async (req, res) => {
   try {
     if (!isId(req.params.id)) return res.status(400).json({ message: "Invalid assist id" });
-    const assist = await VenueLeadAssist.findByIdAndDelete(req.params.id);
+    // Same scoping as the update path — a 404 rather than a 403, so the
+    // response cannot be used to probe whether someone else's assist exists.
+    const assist = await VenueLeadAssist.findOneAndDelete({ _id: req.params.id, ...(req.scopeFilter || {}) });
     if (!assist) return res.status(404).json({ message: "Assist not found" });
     // Nothing on the CRM lead is touched — the assist is the only fact removed.
     return res.status(200).json({ deleted: true });

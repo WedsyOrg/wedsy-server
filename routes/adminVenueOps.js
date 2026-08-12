@@ -90,10 +90,18 @@ router.delete("/partner-visits/:id", CheckAdminLogin, requirePermission("venues_
 
 // "Leads I'm on" — the venue-owned assist join. Nothing here writes to the
 // CRM's Enquiry model.
-router.get("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_assist:view:all"), partnership.listLeadAssists);
-router.post("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_assist:create:all"), partnership.createLeadAssist);
-router.patch("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:edit:all"), partnership.updateLeadAssist);
-router.delete("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:delete:all"), partnership.deleteLeadAssist);
+// `ownerField: "adminId"` makes requirePermission build req.scopeFilter, which
+// these handlers apply. The read populates couple name + phone off the CRM
+// lead, so an unscoped read would let a venues_leads_assist holder see contact
+// details for couples the CRM denies them at leads:view:own.
+//
+// Required scope is :own — the gate widens it to whatever the caller actually
+// holds (own → team → department → all) and builds the matching filter. Asking
+// for :all here would have locked the surface to founders instead.
+router.get("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_assist:view:own", { ownerField: "adminId" }), partnership.listLeadAssists);
+router.post("/lead-assists", CheckAdminLogin, requirePermission("venues_leads_assist:create:own", { ownerField: "adminId" }), partnership.createLeadAssist);
+router.patch("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:edit:own", { ownerField: "adminId" }), partnership.updateLeadAssist);
+router.delete("/lead-assists/:id", CheckAdminLogin, requirePermission("venues_leads_assist:delete:own", { ownerField: "adminId" }), partnership.deleteLeadAssist);
 
 // Bulk Track A actions. Gated only by venues:view here because the handler
 // re-checks the specific capability per action — one route that can do either

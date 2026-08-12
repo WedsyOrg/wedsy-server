@@ -23,6 +23,7 @@ const VenueLeadAssist = require("../models/VenueLeadAssist");
 const VenueWorkTarget = require("../models/VenueWorkTarget");
 const VenueActivity = require("../models/VenueActivity");
 const Admin = require("../models/Admin");
+const Enquiry = require("../models/Enquiry");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
 
@@ -48,7 +49,7 @@ const req = (adminId, extra = {}) => ({
 });
 const call = async (fn, r) => { const res = mockRes(); await fn(r, res); return res; };
 
-const created = { venues: [], owners: [], admins: [], roles: [], depts: [] };
+const created = { venues: [], owners: [], admins: [], roles: [], depts: [], leads: [] };
 
 (async () => {
   try {
@@ -311,13 +312,17 @@ const created = { venues: [], owners: [], admins: [], roles: [], depts: [] };
 
     // ── 9. lead assists — and the CRM lead is never written ─────────────────
     console.log("\n[9] lead assists leave the CRM lead alone");
-    const fakeEnquiry = new mongoose.Types.ObjectId();
+    // A REAL lead: createLeadAssist now 404s on an enquiryId that resolves to
+    // nothing (see tests/venue-osv-fixes.test.js), so a bare ObjectId no longer
+    // stands in for one.
+    const assistLead = await Enquiry.create({ name: `${TAG} Assist Couple`, phone: `55${String(Date.now()).slice(-8)}`, stage: "contacted" });
+    created.leads.push(assistLead._id);
     const la = await call(p.createLeadAssist, req(founder._id, {
-      body: { slug: vClaim.slug, enquiryId: String(fakeEnquiry), role: "recommending" },
+      body: { slug: vClaim.slug, enquiryId: String(assistLead._id), role: "recommending" },
     }));
     ok(la.code === 201, "create an assist → 201");
     const laDupe = await call(p.createLeadAssist, req(founder._id, {
-      body: { slug: vClaim.slug, enquiryId: String(fakeEnquiry) },
+      body: { slug: vClaim.slug, enquiryId: String(assistLead._id) },
     }));
     ok(laDupe.code === 409, "the same admin+lead+venue twice → 409");
     const laList = await call(p.listLeadAssists, req(founder._id, {}));
@@ -330,7 +335,7 @@ const created = { venues: [], owners: [], admins: [], roles: [], depts: [] };
     ok(laClose.code === 200 && !!laClose.body.assist.closedAt, "closing an assist stamps closedAt");
     // Closing frees the partial unique index for a fresh assist.
     const laAgain = await call(p.createLeadAssist, req(founder._id, {
-      body: { slug: vClaim.slug, enquiryId: String(fakeEnquiry) },
+      body: { slug: vClaim.slug, enquiryId: String(assistLead._id) },
     }));
     ok(laAgain.code === 201, "…and the pair can be re-opened afterwards");
     const laBad = await call(p.createLeadAssist, req(founder._id, { body: { slug: vClaim.slug, enquiryId: "nope" } }));
@@ -391,6 +396,7 @@ const created = { venues: [], owners: [], admins: [], roles: [], depts: [] };
     // cleanup
     await Promise.all([
       Venue.deleteMany({ _id: { $in: created.venues } }),
+      Enquiry.deleteMany({ _id: { $in: created.leads } }),
       VenueOwner.deleteMany({ venueId: { $in: created.venues } }),
       VenuePartnerVisit.deleteMany({ venue: { $in: created.venues } }),
       VenueLeadAssist.deleteMany({ venue: { $in: created.venues } }),
