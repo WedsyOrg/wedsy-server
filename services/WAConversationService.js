@@ -6,6 +6,7 @@ const WAAgentMessage = require("../models/WAAgentMessage");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadIntakeService = require("./LeadIntakeService");
+const AdminNotificationService = require("./AdminNotificationService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const SettingsService = require("./SettingsService");
 const { sendWhatsApp, sendWhatsAppText } = require("../utils/whatsapp");
@@ -39,6 +40,46 @@ const windowInfo = (conversation, now = new Date()) => {
   return { windowOpen: closesAt > now, windowClosesAt: closesAt };
 };
 
+// ── Inbound → owner bell notification (additive) ──────────────────────────────
+// Fires ONLY for genuine customer messages. That guard is STRUCTURAL, not a
+// field check: recordInbound() below is reached solely from the four inbound
+// webhook paths (WhatsApp text + media, Instagram text + attachment), each of
+// which persists role:'user'. Staff sends (sendText/sendTemplate) and Kiara's
+// own replies both route through WAConversationRepository.touchOutbound and
+// never come through here — so admin and agent traffic cannot reach this.
+//
+// Skips silently when the conversation has no linked lead yet, or the lead is
+// unassigned: the new_lead / triage_assigned notifications already own that
+// moment, and we never broadcast to the team.
+//
+// Fire-safe (the Instagram-agent pattern): try/catch + console.error, so a
+// notification failure never breaks message delivery.
+const CHAT_PREVIEW_LEN = 60;
+
+const notifyOwnerOfInbound = async (conversation, text) => {
+  try {
+    if (!conversation || !conversation.enquiryId) return;
+    const lead = await Enquiry.findById(conversation.enquiryId, { name: 1, assignedTo: 1 }).lean();
+    if (!lead || !lead.assignedTo) return; // unassigned → no notification, no broadcast
+    const from = conversation.profileName || conversation.phone || "";
+    const snippet = String(text || "").slice(0, CHAT_PREVIEW_LEN);
+    await AdminNotificationService.notifyOnce(lead.assignedTo, {
+      type: "chat",
+      title: `New message from ${from || lead.name || "a lead"}`,
+      message: snippet,
+      leadId: lead._id,
+      payload: {
+        leadId: String(lead._id),
+        chatId: String(conversation._id),
+        preview: snippet,
+        from,
+      },
+    });
+  } catch (e) {
+    console.error("[WAConversation] inbound owner notification failed:", e.message);
+  }
+};
+
 // ── Hook 1 support: inbound touch + CRM lead linkage ─────────────────────────
 
 // Upsert the conversation row for an inbound message (creates it on first
@@ -46,7 +87,12 @@ const windowInfo = (conversation, now = new Date()) => {
 // 'instagram' (IG-user-id-keyed — no meaningful normalized phone).
 const recordInbound = async (phone, text, channel = "whatsapp") => {
   const normalized = channel === "whatsapp" ? LeadIntakeService.normalizePhone(phone) : "";
-  return await WAConversationRepository.upsertOnInbound(phone, normalized, preview(text), new Date(), channel);
+  const conversation = await WAConversationRepository.upsertOnInbound(phone, normalized, preview(text), new Date(), channel);
+  // Additive: ping the lead's owner in the OS bell. Deliberately AFTER the
+  // upsert and awaited-but-swallowed, so the conversation write is already
+  // durable and a notification failure cannot change what this returns.
+  await notifyOwnerOfInbound(conversation, text);
+  return conversation;
 };
 
 // Journey event types are channel-prefixed (wa_* / ig_*).

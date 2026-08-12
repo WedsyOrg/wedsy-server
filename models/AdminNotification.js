@@ -17,7 +17,10 @@ const AdminNotificationSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-AdminNotificationSchema.index({ adminId: 1, read: 1, createdAt: -1 });
+// Covers the bell list (listMine: adminId [+ read] sorted by updatedAt desc).
+// Sorted on updatedAt, not createdAt, so notifyOnce's dedupe-refresh re-sorts a
+// row to the top — see AdminNotificationService.notifyOnce.
+AdminNotificationSchema.index({ adminId: 1, read: 1, updatedAt: -1 });
 
 module.exports =
   mongoose.models.AdminNotification ||
