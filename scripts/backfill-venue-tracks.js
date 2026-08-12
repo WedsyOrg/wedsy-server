@@ -5,8 +5,15 @@
  * boolean, and classifies each venue's entry point. Idempotent: safe to run
  * repeatedly, and a second run reports zero changes.
  *
- *   node scripts/backfill-venue-tracks.js          # dry run (default)
- *   node scripts/backfill-venue-tracks.js --apply  # write
+ * GUARDS (matching scripts/migrate-assignedto-ref.js). This rewrites a field on
+ * every document in the Venue collection, so a remote target needs BOTH
+ * ALLOW_REMOTE=1 and --apply; local hosts only need --apply. Dry-run is the
+ * default and writes nothing. --apply backs the prior values up to
+ * scripts/backups/ before touching anything.
+ *
+ *   node scripts/backfill-venue-tracks.js                          # local dry-run (default)
+ *   node scripts/backfill-venue-tracks.js --apply                  # local backup + write
+ *   ALLOW_REMOTE=1 node scripts/backfill-venue-tracks.js --apply   # PROD (both gates)
  *
  * WHAT IT DOES
  *   1. status === "verified"        → verified.isVerified = true
@@ -28,16 +35,50 @@
  *      grant there is no Track B to backdate.
  */
 require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
 const mongoose = require("mongoose");
 
 const Venue = require("../models/Venue");
 const VenueOwner = require("../models/VenueOwner");
 
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 const APPLY = process.argv.includes("--apply");
+const ALLOW_REMOTE = process.env.ALLOW_REMOTE === "1";
+const BACKUP_DIR = path.join(__dirname, "backups");
+
+// Refuse to touch a remote database unless BOTH gates are set. A backfill that
+// rewrites every Venue document must not be one typo'd DATABASE_URL away from
+// production.
+function assertMongoTarget() {
+  const url = process.env.DATABASE_URL || "";
+  let host;
+  try {
+    host = new URL(url).hostname;
+  } catch (e) {
+    throw new Error(`Cannot parse DATABASE_URL to verify host: ${e.message}`);
+  }
+  const isLocal = LOCAL_HOSTS.has(host);
+  console.log(`[backfill-venue-tracks] ┌───────────────────────────────────────────`);
+  console.log(`[backfill-venue-tracks] │ TARGET HOST: ${host}  (${isLocal ? "local" : "REMOTE"})`);
+  console.log(`[backfill-venue-tracks] │ MODE: ${APPLY ? "APPLY" : "DRY-RUN"}  ALLOW_REMOTE=${ALLOW_REMOTE ? "1" : "0"}`);
+  console.log(`[backfill-venue-tracks] └───────────────────────────────────────────`);
+  if (isLocal) return host;
+  if (!ALLOW_REMOTE || !APPLY) {
+    throw new Error(
+      `Refusing to run: DATABASE_URL host "${host}" is REMOTE. The guarded ` +
+        `production path requires BOTH ALLOW_REMOTE=1 and --apply ` +
+        `(got ALLOW_REMOTE=${ALLOW_REMOTE ? "1" : "0"}, ${APPLY ? "--apply" : "no --apply"}).`
+    );
+  }
+  console.log(`[backfill-venue-tracks] ⚠  REMOTE APPLY authorized — writing to ${host}`);
+  return host;
+}
 
 (async () => {
+  const host = assertMongoTarget();
   await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
-  console.log(`[backfill-venue-tracks] ${APPLY ? "APPLY" : "DRY RUN"} on ${mongoose.connection.name}`);
+  console.log(`[backfill-venue-tracks] connected @ ${host} → ${mongoose.connection.name} (${APPLY ? "APPLY" : "DRY-RUN"})`);
 
   const venues = await Venue.find({}).select("_id name slug status verified entryPoint scrapedFrom googlePlaceId partner").lean();
   const owners = await VenueOwner.find({ isActive: true }).select("venueId lastLoginAt").lean();
@@ -56,6 +97,9 @@ const APPLY = process.argv.includes("--apply");
 
   const counts = { verifiedTrue: 0, verifiedFalse: 0, entryPoint: 0, seededLogin: 0, unchanged: 0 };
   const ops = [];
+  // Prior values for every document we are about to touch, so an --apply is
+  // reversible from the artifact alone.
+  const backup = [];
 
   for (const v of venues) {
     const set = {};
@@ -87,6 +131,14 @@ const APPLY = process.argv.includes("--apply");
       counts.unchanged++;
       continue;
     }
+    backup.push({
+      _id: v._id,
+      slug: v.slug,
+      // Exactly the three paths this script can write, as they are NOW.
+      verified: v.verified ?? null,
+      entryPoint: v.entryPoint ?? null,
+      "partner.firstOwnerLoginAt": (v.partner && v.partner.firstOwnerLoginAt) ?? null,
+    });
     ops.push({ updateOne: { filter: { _id: v._id }, update: { $set: set } } });
   }
 
@@ -99,6 +151,13 @@ const APPLY = process.argv.includes("--apply");
   console.log(`  documents to write    : ${ops.length}`);
 
   if (APPLY && ops.length) {
+    // Backup FIRST — if this throws, nothing has been written yet.
+    if (!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = path.join(BACKUP_DIR, `venue-tracks-premigration-${stamp}.json`);
+    fs.writeFileSync(backupPath, JSON.stringify(backup, null, 2));
+    console.log(`[backfill-venue-tracks] backed up ${backup.length} prior value(s) → ${backupPath}`);
+
     // bulkWrite with updateOne bypasses the coverPhoto update guard's concern
     // (no coverPhoto in any payload here) and never triggers a full save().
     const r = await Venue.bulkWrite(ops, { ordered: false });
