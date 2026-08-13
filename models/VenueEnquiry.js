@@ -18,6 +18,29 @@ const VenueEnquirySchema = new mongoose.Schema(
     // pre-validate hook enforces checkOut > checkIn and checkOut <= checkIn + 7d.
     checkIn: { type: Date },
     checkOut: { type: Date },
+    // BUILD2 S1: "we're marrying in December, day undecided". Until now a lead
+    // either had a precise window or nothing at all, so half the enquiries a
+    // venue takes on the phone could not be written down as what they are.
+    //
+    // Defaults TRUE so every existing row keeps its present meaning: a lead
+    // with dates is finalised, a lead without is a finalised lead nobody has
+    // filled in yet. Only an explicit write makes a lead unfinalised.
+    //
+    // The two states are mutually exclusive and the pre-validate hook enforces
+    // it in BOTH directions — an unfinalised lead has no checkIn/checkOut/
+    // eventDate, a finalised one has no approximatePeriod. A row carrying both
+    // would make every date consumer pick a winner, and they would not all
+    // pick the same one.
+    datesFinalised: { type: Boolean, default: true },
+    approximatePeriod: {
+      // 1-12. Stored as a number rather than a Date so "December 2026" can
+      // never be silently read as the 1st of December by a consumer that
+      // forgets this is approximate.
+      month: { type: Number, min: 1, max: 12, default: null },
+      year: { type: Number, min: 2000, max: 2100, default: null },
+      // Optional: "some time around the 12th". Never enough to finalise.
+      day: { type: Number, min: 1, max: 31, default: null },
+    },
     guestCount: { type: Number },
     budget: { type: String },
     vibe: [{ type: String }],
@@ -155,6 +178,44 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 // consumer having to opt in. Runs on validate so a bad window 400s at the
 // controller instead of corrupting data.
 VenueEnquirySchema.pre("validate", function (next) {
+  // BUILD2 S1: the unfinalised state, enforced for every write path before any
+  // window rule runs. Deliberately invalidate() rather than silently coercing:
+  // a caller that sends both a window and "dates not finalised" has a bug, and
+  // quietly dropping one half would hide it until a date consumer disagreed.
+  if (this.datesFinalised === false) {
+    const p = this.approximatePeriod || {};
+    if (!p.month || !p.year) {
+      this.invalidate("approximatePeriod", "approximatePeriod {month, year} is required when dates are not finalised");
+    }
+    // invalidate() ONLY — deliberately not followed by nulling the field.
+    // Re-setting a path clears its pending validation error in Mongoose, so
+    // doing both would cancel the refusal out and silently drop a window the
+    // caller actually sent. Refusing is the point: a non-controller write path
+    // (import, planner, a script) must not be able to store the pair either.
+    if (this.checkIn || this.checkOut) {
+      this.invalidate("checkIn", "an unfinalised lead cannot carry a check-in/check-out window");
+    }
+    // eventDate is the field the dashboard, calendar and analytics read. An
+    // unfinalised lead has no day, so it carries none — that is what keeps it
+    // out of date-keyed views instead of landing on a wrong day. (The 01 Jan
+    // 1970 renders came from consumers being handed an empty date, not from a
+    // real one.)
+    // eventDate is derived here, never caller-authored, so clearing it carries
+    // no error to cancel.
+    this.eventDate = null;
+    // A function is a thing that happens on a DAY. With no window there is no
+    // day to hang it on and no window to validate it against, so the pairing is
+    // refused outright rather than stored as an unvalidatable date.
+    if (Array.isArray(this.functions) && this.functions.length) {
+      this.invalidate("functions", "add the dates first — an unfinalised lead cannot have functions");
+    }
+  } else if (this.approximatePeriod && (this.approximatePeriod.month || this.approximatePeriod.year || this.approximatePeriod.day)) {
+    // Finalised leads carry no approximate period. Reverting is legitimate (a
+    // couple can un-decide) but it goes through datesFinalised:false, never by
+    // leaving a stale month behind on a lead that now has real dates.
+    this.approximatePeriod = { month: null, year: null, day: null };
+  }
+
   if (this.checkIn) {
     // Derive the day the rest of the platform reads from checkIn.
     this.eventDate = this.checkIn;

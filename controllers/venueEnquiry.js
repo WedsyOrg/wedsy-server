@@ -20,8 +20,8 @@ const VenueOwner = require("../models/VenueOwner");
 
 // Phase 3 lost-reason allowlist (mirrors models/VenueEnquiry.js; "" = none/legacy).
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
-const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow } = require("../utils/venueInput");
-const { venueDateKey } = require("../utils/venueTime");
+const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow, approximatePeriod } = require("../utils/venueInput");
+const { venueDateKey, addVenueDays } = require("../utils/venueTime");
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
@@ -104,6 +104,31 @@ function sanitizeContacts(list) {
 // date inside [checkIn, checkOut] when the window is set, space must be a
 // bookable space of THIS venue (or absent), pax a positive count. Two
 // functions on the same date are fine — different spaces is the normal case.
+// BUILD2 S2(a): the functions a proposed window would strand, named well
+// enough for a UI to list them ("Sangeet · 29 Sep") and for the owner to know
+// what they are being asked to move. Day-granularity, venue calendar, same as
+// every other window comparison here.
+function outsideWindow(list, checkIn, checkOut) {
+  if (!checkIn || !checkOut || !Array.isArray(list)) return [];
+  const lo = venueDateKey(checkIn);
+  const hi = venueDateKey(checkOut);
+  return list
+    .map((f, i) => ({ f, i }))
+    .filter(({ f }) => {
+      if (!f || !f.date) return false;
+      const day = venueDateKey(f.date);
+      return day < lo || day > hi;
+    })
+    .map(({ f, i }) => ({
+      index: i,
+      _id: f._id,
+      name: f.name,
+      customLabel: f.customLabel || "",
+      date: f.date,
+      day: venueDateKey(f.date),
+    }));
+}
+
 function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
   if (!Array.isArray(list)) return { ok: false, message: "functions must be an array" };
   if (list.length > MAX_FUNCTIONS) return { ok: false, message: `functions is too long (max ${MAX_FUNCTIONS})` };
@@ -560,6 +585,9 @@ const updateEnquiry = async (req, res) => {
       coupleName, couplePhone, email, guestCount, source, budget, message,
       // MB-CRM-2 S1: structured lead shape (wholesale replace when sent).
       contacts, functions, requirements,
+      // BUILD2 S1/S2: finalise, revert, and the caller's acknowledgement that
+      // it has seen the holds a window move would strand.
+      datesFinalised, approximatePeriod: approximatePeriodRaw, acknowledgeStaleHolds,
     } = req.body || {};
 
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
@@ -592,6 +620,9 @@ const updateEnquiry = async (req, res) => {
     // and existing functions are re-checked when the window itself moves.
     const effCheckIn = win.ok ? win.checkIn : enquiry.checkIn;
     const effCheckOut = win.ok ? win.checkOut : enquiry.checkOut;
+    // Set when a window move strands holds AND the caller acknowledged them —
+    // echoed back so the UI can offer release/re-placement after the save.
+    let staleHoldsAcknowledged = null;
     let contactsV = null;
     if (contacts !== undefined) {
       contactsV = sanitizeContacts(contacts);
@@ -605,13 +636,113 @@ const updateEnquiry = async (req, res) => {
     if (functions === undefined && winSent && effCheckIn && effCheckOut && (enquiry.functions || []).length) {
       const recheck = sanitizeFunctions(enquiry.functions, venue.spaces, effCheckIn, effCheckOut);
       if (!recheck.ok) {
-        return res.status(400).json({ message: "the new check-in/check-out window would orphan an existing function date" });
+        // BUILD2 S2(a): say WHICH functions fall outside the new window. The
+        // old message named none of them, so a caller could only re-guess. The
+        // UI resolves these before it ever sends the change; this stays as the
+        // backstop for anything that does not.
+        return res.status(400).json({
+          message: "the new check-in/check-out window would orphan an existing function date",
+          conflictingFunctions: outsideWindow(enquiry.functions, effCheckIn, effCheckOut),
+        });
       }
     }
     let requirementsV = null;
     if (requirements !== undefined) {
       requirementsV = sanitizeRequirements(requirements);
       if (!requirementsV.ok) return res.status(400).json({ message: requirementsV.message });
+    }
+
+    // ── BUILD2 S1: finalise / revert ────────────────────────────────────────
+    // Finalising = datesFinalised:true + a window. Reverting = false + a
+    // period. The model refuses to hold both states; the controller refuses
+    // the contradictory REQUEST, so the caller learns which half was wrong.
+    const finalisedSent = datesFinalised !== undefined;
+    const goingUnfinalised = datesFinalised === false;
+    const apU = approximatePeriod(approximatePeriodRaw);
+    if (!apU.ok) return res.status(400).json({ message: apU.message });
+    if (goingUnfinalised) {
+      const period = apU.value || (enquiry.approximatePeriod && enquiry.approximatePeriod.month
+        ? { month: enquiry.approximatePeriod.month, year: enquiry.approximatePeriod.year, day: enquiry.approximatePeriod.day }
+        : null);
+      if (!period) return res.status(400).json({ message: "approximatePeriod {month, year} is required when dates are not finalised" });
+      // Only the INCOMING body can contradict itself. `win` falls back to the
+      // lead's current window, so testing it here would refuse every revert of
+      // a lead that has dates — which is precisely the case reverting exists
+      // for. The existing window is cleared below, not rejected.
+      if ((checkIn !== undefined && checkIn) || (checkOut !== undefined && checkOut)) {
+        return res.status(400).json({ message: "an unfinalised lead cannot carry a check-in/check-out window" });
+      }
+      if ((enquiry.functions || []).length && functions === undefined) {
+        // Un-deciding the dates would strand every function on a day the lead
+        // no longer claims. Same shape as the window-move conflict: name them,
+        // make the caller deal with them first.
+        return res.status(409).json({
+          message: "remove or move this lead's functions before un-finalising its dates",
+          conflictingFunctions: outsideWindow(enquiry.functions, enquiry.checkIn, enquiry.checkOut).length
+            ? outsideWindow(enquiry.functions, enquiry.checkIn, enquiry.checkOut)
+            : (enquiry.functions || []).map((f, i) => ({ index: i, _id: f._id, name: f.name, customLabel: f.customLabel || "", date: f.date, day: venueDateKey(f.date) })),
+        });
+      }
+    } else if (finalisedSent && datesFinalised === true && enquiry.datesFinalised === false) {
+      // Finalising REQUIRES real dates — otherwise the lead would land in the
+      // finalised state carrying neither a window nor a period, which is the
+      // dateless hole this whole slice exists to close.
+      if (!win.checkIn) {
+        return res.status(400).json({ message: "a check-in is required to finalise this lead's dates" });
+      }
+    }
+
+    // ── BUILD2 S2: the consequences of moving an existing window ────────────
+    // Only when the window actually MOVES on a lead that already had one —
+    // filling in dates for the first time strands nothing.
+    const windowMoving =
+      winSent &&
+      (enquiry.checkIn || enquiry.checkOut) &&
+      (String(enquiry.checkIn || "") !== String(win.checkIn || "") ||
+        String(enquiry.checkOut || "") !== String(win.checkOut || ""));
+
+    if (windowMoving || goingUnfinalised) {
+      // (c) A confirmed booking owns real calendar inventory. Moving the lead's
+      // dates underneath it would leave the blocks on the old days and the
+      // paperwork on the new ones. Refuse — the booking is the only path that
+      // may move a booked date, and it is not this endpoint.
+      const booking = await VenueBooking.findOne({ enquiry: enquiry._id }).select("_id status").lean();
+      if (booking) {
+        return res.status(409).json({
+          message: "This lead has a booking — change the dates through the booking, not the lead",
+          bookingId: booking._id,
+          bookingStatus: booking.status,
+        });
+      }
+
+      // (b) Holds are approved claims on specific calendar days. A window move
+      // leaves any hold on the OLD days blocking inventory for an event that is
+      // no longer on them. Invariant #12's rule applies: never release
+      // silently. So the first attempt is refused WITH the holds listed, and
+      // only an explicit acknowledgeStaleHolds lets the move through — still
+      // without touching the hold, which the owner then releases or re-places.
+      const liveHolds = await VenueHold.find({
+        venue: venue._id,
+        linkedEnquiry: enquiry._id,
+        status: { $in: ["requested", "approved"] },
+      })
+        .select("_id status dates expiresAt space")
+        .lean();
+      const newDays = new Set();
+      if (win.checkIn && win.checkOut) {
+        for (let d = new Date(win.checkIn); d <= win.checkOut; d = addVenueDays(d, 1)) newDays.add(venueDateKey(d));
+      }
+      const stranded = liveHolds.filter((h) => (h.dates || []).some((d) => !newDays.has(venueDateKey(d))));
+      if (stranded.length && acknowledgeStaleHolds !== true) {
+        return res.status(409).json({
+          message: "This lead holds dates that the new window does not cover — release or re-place the hold",
+          staleHolds: stranded.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt, space: h.space })),
+          // The caller re-sends with acknowledgeStaleHolds:true once the owner
+          // has decided. We still never release it for them.
+          acknowledgeWith: "acknowledgeStaleHolds",
+        });
+      }
+      if (stranded.length) staleHoldsAcknowledged = stranded;
     }
 
     // ── S0d fine-grained capability gates (coarse "leads" already required by
@@ -676,6 +807,44 @@ const updateEnquiry = async (req, res) => {
       if (checkIn !== undefined) enquiry.checkIn = win.checkIn;
       if (checkOut !== undefined) enquiry.checkOut = win.checkOut;
       // eventDate is re-derived from checkIn by the model pre-validate hook.
+    }
+    // BUILD2 S1 transitions, written after the window so the pre-validate hook
+    // sees the final pair and can enforce mutual exclusivity on it.
+    if (goingUnfinalised) {
+      const prevWindow = { checkIn: enquiry.checkIn, checkOut: enquiry.checkOut };
+      enquiry.datesFinalised = false;
+      enquiry.approximatePeriod = apU.value || enquiry.approximatePeriod;
+      enquiry.checkIn = null;
+      enquiry.checkOut = null;
+      enquiry.eventDate = null;
+      enquiry.activities.push({
+        type: "dates_unfinalised",
+        description: prevWindow.checkIn
+          ? `Dates un-finalised (was ${venueDateKey(prevWindow.checkIn)}${prevWindow.checkOut ? ` → ${venueDateKey(prevWindow.checkOut)}` : ""})`
+          : "Dates marked not finalised",
+        actor: actorIdOf(req),
+        timestamp: new Date(),
+      });
+    } else if (finalisedSent && datesFinalised === true && enquiry.datesFinalised === false) {
+      enquiry.datesFinalised = true;
+      enquiry.approximatePeriod = { month: null, year: null, day: null };
+      enquiry.activities.push({
+        type: "dates_finalised",
+        description: `Dates finalised — ${venueDateKey(win.checkIn)}${win.checkOut ? ` → ${venueDateKey(win.checkOut)}` : ""}`,
+        actor: actorIdOf(req),
+        timestamp: new Date(),
+      });
+    } else if (approximatePeriodRaw !== undefined && enquiry.datesFinalised === false && apU.value) {
+      // Editing the period of a lead that is already unfinalised.
+      enquiry.approximatePeriod = apU.value;
+    }
+    if (windowMoving && !goingUnfinalised) {
+      enquiry.activities.push({
+        type: "dates_changed",
+        description: `Event window moved to ${venueDateKey(win.checkIn)}${win.checkOut ? ` → ${venueDateKey(win.checkOut)}` : ""}`,
+        actor: actorIdOf(req),
+        timestamp: new Date(),
+      });
     }
     // MB-CRM-2 S1 writes (wholesale replace — the workbench sends full arrays).
     if (contactsV) {
@@ -750,7 +919,16 @@ const updateEnquiry = async (req, res) => {
       });
     }
 
-    return res.status(200).json({ enquiry, booking: booking ? { _id: booking._id } : undefined });
+    return res.status(200).json({
+      enquiry,
+      booking: booking ? { _id: booking._id } : undefined,
+      // BUILD2 S2(b): the window moved and these holds still sit on the old
+      // days. Nothing was released — the caller shows them as explicit
+      // release/re-place actions, exactly as delete does with releasedNothing.
+      staleHolds: staleHoldsAcknowledged
+        ? staleHoldsAcknowledged.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt, space: h.space }))
+        : undefined,
+    });
   } catch (err) {
     if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
     return res.status(500).json({ message: err.message });
@@ -780,6 +958,9 @@ const createManualLead = async (req, res) => {
       assignedTo,
       budget,
       contacts,
+      // BUILD2 S1
+      datesFinalised,
+      approximatePeriod: approximatePeriodRaw,
     } = req.body || {};
 
     const nameC = cleanStr(coupleName);
@@ -797,6 +978,21 @@ const createManualLead = async (req, res) => {
     const gcV = optCount(guestCount, "guestCount"); if (!gcV.ok) return res.status(400).json({ message: gcV.message });
     const evV = optNumber(estimatedValue, "estimatedValue"); if (!evV.ok) return res.status(400).json({ message: evV.message });
     const win = eventWindow(checkIn, checkOut); if (!win.ok) return res.status(400).json({ message: win.message });
+    // BUILD2 S1: "dates not finalised". Refuse the contradiction at the door
+    // rather than picking a winner for the caller — a body carrying both a
+    // window and "not finalised" is a bug in the caller, not an ambiguity for
+    // us to resolve quietly.
+    const unfinalised = datesFinalised === false;
+    const apV = approximatePeriod(approximatePeriodRaw);
+    if (!apV.ok) return res.status(400).json({ message: apV.message });
+    if (unfinalised) {
+      if (!apV.value) return res.status(400).json({ message: "approximatePeriod {month, year} is required when dates are not finalised" });
+      if (win.checkIn || win.checkOut || edV.value) {
+        return res.status(400).json({ message: "an unfinalised lead cannot carry a check-in/check-out window or event date" });
+      }
+    } else if (apV.value) {
+      return res.status(400).json({ message: "approximatePeriod is only for leads whose dates are not finalised" });
+    }
     // S1a: optional explicit contacts; default = one primary contact seeded
     // from the couple name+phone (the add-lead modal contract).
     let contactsV = null;
@@ -878,9 +1074,14 @@ const createManualLead = async (req, res) => {
       coupleName: nameC,
       couplePhone: phoneC,
       email: cleanStr(email),
-      eventDate: edV.value,
-      checkIn: win.checkIn,
-      checkOut: win.checkOut,
+      // BUILD2 S1: an unfinalised lead carries the period and NO window. The
+      // model enforces the same thing; sending nulls here means we never even
+      // hand it a contradictory pair to reject.
+      datesFinalised: unfinalised ? false : true,
+      approximatePeriod: unfinalised ? apV.value : undefined,
+      eventDate: unfinalised ? null : edV.value,
+      checkIn: unfinalised ? null : win.checkIn,
+      checkOut: unfinalised ? null : win.checkOut,
       guestCount: gcV.value != null ? gcV.value : null,
       message: cleanStr(message),
       budget: cleanStr(budget),
@@ -982,6 +1183,65 @@ const deleteEnquiry = async (req, res) => {
         holds: liveHolds.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt })),
         openTasks,
         openFollowUps,
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * BUILD2 S2 — GET /venues/:slug/enquiries/:enquiryId/window-impact?checkIn=&checkOut=
+ *
+ * A dry run of a window move. Read-only, changes nothing, and answers the
+ * three questions the PATCH would otherwise answer only by refusing:
+ *   functions — which ones the new window would strand
+ *   holds     — which live holds sit on days the new window no longer covers
+ *   booking   — whether a booking makes this a refusal outright
+ *
+ * The UI calls this while the picker is open, so the owner resolves conflicts
+ * BEFORE pressing save rather than meeting a 400 afterwards. The PATCH keeps
+ * every one of these checks — this endpoint is a courtesy, never the gate.
+ */
+const getWindowImpact = async (req, res) => {
+  try {
+    const { slug, enquiryId } = req.params;
+    const venue = await Venue.findOne({ slug }).select("_id").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, enquiryId);
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+
+    const { checkIn, checkOut } = req.query || {};
+    const win = eventWindow(checkIn, checkOut);
+    if (!win.ok) return res.status(400).json({ message: win.message });
+
+    const [booking, liveHolds] = await Promise.all([
+      VenueBooking.findOne({ enquiry: enquiry._id }).select("_id status").lean(),
+      VenueHold.find({ venue: venue._id, linkedEnquiry: enquiry._id, status: { $in: ["requested", "approved"] } })
+        .select("_id status dates expiresAt space")
+        .lean(),
+    ]);
+
+    const newDays = new Set();
+    if (win.checkIn && win.checkOut) {
+      for (let d = new Date(win.checkIn); d <= win.checkOut; d = addVenueDays(d, 1)) newDays.add(venueDateKey(d));
+    }
+    const staleHolds = liveHolds.filter((h) => (h.dates || []).some((d) => !newDays.has(venueDateKey(d))));
+    const conflictingFunctions = outsideWindow(enquiry.functions, win.checkIn, win.checkOut);
+
+    return res.status(200).json({
+      // blocked = the PATCH would refuse no matter what the caller sends.
+      blocked: Boolean(booking),
+      booking: booking ? { _id: booking._id, status: booking.status } : undefined,
+      conflictingFunctions,
+      staleHolds: staleHolds.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt, space: h.space })),
+      // What the caller must do to make the PATCH succeed.
+      requires: {
+        resolveFunctions: conflictingFunctions.length > 0,
+        acknowledgeStaleHolds: staleHolds.length > 0,
       },
     });
   } catch (err) {
@@ -1141,4 +1401,4 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, importLeads, getImports, importLeadRows };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, getWindowImpact, importLeads, getImports, importLeadRows };
