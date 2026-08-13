@@ -178,6 +178,10 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       await VenueHold.deleteMany({ venue: v });
       await VenueBooking.deleteMany({ venue: v });
       await VenueEnquiry.deleteMany({ venueId: v });
+      // By venue, not by tracked id: the owner's own member row is materialised
+      // by the code under test (utils/venueOwnerMember), so this suite never
+      // learns its id and would otherwise orphan it when the venue goes.
+      await VenueTeamMember.deleteMany({ venueId: v });
       await Venue.deleteOne({ _id: v });
     }
     await VenueTeamMember.deleteMany({ _id: { $in: created.members } });

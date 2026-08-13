@@ -6,6 +6,7 @@ const VenueTeamMember = require("../models/VenueTeamMember");
 const VenueTeamActivity = require("../models/VenueTeamActivity");
 const { VENUE_ROLES, roleHasCapability } = require("../utils/venueRoles");
 const { ensureVenueRoles, isOwnerActor: rbacIsOwnerActor } = require("../utils/venueRbac");
+const { ensureOwnerMembers } = require("../utils/venueOwnerMember");
 const { optStr } = require("../utils/venueInput");
 
 const BCRYPT_ROUNDS = 10;
@@ -48,18 +49,28 @@ async function logActivity(venueId, { actorId: aId = "", actorName = "", action,
 }
 
 // GET /venues/:slug/team — list members (team capability). First touch also
-// seeds the RBAC v2 bundles and lazily migrates legacy-enum members onto them.
+// seeds the RBAC v2 bundles, lazily migrates legacy-enum members onto them, and
+// materialises the owner's own member row.
+//
+// The owner row IS returned here (flagged isOwnerAccount) — it is a real
+// assignee and hiding it would make the roster disagree with every Assign-To
+// dropdown. `total` therefore counts it, so callers get an honest count of the
+// rows they were handed; `teamCount` is the invited-teammates count with the
+// owner excluded, which is what "N members" in the UI has always meant. Adding
+// a field rather than changing `total` keeps this response backward-compatible.
 const listMembers = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
     const { migrateLegacyMembers } = require("../utils/venueRbac");
     await migrateLegacyMembers(venue._id);
+    await ensureOwnerMembers(venue._id);
     const members = await VenueTeamMember.find({ venueId: venue._id })
       .sort({ createdAt: -1 })
       .populate("roleRef", "name capabilities isSystem isDefault")
       .lean();
-    return res.status(200).json({ members, total: members.length });
+    const teamCount = members.filter((m) => !m.isOwnerAccount).length;
+    return res.status(200).json({ members, total: members.length, teamCount });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -69,14 +80,20 @@ const listMembers = async (req, res) => {
 // roster (id + name only) for the lead Assign-To dropdown and the leads-table
 // assignee names. Gated by the LEADS capability (not team) so Owner, Manager
 // and Sales can all resolve names — cross-assignment itself is still enforced
-// server-side (leads_reassign / the create contract). Owners are not members,
-// so they never appear here; the UI offers "You (owner)" → unassigned itself.
+// server-side (leads_reassign / the create contract).
+//
+// The owner DOES appear here, flagged isOwnerAccount, because the owner now has
+// a real member row and is a real assignee. This replaces the old convention in
+// which the UI offered "You (owner)" and meant UNASSIGNED — a synonym that made
+// the owner's own work indistinguishable from nobody's work. Clients should
+// render the flagged row as the owner and stop special-casing unassigned.
 const listAssignableMembers = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
+    await ensureOwnerMembers(venue._id);
     const members = await VenueTeamMember.find({ venueId: venue._id, isActive: true })
-      .select("_id name role")
+      .select("_id name role isOwnerAccount")
       .sort({ name: 1 })
       .lean();
     return res.status(200).json({ members, total: members.length });
@@ -122,8 +139,15 @@ const inviteMember = async (req, res) => {
       }
     }
 
-    const existing = await VenueTeamMember.findOne({ venueId: venue._id, phone }).lean();
-    if (existing) return res.status(400).json({ message: "A member with this phone already exists" });
+    const existing = await VenueTeamMember.findOne({ venueId: venue._id, phone }).select("isOwnerAccount").lean();
+    if (existing) {
+      // Owners used to invite themselves to get an assignable row. They have one
+      // now, so say that rather than the generic collision message.
+      if (existing.isOwnerAccount) {
+        return res.status(400).json({ message: "That's the owner's own number — the owner is already on the team and assignable" });
+      }
+      return res.status(400).json({ message: "A member with this phone already exists" });
+    }
     if (cleanEmail) {
       const emailTaken = await VenueTeamMember.findOne({ venueId: venue._id, email: cleanEmail }).lean();
       if (emailTaken) return res.status(400).json({ message: "A member with this email already exists" });
@@ -181,6 +205,12 @@ const setMemberPassword = async (req, res) => {
     }
     const member = await VenueTeamMember.findOne({ _id: req.params.memberId, venueId: venue._id });
     if (!member) return res.status(404).json({ message: "Member not found" });
+    // The owner account is not a login identity — it has no email and must never
+    // acquire a password. (It would fail the email check below anyway; this says
+    // why, instead of sending the owner off to "set an email first".)
+    if (member.isOwnerAccount) {
+      return res.status(400).json({ message: "The owner's account is not a member login — sign in as the owner instead" });
+    }
     if (!member.email) return res.status(400).json({ message: "Member has no email — set an email first" });
 
     const { password } = req.body || {};
@@ -219,6 +249,26 @@ const updateMember = async (req, res) => {
     }
 
     const { name, email, role, roleId, isActive } = req.body || {};
+
+    // The owner-account row needs its OWN guard. The self-check above compares
+    // against req.venueOwner.memberId, which is `undefined` for an owner token —
+    // so String(member._id) === "undefined" is false and an owner sails straight
+    // past it into their own row. Deactivating it would drop the owner out of
+    // every assignee list and strand whatever is already assigned to them;
+    // demoting it or giving it an email would contradict what the row is (an
+    // all-capabilities account that is not a login identity). Renaming stays
+    // allowed — it is the one harmless edit.
+    if (member.isOwnerAccount) {
+      if (isActive === false) {
+        return res.status(400).json({ message: "The owner's account cannot be deactivated" });
+      }
+      if (role !== undefined || roleId !== undefined) {
+        return res.status(400).json({ message: "The owner's account role cannot be changed" });
+      }
+      if (email !== undefined) {
+        return res.status(400).json({ message: "The owner's account is not a member login — it cannot have an email" });
+      }
+    }
     const changes = [];
 
     if (role !== undefined) {

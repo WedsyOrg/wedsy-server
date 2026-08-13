@@ -20,6 +20,12 @@ const VenueTeamMemberSchema = new mongoose.Schema(
     // Email+password member login (owner auth stays phone OTP). Never selected
     // by default; login code opts in explicitly.
     passwordHash: { type: String, default: "", select: false },
+    // The owner's OWN member row (utils/venueOwnerMember). It exists so the owner
+    // can be assigned leads/tasks/follow-ups like anyone else — it is NOT a login
+    // identity: it never carries an email or a passwordHash, and every member
+    // login lane (collectIdentities / send-otp / member-auth / select-identity)
+    // filters it out. The owner still signs in as an owner, via phone OTP.
+    isOwnerAccount: { type: Boolean, default: false },
     isActive: { type: Boolean, default: true },
     // Actor (owner or member) id that invited this member; not a strict ref since the
     // actor may be either type.
@@ -38,6 +44,8 @@ VenueTeamMemberSchema.index(
   { unique: true, partialFilterExpression: { email: { $gt: "" } } }
 );
 VenueTeamMemberSchema.index({ email: 1 });
+// The owner-account lookup runs on every "Me" resolution — keep it indexed.
+VenueTeamMemberSchema.index({ venueId: 1, isOwnerAccount: 1 });
 
 module.exports =
   mongoose.models.VenueTeamMember || mongoose.model("VenueTeamMember", VenueTeamMemberSchema);

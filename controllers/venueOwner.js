@@ -13,6 +13,7 @@ const VenueInvoice = require("../models/VenueInvoice");
 const { SendOTP, VerifyOTP } = require("../utils/otp");
 const enrichVenue = require("../utils/enrichVenue");
 const { endOfVenueDay } = require("../utils/venueTime");
+const { ensureOwnerMember } = require("../utils/venueOwnerMember");
 
 // Helper — mask phone number: 9876543210 → 98•••••210
 const maskPhone = (phone) => {
@@ -381,9 +382,14 @@ const sendLoginOTP = async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone) return res.status(400).json({ message: "Phone is required" });
-    // Owner account OR an active team member with this phone may log in.
+    // Owner account OR an active team member with this phone may log in. The
+    // owner's OWN member row is not a login identity (utils/venueOwnerMember) —
+    // it shares the owner's phone, so it must be excluded here or a venue whose
+    // owner row exists would answer for a phone that has no real account.
     const venueOwner = await VenueOwner.findOne({ phone }).lean();
-    const member = venueOwner ? null : await VenueTeamMember.findOne({ phone, isActive: true }).lean();
+    const member = venueOwner
+      ? null
+      : await VenueTeamMember.findOne({ phone, isActive: true, isOwnerAccount: { $ne: true } }).lean();
     if (!venueOwner && !member) {
       return res.status(404).json({ message: "No venue account found for this phone number" });
     }
@@ -404,10 +410,15 @@ const sendLoginOTP = async (req, res) => {
 // Collect EVERY login identity for a phone: owner accounts + active memberships.
 // Each is independently selectable — this makes multi-identity login deterministic
 // (no implicit owner-first / first-member pick when a phone maps to several).
+//
+// The owner's own member row is deliberately NOT an identity. It carries the
+// owner's phone, so without this filter every owner would suddenly see a
+// two-way "which account?" prompt at login — owner vs. a member row that is
+// really just themselves. Owner login stays exactly one identity.
 async function collectIdentities(phone) {
   const [owners, members] = await Promise.all([
     VenueOwner.find({ phone }).populate("venueId", "name slug status"),
-    VenueTeamMember.find({ phone, isActive: true }).populate("venueId", "name slug status"),
+    VenueTeamMember.find({ phone, isActive: true, isOwnerAccount: { $ne: true } }).populate("venueId", "name slug status"),
   ]);
   const identities = [];
   for (const o of owners) {
@@ -462,6 +473,15 @@ async function loginAsIdentity(identity) {
       );
     } catch (err) {
       console.warn(`[venueTracks] firstOwnerLoginAt stamp failed for venue ${venueOwner.venueId._id}: ${err.message}`);
+    }
+    // The owner's own member row — created/adopted on first sign-in so the owner
+    // is assignable from the moment they land, without a backfill. Idempotent and
+    // best-effort: it is a convenience, and every read path ensures it too, so a
+    // failure here must never cost the owner their login.
+    try {
+      await ensureOwnerMember(venueOwner.venueId._id, venueOwner._id);
+    } catch (err) {
+      console.warn(`[venueOwnerMember] ensure on login failed for venue ${venueOwner.venueId._id}: ${err.message}`);
     }
     // Fire-and-forget enrichment; never block the login response.
     setImmediate(() => {
@@ -534,7 +554,11 @@ const memberLogin = async (req, res) => {
       return res.status(400).json({ message: "email and password are required" });
     }
     const cleanEmail = email.trim().toLowerCase();
-    const candidates = await VenueTeamMember.find({ email: cleanEmail, isActive: true })
+    // Owner-account rows are excluded belt-and-braces: they are written with an
+    // empty email and empty passwordHash, so they cannot match here anyway, but
+    // the member lane must never be a way into an owner account even if a future
+    // write path forgets that rule.
+    const candidates = await VenueTeamMember.find({ email: cleanEmail, isActive: true, isOwnerAccount: { $ne: true } })
       .select("+passwordHash")
       .populate("venueId", "name slug status");
 
@@ -598,7 +622,11 @@ const selectIdentity = async (req, res) => {
       const o = await VenueOwner.findOne({ _id: id, phone: payload.phone }).populate("venueId", "name slug status");
       if (o && o.venueId) identity = { kind: "owner", doc: o };
     } else if (kind === "member") {
-      const match = payload.phone ? { _id: id, phone: payload.phone, isActive: true } : { _id: id, email: payload.email, isActive: true };
+      // isOwnerAccount is re-checked at redemption, not just at offer time: a
+      // row can be adopted as the owner account inside the selection token's
+      // 10-minute window, and a stale offer must not mint a member session for it.
+      const base = { _id: id, isActive: true, isOwnerAccount: { $ne: true } };
+      const match = payload.phone ? { ...base, phone: payload.phone } : { ...base, email: payload.email };
       const m = await VenueTeamMember.findOne(match).populate("venueId", "name slug status");
       if (m && m.venueId) identity = { kind: "member", doc: m };
     }
@@ -732,4 +760,7 @@ const portfolioOverview = async (req, res) => {
   }
 };
 
-module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, memberLogin, selectIdentity, myVenues, switchVenue, portfolioOverview };
+// collectIdentities is exported for tests: "one owner phone → exactly one
+// identity" is the invariant the owner-account row must never break, and
+// asserting it at the source beats inferring it from a login response.
+module.exports = { getClaimInfo, initiateClaim, verifyClaim, verifyDocument, submitManualClaim, sendLoginOTP, login, memberLogin, selectIdentity, myVenues, switchVenue, portfolioOverview, collectIdentities };

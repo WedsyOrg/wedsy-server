@@ -10,6 +10,7 @@ const Venue = require("../models/Venue");
 const VenueTask = require("../models/VenueTask");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const { hasCapability } = require("../utils/venueRbac");
+const { resolveActorMemberId, resolveActorIds } = require("../utils/venueOwnerMember");
 const { validateAssignable } = require("../utils/venueLeadAssign");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optDate, cleanStr, MAXLEN } = require("../utils/venueInput");
@@ -29,7 +30,24 @@ async function noteOnLead(task, type, description, actorId) {
   }
 }
 
+// AUTHORSHIP id (createdBy / completedBy / timeline actor). Owner tokens keep
+// writing their venueOwnerId here — unchanged on purpose, so no historical row
+// has to be rewritten. Read paths that ask "is this mine?" must therefore match
+// BOTH this and the owner's member id: see resolveActorIds.
 const actorIdOf = (req) => req.venueOwner.memberId || req.venueOwner.venueOwnerId || null;
+
+// "Mine" as a query fragment: assigned to me, or authored by me. `assignedTo`
+// lives in the member-id space (the owner's member row), while `createdBy` holds
+// whichever actor id was current when the row was written — for an owner that is
+// a venueOwnerId on everything predating the owner member row.
+async function mineOr(req) {
+  const [meMemberId, actorIds] = await Promise.all([resolveActorMemberId(req), resolveActorIds(req)]);
+  const or = [];
+  if (meMemberId) or.push({ assignedTo: meMemberId });
+  if (actorIds.length) or.push({ createdBy: { $in: actorIds } });
+  // No resolvable identity at all — match nothing rather than everything.
+  return or.length ? or : [{ _id: null }];
+}
 
 // Resolve + own the venue from the slug. Returns the venue or sends the error.
 async function resolveOwnedVenue(req, res) {
@@ -58,8 +76,7 @@ const listTasks = async (req, res) => {
     // Scope: "all" needs team_see_pipelines; otherwise (and by default) "mine".
     const canSeeAll = await hasCapability(req.venueOwner, "team_see_pipelines", req.venueMember);
     if (filter !== "all" || !canSeeAll) {
-      const me = actorIdOf(req);
-      query.$or = [{ assignedTo: me }, { createdBy: me }];
+      query.$or = await mineOr(req);
     }
     if (status === "open" || status === "done") query.status = status;
     if (from || to) {
@@ -99,7 +116,11 @@ async function resolveLinkedEnquiry(req, venueId, linkedEnquiry) {
 // Resolve the assignee for a task write. Returns { ok, id } or { ok:false,... }.
 // Assigning to anyone but yourself needs tasks_assign_others.
 async function resolveTaskAssignee(req, venueId, assignedTo, { defaultToCreator = false } = {}) {
-  const me = req.venueOwner.memberId || null;
+  // The owner's member row — NOT req.venueOwner.memberId, which is undefined for
+  // an owner token. Without this an owner assigning a task to themselves would
+  // be treated as assigning it to someone else (needing tasks_assign_others),
+  // and defaultToCreator would leave their own new tasks unassigned.
+  const me = await resolveActorMemberId(req);
   if (assignedTo === undefined) {
     return { ok: true, id: defaultToCreator ? me : undefined }; // undefined = "leave unchanged"
   }
@@ -161,8 +182,11 @@ async function resolveOwnedTask(req, res) {
   // or created by them (404 — don't leak existence). Owners always pass.
   const canSeeAll = await hasCapability(req.venueOwner, "team_see_pipelines", req.venueMember);
   if (!canSeeAll) {
-    const me = String(actorIdOf(req));
-    const mine = String(task.assignedTo || "") === me || String(task.createdBy || "") === me;
+    const [meMemberId, actorIds] = await Promise.all([resolveActorMemberId(req), resolveActorIds(req)]);
+    const authored = new Set(actorIds.map(String));
+    const mine =
+      (meMemberId && String(task.assignedTo || "") === String(meMemberId)) ||
+      authored.has(String(task.createdBy || ""));
     if (!mine) {
       res.status(404).json({ message: "Task not found" });
       return null;
