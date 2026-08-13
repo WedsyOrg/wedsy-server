@@ -13,6 +13,7 @@ const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
 const { getCrmOverview } = require("../controllers/venueCrmDashboard");
 const { getDemandMap } = require("../controllers/venueCrmDates");
+const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
 const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead } = require("../controllers/venueBooking");
@@ -104,6 +105,11 @@ router.post("/:slug/enquiries/:enquiryId/confirm-booking", venueOwnerAuth, requi
 router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);
 // ── MB-CRM S6: demand map (contested / held-expiring / booked / open) ──
 router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
+// ── Auspicious (muhurat) dates — platform reference data, read-only here.
+//    No capability gate on purpose: it is neutral calendar data every role
+//    needs, and the venue boundary is the only meaningful check. Writes are
+//    admin-only, under /admin/auspicious-dates.
+router.get("/:slug/auspicious-dates", venueOwnerAuth, getVenueAuspiciousDates);
 // ── MB-CRM S7: owner-tunable CRM settings (auto-assign) — team capability ──
 router.get("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), getCrmSettings);
 router.patch("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), updateCrmSettings);
