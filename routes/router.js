@@ -75,6 +75,9 @@ router.use("/vendor-review", require("./vendor-review"));
 // MB-V2: Wedsy OS venues workspace — mounted ABOVE /admin so /admin/venues/*
 // never leaks into admin.js's PUT /:id param route.
 router.use("/admin/venues", require("./adminVenueOps"));
+// Same reason as /admin/venues above: this must sit ABOVE /admin or the
+// param routes in admin.js swallow /admin/auspicious-dates/:id.
+router.use("/admin/auspicious-dates", require("./auspiciousDates"));
 router.use("/admin", require("./admin"));
 router.use("/department", require("./department"));
 router.use("/role", require("./role"));

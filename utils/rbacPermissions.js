@@ -34,6 +34,13 @@ const RESOURCES = [
   "venues_visit",
   "venues_onboard",
   "venues_leads_assist",
+  // Auspicious (muhurat) dates — PLATFORM reference data, not venue-owned.
+  // A date being auspicious drives demand at every venue at once, so the
+  // vocabulary sits alongside the venue jobs (the venue team enters it) while
+  // the data itself is consumed by the owner portal and the couple site too.
+  // Held as its own resource so entering the calendar can be delegated without
+  // handing out venues_onboard.
+  "auspicious_dates_manage",
 ];
 const ACTIONS = ["view", "create", "edit", "delete", "assign", "export", "approve"];
 const SCOPES = ["own", "team", "department", "all"];
