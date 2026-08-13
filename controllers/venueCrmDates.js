@@ -39,12 +39,29 @@ const getDemandMap = async (req, res) => {
     // Scope the aggregate itself: a member without leads_view_all only feeds the
     // demand map with their OWN leads (contested counts + booked names included).
     const leadFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id, { stage: { $ne: "lost" } });
-    const leads = await VenueEnquiry.find(leadFilter).select("coupleName name checkIn eventDate stage").lean();
+    const leads = await VenueEnquiry.find(leadFilter).select("coupleName name checkIn eventDate stage datesFinalised approximatePeriod").lean();
 
     // demand (non-booked) grouped by date; booked leads → booked dates w/ names
     const demand = new Map(); // key -> [{_id,name,stage}]
     const bookedByDate = new Map(); // key -> { couple, enquiryId }
+    // BUILD2 S1: approximate-month demand is its OWN signal. "8 enquiries want
+    // December" is a real thing to know, but it is NOT contention: nobody is
+    // competing for a date yet because nobody has named one. Mixing these into
+    // `contested` would invent conflicts that do not exist and would let a
+    // month full of undecided couples mask a genuinely contested day.
+    const monthDemand = new Map(); // "YYYY-MM" -> [{_id,name,stage,day}]
     for (const l of leads) {
+      if (l.datesFinalised === false) {
+        const p = l.approximatePeriod || {};
+        // A booked lead is not open demand for its month. (It should not be
+        // possible to book without dates, but the map must not invent demand
+        // if some path ever manages it.)
+        if (!p.month || !p.year || l.stage === "booked") continue;
+        const mk = `${p.year}-${String(p.month).padStart(2, "0")}`;
+        if (!monthDemand.has(mk)) monthDemand.set(mk, []);
+        monthDemand.get(mk).push({ _id: l._id, name: leadName(l), stage: l.stage, day: p.day || null });
+        continue;
+      }
       const key = dayKey(l.checkIn || l.eventDate);
       if (!key) continue;
       if (l.stage === "booked") {
@@ -121,12 +138,29 @@ const getDemandMap = async (req, res) => {
       }
     }
 
+    // ── approximate-month demand (BUILD2 S1) ──
+    // Deliberately a separate array with its own shape: a consumer that has not
+    // been taught about unfinalised leads renders exactly what it did before,
+    // and one that has can say "8 enquiries want December" without ever
+    // implying those eight are fighting over a day.
+    const monthPeriods = [...monthDemand.entries()]
+      .map(([month, arr]) => ({
+        month,
+        leadCount: arr.length,
+        // Same PII gate as contested: counts for everyone, names only for
+        // leads_view_all.
+        leads: canViewAll ? arr.slice(0, 3).map((x) => x.name) : [],
+        leadRefs: canViewAll ? arr.slice(0, 4).map((x) => ({ _id: x._id, name: x.name, stage: x.stage })) : [],
+      }))
+      .sort((a, b) => b.leadCount - a.leadCount || a.month.localeCompare(b.month));
+
     return res.status(200).json({
       scoped: !canViewAll,
       contested,
       held,
       booked,
       openInventory: { count: openCount, windowDays: OPEN_SCAN_DAYS, sample: openSample },
+      approximateDemand: monthPeriods,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });

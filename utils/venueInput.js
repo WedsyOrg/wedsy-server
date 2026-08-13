@@ -73,4 +73,37 @@ function eventWindow(checkInRaw, checkOutRaw) {
   return { ok: true, checkIn: ci.value, checkOut: co.value };
 }
 
-module.exports = { MAXLEN, cleanStr, reqStr, optStr, optDate, optNumber, optCount, eventWindow };
+// BUILD2 S1: the "dates not finalised" period. Mirrors the model's
+// pre-validate so a caller gets a clean 400 with a field name rather than a
+// ValidationError surfaced from save(). Returns { ok, value } where value is
+// {month, year, day|null}, or { ok:false, message }.
+function approximatePeriod(raw, field = "approximatePeriod") {
+  if (raw == null) return { ok: true, value: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, message: `${field} must be an object {month, year, day?}` };
+  }
+  const num = (v) => (v == null || v === "" ? null : Number(v));
+  const month = num(raw.month);
+  const year = num(raw.year);
+  const day = num(raw.day);
+  if (!Number.isInteger(month) || month < 1 || month > 12) {
+    return { ok: false, message: `${field}.month must be 1-12` };
+  }
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) {
+    return { ok: false, message: `${field}.year must be a four-digit year` };
+  }
+  if (day != null) {
+    if (!Number.isInteger(day) || day < 1 || day > 31) {
+      return { ok: false, message: `${field}.day must be 1-31 when given` };
+    }
+    // Reject 31 February at the door — an approximate day is still a day that
+    // has to exist, or "finalise" would later offer a date nobody can pick.
+    const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    if (day > daysInMonth) {
+      return { ok: false, message: `${field}.day ${day} does not exist in that month` };
+    }
+  }
+  return { ok: true, value: { month, year, day: day == null ? null : day } };
+}
+
+module.exports = { MAXLEN, cleanStr, reqStr, optStr, optDate, optNumber, optCount, eventWindow, approximatePeriod };

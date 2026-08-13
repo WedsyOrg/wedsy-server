@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
-const { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, importLeads, getImports } = require("../controllers/venueEnquiry");
+const { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, getWindowImpact, importLeads, getImports } = require("../controllers/venueEnquiry");
 const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
 const { refreshNearby } = require("../controllers/venueNearby");
@@ -88,6 +88,11 @@ router.get("/:slug/enquiries", venueOwnerAuth, getVenueEnquiries); // read: all 
 // Single-lead read — SERVER-SIDE scoped: a member without leads_view_all cannot
 // read another member's lead by direct id (declared after the literal
 // /enquiries/{imports,exists,bulk,...} segments so those still match first).
+// BUILD2 S2: dry run of a window move (functions stranded / holds left behind
+// / booking that refuses it). Read-only, so it sits on the same `leads` gate as
+// reading the lead itself. Registered BEFORE the :enquiryId GET so the literal
+// suffix is not swallowed by the id param.
+router.get("/:slug/enquiries/:enquiryId/window-impact", venueOwnerAuth, requireCapability("leads"), getWindowImpact);
 router.get("/:slug/enquiries/:enquiryId", venueOwnerAuth, getEnquiryById);
 router.patch("/:slug/enquiries/:enquiryId", venueOwnerAuth, requireCapability("leads"), updateEnquiry);
 // Soft-delete a lead — leads_delete (Owner only by default). Scoped resolve inside.
