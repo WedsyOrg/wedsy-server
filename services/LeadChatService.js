@@ -80,6 +80,90 @@ const unreadCountForLead = async (leadId, adminId) =>
     ...notRitualNoteFilter(),
   });
 
+// ── Internal-chat notification (additive) ────────────────────────────────────
+// A human teammate posted on a lead's back-room thread → tell the thread.
+// SECOND notification path, not a replacement: @mentioned people keep getting
+// `chat_mention` above and are excluded here, so nobody is told twice.
+//
+// Recipient set, in order:
+//   1. chatMembers(leadId) ∪ { lead.assignedTo } — the phase-gated participants
+//      (pre-qual: assignee + their reporting manager; post-qual: the roster),
+//      UNION the current owner. The union matters: the qualify hinge rosters the
+//      OUTGOING owner as "qualifier" and never auto-adds the incoming one, so the
+//      roster alone can miss the very person who owns the lead.
+//   2. minus the sender.
+//   3. minus this message's mentions[] (they have chat_mention) — the dedupe.
+//   4. non-empty → notify.
+//   5. empty → owner + owner's reportingManagerId + revenueHeadIds(), minus sender.
+//   6. still empty → nothing to write; logged, never thrown.
+// Reuses chatMembers / Admin.reportingManagerId / TriageService.revenueHeadIds
+// rather than re-deriving any of them. TriageService is lazy-required to match
+// the late-require pattern used elsewhere for it and dodge load-order coupling.
+const notifyThreadOfMessage = async (leadId, authorId, msg, text, ments) => {
+  try {
+    if (!msg || msg.kind === "system") return; // belt-and-braces: system never notifies
+    const lead = await Enquiry.findById(leadId, { name: 1, assignedTo: 1 }).lean();
+    if (!lead) return;
+
+    const sender = String(authorId || "");
+    const mentioned = new Set((ments || []).map(String));
+    const prune = (set) => {
+      set.delete(sender);
+      mentioned.forEach((m) => set.delete(m));
+      return set;
+    };
+
+    // 1 — participants ∪ current owner
+    const ids = new Set();
+    try {
+      for (const m of await chatMembers(leadId)) ids.add(String(m._id));
+    } catch (e) {
+      // chatMembers throws only on a bad/missing lead; the fallback below covers it.
+      console.error("[LeadChat] chatMembers lookup failed:", e.message);
+    }
+    if (lead.assignedTo) ids.add(String(lead.assignedTo));
+
+    // 2 + 3
+    prune(ids);
+
+    // 5 — fallback: the owner and the person above them, plus the revenue heads.
+    // Pruned exactly like the primary set: a mentioned person already has their
+    // chat_mention and must never also get chat_internal, via ANY path. If that
+    // re-empties the set, the log-and-skip below is the right outcome — everyone
+    // who would have been told was told already.
+    if (!ids.size) {
+      if (lead.assignedTo) {
+        ids.add(String(lead.assignedTo));
+        const owner = await Admin.findById(lead.assignedTo, { reportingManagerId: 1 }).lean();
+        if (owner && owner.reportingManagerId) ids.add(String(owner.reportingManagerId));
+      }
+      // revenueHeadIds() is unioned here, so step 6 ("revenue heads alone") is
+      // already satisfied by this branch when there is no owner/manager.
+      for (const id of await require("./TriageService").revenueHeadIds()) ids.add(String(id));
+      prune(ids);
+    }
+
+    if (!ids.size) {
+      console.warn(
+        `[LeadChat] no recipient for internal message on lead ${leadId} — ` +
+          "no participants, no owner, no manager, and no Revenue Head role; nothing written."
+      );
+      return;
+    }
+
+    const author = await Admin.findById(authorId, { name: 1 }).lean();
+    await AdminNotificationService.notify([...ids], {
+      type: "chat_internal",
+      title: `${author ? author.name : "Someone"} messaged on ${lead.name || "a lead"}`,
+      message: text.slice(0, 160),
+      leadId,
+      payload: { messageId: String(msg._id) },
+    });
+  } catch (e) {
+    console.error("[LeadChat] internal-chat notification failed:", e.message);
+  }
+};
+
 const postMessage = async (leadId, authorId, { body, attachments, mentions } = {}) => {
   if (!isId(leadId)) throw httpError(400, "Invalid leadId");
   const text = typeof body === "string" ? body.trim() : "";
@@ -122,6 +206,11 @@ const postMessage = async (leadId, authorId, { body, attachments, mentions } = {
       payload: { messageId: String(msg._id) },
     });
   }
+
+  // Everyone else on the thread → chat_internal. Additive second path; the
+  // mention block above is untouched. Self-contained try/catch inside, so a
+  // notification failure can never break the post.
+  await notifyThreadOfMessage(leadId, authorId, msg, text, ments);
 
   // Signal spine: a HUMAN chat message is employee activity (touched only —
   // internal chatter is never a customer response). System messages don't
