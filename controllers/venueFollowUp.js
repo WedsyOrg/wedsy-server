@@ -14,6 +14,7 @@ const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueFollowUp = require("../models/VenueFollowUp");
 const { hasCapability } = require("../utils/venueRbac");
+const { resolveActorMemberId } = require("../utils/venueOwnerMember");
 const { validateAssignable } = require("../utils/venueLeadAssign");
 const { resolveScopedEnquiry, scopedLeadFilter } = require("../utils/venueLeadScope");
 const { syncLeadNextFollowUp, scopedFollowUpLeadIds } = require("../utils/venueFollowUp");
@@ -58,7 +59,10 @@ async function resolveScopedFollowUp(req, res) {
 async function resolveFollowUpAssignee(req, venueId, assignedTo, { fallback } = {}) {
   if (assignedTo === undefined) return { ok: true, id: fallback };
   if (assignedTo == null || String(assignedTo).trim() === "") return { ok: true, id: null };
-  const me = req.venueOwner.memberId || null;
+  // The owner's member row for owner tokens — a raw memberId is undefined there,
+  // so an owner assigning a follow-up to themselves would be charged for
+  // tasks_assign_others.
+  const me = await resolveActorMemberId(req);
   if (!me || String(assignedTo) !== String(me)) {
     if (!(await hasCapability(req.venueOwner, "tasks_assign_others", req.venueMember))) {
       return { ok: false, status: 403, message: "You don't have permission to assign follow-ups to others" };
@@ -146,7 +150,12 @@ const listFollowUps = async (req, res) => {
     else if (!includeClosed) q.status = "open";
     if (type) q.type = type;
     if (priority) q.priority = priority;
-    if (assignee === "me") q.assignedTo = req.venueOwner.memberId || null;
+    // "me" resolves to the OWNER'S MEMBER ROW for an owner token. It used to
+    // fall through to null, i.e. an owner asking for their own follow-ups got
+    // the UNASSIGNED ones — the old "owner == unassigned" convention. Unassigned
+    // follow-ups are still reachable, under the name that actually describes
+    // them: assignee=unassigned.
+    if (assignee === "me") q.assignedTo = (await resolveActorMemberId(req)) || null;
     else if (assignee === "unassigned") q.assignedTo = null;
     else if (assignee) {
       if (!mongoose.isValidObjectId(assignee)) return res.status(400).json({ message: "assignee must be a member id, 'me' or 'unassigned'" });
@@ -260,8 +269,10 @@ const createFollowUp = async (req, res) => {
     if (!v.ok) return res.status(v.status).json({ message: v.message });
 
     // Default owner: the lead's assignee (whoever owns the lead owes the next
-    // touch), falling back to the acting member.
-    const fallback = lead.assignedTo || req.venueOwner.memberId || null;
+    // touch), falling back to the acting member — which now resolves for an
+    // owner too. Leaving it undefined here would create the owner's own
+    // follow-ups as unassigned, and assignee=me no longer means unassigned.
+    const fallback = lead.assignedTo || (await resolveActorMemberId(req)) || null;
     const assignee = await resolveFollowUpAssignee(req, venue._id, body.assignedTo, { fallback });
     if (!assignee.ok) return res.status(assignee.status).json({ message: assignee.message });
 
@@ -408,7 +419,7 @@ const completeFollowUp = async (req, res) => {
       const nv = validateFollowUpBody(body.next, { requireDue: true });
       if (!nv.ok) return res.status(nv.status).json({ message: nv.message });
       const assignee = await resolveFollowUpAssignee(req, venue._id, body.next.assignedTo, {
-        fallback: followUp.assignedTo || lead.assignedTo || req.venueOwner.memberId || null,
+        fallback: followUp.assignedTo || lead.assignedTo || (await resolveActorMemberId(req)) || null,
       });
       if (!assignee.ok) return res.status(assignee.status).json({ message: assignee.message });
       next = await VenueFollowUp.create({

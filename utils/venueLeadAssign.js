@@ -10,8 +10,9 @@
  *   - a lead is never parked on a disabled/inactive member.
  *
  * Round-robin has NO persistent rotation state (so an explicit assignment can't
- * perturb it): it load-balances by picking the active Sales member currently
- * holding the FEWEST non-terminal leads (ties → earliest-joined).
+ * perturb it): it load-balances by picking the member currently holding the
+ * FEWEST non-terminal leads (ties → earliest-joined) out of the first non-empty
+ * pool — Sales, then any other member, then the owner as a last resort.
  */
 const mongoose = require("mongoose");
 const VenueTeamMember = require("../models/VenueTeamMember");
@@ -30,21 +31,30 @@ async function validateAssignable(venueId, id) {
   return { ok: true, id: member._id };
 }
 
-// Load-balanced round-robin across the active Sales pool. Falls back to the full
-// active-member pool when no one carries the legacy "sales" role, so auto-assign
-// never silently drops a lead into the void (mirrors the intake-never-dies rule).
+// Load-balanced round-robin, over three pools tried in order:
+//   1. active Sales members;
+//   2. any other active member;
+//   3. the owner's own member row — LAST RESORT only.
+//
+// The owner is a real assignee now (utils/venueOwnerMember), but auto-assign is
+// for distributing work across the people hired to do it. Rotating the owner
+// into the normal rotation would quietly hand them a share of every inbound
+// lead, which is the opposite of why a venue turns auto-assign on. The owner
+// still catches everything when there is nobody else — that keeps the
+// intake-never-dies rule intact, and it beats the old behaviour of dropping the
+// lead to unassigned at a venue with no team.
 // Returns a VenueTeamMember _id or null when there is genuinely no one active.
 async function pickRoundRobinAssignee(venueId) {
-  let pool = await VenueTeamMember.find({ venueId, isActive: true, role: "sales" })
-    .select("_id createdAt")
-    .sort({ createdAt: 1 })
-    .lean();
-  if (pool.length === 0) {
-    pool = await VenueTeamMember.find({ venueId, isActive: true })
+  const notOwner = { isOwnerAccount: { $ne: true } };
+  const candidates = (filter) =>
+    VenueTeamMember.find({ venueId, isActive: true, ...filter })
       .select("_id createdAt")
       .sort({ createdAt: 1 })
       .lean();
-  }
+
+  let pool = await candidates({ ...notOwner, role: "sales" });
+  if (pool.length === 0) pool = await candidates(notOwner);
+  if (pool.length === 0) pool = await candidates({ isOwnerAccount: true });
   if (pool.length === 0) return null;
 
   const poolIds = pool.map((m) => m._id);

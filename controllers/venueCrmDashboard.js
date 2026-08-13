@@ -17,6 +17,7 @@ const VenueTask = require("../models/VenueTask");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const VenueFollowUp = require("../models/VenueFollowUp");
 const { canViewAllLeads, scopedLeadFilter } = require("../utils/venueLeadScope");
+const { resolveActorMemberId, resolveActorIds } = require("../utils/venueOwnerMember");
 const { venueDayBounds } = require("../utils/venueTime");
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -42,8 +43,11 @@ const getCrmOverview = async (req, res) => {
     }
 
     const canViewAll = await canViewAllLeads(req.venueOwner, req.venueMember);
-    const memberId = req.venueOwner.memberId || null;
-    const actorId = memberId || req.venueOwner.venueOwnerId || null;
+    // "Me" in the member-id space — the owner's own member row for an owner
+    // token, so the my-day card counts what is actually assigned to them
+    // instead of silently counting nothing.
+    const memberId = await resolveActorMemberId(req);
+    const actorIds = await resolveActorIds(req);
 
     // Scoped + soft-delete-excluded via the shared boundary.
     const leadFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id);
@@ -100,14 +104,21 @@ const getCrmOverview = async (req, res) => {
       }
     }
 
-    // my open tasks due by end of today
-    const taskOr = memberId ? [{ assignedTo: memberId }, { createdBy: actorId }] : [{ createdBy: actorId }];
-    const myTasksOpen = await VenueTask.countDocuments({
-      venue: venue._id,
-      status: "open",
-      dueAt: { $lte: end },
-      $or: taskOr,
-    });
+    // my open tasks due by end of today. createdBy holds an ACTOR id, which for
+    // an owner is their venueOwnerId on every task written before the owner
+    // member row existed — so both ids are matched (see resolveActorIds).
+    const taskOr = [];
+    if (memberId) taskOr.push({ assignedTo: memberId });
+    if (actorIds.length) taskOr.push({ createdBy: { $in: actorIds } });
+    // An empty $or is a Mongo error, so an unresolvable identity counts zero.
+    const myTasksOpen = taskOr.length
+      ? await VenueTask.countDocuments({
+          venue: venue._id,
+          status: "open",
+          dueAt: { $lte: end },
+          $or: taskOr,
+        })
+      : 0;
 
     // ── pipeline health ──
     const stageCounts = {};
