@@ -5,23 +5,32 @@ const VenueSpaceDate = require("../models/VenueSpaceDate");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueBooking = require("../models/VenueBooking");
 const { optStr } = require("../utils/venueInput");
+const { resolveHoldExpiry, holdRequestedText } = require("../utils/venueHoldExpiry");
 const { notifyHoldRequested } = require("../utils/venueHoldAlert");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 
 // MB-CRM-2 S1d: holds write to their linked lead's timeline so the workbench
 // tells one coherent story ("everything writes here"). Best-effort — a
 // timeline failure never fails the hold action itself.
+/**
+ * Write a hold event onto the lead's timeline.
+ *
+ * WALKTHROUGH FIX 2 — this used to $push the SAME text into notes[] AND
+ * activities[] in one update. One write, two records, and the lead page's
+ * buildTimeline merges both arrays — so every hold event rendered TWICE at an
+ * identical timestamp. Exactly the class of bug already fixed once for the
+ * type:"quick_log" bookkeeping row, in a different place.
+ *
+ * It is an ACTIVITY, not a note. notes[] is for what a human typed; an
+ * automated hold record sitting there also polluted the Notes tab, where it
+ * read as if somebody had written it by hand.
+ */
 async function logOnLinkedLead(holdOrEnquiryId, type, text) {
   if (!holdOrEnquiryId) return;
   try {
     await VenueEnquiry.updateOne(
       { _id: holdOrEnquiryId },
-      {
-        $push: {
-          notes: { text, addedAt: new Date() },
-          activities: { type, description: text, timestamp: new Date() },
-        },
-      }
+      { $push: { activities: { type, description: text, timestamp: new Date() } } }
     );
   } catch (e) {
     console.warn(`[venueCalendar] lead timeline write failed: ${e.message}`);
@@ -115,7 +124,12 @@ const createHold = async (req, res) => {
       linkedEnquiry = enq._id;
     }
 
-    const holdDays = (venue.settings && venue.settings.holdExpiryDays) || 5;
+    // WALKTHROUGH FIX 1 — expiry is N days from request, clamped so it can
+    // never outlive the earliest date it protects, and refused outright for a
+    // date already gone. See utils/venueHoldExpiry for the reasoning.
+    const exp = resolveHoldExpiry(dates, venue);
+    if (!exp.ok) return res.status(400).json({ message: exp.message });
+
     const hold = await VenueHold.create({
       venue: venue._id,
       space,
@@ -124,7 +138,7 @@ const createHold = async (req, res) => {
       requestedByName: nameV.value || (req.admin ? "Wedsy concierge" : ""),
       linkedEnquiry,
       notes: notesV.value,
-      expiresAt: new Date(Date.now() + holdDays * 86400000),
+      expiresAt: exp.expiresAt,
     });
 
     // S1d: the hold lands on the lead's timeline.
@@ -132,7 +146,7 @@ const createHold = async (req, res) => {
       await logOnLinkedLead(
         linkedEnquiry,
         "hold_requested",
-        `Hold requested for ${dates.map(fmtDay).join(", ")} — expires ${fmtDay(hold.expiresAt)}.`
+        holdRequestedText(dates.map(fmtDay), hold.expiresAt, { clamped: exp.clamped })
       );
     }
 

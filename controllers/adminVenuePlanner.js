@@ -15,6 +15,7 @@ const VenueSiteVisit = require("../models/VenueSiteVisit");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const { logActivity } = require("../utils/venueActivity");
+const { resolveHoldExpiry } = require("../utils/venueHoldExpiry");
 
 const intParam = (v, def, max) => {
   const n = parseInt(v, 10);
@@ -307,7 +308,12 @@ const requestItemHold = async (req, res) => {
     // D2: first venue-touching action guarantees the owner-visible lead.
     const enquiry = await ensureLinkedEnquiry(shortlist, venue._id, adminName(req));
 
-    const holdDays = (venue.settings && venue.settings.holdExpiryDays) || 5;
+    // WALKTHROUGH FIX 1 — the SECOND copy of the expiry formula lived here and
+    // had drifted out of anyone's sight. Both call sites now share
+    // utils/venueHoldExpiry, so the rule cannot differ by which door the hold
+    // came through (planner vs calendar).
+    const exp = resolveHoldExpiry(dates.map((d) => new Date(d)), venue);
+    if (!exp.ok) return res.status(400).json({ message: exp.message });
     const hold = await VenueHold.create({
       venue: venue._id,
       dates: dates.map((d) => new Date(d)),
@@ -315,7 +321,7 @@ const requestItemHold = async (req, res) => {
       requestedByName: adminName(req),
       linkedEnquiry: enquiry._id,
       notes: `Wedsy planner: ${shortlist.coupleName || "couple"} (CRM ${shortlist.crmEnquiryId})`,
-      expiresAt: new Date(Date.now() + holdDays * 86400000),
+      expiresAt: exp.expiresAt,
     });
     item.holdRef = hold._id;
     await shortlist.save();
