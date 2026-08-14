@@ -18,6 +18,10 @@ const { requirePermission } = require("../middlewares/requirePermission");
 // new unauthenticated route is opened.
 router.get("/", CheckAdminLogin, requirePermission("auspicious_dates_manage:view:all"), ctl.listAuspiciousDates);
 router.post("/", CheckAdminLogin, requirePermission("auspicious_dates_manage:create:all"), ctl.bulkCreateAuspiciousDates);
+// BUILD4 — the review action, above /:id so "verify" is never read as an id.
+// Marking a month checked is an EDIT of what those rows claim about themselves,
+// so it takes the edit capability rather than create.
+router.post("/verify", CheckAdminLogin, requirePermission("auspicious_dates_manage:edit:all"), ctl.verifyAuspiciousDates);
 router.patch("/:id", CheckAdminLogin, requirePermission("auspicious_dates_manage:edit:all"), ctl.updateAuspiciousDate);
 router.delete("/:id", CheckAdminLogin, requirePermission("auspicious_dates_manage:delete:all"), ctl.deleteAuspiciousDate);
 

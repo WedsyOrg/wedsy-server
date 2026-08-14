@@ -24,6 +24,7 @@
  */
 const AuspiciousDate = require("../models/AuspiciousDate");
 const { venueDateKey } = require("./venueTime");
+const { cleanTraditions, traditionsMatch, parentsOf } = require("./weddingTraditions");
 
 const DAY_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -100,12 +101,23 @@ function strongestTier(rows) {
 
 /** Collapse every row covering one date into the single answer a UI renders. */
 function summarise(key, rows) {
+  // Traditions UNION across the covering rows, same additive logic as regions:
+  // if a national row says north_indian and a Karnataka row says kannada, the
+  // date is auspicious for both, and the owner should be told both.
+  const traditions = [...new Set(rows.flatMap((r) => cleanTraditions(r.traditions)))];
   return {
     date: key,
     auspicious: true,
     tier: strongestTier(rows),
     national: rows.some((r) => !r.region),
     regions: [...new Set(rows.map((r) => r.region).filter(Boolean))],
+    // Specific tokens as entered, plus the parent-level rollup owner copy uses.
+    traditions,
+    traditionParents: parentsOf(traditions),
+    // A date is only "verified" when EVERY row behind it has been checked. One
+    // unverified row makes the whole answer provisional, because the owner sees
+    // one merged claim and cannot know which half was checked.
+    verified: rows.length > 0 && rows.every((r) => r.verified === true),
     notes: rows.map((r) => r.notes).filter(Boolean),
   };
 }
@@ -130,7 +142,7 @@ async function isAuspicious(date, region) {
  * @returns {Promise<Map<string, {date,auspicious,tier,national,regions,notes}>>}
  *          keyed by "YYYY-MM-DD"; a date absent from the map is not auspicious.
  */
-async function lookupRange({ from, to, region } = {}) {
+async function lookupRange({ from, to, region, traditions } = {}) {
   const start = toDayStart(from);
   const end = toDayStart(to);
   const out = new Map();
@@ -140,12 +152,20 @@ async function lookupRange({ from, to, region } = {}) {
     date: { $gte: start, $lte: end },
     $or: resolutionFilter(normaliseRegions(region)),
   })
-    .select("date region tier notes")
+    .select("date region tier notes traditions verified")
     .sort({ date: 1 })
     .lean();
 
+  // Tradition filtering happens in JS, not in the query, on purpose: the rule
+  // includes "an empty traditions[] applies to everyone", which Mongo cannot
+  // express as one index-friendly predicate, and the row set for a window is
+  // already small. Omitting `traditions` asks for everything — the right
+  // default, since a venue serves every community until told otherwise.
+  const asking = cleanTraditions(traditions);
+  const kept = asking.length ? rows.filter((r) => traditionsMatch(r.traditions, asking)) : rows;
+
   const byKey = new Map();
-  for (const r of rows) {
+  for (const r of kept) {
     const key = r.date.toISOString().slice(0, 10);
     if (!byKey.has(key)) byKey.set(key, []);
     byKey.get(key).push(r);

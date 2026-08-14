@@ -17,6 +17,7 @@
  */
 const AuspiciousDate = require("../models/AuspiciousDate");
 const { toDayKey, toDayStart, dayParts } = require("../utils/auspiciousDates");
+const { cleanTraditions, TRADITIONS } = require("../utils/weddingTraditions");
 
 // A year is ~365 rows; the OS tab submits one month at a time. The cap is a
 // guard against a runaway client, set far above any real batch.
@@ -34,6 +35,17 @@ const cleanTier = (v) => {
   if (v === undefined) return undefined;
   if (v === null || v === "") return null; // explicit "unspecified"
   return TIERS.includes(v) ? v : false; // false = invalid, caller 400s
+};
+
+// undefined = not supplied; false = supplied but contained something unknown,
+// which is a 400 rather than a silent drop — a typo'd tradition that vanished
+// would look like a successful save of the wrong data.
+const cleanTraditionsInput = (v) => {
+  if (v === undefined) return undefined;
+  if (v === null) return [];
+  const list = Array.isArray(v) ? v : [v];
+  const kept = cleanTraditions(list);
+  return kept.length === list.filter(Boolean).length ? kept : false;
 };
 
 // GET /admin/auspicious-dates?year=&month=&region=
@@ -56,9 +68,14 @@ const listAuspiciousDates = async (req, res) => {
     // An explicitly EMPTY region means "national only" — distinct from omitting
     // the param, which means "every region".
     if (region !== undefined) filter.region = cleanRegion(region);
+    // ?verified=false — the settings-UI review queue ("what still needs
+    // checking against a panchang"). Absent = both.
+    if (req.query.verified === "true") filter.verified = true;
+    else if (req.query.verified === "false") filter.verified = { $ne: true };
 
     const dates = await AuspiciousDate.find(filter).sort({ date: 1 }).lean();
-    return res.status(200).json({ dates, total: dates.length });
+    const unverified = dates.filter((d) => d.verified !== true).length;
+    return res.status(200).json({ dates, total: dates.length, unverified });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -84,6 +101,11 @@ const bulkCreateAuspiciousDates = async (req, res) => {
     if (batchTier === false) return res.status(400).json({ message: `tier must be one of ${TIERS.join(", ")}` });
     const batchRegion = cleanRegion(body.region);
     const batchNotes = typeof body.notes === "string" ? body.notes.trim() : undefined;
+    const batchTraditions = cleanTraditionsInput(body.traditions);
+    if (batchTraditions === false) return res.status(400).json({ message: `traditions must be from: ${TRADITIONS.join(", ")}` });
+    // Entering a date does not make it checked. `verified` is only ever set
+    // true by the explicit review action, never as a side effect of a write.
+    const batchVerified = body.verified === true;
 
     const ops = [];
     const invalid = [];
@@ -99,10 +121,13 @@ const bulkCreateAuspiciousDates = async (req, res) => {
       if (perTier === false) return res.status(400).json({ message: `tier must be one of ${TIERS.join(", ")}` });
       const perRegion = entry && typeof entry === "object" ? cleanRegion(entry.region) : undefined;
       const perNotes = entry && typeof entry === "object" && typeof entry.notes === "string" ? entry.notes.trim() : undefined;
+      const perTraditions = entry && typeof entry === "object" ? cleanTraditionsInput(entry.traditions) : undefined;
+      if (perTraditions === false) return res.status(400).json({ message: `traditions must be from: ${TRADITIONS.join(", ")}` });
 
       const region = perRegion !== undefined ? perRegion : batchRegion !== undefined ? batchRegion : null;
       const tier = perTier !== undefined ? perTier : batchTier !== undefined ? batchTier : null;
       const notes = perNotes !== undefined ? perNotes : batchNotes !== undefined ? batchNotes : "";
+      const rowTraditions = perTraditions !== undefined ? perTraditions : batchTraditions !== undefined ? batchTraditions : [];
 
       // Same (date, region) twice inside ONE batch would make two bulk ops race
       // on the unique index; collapse to the last one instead.
@@ -120,7 +145,10 @@ const bulkCreateAuspiciousDates = async (req, res) => {
         updateOne: {
           filter: { date: start, region },
           update: {
-            $set: { tier, notes },
+            // Traditions are SET, not merged, so correcting a mis-tagged date
+            // is possible at all — a union would make "actually this is South
+            // Indian only" unexpressible through the normal write path.
+            $set: { tier, notes, traditions: rowTraditions, verified: batchVerified },
             $setOnInsert: {
               date: start,
               region,
@@ -175,6 +203,14 @@ const updateAuspiciousDate = async (req, res) => {
     }
     if (body.notes !== undefined) row.notes = typeof body.notes === "string" ? body.notes.trim() : "";
     if (body.region !== undefined) row.region = cleanRegion(body.region);
+    if (body.traditions !== undefined) {
+      const t = cleanTraditionsInput(body.traditions);
+      if (t === false) return res.status(400).json({ message: `traditions must be from: ${TRADITIONS.join(", ")}` });
+      row.traditions = t;
+    }
+    // Verification is a human act, so it is set explicitly and can be revoked
+    // explicitly — "I checked this and it was wrong" has to be expressible.
+    if (body.verified !== undefined) row.verified = body.verified === true;
 
     await row.save();
     return res.status(200).json({ date: row });
@@ -198,10 +234,37 @@ const deleteAuspiciousDate = async (req, res) => {
   }
 };
 
+// POST /admin/auspicious-dates/verify { year, month?, verified? }
+// The review action. Checking a panchang happens a MONTH at a time — the page
+// is a month — so flipping a month in one call is the shape of the actual work.
+// Without it, verifying a seeded year is ~250 individual PATCHes and nobody
+// does it, which would leave the whole calendar permanently marked provisional.
+const verifyAuspiciousDates = async (req, res) => {
+  try {
+    const { year, month, verified } = req.body || {};
+    const y = parseInt(year, 10);
+    if (!Number.isFinite(y) || y < 1970 || y > 2200) {
+      return res.status(400).json({ message: "year is required and must be a 4-digit year" });
+    }
+    const filter = { year: y };
+    if (month !== undefined && month !== null && month !== "") {
+      const m = parseInt(month, 10);
+      if (!Number.isFinite(m) || m < 1 || m > 12) return res.status(400).json({ message: "month must be 1-12" });
+      filter.month = m;
+    }
+    const next = verified === undefined ? true : verified === true;
+    const result = await AuspiciousDate.updateMany(filter, { $set: { verified: next } });
+    return res.status(200).json({ verified: next, matched: result.matchedCount || 0, modified: result.modifiedCount || 0 });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
   listAuspiciousDates,
   bulkCreateAuspiciousDates,
   updateAuspiciousDate,
   deleteAuspiciousDate,
+  verifyAuspiciousDates,
   MAX_BATCH,
 };

@@ -19,7 +19,8 @@
  * region's dates.
  */
 const Venue = require("../models/Venue");
-const { lookupRange, venueRegions, toDayKey } = require("../utils/auspiciousDates");
+const { venueRegions, toDayKey } = require("../utils/auspiciousDates");
+const { resolveRange } = require("../utils/weddingCalendar");
 const { venueDateKey, addVenueDays } = require("../utils/venueTime");
 
 // A year plus a month of slack — enough for a full-year calendar in one call,
@@ -53,19 +54,39 @@ const getVenueAuspiciousDates = async (req, res) => {
     }
 
     const regions = venueRegions(venue);
-    const found = await lookupRange({ from: fromKey, to: toKey, region: regions });
+    // BUILD4: the composite resolver, so this route answers with the WHOLE
+    // calendar picture — auspicious, blackout, holiday, weekend — in three
+    // queries. `dates`/`keys` keep their exact BUILD-earlier meaning so the
+    // existing owner-portal callers are untouched; everything new is additive.
+    const picture = await resolveRange({ venue, from: fromKey, to: toKey });
 
-    // An ARRAY, sorted, plus a bare key list. The array carries tier/notes for
-    // a date detail; `keys` is what a calendar actually needs to colour a grid
-    // without walking the array per cell.
-    const dates = [...found.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+    const days = [...picture.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+    const dates = days.filter((d) => d.auspicious).map((d) => ({ ...d.auspicious, weekday: d.weekday, isWeekend: d.isWeekend }));
+    const blackoutDays = days.filter((d) => d.blackout);
+    const holidayDays = days.filter((d) => d.holidays.length);
+
     return res.status(200).json({
       from: fromKey,
       to: toKey,
       regions,
+      // — unchanged contract —
       dates,
       keys: dates.map((d) => d.date),
       total: dates.length,
+      // — BUILD4, additive —
+      // Every day carrying ANY signal, so a calendar can colour blackouts and
+      // holidays from the same payload it already fetches for muhurat dates.
+      days,
+      blackoutKeys: blackoutDays.map((d) => d.date),
+      holidayKeys: holidayDays.map((d) => d.date),
+      // The distinct periods touching this window, named — a grid wants to
+      // label the band once, not repeat "Chaturmas" on ninety squares.
+      blackoutPeriods: [
+        ...new Map(blackoutDays.map((d) => [`${d.blackout.name}|${d.blackout.startDate}`, d.blackout])).values(),
+      ],
+      // Any provisional signal in the window. The owner portal shows dates as
+      // guidance, and guidance sourced from unverified data has to say so.
+      unverifiedCount: days.filter((d) => !d.verified).length,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
