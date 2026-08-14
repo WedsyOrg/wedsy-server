@@ -11,6 +11,7 @@ const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { writeBackLeadToSheet } = require("../utils/venueSheetWriteBack");
 const { hasCapability } = require("../utils/venueRbac");
 const { resolveCreateAssignment, validateAssignable, pickRoundRobinAssignee } = require("../utils/venueLeadAssign");
+const { resolveActorMemberId } = require("../utils/venueOwnerMember");
 const { canViewAllLeads, scopedLeadFilter, resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { applyLegacyFollowUpWrite } = require("../utils/venueFollowUp");
 const VenueTask = require("../models/VenueTask");
@@ -1162,7 +1163,18 @@ const createManualLead = async (req, res) => {
 
     // ── Assignment contract: explicit wins → creator default → auto round-robin.
     // A member assigning to someone OTHER than themselves needs leads_reassign.
-    const creatorMemberId = req.venueOwner.memberId || null;
+    // WALKTHROUGH FIX 4 — this read req.venueOwner.memberId, which is
+    // `undefined` for an OWNER token. creatorMemberId therefore came out null,
+    // resolveCreateAssignment skipped its create_self rule entirely, and every
+    // lead an owner typed in landed UNASSIGNED unless the venue had
+    // auto-assign switched on (off by default).
+    //
+    // This is the same undefined-memberId class the owner-as-member build
+    // fixed at every "Me" resolution site — and this create path was
+    // explicitly left out of that build as "a separate call about default
+    // ownership". The founder has now hit it on prod, which settles the call:
+    // the person who typed the lead in owns it, owner or member.
+    const creatorMemberId = await resolveActorMemberId(req);
     const explicit = assignedTo != null && String(assignedTo).trim() !== "";
     if (
       explicit &&

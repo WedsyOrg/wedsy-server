@@ -160,7 +160,14 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     const mkHold = await call(calendar.createHold, ownerReq(venue, { body: { dates: ["2026-12-14"], linkedEnquiry: leadId, requestedByName: "Ananya Rao" } }));
     ok(mkHold.code === 201 && String(mkHold.body.hold.linkedEnquiry) === leadId, "createHold links the enquiry");
     const afterHold = await VenueEnquiry.findById(leadId).lean();
-    ok(afterHold.notes.length === notesBefore + 1 && /Hold requested/.test(afterHold.notes[afterHold.notes.length - 1].text), "hold request lands on the lead's timeline");
+    // WALKTHROUGH FIX 2 CHANGED THIS CONTRACT, deliberately. The hold used to
+    // be written into notes[] AND activities[], and the lead page's timeline
+    // merges both — so every hold rendered TWICE at one timestamp. It is an
+    // activity, not a hand-typed note, and notes[] must stay what a human
+    // wrote. The assertion now pins the fixed behaviour in both directions.
+    const holdActs = afterHold.activities.filter((a) => a.type === "hold_requested");
+    ok(holdActs.length === 1 && /Hold requested/.test(holdActs[0].description), "hold request lands on the lead's timeline as ONE activity");
+    ok(afterHold.notes.length === notesBefore, "…and writes nothing to notes[], so the merged timeline shows it once");
     const holdId = String(mkHold.body.hold._id);
     const app = await call(calendar.approveHold, ownerReq(venue, { params: { holdId } }));
     ok(app.code === 200, "hold approved");
@@ -172,7 +179,10 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     const rel = await call(calendar.releaseHold, ownerReq(venue, { params: { holdId } }));
     ok(rel.code === 200, "hold released");
     const afterRel = await VenueEnquiry.findById(leadId).lean();
-    ok(/Hold released/.test(afterRel.notes[afterRel.notes.length - 1].text), "release lands on the lead's timeline (symmetric)");
+    // Same contract change as the request above — an activity, not a note.
+    const relActs = afterRel.activities.filter((a) => a.type === "hold_released");
+    ok(relActs.length === 1 && /Hold released/.test(relActs[0].description), "release lands on the lead's timeline as ONE activity (symmetric)");
+    ok(afterRel.notes.length === notesBefore, "…and still nothing in notes[]");
     const read3 = await call(enq.getEnquiryById, ownerReq(venue, { params: p }));
     ok(read3.body.enquiry.hold === null, "released hold no longer surfaces on the lead read");
 
