@@ -41,6 +41,16 @@ const RESOURCES = [
   // Held as its own resource so entering the calendar can be delegated without
   // handing out venues_onboard.
   "auspicious_dates_manage",
+  // ── A2S (Add to Store) — the décor catalogue publish gate ──────────────────
+  // "store:approve:all" is the ONLY permission on this resource today: it gates
+  // the A2S draft approve/reject actions AND the direct décor write routes
+  // (create / edit / delete / reorder), so the approval queue cannot be
+  // bypassed by posting straight to /decor.
+  // Deliberately reuses the EXISTING "approve" action rather than adding a
+  // "publish" verb — ACTIONS is a global vocabulary, so a new verb would make
+  // "leads:publish:all" (and every other resource pairing) expressible but
+  // meaningless. Resource-only addition keeps the matrix honest.
+  "store",
 ];
 const ACTIONS = ["view", "create", "edit", "delete", "assign", "export", "approve"];
 const SCOPES = ["own", "team", "department", "all"];

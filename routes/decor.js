@@ -3,11 +3,17 @@ const bodyParser = require("body-parser");
 const router = express.Router();
 
 const decor = require("../controllers/decor");
+const decorDraft = require("../controllers/decorDraft");
 const { CheckLogin, CheckAdminLogin } = require("../middlewares/auth");
+const { requirePermission } = require("../middlewares/requirePermission");
 
 // Large parser only for the AI image upload route — base64 of a photo can be
 // several MB, well past the default 100kb json limit.
 const largeJson = bodyParser.json({ limit: "50mb" });
+
+// A2S publish gate. Reuses the existing "approve" action verb — see the note in
+// utils/rbacPermissions.js for why no "publish" verb was added.
+const canPublish = requirePermission("store:approve:all");
 
 router.post("/ai-analyze", largeJson, CheckAdminLogin, decor.AiAnalyze);
 router.post("/ai-regenerate", CheckAdminLogin, decor.AiRegenerate);
@@ -24,12 +30,27 @@ router.post("/analyse-image", largeJson, CheckAdminLogin, decor.AnalyseImage);
 // largeJson for base64 images; literal path above "/:_id"; admin-gated.
 router.post("/demo-price", largeJson, CheckAdminLogin, decor.DemoPrice);
 
-router.post("/", CheckAdminLogin, decor.CreateNew);
+// ── A2S ("Add to Store") queue ───────────────────────────────────────────────
+// Literal paths — MUST stay above "/:_id" or GET /decor/drafts is captured as
+// an id lookup. Creating/reading a draft needs admin auth only (any staff
+// member can queue a pin); approve/reject need store:approve:all — the queue is
+// meaningless if anyone can publish.
+router.post("/drafts", largeJson, CheckAdminLogin, decorDraft.Create);
+router.get("/drafts", CheckAdminLogin, decorDraft.List);
+router.get("/drafts/:id", CheckAdminLogin, decorDraft.Get);
+router.post("/drafts/:id/approve", CheckAdminLogin, canPublish, decorDraft.Approve);
+router.post("/drafts/:id/reject", CheckAdminLogin, canPublish, decorDraft.Reject);
+
+// ── Direct catalogue writes ─────────────────────────────────────────────────
+// Gated on store:approve:all so the approval queue cannot be bypassed by
+// posting straight to /decor. (Curation rides PUT /decor/:_id?addTo=, so the
+// same route gate covers it.) GET stays public — unchanged.
+router.post("/", CheckAdminLogin, canPublish, decor.CreateNew);
 router.get("/", decor.GetAll);
 // S3 — curation reorder (literal path — MUST stay above /:_id).
-router.put("/reorder", CheckAdminLogin, decor.Reorder);
+router.put("/reorder", CheckAdminLogin, canPublish, decor.Reorder);
 router.get("/:_id", decor.Get);
-router.put("/:_id", CheckAdminLogin, decor.Update);
-router.delete("/:_id", CheckAdminLogin, decor.Delete);
+router.put("/:_id", CheckAdminLogin, canPublish, decor.Update);
+router.delete("/:_id", CheckAdminLogin, canPublish, decor.Delete);
 
 module.exports = router;

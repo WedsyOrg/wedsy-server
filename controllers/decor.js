@@ -103,7 +103,15 @@ const sendAnthropicError = (res, err, label) => {
   });
 };
 
-const CreateNew = (req, res) => {
+// Shared 409 body for a product-code collision (used by CreateNew and by the
+// A2S approve path via DecorDraftService).
+const duplicateCodeResponse = (code) => ({
+  message: "duplicate",
+  field: "productInfo.id",
+  detail: `Product code "${code}" is already in use. Pick another.`,
+});
+
+const CreateNew = async (req, res) => {
   const {
     category,
     label,
@@ -131,6 +139,19 @@ const CreateNew = (req, res) => {
   if (!name || !category) {
     res.status(400).send({ message: "Incomplete Data" });
   } else {
+    // July P0 fix: `checkId` on GET /decor is advisory only (and racy) — this
+    // is the real server-side guard. The partial unique index behind it is the
+    // backstop that closes the race; the E11000 catch below reports it.
+    const requestedCode = productInfo && productInfo.id ? String(productInfo.id).trim() : "";
+    if (requestedCode) {
+      try {
+        if (await Decor.exists({ "productInfo.id": requestedCode })) {
+          return res.status(409).send(duplicateCodeResponse(requestedCode));
+        }
+      } catch (error) {
+        return res.status(400).send({ message: "error", error });
+      }
+    }
     new Decor({
       category,
       label,
@@ -160,6 +181,10 @@ const CreateNew = (req, res) => {
         res.status(201).send({ message: "success", id: result._id });
       })
       .catch((error) => {
+        // Lost the race against a concurrent create with the same code.
+        if (error && error.code === 11000) {
+          return res.status(409).send(duplicateCodeResponse(requestedCode));
+        }
         res.status(400).send({ message: "error", error });
       });
   }
@@ -1416,4 +1441,7 @@ module.exports = {
   CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder, SuggestPrice, AnalyseImage, DemoPrice,
   // exported for the response-contract test — the wire-shaping boundary
   shapeClientResponse, shapeDemoPrice, shapeAnalyseImage,
+  // A2S: services/decorListing runs this same listing analysis off-HTTP for the
+  // draft-create path. Shared (not copied) so the two can never drift.
+  AI_SYSTEM_PROMPT,
 };

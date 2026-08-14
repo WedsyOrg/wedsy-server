@@ -117,4 +117,23 @@ const DecorSchema = new mongoose.Schema(
 
 DecorSchema.index({ name: "text", description: "text" });
 
+// ── The July P0 fix: productInfo.id must be unique ───────────────────────────
+// The partial unique index "productInfo_id_unique" is DELIBERATELY NOT declared
+// here. Declaring it would let Mongoose's autoIndex build it on every app boot
+// — an unique-index build against the live collection, triggered by a restart,
+// is not something we want happening implicitly.
+//
+// It is created ONCE, deliberately, by:
+//     node scripts/migrate-decor-productid-unique-index.js --confirm
+//
+// Spec (kept here so the schema still documents the constraint):
+//     key    { "productInfo.id": 1 }
+//     unique true
+//     partial { "productInfo.id": { $type: "string", $gt: "" } }
+// PARTIAL so blank/absent codes are exempt — a plain unique index would make
+// every future "" collide with the first one.
+//
+// ⚠️ Because the index is not declared on the schema, Model.syncIndexes() would
+// DROP it. Do not call syncIndexes() on Decor; use the migration script.
+
 module.exports = mongoose.model("Decor", DecorSchema);
