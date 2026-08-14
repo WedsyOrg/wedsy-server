@@ -244,6 +244,11 @@ const contractPdf = async (req, res) => {
 };
 
 module.exports = {
+  // BUILD B: exported so controllers/venueTerms can seed a per-lead T&C
+  // document from the SAME clauses a contract would carry. Exported rather
+  // than copied so the two can never drift apart.
+  effectivePolicyDoc,
+  seedSections,
   generateContract,
   listContracts,
   updateContract,

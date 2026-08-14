@@ -26,6 +26,9 @@ const { getCompetitive } = require("../controllers/venueCompetitive");
 const sheets = require("../controllers/venueSheetsSync");
 const { listMembers, listAssignableMembers, inviteMember, updateMember, setMemberPassword, getActivity } = require("../controllers/venueTeam");
 const roles = require("../controllers/venueRoles");
+const quoteRounds = require("../controllers/venueQuoteRound");
+const pricing = require("../controllers/venuePricing");
+const terms = require("../controllers/venueTerms");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const checkin = require("../controllers/venueCheckin");
@@ -156,6 +159,23 @@ router.get("/:slug/bookings", venueOwnerAuth, listBookings);
 router.post("/:slug/bookings", venueOwnerAuth, requireCapability("leads"), createBooking);
 router.get("/:slug/bookings/:bookingId", venueOwnerAuth, getBooking);
 router.patch("/:slug/bookings/:bookingId", venueOwnerAuth, requireCapability("leads"), updateBooking);
+
+// ── BUILD B: the negotiation log. Money-gated on bookings_money — the brief
+//    asked for `money_negotiate`, which does not exist in this codebase, and
+//    inventing a capability no role bundle grants would lock every non-owner
+//    out on day one. Pricing is money; bookings_money is the money gate.
+//    Scope is enforced INSIDE the controller (the parent lead resolves through
+//    venueLeadScope first, 404 not 403).
+router.get("/:slug/enquiries/:enquiryId/quote-rounds", venueOwnerAuth, requireCapability("bookings_money"), quoteRounds.listRounds);
+router.post("/:slug/enquiries/:enquiryId/quote-rounds", venueOwnerAuth, requireCapability("bookings_money"), quoteRounds.createRound);
+router.patch("/:slug/enquiries/:enquiryId/quote-rounds/:roundId", venueOwnerAuth, requireCapability("bookings_money"), quoteRounds.updateRound);
+router.delete("/:slug/enquiries/:enquiryId/quote-rounds/:roundId", venueOwnerAuth, requireCapability("bookings_money"), quoteRounds.deleteRound);
+// Pricing intelligence + the terms send live on the same money surface.
+router.get("/:slug/enquiries/:enquiryId/pricing", venueOwnerAuth, requireCapability("bookings_money"), pricing.getPricingIntel);
+router.post("/:slug/enquiries/:enquiryId/pricing/dismiss", venueOwnerAuth, requireCapability("bookings_money"), pricing.dismissPricingAdvice);
+router.get("/:slug/enquiries/:enquiryId/terms/preview", venueOwnerAuth, requireCapability("bookings_money"), terms.previewTerms);
+router.post("/:slug/enquiries/:enquiryId/terms/send", venueOwnerAuth, requireCapability("bookings_money"), terms.sendTerms);
+router.get("/:slug/enquiries/:enquiryId/terms/pdf", venueOwnerAuth, requireCapability("bookings_money"), terms.termsPdf);
 
 // ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
