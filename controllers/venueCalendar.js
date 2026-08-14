@@ -229,12 +229,30 @@ const approveHold = async (req, res) => {
     hold.decidedAt = new Date();
     hold.decidedBy = actorName(req);
     await hold.save();
-    // S1d: the lead's page reads holdExpiry from this hold; log the grant.
-    await logOnLinkedLead(
-      hold.linkedEnquiry,
-      "hold_approved",
-      `Date held for them (${hold.dates.map(fmtDay).join(", ")}) — hold expires ${fmtDay(hold.expiresAt)}.`
-    );
+
+    // WALKTHROUGH FIX 2, second writer — only log a grant that is NEWS.
+    //
+    // "Hold this date for them" on the lead page calls createHold and then
+    // immediately approves the hold it just made, because an owner-raised hold
+    // should claim inventory without waiting on a decision the owner has
+    // already taken. Both server steps used to log, so ONE click produced two
+    // rows at one timestamp restating the same dates and the same expiry —
+    // the founder's duplicate, arriving by a different route than the
+    // notes[]/activities[] double-write fixed above.
+    //
+    // The distinction that matters is who was waiting on the decision. Nobody
+    // waits on the venue approving its own request, so there is nothing to
+    // report: the "Hold requested … they have until X to confirm" row already
+    // carries both dates, and the page shows a live "Held · expires in Nd"
+    // badge. A hold raised by the Wedsy concierge and granted by the venue is
+    // genuinely new information, so that one still lands on the timeline.
+    if (hold.requestedBy !== "owner") {
+      await logOnLinkedLead(
+        hold.linkedEnquiry,
+        "hold_approved",
+        `Date held for them (${hold.dates.map(fmtDay).join(", ")}) — hold expires ${fmtDay(hold.expiresAt)}.`
+      );
+    }
     return res.status(200).json({ hold, claimed: rows.length });
   } catch (err) {
     return res.status(500).json({ message: err.message });

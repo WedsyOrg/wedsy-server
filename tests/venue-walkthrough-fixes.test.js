@@ -135,13 +135,40 @@ const asDate = (s) => new Date(`${s}T00:00:00Z`);
     ok(/to confirm/i.test(holdActivities[0].description), "the sentence now says what the expiry MEANS");
     ok(!/— expires \d{4}-\d{2}-\d{2}\.$/.test(holdActivities[0].description), "…not two bare dates side by side");
 
-    // Approve + release must be single-row too.
+    // ── The SECOND writer, which only the browser drive exposed ──────────
+    // "Hold this date for them" is request-then-immediately-approve, so the
+    // per-controller assertions above passed while the actual screen showed
+    // two rows one second apart. This walks the whole click.
     const holdId = String(dh.body.hold ? dh.body.hold._id : (await VenueHold.findOne({ linkedEnquiry: dupLead._id }).lean())._id);
     const appr = await call(cal.approveHold, ownerReq({ params: { holdId } }));
     ok(appr.code === 200, "approve → 200");
     const after2 = await VenueEnquiry.findById(dupLead._id).lean();
     ok(after2.notes.length === notesBefore, "…approve wrote no note either");
-    ok(after2.activities.filter((a) => a.type === "hold_approved").length === 1, "…exactly one hold_approved activity");
+    ok(after2.activities.filter((a) => a.type === "hold_approved").length === 0,
+      "THE FIX: the venue approving its OWN request adds no second row");
+    const wholeClick = [...after2.notes, ...after2.activities].filter((r) =>
+      /hold|held/i.test(r.text || r.description || "")
+    );
+    ok(wholeClick.length === 1,
+      `one click on "Hold this date for them" = ONE timeline row (got ${wholeClick.length})`);
+    ok(/to confirm/.test(wholeClick[0].description || ""), "…and it is the row that explains the expiry");
+
+    // A hold the WEDSY concierge raised is a different matter: the venue
+    // granting someone else's request is news, so that row survives.
+    const wedsyLead = await VenueEnquiry.create({
+      venueId: venue._id, coupleName: `${TAG} Wedsy`, coupleNameManual: true,
+      couplePhone: "9500000003", stage: "contacted",
+    });
+    const wedsyHold = await VenueHold.create({
+      venue: venue._id, dates: [asDate(dayStr(40))], requestedBy: "wedsy",
+      requestedByName: "Wedsy concierge", linkedEnquiry: wedsyLead._id,
+      expiresAt: new Date(Date.now() + 5 * 86400000),
+    });
+    const wa = await call(cal.approveHold, ownerReq({ params: { holdId: String(wedsyHold._id) } }));
+    ok(wa.code === 200, "venue approves a wedsy-raised hold → 200");
+    const afterW = await VenueEnquiry.findById(wedsyLead._id).lean();
+    ok(afterW.activities.filter((a) => a.type === "hold_approved").length === 1,
+      "…and THAT grant is still logged — somebody was waiting on it");
 
     // ══ FIX 4 — the assignment default ════════════════════════════════════
     console.log("\n[fix 4 · an owner-created lead lands assigned]");
