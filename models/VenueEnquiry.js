@@ -146,6 +146,11 @@ const VenueEnquirySchema = new mongoose.Schema(
       default: "new",
     },
     estimatedValue: { type: Number, default: 0 },
+    // BUILD B: the owner closed the pricing advice on THIS lead. Per-lead, not
+    // per-user: the advice is about this deal, and once it has been read and
+    // acted on it should stop occupying the top of the tab for everyone
+    // working the lead. The venue-wide off switch lives on Venue.settings.
+    pricingAdviceDismissed: { type: Boolean, default: false },
     // Phase 3 (3.x): structured lost reason. "" allowed (legacy/none) so the
     // pre-existing free-text String data never fails validation on save.
     lostReason: {

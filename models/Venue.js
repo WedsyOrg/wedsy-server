@@ -213,6 +213,11 @@ const VenueSchema = new mongoose.Schema({
     // round-robined across active Sales members. Explicit assignment always
     // wins; off by default so nothing changes for venues that don't opt in.
     autoAssignLeads: { type: Boolean, default: false },
+    // BUILD B: pricing advice on the Money tab. ON by default because the
+    // whole point is to turn "quote strong" into a number, but an owner who
+    // prices from experience and finds it noise can switch it off venue-wide
+    // rather than dismissing it lead by lead forever.
+    pricingAdvice: { type: Boolean, default: true },
   },
   // backward compat
   phone: { type: String, default: "" },

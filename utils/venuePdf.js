@@ -281,6 +281,52 @@ async function streamContractPdf(res, { venue, contract }) {
   doc.end();
 }
 
+/**
+ * BUILD B — per-lead terms & conditions.
+ *
+ * Built from the SAME parts streamContractPdf uses (startDoc, venueHeader, the
+ * numbered-clause loop, poweredByFooter) rather than a second renderer, so a
+ * venue's T&Cs look identical whether they arrive during a negotiation or
+ * attached to a contract later. The only real difference is that there is no
+ * booking to state specifics for and no acknowledgment block — nothing has been
+ * agreed yet, and a signature line on a document nobody has accepted would
+ * misrepresent what it is.
+ */
+async function streamTermsPdf(res, { venue, lead, sections, sentAt }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo);
+  const doc = startDoc(res, `terms-${lead._id}.pdf`);
+  venueHeader(doc, venue, "Terms & Conditions", logoBuffer);
+
+  doc.fillColor(GREY).fontSize(10);
+  doc.text(`Prepared for: ${lead.coupleName || lead.name || "—"}`);
+  doc.text(`Issued: ${new Date(sentAt || Date.now()).toDateString()}`);
+  doc.moveDown(0.8);
+
+  let clauseNo = 1;
+  for (const section of sections || []) {
+    doc.fillColor(BURGUNDY).fontSize(12).text(section.heading || "Section");
+    doc.moveDown(0.2).fillColor("#222222").fontSize(10);
+    for (const clause of section.clauses || []) {
+      doc.text(`${clauseNo}. ${clause}`, { width: 495 });
+      doc.moveDown(0.15);
+      clauseNo += 1;
+    }
+    doc.moveDown(0.5);
+  }
+
+  doc.moveDown(0.6);
+  doc.moveTo(50, doc.y).lineTo(545, doc.y).strokeColor(GOLD).stroke();
+  doc.moveDown(0.4).fillColor(GREY).fontSize(9);
+  // Says exactly what this document is. It is shared during a negotiation, so
+  // it must not read as a contract that has been agreed to.
+  doc.text(
+    "These terms are shared for information while the booking is being discussed. They form part of the booking contract only once a booking is confirmed and the contract is acknowledged.",
+    { width: 495 }
+  );
+  poweredByFooter(doc);
+  doc.end();
+}
+
 // D6 deposit-settlement slip — printed at guest check-out.
 async function streamSettlementPdf(res, { venue, allotment, roomName, booking }) {
   const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
@@ -332,4 +378,4 @@ async function streamSettlementPdf(res, { venue, allotment, roomName, booking })
   doc.end();
 }
 
-module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf, streamSettlementPdf };
+module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf, streamSettlementPdf, streamTermsPdf };

@@ -170,4 +170,4 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
   });
 }
 
-module.exports = { send };
+module.exports = { send, TRIGGERS };
