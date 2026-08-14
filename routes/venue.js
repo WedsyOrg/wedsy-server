@@ -13,6 +13,7 @@ const { bulkAction, bulkWhatsApp } = require("../controllers/venueBulk");
 const tasks = require("../controllers/venueTask");
 const { getCrmOverview } = require("../controllers/venueCrmDashboard");
 const { getDemandMap } = require("../controllers/venueCrmDates");
+const { getDay } = require("../controllers/venueCrmDay");
 const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
@@ -115,6 +116,10 @@ router.get("/:slug/crm/dates", venueOwnerAuth, getDemandMap);
 //    needs, and the venue boundary is the only meaningful check. Writes are
 //    admin-only, under /admin/auspicious-dates.
 router.get("/:slug/auspicious-dates", venueOwnerAuth, getVenueAuspiciousDates);
+// BUILD3 S1b: everything happening on one date. Lead ROWS are scoped inside the
+// controller through utils/venueLeadScope; the `leads` capability gates the
+// surface itself, matching the demand map it sits beside.
+router.get("/:slug/crm/day", venueOwnerAuth, requireCapability("leads"), getDay);
 // ── MB-CRM S7: owner-tunable CRM settings (auto-assign) — team capability ──
 router.get("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), getCrmSettings);
 router.patch("/:slug/crm/settings", venueOwnerAuth, requireCapability("team"), updateCrmSettings);
