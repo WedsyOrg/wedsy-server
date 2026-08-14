@@ -126,7 +126,14 @@ const D = (iso) => new Date(iso);
 
     // ── E. the day endpoint ──
     console.log("\n[E. the day endpoint: everything happening on 26 Nov]");
-    await AuspiciousDate.create({ date: toDayStart("2026-11-26"), year: 2026, month: 11, day: 26, region: null, tier: "major", notes: "Peak" });
+    // Upsert, not create: {date, region} is uniquely indexed, so a venue that
+    // already has this date marked (or a previous run of this suite) must not
+    // make the test fail on a collision it does not care about.
+    await AuspiciousDate.updateOne(
+      { date: toDayStart("2026-11-26"), region: null },
+      { $set: { date: toDayStart("2026-11-26"), year: 2026, month: 11, day: 26, region: null, tier: "major", notes: "Peak" } },
+      { upsert: true }
+    );
     created.auspicious.push("2026-11-26");
     await VenueSiteVisit.create({ venue: venue._id, enquiryRef: rivalC._id, scheduledAt: D("2026-09-01T05:00:00Z"), status: "completed" });
     const hold = await VenueHold.create({ venue: venue._id, dates: [toDayStart("2026-11-26")], requestedBy: "owner", requestedByName: "Rival A", linkedEnquiry: rivalA._id, status: "approved", expiresAt: new Date(Date.now() + 7 * 86400000) });
