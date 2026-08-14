@@ -78,6 +78,9 @@ router.use("/admin/venues", require("./adminVenueOps"));
 // Same reason as /admin/venues above: this must sit ABOVE /admin or the
 // param routes in admin.js swallow /admin/auspicious-dates/:id.
 router.use("/admin/auspicious-dates", require("./auspiciousDates"));
+// BUILD4 — the rest of the wedding calendar (blackouts, public holidays).
+// Mounted here for the same shadowing reason as the two above.
+router.use("/admin", require("./weddingCalendarAdmin"));
 router.use("/admin", require("./admin"));
 router.use("/department", require("./department"));
 router.use("/role", require("./role"));

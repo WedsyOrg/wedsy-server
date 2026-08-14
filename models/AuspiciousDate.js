@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { TRADITIONS } = require("../utils/weddingTraditions");
 
 /**
  * models/AuspiciousDate.js — the platform's ONE source of truth for muhurat
@@ -43,6 +44,17 @@ const AuspiciousDateSchema = new mongoose.Schema(
     region: { type: String, default: null, trim: true },
     // Optional strength. null = unspecified, and that is a real answer.
     tier: { type: String, enum: ["major", "moderate", null], default: null },
+    // WHOSE calendar says so — a SEPARATE axis from region (see
+    // utils/weddingTraditions). Region is the place; this is the community
+    // calendar, and the same Bangalore venue serves both. Empty = unspecified,
+    // which applies to everyone rather than to nobody.
+    traditions: { type: [{ type: String, enum: TRADITIONS }], default: [] },
+    // FALSE until a human has checked this row against a regional panchang.
+    // The 2026-27 seed is an AI-sourced summary that says so itself, so the
+    // default is the truth about it — unverified data that is displayed as
+    // though it were confirmed is worse than no data, because an owner prices
+    // against it. Every surface must mark it.
+    verified: { type: Boolean, default: false },
     notes: { type: String, default: "", trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "Admin" },
   },
@@ -53,6 +65,13 @@ const AuspiciousDateSchema = new mongoose.Schema(
 // date the venue team already entered updates that row instead of creating a
 // twin — Mongo treats null as a value here, so two national rows for the same
 // date collide exactly as two regional ones would.
+//
+// TRADITIONS THEREFORE MERGE onto that one row: a date auspicious for both
+// North and South Indian weddings is ONE row carrying both tokens, not two
+// rows. The consequence, stated plainly: `tier` is per row, so a date that is
+// major for one tradition and moderate for another cannot be expressed today.
+// No source we have makes that distinction, and inventing a shape for it now
+// would be speculative — it is on the punch list, not in the schema.
 AuspiciousDateSchema.index({ date: 1, region: 1 }, { unique: true });
 // Range lookups (calendars, demand maps) scan by date.
 AuspiciousDateSchema.index({ date: 1 });
@@ -60,6 +79,8 @@ AuspiciousDateSchema.index({ date: 1 });
 AuspiciousDateSchema.index({ year: 1, month: 1 });
 // "Everything for this region" — the admin list filter.
 AuspiciousDateSchema.index({ region: 1 });
+// "What still needs checking against a panchang" — the settings-UI review queue.
+AuspiciousDateSchema.index({ year: 1, verified: 1 });
 
 module.exports =
   mongoose.models.AuspiciousDate || mongoose.model("AuspiciousDate", AuspiciousDateSchema);

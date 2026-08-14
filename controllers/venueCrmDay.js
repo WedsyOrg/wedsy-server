@@ -22,7 +22,7 @@ const VenueHold = require("../models/VenueHold");
 const VenueBooking = require("../models/VenueBooking");
 const VenueSiteVisit = require("../models/VenueSiteVisit");
 const { canViewAllLeads, scopedLeadFilter } = require("../utils/venueLeadScope");
-const { leadDays, leadsOnDays, summarise, approximateMonthDemand, monthKeyOfDay } = require("../utils/venueContention");
+const { leadDays, leadsOnDays, summarise, approximateMonthDemand, monthKeyOfDay, blockBucket, blockHours } = require("../utils/venueContention");
 const { venueDateKey, venueDayStartFromKey, addVenueDays } = require("../utils/venueTime");
 const { lookupRange, venueRegions, toDayKey } = require("../utils/auspiciousDates");
 
@@ -101,7 +101,15 @@ const getDay = async (req, res) => {
           isThisLead: Boolean(fromId) && String(l._id) === String(fromId),
           // A multi-day block is on this day but not only this day — worth
           // showing so a one-night enquiry is not confused with a four-day one.
+          // Calendar days the block OCCUPIES — the venue is unavailable on all
+          // of them, which is what this list is about.
           spansDays: leadDays(l).length,
+          // …and what the couple actually ASKED for. A 21st-06:00 → 23rd-06:00
+          // booking occupies three squares but is 48 hours, and the note on the
+          // lead page says "2-day block". Sending both means the two surfaces
+          // can stop disagreeing on screen without either of them lying.
+          blockBucket: blockBucket(blockHours(l)),
+          blockHours: blockHours(l),
         };
       })
       .sort((a, b) => Number(b.isThisLead) - Number(a.isThisLead) || b.quotedValue - a.quotedValue);
@@ -152,6 +160,10 @@ const getDay = async (req, res) => {
       // Venue-wide aggregate — matches what the lead page shows.
       total: summary.count,
       topStage: summary.topStage,
+      // BUILD4 — what those enquiries actually want, split by block length.
+      // Aggregate and PII-free, same classification as `total`, and the number
+      // that lets an owner choose on revenue instead of on who asked first.
+      blocks: summary.blocks,
       leads,
       // Non-terminal leads on this day the requester may not open. Named
       // nowhere; counted so the total still adds up.
