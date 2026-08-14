@@ -42,12 +42,26 @@ const MIN_COMPARABLES = 3;
 const COMPARABLE_LOOKBACK_DAYS = 540; // ~18 months, so a full season repeats
 
 const inr = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
-/** ₹7,20,000 → "₹7.2L" — how these numbers are actually said out loud. */
+/**
+ * ₹7,20,000 → "₹7.2L" — how these numbers are actually said out loud.
+ *
+ * WALKTHROUGH FIX 3: a DELIBERATE MIRROR of formatINRShort in wedsy-venue's
+ * app/(portal)/crm/_lib/crm.ts. It cannot import it — this advice is composed
+ * into prose server-side — so the two are kept in step by hand and
+ * tests/venue-walkthrough-fixes.test.js asserts they agree character-for-
+ * character. Change one, change both.
+ *
+ * They had ALREADY diverged when this was written: rounding 999,999 up to
+ * exactly 10 lakh, the server said "₹10.0L" and the client "₹10L", because the
+ * server tested `v % 100000 === 0` on the RAW value while the client stripped a
+ * trailing ".0" AFTER rounding. The client's rule wins — it is the one an owner
+ * reads on every other surface.
+ */
 function shortINR(n) {
   const v = Number(n) || 0;
-  if (v >= 10000000) return `₹${(v / 10000000).toFixed(v % 10000000 === 0 ? 0 : 1)}Cr`;
-  if (v >= 100000) return `₹${(v / 100000).toFixed(v % 100000 === 0 ? 0 : 1)}L`;
-  if (v >= 1000) return `₹${Math.round(v / 1000)}k`;
+  if (v >= 1e7) return `₹${(v / 1e7).toFixed(v % 1e7 ? 1 : 0).replace(/\.0$/, "")}Cr`;
+  if (v >= 1e5) return `₹${(v / 1e5).toFixed(1).replace(/\.0$/, "")}L`;
+  if (v >= 1e3) return `₹${Math.round(v / 1e3)}k`;
   return inr(v);
 }
 

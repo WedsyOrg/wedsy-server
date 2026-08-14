@@ -179,6 +179,29 @@ const asDate = (s) => new Date(`${s}T00:00:00Z`);
     const pubLead = await VenueEnquiry.findById(pub.body.enquiryId).lean();
     ok(!pubLead.assignedTo, "…and stays unassigned with auto-assign off (unchanged — no creator exists)");
 
+    // ══ FIX 3 — the two money formatters must not drift ══════════════════
+    console.log("\n[fix 3 · server prose and client UI format money identically]");
+    // The pricing advice is composed into prose SERVER-side and cannot call the
+    // client helper, so utils/venuePricingIntel.shortINR is a hand-kept mirror
+    // of formatINRShort in wedsy-venue's crm.ts. This is what stops it drifting
+    // — and it HAD already drifted: at 999,999 the server said "₹10.0L" while
+    // the client said "₹10L".
+    const { shortINR } = require("../utils/venuePricingIntel");
+    // Transcribed from app/(portal)/crm/_lib/crm.ts — keep in step.
+    const clientFormatINRShort = (n) => {
+      const v = n || 0;
+      if (v >= 1e7) return `₹${(v / 1e7).toFixed(v % 1e7 ? 1 : 0).replace(/\.0$/, "")}Cr`;
+      if (v >= 1e5) return `₹${(v / 1e5).toFixed(1).replace(/\.0$/, "")}L`;
+      if (v >= 1e3) return `₹${Math.round(v / 1e3)}k`;
+      return `₹${v.toLocaleString("en-IN")}`;
+    };
+    const probes = [0, 1, 999, 1000, 1500, 99999, 100000, 250000, 700000, 720000, 750000, 999999, 1000000, 9999999, 1e7, 12500000, 25000000, 99999999];
+    const mismatched = probes.filter((v) => shortINR(v) !== clientFormatINRShort(v));
+    ok(mismatched.length === 0, `server and client money formatting agree on all ${probes.length} probes${mismatched.length ? ` (differ at ${mismatched.join(", ")})` : ""}`);
+    ok(shortINR(250000) === "₹2.5L", "…₹2,50,000 renders as ₹2.5L on both");
+    ok(shortINR(999999) === "₹10L", "…and the boundary that HAD drifted now agrees");
+    ok(shortINR(100000).startsWith("₹"), "…every output carries the ₹ symbol");
+
     console.log(`\n${pass} passed, ${fail} failed`);
   } catch (e) {
     fail++;
