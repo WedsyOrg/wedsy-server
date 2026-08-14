@@ -65,10 +65,20 @@ function shortDate(key) {
   return `${d} ${MONTHS[m - 1].slice(0, 3)}`;
 }
 
-/** "2-day block" / "single-day". Block length is a fact about the deal. */
-function blockPhrase(nights) {
-  if (!nights || nights <= 1) return "single-day";
-  return `${nights}-day block`;
+/**
+ * "2-day block" / "single-day", derived from HOURS rather than from calendar
+ * days touched.
+ *
+ * These differ and the difference matters. A 21st-06:00 → 23rd-06:00 booking is
+ * 48 hours — two days — but it touches three calendar squares, so counting days
+ * called it a "3-day block" and overstated what the couple asked for. Hours are
+ * also the same source the competitor split uses ("2 want 24h, 1 wants 48h"),
+ * so the two halves of one sentence now measure the same thing.
+ */
+function blockPhrase(hours) {
+  if (!hours || hours <= 24) return "single-day";
+  if (hours <= 36) return "36-hour block";
+  return `${Math.round(hours / 24)}-day block`;
 }
 
 function pluralEnquiries(n) {
@@ -112,7 +122,7 @@ function leadClause(s) {
     const head = s.isWeekend && s.weekday
       ? `${strength} ${s.weekday} (${shortDate(s.date)})`
       : `${strength} date, ${when}`;
-    const shape = s.blockNights > 1 ? `a ${blockPhrase(s.blockNights)} on ` : "";
+    const shape = s.isMultiDay ? `a ${blockPhrase(s.blockHours)} on ` : "";
     // "in the North Indian calendar", not "auspicious for North Indian
     // weddings" — the head already said auspicious, and naming the CALENDAR
     // keeps this unambiguously a fact about the date rather than about people.
@@ -126,13 +136,13 @@ function leadClause(s) {
 
   // ── weekend, the milder version of the same signal ──
   if (s.isWeekend) {
-    const shape = s.blockNights > 1 ? `a ${blockPhrase(s.blockNights)} over ` : "";
+    const shape = s.isMultiDay ? `a ${blockPhrase(s.blockHours)} over ` : "";
     return `This is ${shape}${shape ? "" : "a "}weekend date, ${when}.`;
   }
 
   // ── a multi-day weekday block is still worth naming ──
-  if (s.blockNights > 1) {
-    return `This is a ${blockPhrase(s.blockNights)} starting ${when}.`;
+  if (s.isMultiDay) {
+    return `This is a ${blockPhrase(s.blockHours)} starting ${when}.`;
   }
   return "";
 }
@@ -286,6 +296,17 @@ function composeCalendarNote(input = {}) {
   // ── build the signal set ──
   const days = block ? block.days : [];
   const first = days[0] || null;
+  // Block length in HOURS. Prefer the caller's explicit value, then what
+  // contention already computed for this lead; fall back to calendar days only
+  // when neither is available (a check-in with no check-out is 24h).
+  const hours =
+    input.blockHours != null
+      ? input.blockHours
+      : contention && contention.ownBlockHours != null
+        ? contention.ownBlockHours
+        : days.length
+          ? Math.max(24, (days.length - 1) * 24)
+          : null;
   const auspiciousDay = (block && block.auspiciousDays[0]) || null;
   const blackoutDay = (block && block.blackoutDays[0]) || null;
 
@@ -327,6 +348,9 @@ function composeCalendarNote(input = {}) {
     weekday: first ? first.weekday : null,
     isWeekend: block ? block.weekendDays.length > 0 : false,
     blockNights: block ? block.nights : 0,
+    // Hours, not calendar squares — see blockPhrase for why they differ.
+    blockHours: hours,
+    isMultiDay: hours != null && hours > 24,
     ownBlock: contention ? contention.ownBlock : null,
     auspicious: auspiciousDay
       ? {
