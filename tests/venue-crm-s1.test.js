@@ -67,7 +67,18 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(cUpd.code === 200, "contacts wholesale update 200");
     ok(cUpd.body.enquiry.contacts.length === 3, "three contacts stored");
     ok(cUpd.body.enquiry.contacts.filter((c) => c.isPrimary).length === 1 && cUpd.body.enquiry.contacts[1].isPrimary, "exactly one primary — the explicitly marked one");
-    ok(cUpd.body.enquiry.coupleName === "Kabir Mehra" && cUpd.body.enquiry.couplePhone === "9886002211", "legacy couple mirrors follow the primary contact");
+    // BUILD A CHANGED THIS DELIBERATELY. The PHONE still follows the primary
+    // contact — that is what dedup, WhatsApp and the legacy dashboards read.
+    // The NAME no longer does. Under the old rule, marking the groom primary
+    // silently renamed the whole lead to just the groom and erased the bride,
+    // which is exactly the "coupleName is one string so bride and groom don't
+    // exist separately" problem BUILD A exists to fix. A name a human typed is
+    // now an override that sticks; clearing it hands the row to the derivation,
+    // which composes "Ananya Rao & Kabir Mehra" from the two relations.
+    ok(cUpd.body.enquiry.couplePhone === "9886002211", "the legacy couplePhone mirror still follows the primary contact");
+    ok(cUpd.body.enquiry.coupleName === `${TAG} Ananya`, "…and the typed name is NOT overwritten by the primary contact any more");
+    const derivedNow = await call(enq.updateEnquiry, ownerReq(venue, { params: p, body: { coupleName: "" } }));
+    ok(derivedNow.body.enquiry.coupleName === "Ananya Rao & Kabir Mehra", "…clearing the name derives it from the bride and groom instead");
     const badRole = await call(enq.updateEnquiry, ownerReq(venue, { params: p, body: { contacts: [{ name: "Z", phone: "1", role: "uncle" }] } }));
     ok(badRole.code === 200 && badRole.body.enquiry.contacts[0].role === "other", "unknown role coerces to other");
     const noneP = await call(enq.updateEnquiry, ownerReq(venue, { params: p, body: { contacts: [{ name: "OnlyName" }, { name: "Second", phone: "22" }] } }));
