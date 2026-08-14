@@ -62,6 +62,58 @@ function leadDays(lead) {
   return out;
 }
 
+/**
+ * BLOCK LENGTH — how much of the venue an enquiry actually wants.
+ *
+ * This is the number that lets an owner decide on REVENUE rather than on who
+ * asked first. Five enquiries for one date are not five equivalent options: the
+ * one wanting 48 hours is worth roughly twice the one wanting 24, and until now
+ * the contention line reported all five as an undifferentiated crowd.
+ *
+ * Measured as real hours between check-in and check-out, then bucketed, because
+ * couples ask in round blocks ("we need the day before for the mehendi") and a
+ * histogram of exact hours would be noise. A lead with no check-out is a
+ * single-day booking — 24h — which is what one calendar day means here.
+ */
+const BLOCK_BUCKETS = ["24h", "36h", "48h", "48h+"];
+
+function blockHours(lead) {
+  if (!lead || !lead.checkIn) return null;
+  if (!lead.checkOut) return 24;
+  const ms = new Date(lead.checkOut).getTime() - new Date(lead.checkIn).getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return 24;
+  return Math.round(ms / 3600000);
+}
+
+function blockBucket(hours) {
+  if (hours == null) return null;
+  if (hours <= 24) return "24h";
+  if (hours <= 36) return "36h";
+  if (hours <= 48) return "48h";
+  return "48h+";
+}
+
+/**
+ * The breakdown a UI renders: one entry per bucket that actually occurs, in
+ * ascending block order, plus the total.
+ *
+ * COUNTS OVERLAP ACROSS DAYS AND THAT IS FINE — but it must be SAID. A lead
+ * wanting 30 Sep → 1 Oct is counted on both days, so per-day breakdowns can sum
+ * to more than the number of enquiries. `totalLeads` is the distinct count and
+ * is what any headline should use; the buckets describe the same distinct set
+ * split by what they want, so the buckets DO sum to totalLeads.
+ */
+function blockBreakdown(rows) {
+  const counts = new Map();
+  for (const r of rows || []) {
+    const bucket = blockBucket(blockHours(r));
+    if (!bucket) continue;
+    counts.set(bucket, (counts.get(bucket) || 0) + 1);
+  }
+  const buckets = BLOCK_BUCKETS.filter((b) => counts.has(b)).map((b) => ({ bucket: b, count: counts.get(b) }));
+  return { buckets, total: buckets.reduce((s, b) => s + b.count, 0) };
+}
+
 /** "2026-11" for a day key or a {month,year} period. */
 function monthKeyOfDay(dayKey) {
   return dayKey ? dayKey.slice(0, 7) : "";
@@ -132,16 +184,40 @@ function summarise(dayKeys, rows) {
     date: worst ? worst.date : null,
     days,
     totalLeads: distinct.size,
+    // What the competition actually wants. Aggregate, no PII — the same
+    // classification as `count`, and the number that turns "four others want
+    // this" into a revenue decision.
+    blocks: blockBreakdown(rows),
   };
 }
 
-/** The lead-read summary. Aggregate only — never names. */
+/**
+ * The lead-read summary. Aggregate only — never names.
+ *
+ * BUILD4: this now returns a summary even when NOBODY else wants the date.
+ * Absence used to be reported as null and rendered as nothing, which was
+ * ambiguous — the owner could not tell "no competition" from "we didn't check".
+ * A sole enquiry is its own signal and a strong one: the couple has all the
+ * leverage, so it is worth closing rather than waiting. `sole` says which case
+ * this is so the UI can render both without guessing.
+ */
 async function contentionForLead(venueId, lead) {
   const dayKeys = leadDays(lead);
   if (!dayKeys.length) return null;
   const rows = await leadsOnDays(venueId, dayKeys, lead._id);
   const summary = summarise(dayKeys, rows);
-  return summary.count > 0 ? summary : null;
+  return {
+    ...summary,
+    sole: summary.count === 0,
+    // The date the UI links to. With competition it is the worst day; with none
+    // there is no worst day, so it is the block's first — the day view still
+    // has something true to show (this lead, holds, the calendar picture).
+    date: summary.date || dayKeys[0],
+    // This lead's own block, so "2 want 24h, 3 want 48h" can be read next to
+    // what THIS couple is asking for.
+    ownBlock: blockBucket(blockHours(lead)),
+    ownBlockHours: blockHours(lead),
+  };
 }
 
 /**
@@ -168,6 +244,10 @@ async function approximateMonthDemand(venueId, monthKey, excludeId) {
 module.exports = {
   STAGE_ORDER,
   stageRank,
+  BLOCK_BUCKETS,
+  blockHours,
+  blockBucket,
+  blockBreakdown,
   leadDays,
   monthKeyOfDay,
   monthKeyOfPeriod,

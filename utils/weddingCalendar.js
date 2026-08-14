@@ -33,6 +33,24 @@ const { lookupRange, toDayKey, toDayStart, venueRegions, normaliseRegions } = re
 const { cleanTraditions, traditionsMatch, parentsOf } = require("./weddingTraditions");
 
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+
+/**
+ * "mid-July to October" — how a person describes a season, not "2027-07-14 to
+ * 2027-10-31". Blackouts are named stretches and owner copy reads them aloud,
+ * so the label is computed once here rather than in each surface.
+ */
+function monthSpanLabel(startKey, endKey) {
+  const [, sm, sd] = String(startKey).split("-").map(Number);
+  const [, em, ed] = String(endKey).split("-").map(Number);
+  if (!sm || !em) return "";
+  const startPart = `${sd >= 10 && sd <= 20 ? "mid-" : ""}${MONTH_NAMES[sm - 1]}`;
+  const endPart = `${ed >= 10 && ed <= 20 ? "mid-" : ""}${MONTH_NAMES[em - 1]}`;
+  return startPart === endPart ? startPart : `${startPart} to ${endPart}`;
+}
 
 /** Weekday name of a day key, read in UTC because a day key IS its UTC parts. */
 function weekdayOf(key) {
@@ -164,6 +182,12 @@ async function resolveRange({ venue, from, to, traditions, fillEmptyDays = false
           notes: covering.notes || "",
           startDate: covering.startDate.toISOString().slice(0, 10),
           endDate: covering.endDate.toISOString().slice(0, 10),
+          // Human-readable span, computed once here so owner-facing copy never
+          // has to re-derive it and the day view and the note always agree.
+          window: monthSpanLabel(
+            covering.startDate.toISOString().slice(0, 10),
+            covering.endDate.toISOString().slice(0, 10)
+          ),
         }
       : null;
     const dayHolidays = holidaysByDay.get(key) || [];
@@ -281,6 +305,7 @@ function findConflicts(picture) {
 
 module.exports = {
   WEEKDAY_NAMES,
+  monthSpanLabel,
   weekdayOf,
   isWeekendKey,
   daySpan,

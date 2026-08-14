@@ -152,6 +152,10 @@ const getDay = async (req, res) => {
       // Venue-wide aggregate — matches what the lead page shows.
       total: summary.count,
       topStage: summary.topStage,
+      // BUILD4 — what those enquiries actually want, split by block length.
+      // Aggregate and PII-free, same classification as `total`, and the number
+      // that lets an owner choose on revenue instead of on who asked first.
+      blocks: summary.blocks,
       leads,
       // Non-terminal leads on this day the requester may not open. Named
       // nowhere; counted so the total still adds up.

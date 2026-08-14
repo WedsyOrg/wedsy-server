@@ -22,7 +22,9 @@ const VenueOwner = require("../models/VenueOwner");
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
 const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow, approximatePeriod } = require("../utils/venueInput");
 const { venueDateKey, addVenueDays } = require("../utils/venueTime");
-const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeriod } = require("../utils/venueContention");
+const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeriod, leadDays } = require("../utils/venueContention");
+const { resolveBlock, resolveRange } = require("../utils/weddingCalendar");
+const { composeCalendarNote, HOLIDAY_ADJACENT_DAYS } = require("../utils/venueCalendarNote");
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
@@ -463,7 +465,9 @@ const getVenueEnquiries = async (req, res) => {
 const getEnquiryById = async (req, res) => {
   try {
     const { slug, enquiryId } = req.params;
-    const venue = await Venue.findOne({ slug }).select("_id spaces").lean();
+    // state/city drive the calendar's region resolution (BUILD4) — without them
+    // a Karnataka venue would silently resolve national-only dates.
+    const venue = await Venue.findOne({ slug }).select("_id spaces state city").lean();
     if (!venue) return res.status(404).json({ message: "Venue not found" });
     if (String(venue._id) !== String(req.venueOwner.venueId)) {
       return res.status(403).json({ message: "Forbidden" });
@@ -537,6 +541,50 @@ const getEnquiryById = async (req, res) => {
     const monthCount = await approximateMonthDemand(venue._id, monthKey, enquiry._id);
     json.approximateDemand = monthCount > 0 ? { month: monthKey, count: monthCount } : null;
     json.contentionScoped = !(await canViewAllLeads(req.venueOwner, req.venueMember));
+
+    // BUILD4 — ONE plain-English note instead of three boxes of flags.
+    //
+    // The calendar tips, the contention strip and the month-demand line were
+    // three separate things saying related things about one date; an owner
+    // reads the first and skims the rest. This composes them (see
+    // utils/venueCalendarNote for the language rules — business terms only,
+    // tradition strictly as neutral calendar fact, never as a customer
+    // preference) and hands back the raw signals alongside, so the UI styles
+    // from structure rather than parsing prose.
+    const dayKeys = leadDays(enquiry);
+    const [block, monthPicture] = await Promise.all([
+      dayKeys.length ? resolveBlock({ venue, dayKeys }) : Promise.resolve(null),
+      // Undecided leads get the shape of the month they named instead.
+      !dayKeys.length && monthKey
+        ? resolveRange({
+            venue,
+            from: `${monthKey}-01`,
+            to: `${monthKey}-${new Date(Date.UTC(Number(monthKey.slice(0, 4)), Number(monthKey.slice(5, 7)), 0)).getUTCDate()}`,
+          })
+        : Promise.resolve(null),
+    ]);
+    // Holidays just outside the block still ease guest travel, so look a couple
+    // of days either side — same three-query cost, wider window.
+    let adjacentHolidays = [];
+    if (dayKeys.length) {
+      const pad = HOLIDAY_ADJACENT_DAYS;
+      const lo = new Date(Date.parse(`${dayKeys[0]}T00:00:00Z`) - pad * 86400000).toISOString().slice(0, 10);
+      const hi = new Date(Date.parse(`${dayKeys[dayKeys.length - 1]}T00:00:00Z`) + pad * 86400000).toISOString().slice(0, 10);
+      const around = await resolveRange({ venue, from: lo, to: hi });
+      adjacentHolidays = [...around.values()].flatMap((d) => d.holidays);
+    }
+
+    const note = composeCalendarNote({
+      block,
+      contention: json.contention,
+      approximateDemand: json.approximateDemand,
+      monthPicture,
+      adjacentHolidays,
+      hasHold: Boolean(json.hold),
+      isBooked: enquiry.stage === "booked" || Boolean(json.bookingId),
+      checkIn: enquiry.checkIn,
+    });
+    json.calendarNote = note.text ? note : null;
 
     return res.status(200).json({ enquiry: json });
   } catch (err) {
