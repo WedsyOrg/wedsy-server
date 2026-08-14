@@ -22,6 +22,7 @@ const VenueOwner = require("../models/VenueOwner");
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
 const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow, approximatePeriod } = require("../utils/venueInput");
 const { venueDateKey, addVenueDays } = require("../utils/venueTime");
+const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeriod } = require("../utils/venueContention");
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
@@ -517,6 +518,25 @@ const getEnquiryById = async (req, res) => {
     // contact phone, scoped to what THIS requester may see.
     const match = await findDedupMatch(req.venueOwner, req.venueMember, venue._id, json);
     json.matchedLead = matchedLeadPayload(match) || null;
+
+    // BUILD3 S1a/S1c: "who else wants this date?" — the single most useful
+    // thing to know mid-call, and until now it took manual searching.
+    //
+    // Aggregate ONLY: a count, the furthest-along stage, and which day is worst.
+    // No names, no ids, no money — see utils/venueContention.js for why the
+    // COUNT is venue-wide while every detail stays inside the requester's
+    // scope. `scoped` tells the client it may show the number but must send the
+    // user to the day view for anything more.
+    json.contention = await contentionForLead(venue._id, enquiry);
+    // The approximate-month signal, kept separate: unfinalised leads naming the
+    // same month are demand, not contention — nobody is competing for a day
+    // nobody has named.
+    const monthKey = enquiry.checkIn
+      ? monthKeyOfDay(venueDateKey(enquiry.checkIn))
+      : monthKeyOfPeriod(enquiry.approximatePeriod);
+    const monthCount = await approximateMonthDemand(venue._id, monthKey, enquiry._id);
+    json.approximateDemand = monthCount > 0 ? { month: monthKey, count: monthCount } : null;
+    json.contentionScoped = !(await canViewAllLeads(req.venueOwner, req.venueMember));
 
     return res.status(200).json({ enquiry: json });
   } catch (err) {
