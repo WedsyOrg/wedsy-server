@@ -142,15 +142,19 @@ async function isAuspicious(date, region) {
  * @returns {Promise<Map<string, {date,auspicious,tier,national,regions,notes}>>}
  *          keyed by "YYYY-MM-DD"; a date absent from the map is not auspicious.
  */
-async function lookupRange({ from, to, region, traditions } = {}) {
+async function lookupRange({ from, to, region, traditions, allRegions = false } = {}) {
   const start = toDayStart(from);
   const end = toDayStart(to);
   const out = new Map();
   if (!start || !end || end < start) return out;
 
+  // allRegions is the ADMIN view: the people maintaining this data need to see
+  // every row, including regions no venue of ours is in yet, or a wrong entry
+  // for Kerala would be invisible until a Kerala venue signed up. Never used by
+  // a venue-facing read — those must stay region-resolved.
   const rows = await AuspiciousDate.find({
     date: { $gte: start, $lte: end },
-    $or: resolutionFilter(normaliseRegions(region)),
+    ...(allRegions ? {} : { $or: resolutionFilter(normaliseRegions(region)) }),
   })
     .select("date region tier notes traditions verified")
     .sort({ date: 1 })

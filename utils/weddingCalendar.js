@@ -106,10 +106,13 @@ async function blackoutsOverlapping(start, end) {
 }
 
 /** Holidays in [start, end], national OR matching one of the venue's regions. */
-async function holidaysIn(start, end, regions) {
+async function holidaysIn(start, end, regions, allRegions = false) {
   const or = [{ region: null }, { type: "national" }];
   if (regions.length) or.push({ region: { $in: regions } });
-  return PublicHoliday.find({ date: { $gte: start, $lte: end }, $or: or })
+  return PublicHoliday.find({
+    date: { $gte: start, $lte: end },
+    ...(allRegions ? {} : { $or: or }),
+  })
     .select("date name type region verified")
     .sort({ date: 1 })
     .lean();
@@ -134,7 +137,7 @@ async function holidaysIn(start, end, regions) {
  *   verified:   boolean   // every signal present on this day has been checked
  * }
  */
-async function resolveRange({ venue, from, to, traditions, fillEmptyDays = false } = {}) {
+async function resolveRange({ venue, from, to, traditions, fillEmptyDays = false, allRegions = false } = {}) {
   const fromKey = toDayKey(from);
   const toKey = toDayKey(to);
   const out = new Map();
@@ -147,9 +150,9 @@ async function resolveRange({ venue, from, to, traditions, fillEmptyDays = false
 
   // THREE queries for the whole window, run together.
   const [auspiciousMap, blackouts, holidays] = await Promise.all([
-    lookupRange({ from: fromKey, to: toKey, region: regions, traditions: asking }),
+    lookupRange({ from: fromKey, to: toKey, region: regions, traditions: asking, allRegions }),
     blackoutsOverlapping(start, end),
-    holidaysIn(start, end, normaliseRegions(regions)),
+    holidaysIn(start, end, normaliseRegions(regions), allRegions),
   ]);
 
   // A blackout only applies to a day if its tradition scope matches the ask.

@@ -23,6 +23,14 @@ function mount(prefix, handlers) {
   router.use(prefix, r);
 }
 
+// The review queue — a read, so it takes the view capability.
+router.get(
+  "/wedding-calendar/review",
+  CheckAdminLogin,
+  requirePermission("auspicious_dates_manage:view:all"),
+  ctl.reviewYear
+);
+
 mount("/blackout-periods", {
   list: ctl.listBlackoutPeriods,
   create: ctl.createBlackoutPeriod,

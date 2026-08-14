@@ -14,8 +14,10 @@
  */
 const BlackoutPeriod = require("../models/BlackoutPeriod");
 const PublicHoliday = require("../models/PublicHoliday");
+const AuspiciousDate = require("../models/AuspiciousDate");
 const { toDayKey, toDayStart, dayParts } = require("../utils/auspiciousDates");
 const { cleanTraditions, TRADITIONS } = require("../utils/weddingTraditions");
+const { resolveRange, findConflicts } = require("../utils/weddingCalendar");
 
 const cleanRegion = (v) => {
   if (v === undefined) return undefined;
@@ -289,7 +291,76 @@ const deletePublicHoliday = async (req, res) => {
   }
 };
 
+// GET /admin/wedding-calendar/review?year= — the settings UI's review queue.
+//
+// Answers the one question the person maintaining this data actually has:
+// "what in this year still needs my eyes?" Two lists, kept apart because they
+// mean different things — CONFLICTS are signals that disagree with each other,
+// UNVERIFIED is simply what nobody has checked yet. A year can be fully
+// conflict-free and still entirely unverified.
+//
+// Resolved with allRegions so the maintainer sees EVERY row, including regions
+// no venue of ours is in yet — otherwise a wrong Kerala entry stays invisible
+// until a Kerala venue signs up.
+const reviewYear = async (req, res) => {
+  try {
+    const y = parseInt((req.query || {}).year, 10);
+    if (!Number.isFinite(y) || y < 1970 || y > 2200) {
+      return res.status(400).json({ message: "year is required and must be a 4-digit year" });
+    }
+    const picture = await resolveRange({
+      venue: null,
+      from: `${y}-01-01`,
+      to: `${y}-12-31`,
+      allRegions: true,
+    });
+    const conflicts = findConflicts(picture);
+
+    const [unverifiedDates, unverifiedBlackouts, unverifiedHolidays, totalDates] = await Promise.all([
+      AuspiciousDate.countDocuments({ year: y, verified: { $ne: true } }),
+      BlackoutPeriod.countDocuments({ year: y, verified: { $ne: true } }),
+      PublicHoliday.countDocuments({ year: y, verified: { $ne: true } }),
+      AuspiciousDate.countDocuments({ year: y }),
+    ]);
+
+    // Per-month unverified counts drive the "mark this month checked" affordance
+    // — the UI needs to know which months still have work in them.
+    const byMonth = await AuspiciousDate.aggregate([
+      { $match: { year: y } },
+      {
+        $group: {
+          _id: "$month",
+          total: { $sum: 1 },
+          unverified: { $sum: { $cond: [{ $eq: ["$verified", true] }, 0, 1] } },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Which regions this year actually has holiday data for — so the UI can say
+    // "Karnataka 2027 is not yet notified" from DATA rather than from a
+    // hardcoded list that would rot the moment the state publishes.
+    const holidayRegions = await PublicHoliday.distinct("region", { year: y, region: { $ne: null } });
+
+    return res.status(200).json({
+      year: y,
+      conflicts,
+      unverified: {
+        auspiciousDates: unverifiedDates,
+        blackoutPeriods: unverifiedBlackouts,
+        publicHolidays: unverifiedHolidays,
+      },
+      totals: { auspiciousDates: totalDates },
+      months: byMonth.map((m) => ({ month: m._id, total: m.total, unverified: m.unverified })),
+      holidayRegions: holidayRegions.filter(Boolean).sort(),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
+  reviewYear,
   listBlackoutPeriods,
   createBlackoutPeriod,
   updateBlackoutPeriod,
