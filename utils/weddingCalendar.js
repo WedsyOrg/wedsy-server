@@ -225,11 +225,66 @@ async function resolveBlock({ venue, dayKeys, traditions } = {}) {
   };
 }
 
+/**
+ * Days whose signals disagree with each other — the settings UI's "needs
+ * review" queue.
+ *
+ * TWO KINDS, and the distinction is the point:
+ *
+ *   contradiction — auspicious AND inside a blackout whose TRADITION SCOPE
+ *                   OVERLAPS. This is logically impossible: the same calendar
+ *                   cannot both permit and forbid a wedding. Something in the
+ *                   data is wrong.
+ *
+ *   review        — auspicious AND inside a blackout for a DIFFERENT tradition.
+ *                   Not a contradiction at all — a north-only blackout has
+ *                   nothing to say about a south date, and the tradition axis
+ *                   resolves it cleanly — but it is exactly the shape that
+ *                   looks like an error, so a human should confirm the
+ *                   traditions were tagged right rather than the reader
+ *                   quietly assuming they were.
+ *
+ * Rows whose notes were written with a known problem (the seed marks them
+ * CONFLICT) are surfaced too, so a flagged fact stays flagged all the way to
+ * the screen instead of dying in a script's output.
+ */
+function findConflicts(picture) {
+  const out = [];
+  for (const day of picture.values()) {
+    if (day.auspicious && day.blackout) {
+      const overlaps = traditionsMatch(day.blackout.traditions, day.auspicious.traditions);
+      const bScope = day.blackout.traditions.length ? day.blackout.traditions.join(", ") : "all traditions";
+      const aScope = day.auspicious.traditions.length ? day.auspicious.traditions.join(", ") : "unspecified";
+      out.push(
+        overlaps
+          ? {
+              date: day.date,
+              kind: "contradiction",
+              reason: `Marked auspicious (${aScope}) and inside ${day.blackout.name}, which covers ${bScope}. A date cannot be both.`,
+            }
+          : {
+              date: day.date,
+              kind: "review",
+              reason: `Auspicious for ${aScope} while ${day.blackout.name} (${bScope}) is running. Not a contradiction — different traditions — but worth confirming the tagging.`,
+            }
+      );
+      continue;
+    }
+    const flaggedNote = [
+      ...(day.auspicious ? day.auspicious.notes || [] : []),
+      ...(day.blackout && day.blackout.notes ? [day.blackout.notes] : []),
+    ].find((n) => /CONFLICT/i.test(n));
+    if (flaggedNote) out.push({ date: day.date, kind: "review", reason: flaggedNote });
+  }
+  return out.sort((a, b) => a.date.localeCompare(b.date));
+}
+
 module.exports = {
   WEEKDAY_NAMES,
   weekdayOf,
   isWeekendKey,
   daySpan,
+  findConflicts,
   blackoutsOverlapping,
   holidaysIn,
   resolveRange,
