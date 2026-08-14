@@ -54,12 +54,18 @@ const toMemberIdOrNull = (v) => (mongoose.isValidObjectId(v) ? v : null);
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];
 const STAGE_ENUM = ["new", "contacted", "site_visit_scheduled", "site_visit_done", "proposal_sent", "negotiating", "booked", "lost"];
-// MB-CRM-2 S1 enums (kept in sync with models/VenueEnquiry.js).
-const CONTACT_ROLE_ENUM = ["groom", "bride", "brides_father", "mother", "planner", "other"];
-const FUNCTION_NAME_ENUM = ["mehendi", "haldi", "sangeet", "wedding", "reception", "custom"];
+// BUILD A: the vocabularies are keyed off eventType and live in ONE place.
+// The controller validates a write against the lead's type; the model accepts
+// the union, so a type change never destroys already-stored rows.
+const {
+  cleanEventType, functionVocabulary, functionAllowed,
+  relationVocabulary, relationAllowed, EVENT_TYPES,
+} = require("../utils/venueEventType");
+const { applyCoupleName, setManualCoupleName } = require("../utils/venueCoupleName");
 const REQ_FOOD_ENUM = ["", "veg", "nonveg", "both"];
 const REQ_CATERING_ENUM = ["", "inhouse", "outside", "both"];
 const MAX_CONTACTS = 20;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_FUNCTIONS = 20;
 
 // ── Import coercion helpers ──
@@ -84,21 +90,44 @@ function toNumberOrNull(v) {
 // S1a contacts[]: name-or-phone required per row, role coerced to the enum,
 // EXACTLY one isPrimary in the result — first explicitly-marked wins, else the
 // first contact. Empty array is allowed (legacy rows).
-function sanitizeContacts(list) {
+function sanitizeContacts(list, eventType) {
   if (!Array.isArray(list)) return { ok: false, message: "contacts must be an array" };
   if (list.length > MAX_CONTACTS) return { ok: false, message: `contacts is too long (max ${MAX_CONTACTS})` };
+  const type = cleanEventType(eventType);
   const out = [];
   for (let i = 0; i < list.length; i++) {
     const c = list[i] || {};
     const name = cleanStr(c.name).slice(0, MAXLEN.name);
     const phone = cleanStr(c.phone).slice(0, MAXLEN.phone);
     if (!name && !phone) return { ok: false, message: `contacts[${i}] needs a name or phone` };
-    const role = CONTACT_ROLE_ENUM.includes(c.role) ? c.role : "other";
-    out.push({ name, phone, role, isPrimary: Boolean(c.isPrimary) });
+    const email = cleanStr(c.email).slice(0, MAXLEN.name).toLowerCase();
+    if (email && !EMAIL_RE.test(email)) {
+      return { ok: false, message: `contacts[${i}].email is not a valid email address` };
+    }
+    // `relation` is the field; `role` is accepted as the legacy input name so a
+    // client mid-deploy keeps working. Unknown values coerce to "other" rather
+    // than 400 — the vocabulary is type-dependent and a lead that just switched
+    // type would otherwise be unsaveable until every row was re-picked.
+    const incoming = c.relation !== undefined ? c.relation : c.role;
+    const relation = relationAllowed(type, incoming) ? incoming : "other";
+    out.push({
+      name,
+      phone,
+      email,
+      relation,
+      // Legacy mirror, written never read — see the model.
+      role: relation,
+      isPrimary: Boolean(c.isPrimary),
+      isDecisionMaker: Boolean(c.isDecisionMaker),
+    });
   }
   if (out.length > 0) {
     const primaryIdx = out.findIndex((c) => c.isPrimary);
     out.forEach((c, i) => { c.isPrimary = i === (primaryIdx === -1 ? 0 : primaryIdx); });
+    // Decision maker is NOT forced to exist and NOT forced to be unique-or-first
+    // the way primary is: "we don't know yet" is a real answer, and two parents
+    // sharing the cheque is a real arrangement. Only the "exactly one person to
+    // call" rule is a genuine invariant.
   }
   return { ok: true, value: out };
 }
@@ -132,7 +161,7 @@ function outsideWindow(list, checkIn, checkOut) {
     }));
 }
 
-function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
+function sanitizeFunctions(list, venueSpaces, checkIn, checkOut, fnType) {
   if (!Array.isArray(list)) return { ok: false, message: "functions must be an array" };
   if (list.length > MAX_FUNCTIONS) return { ok: false, message: `functions is too long (max ${MAX_FUNCTIONS})` };
   // Venue-calendar-day (IST) comparison — mirrors the model hook so the 400 and
@@ -142,8 +171,8 @@ function sanitizeFunctions(list, venueSpaces, checkIn, checkOut) {
   const out = [];
   for (let i = 0; i < list.length; i++) {
     const f = list[i] || {};
-    if (!FUNCTION_NAME_ENUM.includes(f.name)) {
-      return { ok: false, message: `functions[${i}].name must be one of ${FUNCTION_NAME_ENUM.join(", ")}` };
+    if (!functionAllowed(fnType, f.name)) {
+      return { ok: false, message: `functions[${i}].name must be one of ${functionVocabulary(fnType).join(", ")}` };
     }
     const customLabel = cleanStr(f.customLabel).slice(0, MAXLEN.label);
     if (f.name === "custom" && !customLabel) {
@@ -348,7 +377,10 @@ const createEnquiry = async (req, res) => {
       userId: userId || undefined,
       name: effectiveName,
       phone: effectivePhone,
+      // Public intake is always a wedding enquiry — the couple site has no
+      // corporate lane — and the name the couple typed is the name.
       coupleName: cleanStr(coupleName) || effectiveName,
+      coupleNameManual: Boolean(cleanStr(coupleName) || effectiveName),
       couplePhone: cleanStr(couplePhone) || effectivePhone,
       email: cleanStr(email),
       eventDate: edPub.value,
@@ -583,6 +615,9 @@ const getEnquiryById = async (req, res) => {
       hasHold: Boolean(json.hold),
       isBooked: enquiry.stage === "booked" || Boolean(json.bookingId),
       checkIn: enquiry.checkIn,
+      // BUILD A: the type decides whether muhurat advice appears at all, and
+      // whether a blackout reads as a warning or as an opportunity.
+      eventType: enquiry.eventType,
     });
     json.calendarNote = note.text ? note : null;
 
@@ -656,6 +691,8 @@ const updateEnquiry = async (req, res) => {
       // BUILD2 S1/S2: finalise, revert, and the caller's acknowledgement that
       // it has seen the holds a window move would strand.
       datesFinalised, approximatePeriod: approximatePeriodRaw, acknowledgeStaleHolds,
+      // BUILD A: the event type, changeable after creation.
+      eventType,
     } = req.body || {};
 
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
@@ -691,18 +728,34 @@ const updateEnquiry = async (req, res) => {
     // Set when a window move strands holds AND the caller acknowledged them —
     // echoed back so the UI can offer release/re-placement after the save.
     let staleHoldsAcknowledged = null;
+
+    // BUILD A — the event type is CHANGEABLE. A lead typed in as a wedding that
+    // turns out to be a corporate offsite must never need deleting and
+    // re-entering; that is how history, notes and follow-ups get lost. The
+    // effective type drives validation of contacts and functions in this same
+    // request, so a caller can switch the type and send the new vocabulary at
+    // once rather than having to save twice.
+    if (eventType !== undefined && !EVENT_TYPES.includes(eventType)) {
+      return res.status(400).json({ message: `eventType must be one of ${EVENT_TYPES.join(", ")}` });
+    }
+    const effEventType = cleanEventType(eventType !== undefined ? eventType : enquiry.eventType);
+
     let contactsV = null;
     if (contacts !== undefined) {
-      contactsV = sanitizeContacts(contacts);
+      contactsV = sanitizeContacts(contacts, effEventType);
       if (!contactsV.ok) return res.status(400).json({ message: contactsV.message });
     }
     let functionsV = null;
     if (functions !== undefined) {
-      functionsV = sanitizeFunctions(functions, venue.spaces, effCheckIn, effCheckOut);
+      functionsV = sanitizeFunctions(functions, venue.spaces, effCheckIn, effCheckOut, effEventType);
       if (!functionsV.ok) return res.status(400).json({ message: functionsV.message });
     }
     if (functions === undefined && winSent && effCheckIn && effCheckOut && (enquiry.functions || []).length) {
-      const recheck = sanitizeFunctions(enquiry.functions, venue.spaces, effCheckIn, effCheckOut);
+      // Re-checked against the lead's CURRENT type, not the effective one: this
+      // path is about the window moving, and re-validating stored functions
+      // against a freshly-changed vocabulary would reject a type switch purely
+      // because the old functions exist.
+      const recheck = sanitizeFunctions(enquiry.functions, venue.spaces, effCheckIn, effCheckOut, enquiry.eventType);
       if (!recheck.ok) {
         // BUILD2 S2(a): say WHICH functions fall outside the new window. The
         // old message named none of them, so a caller could only re-guess. The
@@ -864,7 +917,13 @@ const updateEnquiry = async (req, res) => {
     // is recomputed from it) so the two can never diverge.
     // S3 profile-field edits (keep name/phone mirrors in sync with the couple
     // fields so dedup + WhatsApp keep working).
-    if (coupleName !== undefined) { enquiry.coupleName = cleanStr(coupleName); enquiry.name = cleanStr(coupleName); }
+    // BUILD A: typing a name here is an OVERRIDE and it sticks — the
+    // derivation never touches the row again until the field is cleared, which
+    // is how "actually, just use the couple's names" is expressed.
+    if (coupleName !== undefined) {
+      setManualCoupleName(enquiry, coupleName);
+      enquiry.name = enquiry.coupleName;
+    }
     if (couplePhone !== undefined) { enquiry.couplePhone = cleanStr(couplePhone); enquiry.phone = cleanStr(couplePhone); }
     if (email !== undefined) enquiry.email = cleanStr(email);
     if (budget !== undefined) enquiry.budget = cleanStr(budget);
@@ -914,16 +973,35 @@ const updateEnquiry = async (req, res) => {
         timestamp: new Date(),
       });
     }
+    // BUILD A: the type change itself, recorded on the timeline because it
+    // changes what the whole page means.
+    if (eventType !== undefined && effEventType !== cleanEventType(enquiry.eventType)) {
+      const from = cleanEventType(enquiry.eventType);
+      enquiry.eventType = effEventType;
+      enquiry.activities.push({
+        type: "event_type_changed",
+        description: `Event type changed from ${from} to ${effEventType}`,
+        actor: actorIdOf(req),
+        timestamp: new Date(),
+      });
+    }
+
     // MB-CRM-2 S1 writes (wholesale replace — the workbench sends full arrays).
     if (contactsV) {
       enquiry.contacts = contactsV.value;
-      // Keep the legacy couple mirrors following the primary contact so dedup
+      // Keep the legacy PHONE mirrors following the primary contact so dedup
       // import, WhatsApp and the legacy dashboards stay coherent.
       const primary = contactsV.value.find((c) => c.isPrimary);
-      if (primary) {
-        if (primary.name) { enquiry.coupleName = primary.name; enquiry.name = primary.name; }
-        if (primary.phone) { enquiry.couplePhone = primary.phone; enquiry.phone = primary.phone; }
+      if (primary && primary.phone) {
+        enquiry.couplePhone = primary.phone;
+        enquiry.phone = primary.phone;
       }
+      // BUILD A: the NAME is no longer just "whatever the primary is called" —
+      // it derives from bride + groom when those exist, and a manual override
+      // beats both. utils/venueCoupleName owns the rule; `name` follows
+      // coupleName exactly as it always did.
+      applyCoupleName(enquiry);
+      if (enquiry.coupleName) enquiry.name = enquiry.coupleName;
     }
     if (functionsV) enquiry.functions = functionsV.value;
     if (requirementsV) {
@@ -1029,7 +1107,14 @@ const createManualLead = async (req, res) => {
       // BUILD2 S1
       datesFinalised,
       approximatePeriod: approximatePeriodRaw,
+      // BUILD A: set at creation. Defaults to social — weddings are the business.
+      eventType,
     } = req.body || {};
+
+    if (eventType !== undefined && !EVENT_TYPES.includes(eventType)) {
+      return res.status(400).json({ message: `eventType must be one of ${EVENT_TYPES.join(", ")}` });
+    }
+    const newEventType = cleanEventType(eventType);
 
     const nameC = cleanStr(coupleName);
     const phoneC = cleanStr(couplePhone);
@@ -1065,7 +1150,7 @@ const createManualLead = async (req, res) => {
     // from the couple name+phone (the add-lead modal contract).
     let contactsV = null;
     if (contacts !== undefined) {
-      contactsV = sanitizeContacts(contacts);
+      contactsV = sanitizeContacts(contacts, newEventType);
       if (!contactsV.ok) return res.status(400).json({ message: contactsV.message });
     }
 
@@ -1128,18 +1213,35 @@ const createManualLead = async (req, res) => {
       });
     }
 
-    // Default contact seeding: the couple themselves, primary.
+    // Default contact seeding: whoever the form named, as the primary contact.
+    // BUILD A gives them the optional email from the form and the type's
+    // neutral relation, so a brand-new lead already has a usable People tab
+    // rather than an empty one the owner has to populate by hand.
+    const seedRelation = newEventType === "corporate" ? "main_contact" : "other";
     const contactRows = contactsV
       ? contactsV.value
       : nameC || phoneC
-        ? [{ name: nameC, phone: phoneC, role: "other", isPrimary: true }]
+        ? [{
+            name: nameC,
+            phone: phoneC,
+            email: cleanStr(email).toLowerCase(),
+            relation: seedRelation,
+            role: seedRelation,
+            isPrimary: true,
+            isDecisionMaker: false,
+          }]
         : [];
 
     const enquiry = await VenueEnquiry.create({
       venueId: venue._id,
+      eventType: newEventType,
       name: nameC,
       phone: phoneC,
+      // The typed name is what the owner meant, so it is the name — and it is
+      // marked manual so a later bride/groom contact does not quietly rewrite
+      // "Infosys Offsite" into two people's names.
       coupleName: nameC,
+      coupleNameManual: Boolean(nameC),
       couplePhone: phoneC,
       email: cleanStr(email),
       // BUILD2 S1: an unfinalised lead carries the period and NO window. The

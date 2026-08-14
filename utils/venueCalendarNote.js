@@ -34,6 +34,7 @@
  * a server round-trip.
  */
 const { labelList, parentsOf, coversBoth } = require("./weddingTraditions");
+const { cleanEventType, isCorporate, showsAuspicious, blackoutSense } = require("./venueEventType");
 
 const DAY = 86400000;
 // The window where an unclaimed date is worth chasing rather than waiting on —
@@ -102,12 +103,19 @@ function blocksPhrase(blocks) {
 function leadClause(s) {
   const when = `${shortDate(s.date)}${s.weekday ? ` (${s.weekday})` : ""}`;
 
-  // ── blackout: the strong negative ──
+  // ── blackout ──
+  // THE INVERSION. The same stored fact means opposite things by event type: a
+  // wedding cannot happen in Chaturmas, and a corporate booking does not care —
+  // which makes the empty season the single best reason to chase this lead.
+  // Suppressing it for corporate would have been the easy wrong answer.
   if (s.blackout) {
-    // "Almost no North Indian weddings happen" — NOT "no Hindu weddings happen
-    // for North Indian weddings", which is what naive concatenation produced.
     const who = s.blackout.traditionParents.length ? labelList(s.blackout.traditionParents) : "Hindu";
     const window = s.blackout.window ? ` (${s.blackout.window})` : "";
+    if (s.blackoutSense === "positive") {
+      return `${when} sits in ${s.blackout.name}${window} — the quiet season for weddings. Corporate bookings are exactly what fills these dates.`;
+    }
+    // "Almost no North Indian weddings happen" — NOT "no Hindu weddings happen
+    // for North Indian weddings", which is what naive concatenation produced.
     return `${when} falls inside ${s.blackout.name}${window}. Almost no ${who} weddings happen in this stretch.`;
   }
 
@@ -153,6 +161,14 @@ function leadClause(s) {
  */
 function demandClause(s) {
   if (s.blackout) {
+    if (s.blackoutSense === "positive") {
+      // For corporate the empty calendar is the ARGUMENT, not the warning.
+      if (s.contention && s.contention.count > 0) {
+        const n = s.contention.count;
+        return `${pluralEnquiries(n)} ${n === 1 ? "wants" : "want"} this date even in the off-season — it is not as open as it looks.`;
+      }
+      return "The date is wide open and competing weddings will not appear.";
+    }
     // Inside a blackout the useful demand statement is the ABSENCE of it —
     // and if there somehow is competition, that is worth saying plainly too.
     if (s.contention && s.contention.count > 0) {
@@ -174,7 +190,10 @@ function demandClause(s) {
   }
 
   if (s.soleEnquiry) {
-    return "Only enquiry for this date so far — the couple has the leverage here.";
+    // "the couple" is wrong on a conference booking, and getting it wrong is
+    // exactly the kind of small tell that says this product was not built for
+    // what the reader is doing.
+    return `Only enquiry for this date so far — the ${isCorporate(s.eventType) ? "client" : "couple"} has the leverage here.`;
   }
 
   if (s.approximateDemand && s.approximateDemand.count > 0) {
@@ -187,8 +206,11 @@ function demandClause(s) {
 /** What to do about it. At most one action — a list of advice is not advice. */
 function actionClause(s) {
   if (s.blackout) {
-    return s.isBooked
-      ? ""
+    if (s.isBooked) return "";
+    return s.blackoutSense === "positive"
+      // Already the corporate lead the wedding-side note would have told them
+      // to go and find — so the advice is about rate, not repurposing.
+      ? "Off-season capacity is worth filling — there is room to be competitive on rate and still win the date."
       : "Worth closing this one, or pitching the date for a corporate event.";
   }
 
@@ -248,9 +270,11 @@ function undecidedNote(s) {
 
   if (s.monthBlackout) {
     parts.push(
-      `${label} falls largely inside ${s.monthBlackout.name} — almost no Hindu weddings happen then, so this one may be worth steering to another month.`
+      s.blackoutSense === "positive"
+        ? `${label} falls largely inside ${s.monthBlackout.name} — the quiet season for weddings, so the calendar is open and the rate has room.`
+        : `${label} falls largely inside ${s.monthBlackout.name} — almost no Hindu weddings happen then, so this one may be worth steering to another month.`
     );
-  } else if (s.monthAuspiciousCount > 0) {
+  } else if (s.monthAuspiciousCount > 0 && showsAuspicious(s.eventType)) {
     const both = coversBoth(s.monthTraditionParents);
     const n = s.monthAuspiciousCount;
     // Says exactly what was counted. "Most of them" would be a claim about
@@ -342,7 +366,15 @@ function composeCalendarNote(input = {}) {
   const monthAuspicious = monthDays.filter((d) => d.auspicious);
   const monthBlackoutDay = monthDays.find((d) => d.blackout) || null;
 
+  // BUILD A — the event type decides how the wedding-specific layer is read.
+  const eventType = cleanEventType(input.eventType);
+
   const signals = {
+    eventType,
+    // A conference is not scheduled off a panchang. Telling an owner a
+    // corporate date is "a major muhurat — expect competition" is worse than
+    // silence: it is confidently wrong about who they are competing with.
+    blackoutSense: blackoutSense(eventType),
     hasDates: Boolean(block && days.length),
     date: first ? first.date : null,
     weekday: first ? first.weekday : null,
@@ -352,7 +384,7 @@ function composeCalendarNote(input = {}) {
     blockHours: hours,
     isMultiDay: hours != null && hours > 24,
     ownBlock: contention ? contention.ownBlock : null,
-    auspicious: auspiciousDay
+    auspicious: auspiciousDay && showsAuspicious(eventType)
       ? {
           tier: auspiciousDay.auspicious.tier,
           traditions: auspiciousDay.auspicious.traditions,
@@ -389,7 +421,7 @@ function composeCalendarNote(input = {}) {
     hasHold: Boolean(input.hasHold),
     // Everything the note says rests on data a human has not checked yet.
     unverified: Boolean(
-      (auspiciousDay && !auspiciousDay.auspicious.verified) ||
+      (auspiciousDay && showsAuspicious(eventType) && !auspiciousDay.auspicious.verified) ||
         (blackoutDay && !blackoutDay.blackout.verified)
     ),
     // undecided-lead context

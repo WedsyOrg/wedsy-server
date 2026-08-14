@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const { venueDateKey } = require("../utils/venueTime");
+const { EVENT_TYPES, DEFAULT_EVENT_TYPE, ALL_FUNCTION_NAMES, ALL_RELATIONS } = require("../utils/venueEventType");
 
 const VenueEnquirySchema = new mongoose.Schema(
   {
@@ -7,9 +8,25 @@ const VenueEnquirySchema = new mongoose.Schema(
     userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     name: { type: String, default: "" },
     phone: { type: String, default: "" },
+    // The lead's display name. DERIVED from the bride/groom contacts when they
+    // exist, else the lead name — but it stays a real stored String because
+    // ~60 files read it: lists, search, dedup, the header, WhatsApp, PDFs, the
+    // couple site, the OS. Turning it into a virtual would have been the tidy
+    // change and would have broken every one of them. See
+    // utils/venueCoupleName for the derivation and the override.
     coupleName: { type: String, default: "" },
+    // TRUE once a human has typed a name here explicitly. The derivation then
+    // leaves it alone forever: someone who wrote "The Mehra Wedding" outranks
+    // anything we can assemble from contact rows.
+    coupleNameManual: { type: Boolean, default: false },
     couplePhone: { type: String, default: "" },
     email: { type: String, default: "" },
+    // BUILD A — what KIND of event this is. Defaults to social because that is
+    // what these venues sell and what every existing row already is; a
+    // different default would silently re-label the entire book. Only the
+    // wedding-specific layer keys off this (utils/venueEventType is the whole
+    // list) — dates, money, contention, scoping and everything else are shared.
+    eventType: { type: String, enum: EVENT_TYPES, default: DEFAULT_EVENT_TYPE },
     // eventDate stays the single day the dashboard/calendar/analytics/OS journey
     // read. When checkIn is set it is DERIVED from checkIn (see the pre-validate
     // hook) so every existing consumer keeps working with no changes.
@@ -50,16 +67,31 @@ const VenueEnquirySchema = new mongoose.Schema(
     // dedup import all read them); contacts[] is the CRM-2 source of truth.
     // Exactly one isPrimary is enforced by the controller sanitizer, not here,
     // so legacy rows (empty contacts) never fail validation on save.
+    // BUILD A: contacts are now the WHOLE people model. There are deliberately
+    // no structured bride/groom fields — a bride is a contact whose relation is
+    // `bride`. One model, no special-casing, and it answers "the groom is the
+    // one actually calling" for free by letting him be primary.
     contacts: [
       {
         name: { type: String, default: "" },
         phone: { type: String, default: "" },
-        role: {
-          type: String,
-          enum: ["groom", "bride", "brides_father", "mother", "planner", "other"],
-          default: "other",
-        },
+        email: { type: String, default: "" },
+        // Renamed from `role`, and widened per event type
+        // (utils/venueEventType.RELATION_VOCABULARY). `role` is kept below as a
+        // read-only legacy mirror so any consumer not yet migrated keeps working.
+        relation: { type: String, enum: ALL_RELATIONS, default: "other" },
+        // Legacy field. Written by the sanitizer, never read by new code.
+        // Retained so an un-migrated row and an un-migrated reader both survive
+        // the deploy window; scripts/migrate-contact-relations backfills the
+        // new field from it.
+        role: { type: String, default: "other" },
+        // WHO YOU CALL.
         isPrimary: { type: Boolean, default: false },
+        // WHO HOLDS THE MONEY — and in Indian weddings that is frequently the
+        // bride's father, not either of the people getting married. Knowing it
+        // is worth more than the relation labels are, which is why it is its
+        // own flag rather than inferred from one.
+        isDecisionMaker: { type: Boolean, default: false },
       },
     ],
     // MB-CRM-2 S1b (additive): per-function event mapping across the stay.
@@ -70,11 +102,13 @@ const VenueEnquirySchema = new mongoose.Schema(
     // sit inside [checkIn, checkOut] when the window is set (pre-validate).
     functions: [
       {
-        name: {
-          type: String,
-          enum: ["mehendi", "haldi", "sangeet", "wedding", "reception", "custom"],
-          required: true,
-        },
+        // The UNION of both vocabularies. Which subset is offered is an
+        // eventType question the controller answers on WRITE; the model must
+        // accept anything already stored, because a lead switched from social
+        // to corporate keeps its mehendi row until a human edits it. Silently
+        // dropping stored functions on a type change would destroy real data
+        // over a mislabelled dropdown.
+        name: { type: String, enum: ALL_FUNCTION_NAMES, required: true },
         customLabel: { type: String, default: "" },
         date: { type: Date, required: true },
         timeSlot: { type: String, default: "" },
