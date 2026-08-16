@@ -88,6 +88,15 @@ const VenueQuoteRoundSchema = new mongoose.Schema(
         clauses: [String],
       },
     ],
+    // When the venue sends its UPLOADED PDF rather than generated clauses, the
+    // snapshot is the pointer and the name as sent. The S3 object is never
+    // rewritten and is deliberately not deleted when an owner removes the
+    // document from Settings, so this link keeps resolving for exactly the
+    // dispute that would follow it.
+    termsDocument: {
+      url: { type: String, default: "" },
+      filename: { type: String, default: "" },
+    },
 
     createdBy: { type: mongoose.Schema.Types.ObjectId },
   },

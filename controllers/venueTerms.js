@@ -54,7 +54,9 @@ const TERMS_TRIGGER = "venue_terms_sent";
 
 async function resolveOwnedLead(req, res) {
   const venue = await Venue.findOne({ slug: req.params.slug })
-    .select("_id name policies policyDoc settings")
+    // termsDocument is what resolveTermsSource() checks FIRST — leaving it out
+    // of the projection made every venue look like it had no uploaded terms.
+    .select("_id name policies policyDoc settings termsDocument")
     .lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) {
@@ -97,14 +99,58 @@ async function resolveTermsSections(venue) {
   return { sections: seeded, source: seeded.length ? "policy_doc" : "empty", templateName: "" };
 }
 
+/**
+ * WHAT THIS VENUE WOULD ACTUALLY SEND — the uploaded PDF, or generated clauses.
+ *
+ * THE UPLOADED DOCUMENT WINS, and the generated path STAYS. Both halves of
+ * that are deliberate:
+ *
+ * Upload wins because it is the venue's real terms. An owner who has uploaded
+ * their signed-off PDF has said, unambiguously, "this is what we send" — and
+ * silently mailing our generated approximation instead would be the worst kind
+ * of wrong: confidently, invisibly, and only discovered in a dispute.
+ *
+ * The generated path stays because deleting it would remove working machinery
+ * to solve a problem upload already solves by sitting in front of it. It is
+ * the ONLY thing that can produce a per-lead document — clauses seeded from
+ * the venue's policies and frozen against a specific negotiation — and it is
+ * load-bearing elsewhere: controllers/venueContract.js generates booking
+ * contracts from the same seedSections(), so the clause machinery cannot be
+ * removed without taking the contract flow with it. A venue that later wants
+ * per-lead clauses simply removes its uploaded PDF and the old behaviour is
+ * back, unchanged.
+ */
+async function resolveTermsSource(venue) {
+  const doc = venue.termsDocument || {};
+  if (doc.url) {
+    return {
+      kind: "document",
+      document: {
+        url: doc.url,
+        filename: doc.filename || "terms.pdf",
+        sizeBytes: doc.sizeBytes || null,
+        uploadedAt: doc.uploadedAt || null,
+      },
+      sections: [],
+      clauseCount: 0,
+      source: "uploaded",
+      templateName: "",
+      ready: true,
+    };
+  }
+  const { sections, source, templateName } = await resolveTermsSections(venue);
+  const clauseCount = sections.reduce((n, s) => n + (s.clauses || []).length, 0);
+  return { kind: "generated", document: null, sections, clauseCount, source, templateName, ready: clauseCount > 0 };
+}
+
 // GET /venues/:slug/enquiries/:enquiryId/terms/preview
 // What would be sent, so nobody emails a document they have not read.
 const previewTerms = async (req, res) => {
   try {
     const owned = await resolveOwnedLead(req, res);
     if (!owned) return;
-    const { sections, source, templateName } = await resolveTermsSections(owned.venue);
-    const clauseCount = sections.reduce((n, s) => n + (s.clauses || []).length, 0);
+    const resolved = await resolveTermsSource(owned.venue);
+    const { sections, source, templateName, clauseCount } = resolved;
 
     // Contacts with an email are who this can go to — contacts carry email as
     // of BUILD A, so the picker has real options rather than a free-text box.
@@ -118,9 +164,13 @@ const previewTerms = async (req, res) => {
       source,
       templateName,
       recipients,
-      // An honest empty state beats an empty PDF: a venue that has never
-      // written its policies has nothing to send, and should be told so.
-      ready: clauseCount > 0,
+      // What the couple would actually receive, so the portal can name it
+      // rather than describing clauses that are not being sent.
+      kind: resolved.kind,
+      document: resolved.document,
+      // An honest empty state beats an empty PDF: a venue with neither an
+      // uploaded document nor written policies has nothing to send.
+      ready: resolved.ready,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
@@ -138,11 +188,15 @@ const sendTerms = async (req, res) => {
       return res.status(400).json({ message: "A valid email address is required" });
     }
 
-    const { sections, source } = await resolveTermsSections(venue);
-    const clauseCount = sections.reduce((n, s) => n + (s.clauses || []).length, 0);
-    if (!clauseCount) {
+    const resolved = await resolveTermsSource(venue);
+    const { sections, source, clauseCount } = resolved;
+    if (!resolved.ready) {
+      // Says the ONE thing an owner can act on, and names where. The old
+      // message pointed at document templates and venue policies — neither of
+      // which the portal can reach — so it read as a dead end.
       return res.status(400).json({
-        message: "This venue has no terms written yet — add them in the document templates or venue policies first.",
+        message: "No terms & conditions uploaded yet. Add your T&C PDF in Settings, then send it from here.",
+        code: "no_terms_document",
       });
     }
 
@@ -179,8 +233,17 @@ const sendTerms = async (req, res) => {
 
     round.termsSentAt = new Date();
     round.termsSentTo = email;
-    // FROZEN. See the header.
+    // FROZEN. See the header. For an uploaded PDF the snapshot is the pointer
+    // and the filename as sent — the bytes on S3 are never rewritten, and the
+    // document is deliberately not deleted from storage when an owner removes
+    // it, so this link keeps resolving for exactly the dispute it exists for.
     round.termsSnapshot = sections;
+    if (resolved.kind === "document") {
+      round.termsDocument = {
+        url: resolved.document.url,
+        filename: resolved.document.filename,
+      };
+    }
     await round.save();
 
     // Transport is best-effort and must never fail the record: the fact that
@@ -210,6 +273,10 @@ const sendTerms = async (req, res) => {
             venue_name: venue.name || "",
             lead_name: lead.coupleName || lead.name || "",
             clause_count: String(clauseCount),
+            // The attachment the couple actually opens. Empty for the
+            // generated path, which renders its clauses in the body.
+            terms_url: resolved.kind === "document" ? resolved.document.url : "",
+            terms_filename: resolved.kind === "document" ? resolved.document.filename : "",
           },
         });
         delivered = true;
@@ -221,7 +288,10 @@ const sendTerms = async (req, res) => {
 
     lead.activities.push({
       type: "terms_sent",
-      description: `Terms & conditions sent to ${email}`,
+      description:
+        resolved.kind === "document"
+          ? `Terms & conditions (${resolved.document.filename}) sent to ${email}`
+          : `Terms & conditions sent to ${email}`,
       actor: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null,
       timestamp: new Date(),
     });
@@ -233,6 +303,8 @@ const sendTerms = async (req, res) => {
       sentTo: email,
       clauseCount,
       source,
+      kind: resolved.kind,
+      document: resolved.document,
       // Said plainly rather than implied — "recorded but not emailed" is a
       // different state from "emailed", and the owner needs to know which.
       delivered,
@@ -276,4 +348,4 @@ const termsPdf = async (req, res) => {
   }
 };
 
-module.exports = { previewTerms, sendTerms, termsPdf, resolveTermsSections };
+module.exports = { previewTerms, sendTerms, termsPdf, resolveTermsSections, resolveTermsSource };
