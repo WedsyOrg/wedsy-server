@@ -138,6 +138,33 @@ const VenueEnquirySchema = new mongoose.Schema(
       alcohol: { type: Boolean },
       roomsNeeded: { type: Number },
       decorNotes: { type: String, default: "" },
+      // Anything that does not fit a box. Kept free-text on purpose: "the
+      // bride's grandmother uses a wheelchair" and "no beef in the kitchen"
+      // are the sentences that lose a booking when they are forgotten, and
+      // neither survives being turned into a dropdown.
+      specialRequests: { type: String, default: "" },
+      /**
+       * THE CALL QUESTIONS, AS THEY ARE ACTUALLY ASKED.
+       *
+       * "Not asked" and "no" are different facts. The old shape could not tell
+       * them apart for food, catering and décor — an empty string meant both
+       * "nobody has asked" and "they don't want it" — so the checklist could
+       * never be finished honestly.
+       *
+       * Stored in `asks` rather than replacing the scalars above because those
+       * hold real values on real leads ("veg", "inhouse") and changing a
+       * String field to a subdocument in place would fail to read every
+       * existing row. The controller DERIVES `asks` from the legacy scalars
+       * when nothing has been answered here yet, so a lead written before this
+       * reads correctly with no migration, and there is still exactly one
+       * answer on screen.
+       */
+      asks: {
+        food: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        catering: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        alcohol: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        decor: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+      },
     },
     source: {
       type: String,
