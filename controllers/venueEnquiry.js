@@ -26,6 +26,7 @@ const { venueDateKey, addVenueDays } = require("../utils/venueTime");
 const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeriod, leadDays } = require("../utils/venueContention");
 const { resolveBlock, resolveRange } = require("../utils/weddingCalendar");
 const { composeCalendarNote, HOLIDAY_ADJACENT_DAYS } = require("../utils/venueCalendarNote");
+const { isTradition, cleanTraditions, labelList } = require("../utils/weddingTraditions");
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
@@ -586,7 +587,13 @@ const getEnquiryById = async (req, res) => {
     // from structure rather than parsing prose.
     const dayKeys = leadDays(enquiry);
     const [block, monthPicture] = await Promise.all([
-      dayKeys.length ? resolveBlock({ venue, dayKeys }) : Promise.resolve(null),
+      // The couple's own traditions narrow the calendar: a date that is
+      // auspicious for Tamil weddings is only news if this couple is having
+      // one. Empty stays wide open — see utils/weddingTraditions.js on why
+      // unspecified means "applies unless we learn otherwise".
+      dayKeys.length
+        ? resolveBlock({ venue, dayKeys, traditions: cleanTraditions(enquiry.traditions) })
+        : Promise.resolve(null),
       // Undecided leads get the shape of the month they named instead.
       !dayKeys.length && monthKey
         ? resolveRange({
@@ -694,6 +701,9 @@ const updateEnquiry = async (req, res) => {
       datesFinalised, approximatePeriod: approximatePeriodRaw, acknowledgeStaleHolds,
       // BUILD A: the event type, changeable after creation.
       eventType,
+      // The couple's own community calendar. Wholesale replace when sent; []
+      // clears it back to "nobody asked".
+      traditions,
     } = req.body || {};
 
     if (lostReason !== undefined && !LOST_REASON_ENUM.includes(lostReason)) {
@@ -705,6 +715,20 @@ const updateEnquiry = async (req, res) => {
     }
     const gcU = guestCount !== undefined ? optCount(guestCount, "guestCount") : null;
     if (gcU && !gcU.ok) return res.status(400).json({ message: gcU.message });
+    // Traditions: an array of known tokens, or [] to clear. An unknown token is
+    // refused rather than dropped — silently discarding "bengali" would tell
+    // the owner it was saved when their date matching would never use it.
+    let traditionsU;
+    if (traditions !== undefined) {
+      if (!Array.isArray(traditions)) {
+        return res.status(400).json({ message: "traditions must be an array" });
+      }
+      const bad = traditions.filter((t) => !isTradition(t));
+      if (bad.length) {
+        return res.status(400).json({ message: `traditions has unknown values: ${bad.join(", ")}` });
+      }
+      traditionsU = cleanTraditions(traditions);
+    }
     if (source !== undefined && !SOURCE_ENUM.includes(source)) {
       return res.status(400).json({ message: `source must be one of ${SOURCE_ENUM.join(", ")}` });
     }
@@ -985,6 +1009,23 @@ const updateEnquiry = async (req, res) => {
         actor: actorIdOf(req),
         timestamp: new Date(),
       });
+    }
+
+    // The couple's community calendar. Recorded on the timeline: it changes
+    // which dates the advice calls auspicious, so it is not a silent edit.
+    if (traditionsU !== undefined) {
+      const before = cleanTraditions(enquiry.traditions).join(",");
+      if (before !== traditionsU.join(",")) {
+        enquiry.traditions = traditionsU;
+        enquiry.activities.push({
+          type: "note",
+          description: traditionsU.length
+            ? `Tradition set to ${labelList(traditionsU)}`
+            : "Tradition cleared",
+          actor: actorIdOf(req),
+          timestamp: new Date(),
+        });
+      }
     }
 
     // MB-CRM-2 S1 writes (wholesale replace — the workbench sends full arrays).

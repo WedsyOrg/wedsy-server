@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const { venueDateKey } = require("../utils/venueTime");
 const { EVENT_TYPES, DEFAULT_EVENT_TYPE, ALL_FUNCTION_NAMES, ALL_RELATIONS } = require("../utils/venueEventType");
+const { TRADITIONS } = require("../utils/weddingTraditions");
 
 const VenueEnquirySchema = new mongoose.Schema(
   {
@@ -27,6 +28,18 @@ const VenueEnquirySchema = new mongoose.Schema(
     // wedding-specific layer keys off this (utils/venueEventType is the whole
     // list) — dates, money, contention, scoping and everything else are shared.
     eventType: { type: String, enum: EVENT_TYPES, default: DEFAULT_EVENT_TYPE },
+    // The couple's OWN community calendar — whose panchang says their date is
+    // auspicious. Optional and MULTI on purpose: a mixed wedding is two
+    // traditions, not a compromise between them, and forcing one would make
+    // half the family's dates invisible. Empty means nobody asked, which reads
+    // as "applies unless we learn otherwise" — the same convention
+    // utils/weddingTraditions.js documents for the date rows themselves.
+    // Social leads only in the UI; the model does not enforce that, because a
+    // lead retyped as corporate keeps what it was told until a human clears it.
+    traditions: {
+      type: [{ type: String, enum: TRADITIONS }],
+      default: [],
+    },
     // eventDate stays the single day the dashboard/calendar/analytics/OS journey
     // read. When checkIn is set it is DERIVED from checkIn (see the pre-validate
     // hook) so every existing consumer keeps working with no changes.
