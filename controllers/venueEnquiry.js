@@ -268,7 +268,11 @@ function sanitizeRequirements(body) {
       return { ok: false, message: "requirements.asks must be an object" };
     }
     const asks = {};
-    for (const key of ASK_KEYS) {
+    // `food` is retired as a question but still ACCEPTED on write: the portal
+    // is a static export, so an owner with a stale tab open can still send it,
+    // and silently dropping their answer is worse than folding it into the
+    // question that replaced it.
+    for (const key of [...ASK_KEYS, "food"]) {
       const a = body.asks[key];
       if (a === undefined) continue;
       if (a == null || typeof a !== "object" || Array.isArray(a)) {
@@ -290,14 +294,43 @@ function sanitizeRequirements(body) {
       // the answer back clears it, rather than leaving "veg only" attached to
       // a question they said no to.
       if (entry.answer === "no" || entry.answer === "") entry.note = "";
-      asks[key] = entry;
+      // A late `food` answer is held aside rather than written straight into
+      // catering: whether it applies depends on what the lead already says,
+      // which this function cannot see. Resolved at the merge below.
+      if (key === "food") out.asksFoodFallback = entry;
+      else asks[key] = entry;
     }
     out.asks = asks;
+
+    // ACCOMMODATION AND roomsNeeded ARE ONE FACT. The allotment planner and
+    // the booking handoff read requirements.roomsNeeded and know nothing about
+    // `asks`, so answering "no" here has to zero the number they read —
+    // otherwise a lead says "no rooms" on this tab while the planner still
+    // holds 20. Only an explicit no writes it; a yes leaves the count to the
+    // number field, which is sent alongside.
+    if (asks.accommodation && asks.accommodation.answer === "no" && body.roomsNeeded === undefined) {
+      out.roomsNeeded = 0;
+    }
   }
   return { ok: true, value: out };
 }
 
-const ASK_KEYS = ["food", "catering", "alcohol", "decor"];
+/**
+ * FOOD AND CATERING WERE THE SAME QUESTION ASKED TWICE.
+ *
+ * "Food: veg" and "Catering: in-house" are two halves of one conversation —
+ * are we feeding this wedding, and how. Two tiles meant two places to record
+ * it, two ways to leave it half-answered, and a checklist that counted the
+ * same fact twice. `food` is gone as a question; `catering` is the one that
+ * survives, and normaliseAsks() folds anything already recorded under `food`
+ * into it (see the reconciliation rule there).
+ *
+ * `accommodation` is new and is the yes/no half of what `roomsNeeded` already
+ * stored. The NUMBER still lives in requirements.roomsNeeded and nowhere else
+ * — the rooms handoff and the allotment planner read that field, and a second
+ * copy inside the ask would be two answers to one question.
+ */
+const ASK_KEYS = ["catering", "alcohol", "decor", "accommodation"];
 const ASK_ANSWERS = ["", "yes", "no"];
 
 /**
@@ -315,24 +348,70 @@ const ASK_ANSWERS = ["", "yes", "no"];
 function normaliseAsks(requirements) {
   const r = requirements || {};
   const stored = r.asks || {};
-  const legacy = {
-    food: { yes: Boolean(r.food), note: REQ_FOOD_LABEL[r.food] || "" },
-    catering: { yes: Boolean(r.catering), note: REQ_CATERING_LABEL[r.catering] || "" },
-    // alcohol is the one question the old shape could already answer both
-    // ways, so false genuinely means no.
-    alcohol: { yes: r.alcohol === true, no: r.alcohol === false, note: "" },
-    decor: { yes: Boolean(r.decorNotes), note: r.decorNotes || "" },
+
+  /**
+   * THE FOOD → CATERING RECONCILIATION, in one place.
+   *
+   * A lead can carry an answer in up to four places: asks.catering (newest),
+   * asks.food (the question we retired), and the two legacy scalars r.catering
+   * and r.food. The rule, in order:
+   *
+   *   1. An explicit asks.catering answer wins outright — it is the question
+   *      that survives and the most recent thing a human said.
+   *   2. Otherwise an explicit asks.food answer is adopted AS the catering
+   *      answer. Same question, old name.
+   *   3. Otherwise the legacy scalars: either one set means yes, and BOTH
+   *      details are kept, catering first — "In-house · Veg only". Nothing a
+   *      human typed is thrown away to tidy a merge.
+   *   4. If the two disagree — one yes, one no — YES WINS, and both notes are
+   *      carried so the conflict is visible rather than silently resolved.
+   *      Dropping a recorded requirement is worse than showing a stale one.
+   */
+  const cateringFromLegacy = () => {
+    const parts = [REQ_CATERING_LABEL[r.catering], REQ_FOOD_LABEL[r.food]].filter(Boolean);
+    if (parts.length) return { answer: "yes", note: parts.join(" · ") };
+    return null;
   };
+  const explicit = (key) => {
+    const a = stored[key] || {};
+    return a.answer === "yes" || a.answer === "no"
+      ? { answer: a.answer, note: a.answer === "yes" ? a.note || "" : "" }
+      : null;
+  };
+
   const out = {};
   for (const key of ASK_KEYS) {
-    const s = stored[key] || {};
-    if (s.answer === "yes" || s.answer === "no") {
-      out[key] = { answer: s.answer, note: s.answer === "yes" ? s.note || "" : "" };
+    if (key === "catering") {
+      out.catering =
+        explicit("catering") ||
+        explicit("food") ||
+        cateringFromLegacy() || { answer: "", note: "" };
       continue;
     }
-    const l = legacy[key];
-    if (l.yes) out[key] = { answer: "yes", note: l.note };
-    else if (l.no) out[key] = { answer: "no", note: "" };
+    if (key === "accommodation") {
+      // The number IS the answer. A lead that recorded rooms has said yes
+      // whether or not anyone ever pressed a button, and an explicit 0 is a
+      // real "no" — somebody asked and they do not need rooms.
+      const rooms = r.roomsNeeded;
+      out.accommodation =
+        explicit("accommodation") ||
+        (typeof rooms === "number" && rooms > 0
+          ? { answer: "yes", note: "" }
+          : rooms === 0
+          ? { answer: "no", note: "" }
+          : { answer: "", note: "" });
+      continue;
+    }
+    const legacy = {
+      // alcohol is the one question the old shape could already answer both
+      // ways, so false genuinely means no.
+      alcohol: { yes: r.alcohol === true, no: r.alcohol === false, note: "" },
+      decor: { yes: Boolean(r.decorNotes), no: false, note: r.decorNotes || "" },
+    }[key];
+    const e = explicit(key);
+    if (e) out[key] = e;
+    else if (legacy.yes) out[key] = { answer: "yes", note: legacy.note };
+    else if (legacy.no) out[key] = { answer: "no", note: "" };
     else out[key] = { answer: "", note: "" };
   }
   return out;
@@ -1148,7 +1227,7 @@ const updateEnquiry = async (req, res) => {
           ? enquiry.requirements.toObject()
           : enquiry.requirements
         : {};
-      const { asks: asksPatch, ...flat } = requirementsV.value;
+      const { asks: asksPatch, asksFoodFallback, ...flat } = requirementsV.value;
       // `asks` merges PER QUESTION. A spread would mean answering "food" wipes
       // what they already said about alcohol — the whole checklist lost to
       // one dropdown.
@@ -1156,7 +1235,14 @@ const updateEnquiry = async (req, res) => {
       for (const [key, entry] of Object.entries(asksPatch || {})) {
         asks[key] = { ...(asks[key] || {}), ...entry };
       }
-      enquiry.requirements = { ...existing, ...flat, ...(asksPatch ? { asks } : {}) };
+      // The retired question FILLS catering, it never overwrites it. A stale
+      // tab answering "food" must not wipe a catering answer somebody gave
+      // afterwards — and a note like "Outside caterer approved" is exactly the
+      // kind of thing that would vanish.
+      if (asksFoodFallback && asks.catering?.answer !== "yes" && asks.catering?.answer !== "no") {
+        asks.catering = asksFoodFallback;
+      }
+      enquiry.requirements = { ...existing, ...flat, ...(asksPatch || asksFoodFallback ? { asks } : {}) };
     }
     if (assignResolved) {
       enquiry.assignedTo = assignResolved.id;

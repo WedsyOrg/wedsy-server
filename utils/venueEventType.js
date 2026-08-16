@@ -37,8 +37,20 @@ function isCorporate(eventType) {
 }
 
 // ── function vocabulary ─────────────────────────────────────────────────────
-// Social keeps the existing wedding list untouched — renaming it would rewrite
-// every stored function on every existing lead.
+// The social list covers what these venues are actually booked for, in the
+// order an owner thinks of them: the big two first, then the ceremonies around
+// them, then the non-wedding occasions a banquet hall also sells.
+//
+// IT SPANS COMMUNITIES BY LISTING FUNCTIONS, NOT BY TAGGING TRADITIONS. Nikah
+// and shukrana are Muslim and Sikh functions, baraat and varmala are common to
+// many Hindu weddings — and naming the FUNCTION is a better answer than adding
+// religion tokens, because what a venue blocks a space for is the event, not
+// the couple's community. A Muslim wedding books a nikah; the software does not
+// need to know anything else to take that booking.
+//
+// PURELY ADDITIVE. Every previously stored value (mehendi, haldi, sangeet,
+// wedding, reception, custom) is still here and still validates — no lead is
+// rewritten and no migration runs.
 //
 // Corporate is a generic SESSION vocabulary. The four chosen (conference,
 // dinner, cocktail, ceremony) cover what a venue actually blocks a space for on
@@ -48,8 +60,47 @@ function isCorporate(eventType) {
 // inventing a taxonomy nobody asked for. `custom` carries anything else, the
 // same escape hatch the social list has.
 const FUNCTION_VOCABULARY = {
-  social: ["mehendi", "haldi", "sangeet", "wedding", "reception", "custom"],
+  social: [
+    "wedding",
+    "reception",
+    "baraat",
+    "varmala",
+    "nikah",
+    "shukrana",
+    "haldi",
+    "mehendi",
+    "sangeet",
+    "baby_shower",
+    "anniversary",
+    "engagement",
+    "custom",
+  ],
   corporate: ["conference", "dinner", "cocktail", "ceremony", "custom"],
+};
+
+/**
+ * Display names, so the enum token is never what an owner reads. Kept beside
+ * the vocabulary rather than in the frontend: a label that lives in the client
+ * drifts the moment a function is added here.
+ */
+const FUNCTION_LABEL = {
+  wedding: "Wedding",
+  reception: "Reception",
+  baraat: "Baraat",
+  varmala: "Varmala",
+  nikah: "Nikah",
+  shukrana: "Shukrana",
+  haldi: "Haldi",
+  mehendi: "Mehendi",
+  sangeet: "Sangeet",
+  baby_shower: "Baby shower",
+  anniversary: "Anniversary",
+  engagement: "Engagement",
+  conference: "Conference",
+  dinner: "Dinner",
+  cocktail: "Cocktail",
+  ceremony: "Ceremony",
+  custom: "Custom",
 };
 
 /** Every function name that may be STORED, across both types. */
@@ -167,6 +218,7 @@ module.exports = {
   cleanEventType,
   isCorporate,
   FUNCTION_VOCABULARY,
+  FUNCTION_LABEL,
   ALL_FUNCTION_NAMES,
   functionVocabulary,
   functionAllowed,
