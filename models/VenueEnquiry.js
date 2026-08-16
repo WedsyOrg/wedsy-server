@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const { venueDateKey } = require("../utils/venueTime");
 const { EVENT_TYPES, DEFAULT_EVENT_TYPE, ALL_FUNCTION_NAMES, ALL_RELATIONS } = require("../utils/venueEventType");
+const { TRADITIONS } = require("../utils/weddingTraditions");
 
 const VenueEnquirySchema = new mongoose.Schema(
   {
@@ -27,6 +28,18 @@ const VenueEnquirySchema = new mongoose.Schema(
     // wedding-specific layer keys off this (utils/venueEventType is the whole
     // list) — dates, money, contention, scoping and everything else are shared.
     eventType: { type: String, enum: EVENT_TYPES, default: DEFAULT_EVENT_TYPE },
+    // The couple's OWN community calendar — whose panchang says their date is
+    // auspicious. Optional and MULTI on purpose: a mixed wedding is two
+    // traditions, not a compromise between them, and forcing one would make
+    // half the family's dates invisible. Empty means nobody asked, which reads
+    // as "applies unless we learn otherwise" — the same convention
+    // utils/weddingTraditions.js documents for the date rows themselves.
+    // Social leads only in the UI; the model does not enforce that, because a
+    // lead retyped as corporate keeps what it was told until a human clears it.
+    traditions: {
+      type: [{ type: String, enum: TRADITIONS }],
+      default: [],
+    },
     // eventDate stays the single day the dashboard/calendar/analytics/OS journey
     // read. When checkIn is set it is DERIVED from checkIn (see the pre-validate
     // hook) so every existing consumer keeps working with no changes.
@@ -125,6 +138,33 @@ const VenueEnquirySchema = new mongoose.Schema(
       alcohol: { type: Boolean },
       roomsNeeded: { type: Number },
       decorNotes: { type: String, default: "" },
+      // Anything that does not fit a box. Kept free-text on purpose: "the
+      // bride's grandmother uses a wheelchair" and "no beef in the kitchen"
+      // are the sentences that lose a booking when they are forgotten, and
+      // neither survives being turned into a dropdown.
+      specialRequests: { type: String, default: "" },
+      /**
+       * THE CALL QUESTIONS, AS THEY ARE ACTUALLY ASKED.
+       *
+       * "Not asked" and "no" are different facts. The old shape could not tell
+       * them apart for food, catering and décor — an empty string meant both
+       * "nobody has asked" and "they don't want it" — so the checklist could
+       * never be finished honestly.
+       *
+       * Stored in `asks` rather than replacing the scalars above because those
+       * hold real values on real leads ("veg", "inhouse") and changing a
+       * String field to a subdocument in place would fail to read every
+       * existing row. The controller DERIVES `asks` from the legacy scalars
+       * when nothing has been answered here yet, so a lead written before this
+       * reads correctly with no migration, and there is still exactly one
+       * answer on screen.
+       */
+      asks: {
+        food: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        catering: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        alcohol: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        decor: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+      },
     },
     source: {
       type: String,
