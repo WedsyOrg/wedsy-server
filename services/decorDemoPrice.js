@@ -31,6 +31,10 @@
 // there), each applicable tier anchored on its own p75.
 
 const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS, tierOf } = require("./decorPricing");
+// The size ladder is the single source of truth for valid length×width pairs.
+// SIZE_BUCKETS below is the LEGACY demo ladder and does NOT agree with it —
+// see the reconciliation note in services/decorSizeLadder.js.
+const sizeLadder = require("./decorSizeLadder");
 
 // Common size buckets to show, in the order the panel lists them. Only these
 // two categories get a size ladder.
@@ -643,6 +647,62 @@ const rangesForCategory = (category, tiers, comps) => {
 //   analysis: Phase B demo output { isDecorProduct, category, categoryConfidence, ... }
 //   comparables: normalizeComparable() results, pre-filtered to visible+available
 //   opts.includeExamples: attach up to 3 scale/price-point examples per row
+// ── Size-bracket builder ─────────────────────────────────────────────────────
+// Prices each offered rung through the SAME anchor mechanism as the sized
+// ladder (reference anchor × area-ratio^exponent → ladderRanges), so a rung's
+// price is consistent with the ladder row of the same size.
+//
+// Raw width, in preference order:
+//   1. stageMeasurements.backdropWidthFt — the COUNTED width (count ×
+//      per-unit), the only genuinely raw number the pipeline preserves.
+//   2. analysis.size.length — already snapped by decorVision.postProcess, so
+//      it is a fallback, not a raw read. An exact rung hit here yields that
+//      rung + the next one up, which is the documented behaviour anyway.
+const buildSizeOptions = ({ analysis, category, comps, stageMeasurements, occasion }) => {
+  const validSizes = sizeLadder.validSizes();
+  const empty = { sizeOptions: [], validSizes };
+
+  // Only categories with a size model. Haldi prices purely by floral run.
+  if (!REFERENCE_SIZE[category] || !SIZE_BUCKETS[category]) return empty;
+
+  const measuredWidth = stageMeasurements ? Number(stageMeasurements.backdropWidthFt) : NaN;
+  const snappedLength = Number(analysis && analysis.size && analysis.size.length);
+  const rawWidthFt =
+    Number.isFinite(measuredWidth) && measuredWidth > 0
+      ? measuredWidth
+      : Number.isFinite(snappedLength) && snappedLength > 0
+        ? snappedLength
+        : null;
+  if (rawWidthFt == null) return empty;
+
+  const bracket = sizeLadder.bracketFor({
+    rawWidthFt,
+    occasion: occasion ? occasion.value : null,
+    sizeConfidence: analysis && analysis.size ? analysis.size.confidence : null,
+    backdropWidthFt: Number.isFinite(measuredWidth) && measuredWidth > 0 ? measuredWidth : rawWidthFt,
+  });
+  if (!bracket || !bracket.options.length) return empty;
+
+  const anchor = referenceAnchor(category, Array.isArray(comps) ? comps : []);
+  const tierLadder = DEMO_TIER_LADDER[category];
+
+  const sizeOptions = bracket.options.map((rung) => {
+    const natAnchor =
+      anchor && anchor.natAnchor != null
+        ? anchor.natAnchor * Math.pow(rung.area / anchor.area, DECOR_AREA_EXPONENT)
+        : null;
+    return {
+      size: rung.size,
+      length: rung.length,
+      width: rung.width,
+      area: rung.area,
+      prices: natAnchor == null ? {} : ladderRanges(natAnchor, tierLadder),
+    };
+  });
+
+  return { sizeOptions, validSizes };
+};
+
 const buildDemoPrice = (analysis, comparables, opts = {}) => {
   const includeExamples = !!opts.includeExamples;
   const occasion = opts.occasion || null;
@@ -753,10 +813,24 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     ladder = [row];
   }
 
+  // ── SIZE BRACKET (additive, 2026-08) ──────────────────────────────────────
+  // The pipeline runs at temperature 1.0, so one draw is a bet. Offer the two
+  // ladder rungs the read falls between, each with its own full price ladder,
+  // and let the human pick. Deliberately ALONGSIDE floral-run pricing, never
+  // instead of it: floral run is the founder-calibrated path (24ft fresh
+  // ~₹1.5L) and stays the headline on a measured Stage.
+  const sizeBracket = buildSizeOptions({ analysis, category, comps, stageMeasurements, occasion });
+
   return {
     rejected: false,
     category,
     categoryConfidence: analysis.categoryConfidence,
+    // Two valid rungs bracketing the read; [] when this category has no size
+    // model or nothing gave a usable width.
+    sizeOptions: sizeBracket.sizeOptions,
+    // Every valid length×width pair, so the panel's manual picker can offer
+    // ONLY real sizes. Always present — it is a constant, not a derivation.
+    validSizes: sizeBracket.validSizes,
     // Vision observations in the founder's vocabulary — evidence for the staff
     // member to place the quote within the range. NEVER graded, never priced on
     // (the Phase 3 gate proved they don't predict price).

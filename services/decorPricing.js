@@ -74,6 +74,15 @@ const SIZE_LOOKUP = {
     320: 60000,
     384: 80000,
     480: 123500, // 30x16 — outlier-EXCLUDED median (was 180000, a pre-Rule-2 plain median)
+    // 32x16 — added 2026-08 with the size ladder (services/decorSizeLadder.js).
+    // ⚠️ This table is NATURAL-tier (see the header above); the figure supplied
+    // for st164 was ₹70,000 ARTIFICIAL, so it is converted here via the Stage
+    // ladder: 70000 × TIER_LADDER.Stage.natural (1.44) = 100,800. Entering
+    // 70,000 directly would have under-priced this rung by ~31%.
+    // Note st164's own recorded natural price is ₹105,000 — 4% above the
+    // ladder-derived figure. 100,800 is used so the engine returns exactly the
+    // ₹70,000 artificial that was specified; revisit when more products land here.
+    512: 100800,
     800: 257500,
   },
   Mandap: {

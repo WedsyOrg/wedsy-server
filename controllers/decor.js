@@ -915,6 +915,17 @@ const shapeExample = (e) => ({
 });
 // The ladder row keeps its size label and its tier→{low,high} prices. `area` is
 // dropped: with the size already present it only feeds the area exponent.
+// A size option is a ladder row plus its concrete dimensions — the panel needs
+// length/width to render the picker selection. `area` is DROPPED for the same
+// reason shapeLadderRow drops it: with the size present it only feeds the area
+// exponent, so it is method, not output. (The response-contract suite caught
+// this — it is an asserted invariant, not a style preference.)
+const shapeSizeOption = (o) => ({
+  size: o.size != null ? o.size : null,
+  length: o.length != null ? o.length : null,
+  width: o.width != null ? o.width : null,
+  prices: o.prices || {},
+});
 const shapeLadderRow = (row) => ({
   size: row.size != null ? row.size : null,
   prices: row.prices || {},
@@ -992,6 +1003,19 @@ const shapeDemoPrice = (out) => {
     ...(out.occasion ? { occasion: shapeOccasion(out.occasion) } : {}),
     applicableTiers: out.applicableTiers,
     ladder: (out.ladder || []).map(shapeLadderRow),
+    // ── Size bracket (additive 2026-08) — every key above is unchanged. ──────
+    // Two valid rungs bracketing the read, each with its own full price ladder,
+    // so staff pick a size instead of the pipeline betting on one draw at
+    // temperature 1.0. Omitted entirely when empty, so a category with no size
+    // model adds nothing to the payload.
+    ...(Array.isArray(out.sizeOptions) && out.sizeOptions.length
+      ? { sizeOptions: out.sizeOptions.map(shapeSizeOption) }
+      : {}),
+    // The full set of valid pairs, for a manual picker that can only offer real
+    // sizes. No prices — the picker chooses a size, the ladder carries money.
+    ...(Array.isArray(out.validSizes) && out.validSizes.length
+      ? { validSizes: out.validSizes.map((s) => ({ size: s.size, length: s.length, width: s.width })) }
+      : {}),
     ...(out.pinTextCheck ? { pinTextCheck: out.pinTextCheck } : {}),
   });
 };
