@@ -132,6 +132,12 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(accDoc.requirements.roomsNeeded === 35,
       "THE HANDOFF: answering yes with a number writes requirements.roomsNeeded — the field the allotment planner reads");
     ok((await readAsks(acc._id)).accommodation.answer === "yes", "…and the ask reads yes");
+    // Read the DOCUMENT, not the derivation. Deriving accommodation from
+    // roomsNeeded means a stored answer that mongoose silently dropped would
+    // still read correctly — so assert the stored path itself, or this suite
+    // passes for the wrong reason.
+    ok((await VenueEnquiry.findById(acc._id).lean()).requirements.asks.accommodation.answer === "yes",
+      "…and the ask is genuinely STORED, not merely derivable from the count");
 
     await patchReq(acc._id, { asks: { accommodation: { answer: "no" } } });
     const afterNo = await VenueEnquiry.findById(acc._id).lean();

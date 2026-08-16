@@ -160,10 +160,19 @@ const VenueEnquirySchema = new mongoose.Schema(
        * answer on screen.
        */
       asks: {
+        // RETIRED as a question but kept in the schema: leads answered under
+        // the previous shape carry a value here, and removing the path would
+        // make mongoose drop it on the next save — losing the answer we are
+        // careful to fold into `catering` on read.
         food: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
         catering: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
         alcohol: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
         decor: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
+        // Whether they need rooms. The COUNT stays in roomsNeeded above — the
+        // allotment planner and the booking handoff read that field and know
+        // nothing about `asks`, so a second copy here would be two answers to
+        // one question.
+        accommodation: { answer: { type: String, enum: ["", "yes", "no"], default: "" }, note: { type: String, default: "" } },
       },
     },
     source: {
