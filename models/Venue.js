@@ -188,6 +188,35 @@ const VenueSchema = new mongoose.Schema({
     terms: [{ type: String }],
     refund: [{ type: String }],
   },
+  /**
+   * THE VENUE'S TERMS, AS A FILE.
+   *
+   * Owners already have their T&Cs — as a Google Doc, exported to PDF — and
+   * they are not going to retype them as clauses in our editor. The audit that
+   * prompted this found why it mattered: `policyDoc` has no write path
+   * anywhere, and the doc-template routes are never called by the portal, so
+   * "Send terms & conditions" refused with a message pointing at two places an
+   * owner could not reach.
+   *
+   * ONE DOCUMENT PER VENUE, not per lead. Venues do not rewrite their terms
+   * per couple, and a per-lead copy would invite exactly the drift that makes
+   * "which terms did they get?" unanswerable.
+   *
+   * The FILE lives on S3 via the existing /file/upload path; this holds only
+   * the pointer and the provenance an owner needs to recognise it.
+   */
+  termsDocument: {
+    url: { type: String, default: "" },
+    filename: { type: String, default: "" },
+    sizeBytes: { type: Number },
+    contentType: { type: String, default: "" },
+    uploadedAt: { type: Date },
+    // Who to ask about it. Stored as a NAME as well as an id because the id
+    // stops resolving the day that member leaves, and "uploaded by someone who
+    // no longer works here" is still useful provenance.
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId },
+    uploadedByName: { type: String, default: "" },
+  },
   contact: {
     primaryName: { type: String, default: "" },
     primaryPhone: { type: String, default: "" },

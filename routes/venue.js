@@ -31,6 +31,7 @@ const pricing = require("../controllers/venuePricing");
 const terms = require("../controllers/venueTerms");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
+const termsDoc = require("../controllers/venueTermsDocument");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
@@ -198,6 +199,11 @@ router.post("/:slug/invoices/:invoiceId/payments/:paymentId/approve", venueOwner
 router.post("/:slug/invoices/:invoiceId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), rejectPayment);
 
 // ── D8 document engine: templates + bills (documents capability) ──
+// The venue's uploaded T&C PDF. Same capability as the document templates it
+// sits beside — an owner who may author terms may upload them.
+router.get("/:slug/terms-document", venueOwnerAuth, termsDoc.getTermsDocument);
+router.put("/:slug/terms-document", venueOwnerAuth, requireCapability("documents"), termsDoc.putTermsDocument);
+router.delete("/:slug/terms-document", venueOwnerAuth, requireCapability("documents"), termsDoc.deleteTermsDocument);
 router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);
 router.post("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.createTemplate);
 router.patch("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.updateTemplate);
