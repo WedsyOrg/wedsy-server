@@ -14,6 +14,7 @@
 const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueTask = require("../models/VenueTask");
+const VenueSiteVisit = require("../models/VenueSiteVisit");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const VenueFollowUp = require("../models/VenueFollowUp");
 const { canViewAllLeads, scopedLeadFilter } = require("../utils/venueLeadScope");
@@ -89,6 +90,29 @@ const getCrmOverview = async (req, res) => {
         if (d < start) overdue++;
         else if (d >= start && d <= end) dueToday++;
       }
+    }
+
+    // BUILD — the rail now shows ONE "Next steps" item, so its overdue badge
+    // has to mean every kind of overdue next step, not just follow-ups. An
+    // overdue task and an overdue walk-through are equally late; counting only
+    // follow-ups under a unified label would put a wrong number on the exact
+    // item that is meant to end the two-answers problem.
+    //
+    // Additive: `overdue` keeps its follow-up-only meaning for every existing
+    // consumer, and the new total sits beside it.
+    let overdueNextSteps = overdue;
+    if (nonTerminalIds.length) {
+      const [taskOverdue, visitOverdue] = await Promise.all([
+        VenueTask.countDocuments({
+          venue: venue._id, linkedEnquiry: { $in: nonTerminalIds },
+          status: "open", dueAt: { $ne: null, $lt: start },
+        }),
+        VenueSiteVisit.countDocuments({
+          venue: venue._id, enquiryRef: { $in: nonTerminalIds },
+          status: { $in: ["scheduled", "confirmed"] }, scheduledAt: { $lt: start },
+        }),
+      ]);
+      overdueNextSteps += taskOverdue + visitOverdue;
     }
 
     let noFollowUp = 0, unassigned = 0;
@@ -179,7 +203,7 @@ const getCrmOverview = async (req, res) => {
 
     return res.status(200).json({
       scoped: !canViewAll,
-      myDay: { overdue, dueToday, noFollowUp, unassigned, myTasksOpen, todaySiteVisit },
+      myDay: { overdue, dueToday, noFollowUp, unassigned, myTasksOpen, todaySiteVisit, overdueNextSteps },
       // Non-zero only until the follow-ups migration has run: leads still
       // counted via their legacy mirror because they own no follow-up rows.
       // A deploy-window observability signal, not a product number.
