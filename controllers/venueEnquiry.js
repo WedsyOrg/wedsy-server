@@ -26,7 +26,20 @@ const { venueDateKey, addVenueDays } = require("../utils/venueTime");
 const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeriod, leadDays } = require("../utils/venueContention");
 const { resolveBlock, resolveRange } = require("../utils/weddingCalendar");
 const { composeCalendarNote, HOLIDAY_ADJACENT_DAYS } = require("../utils/venueCalendarNote");
-const { isTradition, cleanTraditions, labelList } = require("../utils/weddingTraditions");
+const { isTradition, cleanTraditions, labelList, PARENTS, TRADITION_PARENT, TRADITION_LABEL } = require("../utils/weddingTraditions");
+
+// The tradition vocabulary, served WITH the lead so the portal never keeps its
+// own copy. A hardcoded frontend list would drift the moment a tradition is
+// added here, and the drift would be silent: the owner would pick a value the
+// date matching has never heard of. Grouped parent → children because that is
+// how it is chosen ("South Indian", then "Tamil" if they know).
+const TRADITION_OPTIONS = PARENTS.map((parent) => ({
+  value: parent,
+  label: TRADITION_LABEL[parent],
+  children: Object.entries(TRADITION_PARENT)
+    .filter(([, p]) => p === parent)
+    .map(([value]) => ({ value, label: TRADITION_LABEL[value] })),
+}));
 
 // The acting principal's id for audit stamps: a member id when a team member is
 // logged in, otherwise the owner anchor id.
@@ -628,6 +641,7 @@ const getEnquiryById = async (req, res) => {
       eventType: enquiry.eventType,
     });
     json.calendarNote = note.text ? note : null;
+    json.traditionOptions = TRADITION_OPTIONS;
 
     return res.status(200).json({ enquiry: json });
   } catch (err) {

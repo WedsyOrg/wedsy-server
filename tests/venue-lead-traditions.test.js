@@ -110,6 +110,16 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok((await VenueEnquiry.findById(corp._id).lean()).traditions.includes("gujarati"),
       "…and the tradition is NOT silently wiped — the UI hides it, the data keeps it until a human clears it");
 
+    // ── the vocabulary travels with the lead ──
+    console.log("\n[F. the portal is TOLD the vocabulary, it does not keep a copy]");
+    const read = await call(ctrl.getEnquiryById, req({ params: { enquiryId: String(corp._id) } }));
+    const opts = read.body && read.body.enquiry && read.body.enquiry.traditionOptions;
+    ok(Array.isArray(opts) && opts.length === 2, "the lead read carries the two parent traditions");
+    ok(opts.every((o) => o.label && Array.isArray(o.children) && o.children.length),
+      "…each labelled, with its children — so the frontend never hardcodes a list that can drift");
+    ok(opts.flatMap((o) => o.children).some((c) => c.value === "tamil"),
+      "…and a sub-tradition the date data can actually be tagged with is offered");
+
     console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   } catch (e) {
     console.error("FATAL", e);
