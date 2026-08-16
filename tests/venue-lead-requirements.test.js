@@ -52,24 +52,24 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     console.log("\n[A. not asked, no, and yes are three different answers]");
     const fresh = await mkLead({ n: "Fresh" });
     let asks = await readAsks(fresh._id);
-    ok(asks.food.answer === "" && asks.alcohol.answer === "",
+    ok(asks.catering.answer === "" && asks.alcohol.answer === "",
       "a brand-new lead is NOT ASKED on everything — not 'no'");
 
     await patchReq(fresh._id, { asks: { alcohol: { answer: "no" } } });
     asks = await readAsks(fresh._id);
     ok(asks.alcohol.answer === "no", "'no' is recordable and stays 'no'");
-    ok(asks.food.answer === "", "…and the questions nobody asked are still unasked");
+    ok(asks.catering.answer === "", "…and the questions nobody asked are still unasked");
 
     // ── a note belongs to a yes ──
     console.log("\n[B. a note belongs to the YES it was given for]");
-    await patchReq(fresh._id, { asks: { food: { answer: "yes", note: "Veg only, no onion garlic" } } });
+    await patchReq(fresh._id, { asks: { catering: { answer: "yes", note: "Veg only, no onion garlic" } } });
     asks = await readAsks(fresh._id);
-    ok(asks.food.answer === "yes" && /no onion garlic/.test(asks.food.note),
+    ok(asks.catering.answer === "yes" && /no onion garlic/.test(asks.catering.note),
       "a yes carries the detail the owner actually wrote down");
 
-    await patchReq(fresh._id, { asks: { food: { answer: "no" } } });
+    await patchReq(fresh._id, { asks: { catering: { answer: "no" } } });
     asks = await readAsks(fresh._id);
-    ok(asks.food.answer === "no" && asks.food.note === "",
+    ok(asks.catering.answer === "no" && asks.catering.note === "",
       "THE POINT: changing it to 'no' drops the note — 'veg only' must not hang off a question they said no to");
 
     // ── one answer must not wipe the others ──
@@ -78,14 +78,14 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     asks = await readAsks(fresh._id);
     ok(asks.decor.answer === "yes", "décor is answered");
     ok(asks.alcohol.answer === "no", "…and the alcohol answer from earlier SURVIVES");
-    ok(asks.food.answer === "no", "…as does food — a partial PATCH merges per question");
+    ok(asks.catering.answer === "no", "…as does catering — a partial PATCH merges per question");
 
     // ── validation ──
     console.log("\n[D. an answer we cannot store is refused]");
-    const bad = await patchReq(fresh._id, { asks: { food: { answer: "maybe" } } });
+    const bad = await patchReq(fresh._id, { asks: { catering: { answer: "maybe" } } });
     ok(bad.code === 400, "'maybe' → 400");
     ok(/yes, no/.test(bad.body.message || ""), "…and the message says what is allowed");
-    const badShape = await patchReq(fresh._id, { asks: { food: "yes" } });
+    const badShape = await patchReq(fresh._id, { asks: { catering: "yes" } });
     ok(badShape.code === 400, "a bare string where an object belongs → 400");
 
     // ── NO MIGRATION: a lead answered the old way still reads right ──
@@ -95,9 +95,11 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       requirements: { food: "veg", catering: "inhouse", alcohol: false, decorNotes: "Marigold only", roomsNeeded: 20 },
     });
     asks = await readAsks(legacy._id);
-    ok(asks.food.answer === "yes" && asks.food.note === "Veg only",
-      "a stored 'veg' reads as YES, with 'Veg only' as its note — the old value is not lost");
-    ok(asks.catering.answer === "yes" && asks.catering.note === "In-house", "…same for catering");
+    // FOOD AND CATERING ARE NOW ONE QUESTION. A lead that answered both keeps
+    // BOTH details, joined — nothing a human typed is dropped to tidy a merge.
+    ok(asks.food === undefined, "`food` is no longer asked separately");
+    ok(asks.catering.answer === "yes" && /In-house/.test(asks.catering.note) && /Veg only/.test(asks.catering.note),
+      "…both stored details survive as one catering answer");
     ok(asks.alcohol.answer === "no",
       "…a stored alcohol:false reads as NO, because that is the one question the old shape could answer both ways");
     ok(asks.decor.answer === "yes" && asks.decor.note === "Marigold only", "…and décor notes read as a yes with the note");
@@ -105,9 +107,9 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(rawLegacy.requirements.food === "veg", "…and NOTHING was rewritten on disk — the derivation is on read");
 
     // an explicit answer overrides what was derived
-    await patchReq(legacy._id, { asks: { food: { answer: "no" } } });
+    await patchReq(legacy._id, { asks: { catering: { answer: "no" } } });
     asks = await readAsks(legacy._id);
-    ok(asks.food.answer === "no", "an explicit answer WINS over the derived one — one answer on screen, never two");
+    ok(asks.catering.answer === "no", "an explicit answer WINS over the derived one — one answer on screen, never two");
 
     // ── rooms is untouched by all of this ──
     ok((await VenueEnquiry.findById(legacy._id).lean()).requirements.roomsNeeded === 20,
