@@ -24,6 +24,12 @@ const { optDate, optStr, MAXLEN } = require("../utils/venueInput");
 const { venueDayBounds, venueDueBucket, venueDateTimeLabel } = require("../utils/venueTime");
 
 const STATUSES = ["scheduled", "confirmed", "completed", "cancelled"];
+// BUILD — how the visit WENT, which `status` never answered. Logging one is
+// the single most valuable thing an owner can do after a walk-through, and it
+// implies the appointment happened, so it completes the visit in the same tap.
+const OUTCOMES = ["came", "no_show", "went_well", "too_expensive", "other"];
+// A no-show means they did not come; everything else means they did.
+const OUTCOME_IMPLIES_COMPLETED = new Set(["came", "went_well", "too_expensive", "other"]);
 // A visit's outcome moves the pipeline: booking a walk-through is what
 // site_visit_scheduled means, and completing one is what site_visit_done means.
 const STAGE_FOR_STATUS = { scheduled: "site_visit_scheduled", confirmed: "site_visit_scheduled", completed: "site_visit_done" };
@@ -145,12 +151,16 @@ const createOwnSiteVisit = async (req, res) => {
     if (!when.value) return res.status(400).json({ message: "scheduledAt is required" });
     const notes = optStr(body.notes, "notes", 2000);
     if (!notes.ok) return res.status(400).json({ message: notes.message });
+    // Optional at creation: what to have ready before they walk in.
+    const prep = optStr(body.prepNote, "prepNote", 2000);
+    if (!prep.ok) return res.status(400).json({ message: prep.message });
 
     const visit = await VenueSiteVisit.create({
       venue: venue._id,
       enquiryRef: lead._id,
       scheduledAt: when.value,
       notes: notes.value,
+      prepNote: prep.value,
       status: "scheduled",
       createdByType: "owner",
     });
@@ -181,8 +191,14 @@ const updateOwnSiteVisit = async (req, res) => {
     const { visit, lead } = owned;
     const body = req.body || {};
 
-    if (body.status === undefined && body.scheduledAt === undefined && body.notes === undefined) {
+    if (
+      body.status === undefined && body.scheduledAt === undefined && body.notes === undefined &&
+      body.prepNote === undefined && body.outcome === undefined && body.outcomeNote === undefined
+    ) {
       return res.status(400).json({ message: "Nothing to update" });
+    }
+    if (body.outcome !== undefined && body.outcome !== null && !OUTCOMES.includes(body.outcome)) {
+      return res.status(400).json({ message: `outcome must be one of ${OUTCOMES.join(", ")}` });
     }
     if (body.status !== undefined && !STATUSES.includes(body.status)) {
       return res.status(400).json({ message: "Unknown status" });
@@ -191,6 +207,36 @@ const updateOwnSiteVisit = async (req, res) => {
       const n = optStr(body.notes, "notes", 2000);
       if (!n.ok) return res.status(400).json({ message: n.message });
       visit.notes = n.value;
+    }
+
+    if (body.prepNote !== undefined) {
+      const n = optStr(body.prepNote, "prepNote", 2000);
+      if (!n.ok) return res.status(400).json({ message: n.message });
+      visit.prepNote = n.value;
+    }
+    if (body.outcomeNote !== undefined) {
+      const n = optStr(body.outcomeNote, "outcomeNote", 2000);
+      if (!n.ok) return res.status(400).json({ message: n.message });
+      visit.outcomeNote = n.value;
+    }
+    if (body.outcome !== undefined) {
+      visit.outcome = body.outcome || null;
+      visit.outcomeAt = body.outcome ? new Date() : undefined;
+      if (body.outcome) {
+        // Logging an outcome IS closing the visit — asking the owner to also
+        // set a status would be two taps for one fact. A no-show is still a
+        // finished appointment, so both land on "completed"; which of the two
+        // happened is what `outcome` records.
+        if (OUTCOME_IMPLIES_COMPLETED.has(body.outcome) || body.outcome === "no_show") {
+          visit.status = "completed";
+        }
+        lead.activities.push({
+          type: "site_visit_outcome",
+          description: `Site visit outcome: ${body.outcome.replace(/_/g, " ")}`,
+          actor: actorIdOf(req),
+          timestamp: new Date(),
+        });
+      }
     }
 
     if (body.scheduledAt !== undefined) {

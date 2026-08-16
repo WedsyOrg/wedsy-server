@@ -15,6 +15,26 @@ const VenueSiteVisitSchema = new mongoose.Schema(
       default: "scheduled",
     },
     notes: { type: String, default: "", maxlength: 2000 },
+    // BUILD — a visit is the only next-step whose VALUE is entirely in what
+    // happens after it, and until now the record could not hold that. `status`
+    // is lifecycle (did the appointment happen) and answers a different
+    // question from `outcome` (how did it GO) — "completed" and "no-show" are
+    // not points on one scale, and "too expensive" is not a status at all.
+    //
+    // ADDITIVE ONLY: three optional fields with defaults. No existing field is
+    // touched, no document needs migrating, and every current reader is
+    // unaffected — a row without them behaves exactly as it does today.
+    /** What to have ready, who's coming, what they care about. Written BEFORE. */
+    prepNote: { type: String, default: "", maxlength: 2000 },
+    /** How it went. null until someone logs it — the honest state. */
+    outcome: {
+      type: String,
+      enum: ["came", "no_show", "went_well", "too_expensive", "other", null],
+      default: null,
+    },
+    /** The detail behind the outcome, in the owner's words. */
+    outcomeNote: { type: String, default: "", maxlength: 2000 },
+    outcomeAt: { type: Date },
     createdByType: { type: String, enum: ["wedsy", "owner"], default: "wedsy" },
   },
   { timestamps: true }
