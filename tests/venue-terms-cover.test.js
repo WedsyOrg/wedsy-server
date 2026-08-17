@@ -349,9 +349,13 @@ const makeSourcePdf = (pages = 6) =>
     const foreignDl = await call(leadDocs.downloadLeadDocument, req({ params: { documentId: String(new mongoose.Types.ObjectId()) } }));
     ok(foreignDl.code === 404, "…and a document id that is not this lead's is 404 too");
 
-    // Download redirects to the stored object, after the scope check.
+    // Download PROXIES the bytes rather than redirecting: scope runs on the
+    // path the download actually takes, and the client's Authorization header
+    // never crosses to another origin. https://x/ is unreachable here, so the
+    // assertion is that it resolved scope and then tried upstream — a 404 would
+    // mean scope rejected it, which is the failure worth catching.
     const dl = await call(leadDocs.downloadLeadDocument, req({ params: { documentId: String(v1._id) } }));
-    ok(dl.code === 302 && dl.redirected === "https://x/v1.pdf", "download resolves scope then redirects to the stored file");
+    ok(dl.code === 502, `download passes scope and streams from storage (unreachable upstream -> 502, got ${dl.code})`);
 
     console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   } catch (e) {

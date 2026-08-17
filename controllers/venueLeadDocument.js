@@ -40,6 +40,7 @@
  * failure a dispute would expose, and the RECORD is complete either way.
  */
 const mongoose = require("mongoose");
+const axios = require("axios");
 const Venue = require("../models/Venue");
 const VenueQuoteRound = require("../models/VenueQuoteRound");
 const VenueLeadDocument = require("../models/VenueLeadDocument");
@@ -400,10 +401,24 @@ const generateTermsDocument = async (req, res) => {
 };
 
 // ── GET /venues/:slug/enquiries/:enquiryId/documents/:documentId/download ───
-// Resolves scope, then redirects to the stored object. The redirect (rather than
-// handing the S3 URL to the client in the list) keeps the venueLeadScope check
-// on the path a download actually takes, so a document is exactly as private as
-// its lead even though the bucket object is publicly addressable.
+/**
+ * Streams the stored bytes back through the API.
+ *
+ * Deliberately NOT a 302 to the S3 URL, and not the S3 URL handed to the client
+ * in the list response. Two reasons, in order of how much they would hurt:
+ *
+ *   · SCOPE. Proxying means venueLeadScope runs on the path the download
+ *     actually takes, so a document is exactly as private as its lead. A public
+ *     bucket URL in a list response is a capability that outlives the session
+ *     and travels wherever it is pasted.
+ *   · CORS. The client sends an Authorization header, so a redirect to another
+ *     origin turns into a cross-origin fetch that the bucket would have to
+ *     allow explicitly. This works with no bucket configuration at all.
+ *
+ * Streamed rather than buffered: the whole point of the size cap is that this
+ * box cannot afford to hold documents in memory, and that applies just as much
+ * on the way out as on the way in.
+ */
 const downloadLeadDocument = async (req, res) => {
   try {
     const owned = await resolveOwnedLead(req, res);
@@ -414,7 +429,26 @@ const downloadLeadDocument = async (req, res) => {
     }
     const doc = await VenueLeadDocument.findOne({ _id: req.params.documentId, enquiry: lead._id }).lean();
     if (!doc || !doc.url) return res.status(404).json({ message: "Document not found" });
-    return res.redirect(302, doc.url);
+
+    let upstream;
+    try {
+      upstream = await axios.get(doc.url, { responseType: "stream", timeout: 20000, maxRedirects: 3 });
+    } catch (e) {
+      console.warn(`[venueLeadDocument] download failed for ${doc._id}: ${e.message}`);
+      return res.status(502).json({ message: "The stored document could not be retrieved." });
+    }
+
+    res.setHeader("Content-Type", doc.contentType || "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${(doc.filename || "document.pdf").replace(/"/g, "")}"`);
+    if (doc.sizeBytes) res.setHeader("Content-Length", String(doc.sizeBytes));
+    // A mid-stream upstream failure cannot become a JSON error — headers are
+    // already sent — so the socket is closed and the client sees a truncated
+    // download rather than a PDF with an error message inside it.
+    upstream.data.on("error", (e) => {
+      console.warn(`[venueLeadDocument] stream broke for ${doc._id}: ${e.message}`);
+      res.destroy(e);
+    });
+    return upstream.data.pipe(res);
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
