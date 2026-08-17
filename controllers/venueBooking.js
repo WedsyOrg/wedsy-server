@@ -204,8 +204,50 @@ const confirmBookingFromLead = async (req, res) => {
       if (!aV.ok) return res.status(400).json({ message: aV.message });
       const dV = optDate(row.dueDate, `paymentSchedule[${i}].dueDate`);
       if (!dV.ok) return res.status(400).json({ message: dV.message });
-      if (!lV.value && !aV.value) continue; // ignore fully-empty rows
-      schedule.push({ label: lV.value, amount: aV.value || 0, dueDate: dV.value || undefined });
+      const pV = optNumber(row.percent, `paymentSchedule[${i}].percent`);
+      if (!pV.ok) return res.status(400).json({ message: pV.message });
+      if (!lV.value && !aV.value && pV.value === undefined) continue; // ignore fully-empty rows
+      schedule.push({
+        label: lV.value,
+        amount: aV.value || 0,
+        dueDate: dV.value || undefined,
+        percent: pV.value === undefined ? null : pV.value,
+      });
+    }
+
+    // ── S2: THE 100% RULE, ENFORCED SERVER-SIDE ─────────────────────────────
+    // The wizard shows a live shortfall/excess while the owner adjusts, but the
+    // rule cannot live only in the UI: this endpoint is the write, and a schedule
+    // that does not add up is a schedule the venue cannot invoice against.
+    //
+    // Only enforced when percentages are actually in play. A schedule entered as
+    // amounts only (every pre-existing caller, and an owner working in rupees)
+    // is untouched — requiring percentages here would break a shape that already
+    // works and was never wrong.
+    const withPercent = schedule.filter((r) => r.percent !== null && r.percent !== undefined);
+    if (withPercent.length) {
+      if (withPercent.length !== schedule.length) {
+        return res.status(400).json({
+          message: "Give every instalment a percentage, or none of them — a half-percentage schedule cannot be checked.",
+          code: "mixed_percent_schedule",
+        });
+      }
+      const { checkTotal, toHundredths, ScheduleError } = require("../utils/venuePaymentSchedule");
+      let total;
+      try {
+        total = checkTotal(withPercent.map((r, i) => ({ percentHundredths: toHundredths(r.percent, `paymentSchedule[${i}].percent`) })));
+      } catch (e) {
+        if (e instanceof ScheduleError) return res.status(400).json({ message: e.message, code: e.code });
+        throw e;
+      }
+      if (!total.ok) {
+        return res.status(400).json({
+          message: `The schedule ${total.message.toLowerCase()} — it must total exactly 100% before it can be saved.`,
+          code: "schedule_not_100",
+          totalPercent: total.totalPercent,
+          deltaPercent: total.deltaPercent,
+        });
+      }
     }
     let agreementDoc;
     if (body.agreementDocId !== undefined && body.agreementDocId !== null && body.agreementDocId !== "") {
@@ -315,7 +357,23 @@ const confirmBookingFromLead = async (req, res) => {
       .map((d) => ({ date: d.date, eventType: d.names.join(" + "), guestCount: d.pax || enquiry.guestCount || 0, spaces: [...d.spaces].filter(Boolean) }));
     const token = tokenV.value || 0;
     const rows = [];
-    if (token > 0) rows.push({ label: `Token — received${modeV.value ? ` (${modeV.value})` : ""}`, dueDate: new Date(), amount: token });
+    if (token > 0) {
+      // The token is money already in hand, so it is recorded as a PAID row
+      // rather than a due one — S4 reads paidAmount, and a token that shows as
+      // outstanding would put the booking permanently in arrears on day one.
+      rows.push({
+        label: `Token — received${modeV.value ? ` (${modeV.value})` : ""}`,
+        dueDate: new Date(),
+        amount: token,
+        percent: null,
+        paidAmount: token,
+        paidAt: new Date(),
+        paidMode: ["bank_transfer", "cash", "cheque", "upi", "card"].includes((modeV.value || "").toLowerCase().replace(/\s+/g, "_"))
+          ? (modeV.value || "").toLowerCase().replace(/\s+/g, "_")
+          : "",
+        recordedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+      });
+    }
     rows.push(...schedule);
     if (rows.length) booking.paymentSchedule = rows;
     const computedTotal = token + schedule.reduce((s, r) => s + (r.amount || 0), 0);

@@ -17,11 +17,29 @@ const VenueBookingSchema = new mongoose.Schema(
       },
     ],
     totalValue: { type: Number, default: 0 },
+    // Booking-engine S2/S4 EXTEND this rather than introducing a second model.
+    // It already held {label, dueDate, amount}; what was missing is the shape the
+    // money came from and whether it has arrived.
     paymentSchedule: [
       {
         label: { type: String, default: "" },
         dueDate: { type: Date },
         amount: { type: Number, default: 0 },
+        // S2: the percentage this row represents of the booking value. Stored
+        // alongside the amount, not instead of it, because the amount is what
+        // the couple owes and must not silently move if the booking value is
+        // later corrected — while the percentage is what the owner reasoned in
+        // and what the confirmation document shows. Rows written before this
+        // slice have no percent, which reads correctly as "amount only".
+        percent: { type: Number, min: 0, max: 100, default: null },
+        // S4: payment against this milestone. `paid` is DERIVED on read from
+        // paidAmount vs amount rather than stored, so the two cannot drift.
+        paidAmount: { type: Number, default: 0, min: 0 },
+        paidAt: { type: Date },
+        paidMode: { type: String, enum: ["bank_transfer", "cash", "cheque", "upi", "card", ""], default: "" },
+        paidReference: { type: String, default: "" },
+        recordedBy: { type: mongoose.Schema.Types.ObjectId },
+        recordedByName: { type: String, default: "" },
       },
     ],
     specialRequirements: { type: String, default: "" },
