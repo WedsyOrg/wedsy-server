@@ -32,6 +32,7 @@ const terms = require("../controllers/venueTerms");
 const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const termsDoc = require("../controllers/venueTermsDocument");
+const leadDocs = require("../controllers/venueLeadDocument");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
@@ -177,6 +178,18 @@ router.post("/:slug/enquiries/:enquiryId/pricing/dismiss", venueOwnerAuth, requi
 router.get("/:slug/enquiries/:enquiryId/terms/preview", venueOwnerAuth, requireCapability("bookings_money"), terms.previewTerms);
 router.post("/:slug/enquiries/:enquiryId/terms/send", venueOwnerAuth, requireCapability("bookings_money"), terms.sendTerms);
 router.get("/:slug/enquiries/:enquiryId/terms/pdf", venueOwnerAuth, requireCapability("bookings_money"), terms.termsPdf);
+
+// ── The Documents tab: generated documents, versioned and immutable ─────────
+// Gated on `documents`, not `bookings_money`. Generating a T&C document is the
+// same act as uploading the terms it wraps (/terms-document, above) and belongs
+// to the same capability — which is also why the founder moved the button out of
+// Money. `documents` is a real capability held by the Manager and Accounts
+// bundles, so this does not lock anyone out the way an invented one would.
+// Scope is enforced INSIDE the controller: the parent lead resolves through
+// venueLeadScope first, so a miss is 404 and never 403.
+router.get("/:slug/enquiries/:enquiryId/documents", venueOwnerAuth, requireCapability("documents"), leadDocs.listLeadDocuments);
+router.post("/:slug/enquiries/:enquiryId/documents/terms", venueOwnerAuth, requireCapability("documents"), leadDocs.generateTermsDocument);
+router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOwnerAuth, requireCapability("documents"), leadDocs.downloadLeadDocument);
 
 // ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
