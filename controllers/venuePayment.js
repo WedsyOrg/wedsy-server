@@ -5,6 +5,7 @@
 const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
 const VenueInvoice = require("../models/VenueInvoice");
+const { summarizeSchedule, overdueSentence } = require("../utils/venuePaymentStatus");
 
 async function resolveOwnedVenue(req, res) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select("_id").lean();
@@ -67,16 +68,31 @@ const summary = async (req, res) => {
       received += recv;
       perBooking.push({ bookingId: b._id, coupleName: b.coupleName, totalValue, received: recv, balance });
 
-      for (const item of b.paymentSchedule || []) {
-        if (item.dueDate && new Date(item.dueDate) < now && balance > 0) {
-          overdue.push({
-            bookingId: b._id,
-            coupleName: b.coupleName,
-            label: item.label,
-            dueDate: item.dueDate,
-            amount: Number(item.amount) || 0,
-          });
-        }
+      // S4: overdue is derived per INSTALMENT, not from the booking's balance.
+      //
+      // It used to flag every past-due row whenever the booking owed anything at
+      // all, which meant a booking with one late instalment and three future ones
+      // reported all four, and an instalment that HAD been paid still showed as
+      // overdue because the booking balance was non-zero. Neither told an owner
+      // what to chase.
+      //
+      // summarizeSchedule reads paidAmount per row, so this now names the
+      // instalment, its due date, what is still outstanding on it, and how many
+      // days late it is — the same sentence the lead and Today show, from the
+      // same derivation.
+      for (const m of summarizeSchedule(b, now).overdue) {
+        overdue.push({
+          bookingId: b._id,
+          coupleName: b.coupleName,
+          milestoneId: m._id,
+          label: m.label,
+          dueDate: m.dueDate,
+          amount: m.amount,
+          outstanding: m.outstanding,
+          paidAmount: m.paidAmount,
+          daysLate: m.daysLate,
+          sentence: overdueSentence(m),
+        });
       }
     }
 
