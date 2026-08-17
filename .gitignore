@@ -11,3 +11,4 @@ ecosystem.config.js
 /scripts/backups/
 # PDF regression harness output (scripts/pdf-regression-fingerprint.js)
 scripts/pdf-fingerprints/
+scripts/tables/
