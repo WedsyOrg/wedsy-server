@@ -38,6 +38,7 @@
     "node-mailjet": "^6.0.6",
     "nodemon": "^3.1.10",
     "papaparse": "^5.5.3",
+    "pdf-lib": "^1.17.1",
     "pdfkit": "^0.14.0",
     "puppeteer": "^24.43.1",
     "razorpay": "^2.9.2",
