@@ -117,6 +117,14 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
   // CHANGED 2026-08-17: exempt (haldi) → no fabrication → structureHeavy false.
   // The structureHeavy:true path is covered by the genuine-Stage block below.
   eq(out.structureHeavy, false, "structureHeavy:false — haldi is exempt, nothing fabricated");
+  // ADDED 2026-08-17 — the presentation switch. Haldi is ALWAYS floral-run
+  // priced (it falls back to a 9ft default run when unmeasured), so this is true
+  // here even though nothing is fabricated. Revives the five panel features that
+  // had been gated on the stripped `pricingModel`.
+  eq(out.floralRunPriced, true, "floralRunPriced:true on Haldi (always floral-run priced)");
+  ok(typeof out.floralRunPriced === "boolean", "…and it is a plain boolean, carrying no rate or method");
+  ok(!("pricingModel" in out) && !("floralRatePerFt" in out),
+    "…while pricingModel and the rate stay stripped — presentation without method");
   eq(out.confirmWidth, true, "confirmWidth:true (36ft > 25ft)");
   eq(out.lowConfidence, false, "lowConfidence:false passthrough");
 
@@ -163,6 +171,9 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
   eq(fabricated.structure.fabricated, true, "…and flagged fabricated");
   eq(fabOut.structureHeavy, true, "structureHeavy:true replaces the threshold/rate/split");
   ok(!("structure" in fabOut), "the structure OBJECT never reaches the wire — only the boolean");
+  eq(fabricated.floralRunPriced, true, "36ft measured Stage was priced by floral run (service)");
+  eq(fabOut.floralRunPriced, true, "…and floralRunPriced:true reaches the wire");
+  ok(!("pricingModel" in fabOut) && !("floralRatePerFt" in fabOut), "…with no rate or method alongside it");
 
   // A sub-30ft Stage: a charge applies, but it is NOT fabricated, so the
   // negotiating-margin flag must stay false. This is the distinction the
@@ -178,6 +189,40 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
   eq(light.structure.applies, true, "24ft Stage: a light charge DOES apply");
   eq(light.structure.fabricated, false, "…but nothing is fabricated");
   eq(lightOut.structureHeavy, false, "…so structureHeavy stays false — the flag keeps its meaning");
+  eq(lightOut.floralRunPriced, true, "a measured sub-30ft Stage is still floral-run priced");
+
+  // ── ADDED 2026-08-17 — the SIZE-BUCKET case: no measurement, so the build was
+  // priced from the smoothed area ladder, not floral run.
+  const bucketed = buildDemoPrice(
+    { isDecorProduct: true, category: "Stage", categoryConfidence: 0.9, observations: [] },
+    [doc("st7", "A", { natural: 90000 }, [24, 16]), doc("st8", "B", { natural: 88000 }, [24, 16])],
+    {}
+  );
+  const bucketOut = shapeClientResponse("demo-price", bucketed);
+  assertClean(bucketOut, "demo-price");
+  eq(bucketed.floralRunPriced, false, "no measurement → size-bucket priced, not floral run");
+  eq(bucketOut.floralRunPriced, false, "…and floralRunPriced:false reaches the wire");
+  ok(bucketOut.ladder.length > 1, "…confirmed by a multi-row size ladder rather than one block");
+
+  // ── THE DIVERGENCE THIS FLAG EXISTS FOR ───────────────────────────────────
+  // A non-floral-run CATEGORY carrying a backdrop measurement. The wire emits
+  // `stageMeasurements` anyway (deliberate — the panel resends it with a
+  // category override), but pricing came from the size ladder. So the client
+  // cannot infer floral-run pricing from the measurement's presence, which is
+  // exactly why one explicit boolean was added instead of re-exposing
+  // pricingModel.
+  const mandap = buildDemoPrice(
+    { isDecorProduct: true, category: "Mandap", categoryConfidence: 0.9, observations: [], stageMeasurements: MEASURED },
+    [doc("ma1", "M", { natural: 150000 }, [12, 12])],
+    {}
+  );
+  const mandapOut = shapeClientResponse("demo-price", mandap);
+  assertClean(mandapOut, "demo-price");
+  ok(mandapOut.stageMeasurements && mandapOut.stageMeasurements.backdropWidthFt === 36,
+    "Mandap DOES carry measurements on the wire (ungated, deliberate)");
+  eq(mandap.floralRunPriced, false, "…but it was NOT floral-run priced");
+  eq(mandapOut.floralRunPriced, false,
+    "…so floralRunPriced:false — measurements present, floral-run pricing absent");
   eq(narrow.lowConfidence, false, "lowConfidence:false");
   // narrow but unsure → confidence is stripped, so the boolean carries the job
   const unsure = build({ spanWidthFt: 20, floralRunFt: 16, confidence: 0.05, widthToHeightRatio: 2 });

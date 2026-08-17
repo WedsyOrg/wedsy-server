@@ -688,6 +688,20 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
 
   let ladder;
   let anchor = null;
+  // ── PRESENTATION FLAG (2026-08-17) ────────────────────────────────────────
+  // Set by the branch that ACTUALLY PRICED, so it cannot drift from the pricing
+  // decision. The panel gates five presentation features on this: the
+  // measurement line, the disputed-width warning, the confirm-the-size-with-the
+  // -client note, the hint text, and the staff floral-rate line.
+  //
+  // It exists because the client CANNOT infer this from the response. The wire
+  // carries `stageMeasurements` for ANY category (see the note at the return
+  // below — that is deliberate, so the panel can resend a measurement with a
+  // category override), while only Stage-with-a-measurement and Haldi are
+  // actually priced by floral run. Presence of measurements therefore does not
+  // imply floral-run pricing, and `pricingModel` is correctly stripped at the
+  // wire as pricing METHOD. Hence one explicit boolean.
+  let floralRunPriced = false;
   if (category === "Haldi") {
     // Haldi always prices by floral run at its own rate; without a vision
     // measurement it falls back to the typical 8-10ft backdrop (9ft midpoint)
@@ -698,12 +712,17 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
       row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
     }
     ladder = [row];
+    // Haldi is ALWAYS floral-run priced — even with no vision measurement, where
+    // it falls back to the 9ft default run above. So this is true regardless of
+    // whether stageMeasurements exists.
+    floralRunPriced = true;
   } else if (stageMeasurements) {
     const row = { size: null, prices: stageFloralPrices(stageMeasurements.floralRunFt, structure) };
     if (includeExamples) {
       row.examplesAtThisSize = withImage.slice(0, 3).map((c) => exampleOf(c, bandTier));
     }
     ladder = [row];
+    floralRunPriced = true;
   } else if (sized) {
     anchor = referenceAnchor(category, comps);
     const tierLadder = DEMO_TIER_LADDER[category];
@@ -749,6 +768,11 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     recommendedSize: analysis.recommendedSize || null,
     // The vision backdrop measurement, echoed whatever the category so the
     // panel can resend it with a category override to Stage.
+    // ⚠️ DELIBERATELY UNGATED — unlike the `stageMeasurements` LOCAL above,
+    // which is gated to Stage|Haldi (:677) and is what actually drove pricing.
+    // So the wire can carry measurements on a build that was priced by the size
+    // ladder. That is why the panel cannot infer floral-run pricing from this
+    // field's presence, and why `floralRunPriced` below exists.
     stageMeasurements: readStageMeasurements(analysis.stageMeasurements),
     // The fabrication breakdown is STAFF-DETAILS material only — the client
     // sees one combined "estimated build" figure, never floral and structure
@@ -767,9 +791,16 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
           },
         }
       : {}),
+    // The ONE presentation boolean the panel gates its floral-run UI on. Carries
+    // no rate, no multiplier and no method name — just "was this priced by
+    // floral run?". Sourced from the branch that priced (see above), never from
+    // analysis.stageMeasurements.
+    floralRunPriced,
     // The per-foot rate rides along so staff details can show the arithmetic
-    // behind the single combined figure, not just its result.
-    ...(stageMeasurements || category === "Haldi"
+    // behind the single combined figure, not just its result. STRIPPED at the
+    // wire — method, not output. Keyed off the same flag so the two can never
+    // disagree about which model priced the build.
+    ...(floralRunPriced
       ? {
           pricingModel: "floral-run",
           floralRatePerFt: category === "Haldi" ? DECOR_HALDI_RATE_PER_FT : DECOR_FLORAL_RATE_PER_FT,

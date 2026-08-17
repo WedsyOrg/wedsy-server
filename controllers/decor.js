@@ -944,6 +944,17 @@ const shapeDemoPrice = (out) => {
     ...(out.recommendedSize ? { recommendedSize: out.recommendedSize } : {}),
     ...(m ? { stageMeasurements: shapeMeasurements(m) } : {}),
     // Operational signals in place of the threshold / rate / split.
+    // ── Presentation switch (2026-08-17), NOT pricing method ─────────────────
+    // The panel gates five features on this: the measurement line, the
+    // disputed-width warning, the confirm-the-size-with-the-client note (the
+    // safeguard for the ±25% width read noise), the hint text, and the staff
+    // floral-rate line. All five were dead because they had been gated on
+    // `pricingModel`, which is correctly stripped here as pricing METHOD.
+    // This boolean is the presentation half of that signal with none of the
+    // method: no rate, no multiplier, no model name. The panel CANNOT derive it
+    // from `stageMeasurements`, which is emitted for any category regardless of
+    // how the build was priced — see the note at its source.
+    floralRunPriced: !!out.floralRunPriced,
     // Keyed on `fabricated`, NOT `applies`. Since 2026-08-17 a sub-30ft build
     // also carries a (light) structure charge, so `applies` is true for almost
     // every Stage. This flag has to keep meaning "limited negotiating margin on
