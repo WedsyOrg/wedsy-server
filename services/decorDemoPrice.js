@@ -30,7 +30,7 @@
 // Every other category → a single category-band row (size doesn't predict price
 // there), each applicable tier anchored on its own p75.
 
-const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS } = require("./decorPricing");
+const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS, tierOf } = require("./decorPricing");
 
 // Common size buckets to show, in the order the panel lists them. Only these
 // two categories get a size ladder.
@@ -815,6 +815,71 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// buildStorePrice(decorDoc, { analysis }) — the pin is ALREADY A PRODUCT.
+//
+// Step (a) of the read-cache lookup order (2026-08-17). When a pin resolves to
+// an approved draft with a live published product, the panel must show THAT
+// PRODUCT'S PRICE, not an AI estimate of it: a human set that number and it is
+// what the store will actually charge. It also means a catalogue price edit is
+// reflected immediately — the deliberate exception to "a revisit must not
+// differ", because there the new number IS the wanted answer.
+//
+// Emits the same response contract as buildDemoPrice so the panel needs no
+// second renderer: one ladder row, tier prices as a POINT (low === high — a
+// store price is not a range), and no headroom arithmetic anywhere near it.
+// `comparables` is deliberately not a parameter: nothing here is estimated.
+//
+// The cached vision read, when we have one, contributes ONLY its descriptive
+// fields (observations, measurements) so the panel keeps its measurement line.
+// It never touches the price.
+// ─────────────────────────────────────────────────────────────────────────────
+const buildStorePrice = (decorDoc, { analysis } = {}) => {
+  const doc = decorDoc || {};
+  const category = doc.category || "";
+  const tiers = demoCategoryTiers(category);
+  const info = doc.productInfo || {};
+  const m = info.measurements || {};
+
+  // Live selling prices off productTypes, per tier — the same mapping the
+  // comparable normaliser uses, so a tier is named the same way everywhere.
+  const prices = {};
+  (Array.isArray(doc.productTypes) ? doc.productTypes : []).forEach((pt) => {
+    if (!pt) return;
+    const tier = tierOf(pt.name);
+    const price = Number(pt.sellingPrice);
+    if (Number.isFinite(price) && price > 0 && (prices[tier] === undefined || price > prices[tier])) {
+      prices[tier] = price;
+    }
+  });
+
+  const sizeLabel =
+    Number(m.length) > 0 && Number(m.width) > 0 ? `${Number(m.length)}x${Number(m.width)}` : null;
+
+  return {
+    rejected: false,
+    category,
+    // Not a guess — a human classified this product on approval.
+    categoryConfidence: 1,
+    observations: Array.isArray(analysis && analysis.observations) ? analysis.observations : [],
+    minBuildWidth: (analysis && analysis.minBuildWidth) || null,
+    recommendedSize: sizeLabel,
+    stageMeasurements: readStageMeasurements(analysis && analysis.stageMeasurements),
+    // No structure charge and no floral-run model: nothing was estimated.
+    floralRunPriced: false,
+    applicableTiers: tiers || Object.keys(prices),
+    sized: false,
+    upliftApplied: 1,
+    headroomApplied: 1, // the store price already is what we charge
+    ladder: [
+      {
+        size: sizeLabel,
+        prices: Object.fromEntries(Object.entries(prices).map(([t, p]) => [t, { low: p, high: p }])),
+      },
+    ],
+  };
+};
+
 // Optional pin-text cross-check (spec: VERIFICATION only, never a prompt input,
 // never shown to the client — a quiet staff signal). Compact Hinglish keyword
 // map; returns the caption's implied category and whether it agrees with the
@@ -842,6 +907,7 @@ const pinTextCategoryCheck = (pinText, modelCategory) => {
 
 module.exports = {
   buildDemoPrice,
+  buildStorePrice,
   pinTextCategoryCheck,
   SIZE_BUCKETS,
   DECOR_DEMO_HEADROOM,

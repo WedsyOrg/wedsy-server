@@ -18,7 +18,7 @@ const {
   shapeDemoPrice,
   shapeAnalyseImage,
 } = require("../controllers/decor");
-const { buildDemoPrice, resolveOccasion } = require("../services/decorDemoPrice");
+const { buildDemoPrice, buildStorePrice, resolveOccasion } = require("../services/decorDemoPrice");
 const { suggestPrice, normalizeComparable } = require("../services/decorPricing");
 const { postProcess } = require("../services/decorVision");
 
@@ -308,6 +308,66 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
   ok(!("reasoning" in out.pinTextCheck), "…and inside pinTextCheck");
   eq(out.pinTextCheck.agrees, false, "pinTextCheck's operational fields survive");
   eq(out.ladder[0].prices.natural.low, 1000, "…and the prices themselves are untouched");
+}
+
+// ── 6. Read provenance + the from-store reply (ADDED 2026-08-17) ─────────────
+// The pin-level read cache put two new things on this wire: a `read` provenance
+// object, and buildStorePrice's reply for a pin that is already a product. Both
+// have to clear the same allowlist as everything else.
+{
+  console.log("\nRead provenance + from-store reply:");
+
+  const withRead = shapeDemoPrice({
+    rejected: false, category: "Stage", categoryConfidence: 0.9, observations: [],
+    applicableTiers: ["natural"], ladder: [{ size: "16x12", prices: { natural: { low: 1000, high: 1250 } } }],
+    read: {
+      origin: "cached",
+      firstReadAt: "2026-08-14T00:00:00.000Z",
+      // Fields the cache carries internally that must NOT reach the panel.
+      hits: 7, reads: 2, analysis: { complexity: { reasoning: "leak" } }, sourceUrl: "https://i.pinimg.com/564x/a/b/c.jpg",
+    },
+  });
+  assertClean(withRead, "demo-price with provenance");
+  eq(withRead.read.origin, "cached", "read.origin kept");
+  eq(withRead.read.firstReadAt, "2026-08-14T00:00:00.000Z", "read.firstReadAt kept");
+  eq(JSON.stringify(Object.keys(withRead.read).sort()), JSON.stringify(["firstReadAt", "origin"]),
+    "…and NOTHING else — no hit counters, no stored analysis, no raw source URL");
+  // The key is `origin`, not `source`: `source` is on the FORBIDDEN list (it is
+  // how occasion narrates which signal decided it), and provenance must not
+  // force a hole in that check.
+  ok(!("source" in withRead.read), "provenance is `origin` — `source` stays a forbidden key name");
+
+  // A cached REJECTION is still a read, and still says so.
+  const rej = shapeDemoPrice({ rejected: true, reason: "Not a décor product.", read: { origin: "cached" } });
+  assertClean(rej, "cached rejection");
+  eq(rej.read.origin, "cached", "a replayed rejection reports its provenance too");
+
+  // from-store: the live product price, through the same shaper.
+  const store = buildStorePrice(
+    {
+      category: "Stage",
+      name: "Ivory Grace",
+      productTypes: [
+        { name: "Artificial Flowers", sellingPrice: 55000 },
+        { name: "Natural Flowers", sellingPrice: 79000 },
+      ],
+      productInfo: { id: "st164", measurements: { length: 16, width: 12 } },
+    },
+    { analysis: { observations: ["mirror panels"], stageMeasurements: MEASURED } }
+  );
+  const shaped = shapeDemoPrice({ ...store, read: { origin: "from-store", product: { code: "st164", name: "Ivory Grace" } } });
+  assertClean(shaped, "from-store reply");
+  eq(shaped.ladder[0].prices.artificial.low, 55000, "the live selling price is the ladder");
+  eq(shaped.ladder[0].prices.artificial.high, 55000, "…as a point, not a range");
+  eq(shaped.ladder[0].size, "16x12", "…at the product's own size");
+  eq(shaped.floralRunPriced, false, "floralRunPriced:false — nothing was estimated");
+  eq(shaped.structureHeavy, false, "structureHeavy:false — no fabrication was computed");
+  eq(shaped.read.product.code, "st164", "the product code identifies it (read.product.code)");
+  ok(!("headroomApplied" in shaped) && !("sized" in shaped) && !("upliftApplied" in shaped),
+    "…while the store reply's own method keys are stripped like any other");
+  // The descriptive half of a cached read still comes through.
+  eq(JSON.stringify(shaped.observations), JSON.stringify(["mirror panels"]), "cached observations survive");
+  eq(shaped.stageMeasurements.backdropWidthFt, 36, "…as does the cached measurement line");
 }
 
 console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);

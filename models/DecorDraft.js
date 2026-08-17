@@ -67,9 +67,38 @@ const DecorDraftSchema = new mongoose.Schema(
       productVariation: { type: Mixed, default: () => ({}) },
     },
 
+    // ── Read provenance (2026-08-17) — WHICH vision read this draft carries ──
+    // aiAnalysis is immutable, so whatever read was in hand at create time is
+    // frozen into the training data forever. That makes "where did this read come
+    // from, and how old was it" part of the record, not a debugging nicety: a
+    // stale cache entry produces a training pair whose "before" was never a live
+    // look at the image. cacheId points at models/DecorImageRead (a CACHE — the
+    // entry may legitimately be gone; then these fields are all we have).
+    sourceRead: {
+      // "cache" (the panel's read, replayed) | "fresh" (A2S read it itself)
+      source: { type: String, default: "" },
+      cacheId: { type: ObjectId, ref: "DecorImageRead", default: null },
+      firstReadAt: { type: Date, default: null }, // when the IMAGE was first read
+      usedAt: { type: Date, default: null }, // when THIS draft consumed it
+    },
+
     pricing: {
       // ── IMMUTABLE (2/2) — the full AI price ladder as first computed ───────
       aiSuggested: { type: Mixed, default: () => ({}) },
+      // ── IMMUTABLE — WHAT THE CLIENT WAS ACTUALLY QUOTED ────────────────────
+      // The demo panel and the draft engine are two different pricing models and
+      // caching the read cannot make them agree. Ruling (2026-08-17): the panel
+      // wins. `midpoint` is the pre-filled price in the approval modal — the
+      // ×1.15 negotiating headroom INCLUDED, so the published store price matches
+      // the figure the client heard on the call. Rohaan edits it in the modal;
+      // finalPrice is what he settles on, and (midpoint → finalPrice → reason) is
+      // the training pair that now matters most, since midpoint is the number a
+      // human actually quoted.
+      //
+      // NULL when A2S could not replay the panel (no cached read for this pin —
+      // e.g. A2S clicked without the panel ever pricing it). Deliberately not
+      // faked: an estimate computed here was never quoted to anyone.
+      panelQuote: { type: Mixed, default: null },
       finalPrice: { type: Number, default: null },
       // overridden=false is the POSITIVE signal (the human accepted the AI
       // price) and needs no reason. overridden=true REQUIRES one.
@@ -139,7 +168,12 @@ DecorDraftSchema.index({ status: 1, addedAt: -1 });
 // that never calls markModified() is not persisted by Mongoose at all, and one
 // that DOES call it trips the save hook below.
 // ─────────────────────────────────────────────────────────────────────────────
-const IMMUTABLE_PATHS = ["aiAnalysis", "pricing.aiSuggested"];
+// pricing.panelQuote and sourceRead joined the list on 2026-08-17: both are
+// "before" evidence in exactly the same sense as aiSuggested — panelQuote is the
+// number a human quoted the client, sourceRead says which read produced it. If
+// either can be rewritten after the fact, an approval's training pair can be
+// made to look like something that never happened.
+const IMMUTABLE_PATHS = ["aiAnalysis", "pricing.aiSuggested", "pricing.panelQuote", "sourceRead"];
 
 const isImmutablePath = (path) =>
   IMMUTABLE_PATHS.some((p) => path === p || path.startsWith(`${p}.`));

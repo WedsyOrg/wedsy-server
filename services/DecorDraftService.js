@@ -7,6 +7,8 @@ const { storeRemoteImage, toAnalysisBase64 } = require("../utils/remoteImageToS3
 const { analyseImage } = require("./decorVision");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("./decorPricing");
 const { analyseListing } = require("./decorListing");
+const { normalizeImageUrl } = require("./decorImageKey");
+const { lookupRead, panelQuoteFor } = require("./decorReadCache");
 
 const err = (status, message, extra = {}) =>
   Object.assign(new Error(message), { status, ...extra });
@@ -18,25 +20,21 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 // NORMALISED image URL: Pinterest serves the same asset at many sizes
 // (/236x/, /564x/, /originals/), so the stable identity is the trailing
 // hash path (ab/cd/<hash>.jpg), not the full URL.
-const normalizeImageUrl = (raw) => {
-  const s = String(raw || "").trim();
-  if (!s) return "";
-  let u;
-  try {
-    u = new URL(s);
-  } catch (_) {
-    return s.toLowerCase();
-  }
-  const host = u.hostname.toLowerCase();
-  let path = u.pathname.toLowerCase();
-  if (/pinimg\.com$/.test(host)) {
-    // drop the size segment: /564x/ab/cd/hash.jpg -> /ab/cd/hash.jpg
-    path = path.replace(/^\/(originals|\d+x\d*)\//, "/");
-    return `pinimg${path}`;
-  }
-  return `${host}${path}`;
-};
-
+//
+// The normaliser moved to services/decorImageKey on 2026-08-17 so the demo-price
+// read cache could share it instead of growing a second copy that drifts. Still
+// re-exported from here — it is part of this module's published surface.
+//
+// ⚠️ DELIBERATE DIVERGENCE (ruled 2026-08-17): this filter stays
+// pinId-first-EITHER-OR, while the read cache $ORs over both keys (see the
+// matching note in services/decorReadCache). The asymmetry is intentional and
+// follows the cost of being wrong in each direction:
+//   • cache — a false NEGATIVE (miss when it should hit) is the exact bug the
+//     cache exists to fix, and a false positive costs nothing, so match widely.
+//   • dedupe — a false POSITIVE refuses a legitimate A2S click with "already in
+//     the store", which a human then has to argue with. Match narrowly.
+// So: do NOT "fix" this into an $or to match the cache. They are different
+// questions with different failure costs.
 const dedupeFilterFor = ({ pinId, normalizedUrl }) =>
   pinId
     ? { "sourceImage.pinId": pinId }
@@ -73,11 +71,19 @@ const unitFor = async (category) => {
 // modes, and the pricing path is pinned by 372 tests.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Brain 2: vision + pricing. Mirrors POST /decor/analyse-image, but keeps the
-// FULL result (shapeClientResponse trims the wire response, not this).
-const runPricingBrain = async (imageBase64) => {
-  const analysis = await analyseImage({ imageBase64, mode: "full" });
-
+// ── The pricing half, split from the vision half (2026-08-17) ────────────────
+// Everything below the vision call, given an analysis from ANY source. Split out
+// so a cached DEMO read can be priced without paying for a second look at the
+// same image.
+//
+// Why a demo read is a valid input here: postProcess builds one shared `base`
+// for every vision mode — { isDecorProduct, category, categoryConfidence, style,
+// size, complexity } — and those six fields are the complete set this function
+// reads. Demo mode adds observations/measurements/occasion on top; only the
+// LISTING copy fields (flowers, colors, fabric, suggestedName, description, tags,
+// included) are missing from a demo read, and none of them price anything. That
+// is why A2S can drop to one AI call while still needing analyseListing.
+const priceFromAnalysis = async (analysis) => {
   const out = { analysis, pricing: null, fallbacks: [], rejected: false };
   if (!analysis.isDecorProduct) {
     out.rejected = true;
@@ -137,12 +143,20 @@ const runPricingBrain = async (imageBase64) => {
   return out;
 };
 
+// Brain 2: vision + pricing. Mirrors POST /decor/analyse-image, but keeps the
+// FULL result (shapeClientResponse trims the wire response, not this).
+const runPricingBrain = async (imageBase64) =>
+  priceFromAnalysis(await analyseImage({ imageBase64, mode: "full" }));
+
 // Injection seam so the test suite never calls Anthropic or S3.
 const deps = {
   storeRemoteImage,
   toAnalysisBase64,
   runPricingBrain,
+  priceFromAnalysis,
   analyseListing,
+  lookupRead,
+  panelQuoteFor,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -211,9 +225,49 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
   let listing = analysis && analysis.listing ? analysis.listing : null;
   let pricingBrain = analysis && analysis.pricing ? analysis.pricing : null;
 
+  // ── CONSUME THE PANEL'S READ (2026-08-17) ─────────────────────────────────
+  // The staff member almost always priced this pin in the panel seconds ago. Its
+  // read is cached, so A2S replays it instead of looking at the same photo again.
+  // Two things this buys, in order of importance:
+  //   1. The draft and the quote describe the SAME read of the image. A2S running
+  //      its own vision call is how a pin priced at ₹31k in the panel became ₹93k
+  //      in the queue — two temperature-1.0 reads of one photo.
+  //   2. One AI call instead of two. The listing brain still runs: a demo read
+  //      carries no copy fields (see priceFromAnalysis).
+  let sourceRead = { source: "fresh", cacheId: null, firstReadAt: null, usedAt: null };
+  let cachedAnalysis = null;
   if (!pricingBrain) {
+    try {
+      const hit = await deps.lookupRead({ pinId: cleanPinId, normalizedUrl });
+      if (hit) {
+        cachedAnalysis = hit.analysis;
+        pricingBrain = await deps.priceFromAnalysis(hit.analysis);
+        // Marks the training record: this "before" came from a stored read taken
+        // at firstReadAt, not from a live look at the image now.
+        pricingBrain.analysisMode = "demo";
+        sourceRead = {
+          source: "cache",
+          cacheId: hit._id || null,
+          firstReadAt: hit.firstReadAt || null,
+          usedAt: new Date(),
+        };
+      }
+    } catch (e) {
+      // The cache is an optimisation, never a dependency — fall through to a
+      // fresh read rather than failing the A2S click.
+      console.warn("[A2S] read-cache lookup failed", e && e.message);
+    }
+  }
+
+  // The listing brain always needs the image; the pricing brain needs it only on
+  // a cache miss. Compute the base64 once, and only if something still has to run.
+  if (!pricingBrain || !listing) {
     const b64 = await deps.toAnalysisBase64(stored.buffer);
-    pricingBrain = await deps.runPricingBrain(b64);
+    if (!pricingBrain) {
+      pricingBrain = await deps.runPricingBrain(b64);
+      pricingBrain.analysisMode = "full";
+      sourceRead = { source: "fresh", cacheId: null, firstReadAt: new Date(), usedAt: new Date() };
+    }
     if (!listing) {
       // The vision brain names the category; the listing brain is told what it
       // is looking at. A listing failure must NOT lose the pricing work.
@@ -260,6 +314,21 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
     priceLadder,
   };
 
+  // ── THE PANEL'S NUMBER (ruling 3, 2026-08-17) ──────────────────────────────
+  // Replayed from the same cached read, so the modal pre-fills with the figure
+  // the client was actually quoted — ×1.15 headroom included — rather than the
+  // draft engine's independent estimate of the same photo. Only possible when we
+  // consumed a cached read; a fresh A2S read was never shown to anyone, so there
+  // is no quote to match and this stays null rather than inventing one.
+  let panelQuote = null;
+  if (cachedAnalysis) {
+    try {
+      panelQuote = await deps.panelQuoteFor(cachedAnalysis, { pinText });
+    } catch (e) {
+      console.warn("[A2S] panel quote replay failed", e && e.message);
+    }
+  }
+
   const provisionalCode = category ? await suggestProductCode(category) : "";
 
   const doc = await DecorDraft.create({
@@ -285,7 +354,8 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
       measurements: suggested.measurements,
       productVariation: {},
     },
-    pricing: { aiSuggested: priceLadder },
+    sourceRead,
+    pricing: { aiSuggested: priceLadder, panelQuote },
     status: "queued",
     addedBy: actorId || null,
     addedAt: new Date(),
@@ -484,5 +554,6 @@ module.exports = {
   rejectDraft,
   normalizeImageUrl,
   runPricingBrain,
+  priceFromAnalysis,
   __deps: deps, // test seam
 };
