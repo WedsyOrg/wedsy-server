@@ -76,8 +76,68 @@ const VenueInvoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Booking-engine S5 (additive): the lead this invoice belongs to, so the
+// Documents tab can list invoices without going through the booking. Denormalised
+// rather than joined because every read of the tab needs it and the booking↔lead
+// link is immutable once set.
+VenueInvoiceSchema.add({
+  enquiry: { type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" },
+  // The VenueLeadDocument row holding the rendered PDF, so download and version
+  // history come from the same infrastructure as every other lead document.
+  leadDocument: { type: mongoose.Schema.Types.ObjectId, ref: "VenueLeadDocument" },
+  // Set when this invoice was raised against ONE recorded payment (S5: "one at
+  // booking, then one per recorded payment"). The subdocument id of the
+  // VenueBooking.paymentSchedule row, or null for the at-booking invoice.
+  forMilestoneId: { type: mongoose.Schema.Types.ObjectId, default: null },
+});
+
+/**
+ * ── IMMUTABILITY, SCOPED TO WHAT "IMMUTABLE" CAN MEAN HERE ──────────────────
+ * S5 requires an invoice to be immutable once generated. That cannot mean the
+ * whole document is frozen: `payments` and `status` are mutated by four existing
+ * flows (venueInvoice.addPayment/approvePayment/rejectPayment, venueCheckin),
+ * and a tax invoice legitimately accumulates payments against it over time.
+ *
+ * What must never change is the FINANCIAL CONTENT — the number it was issued
+ * under, the sequence backing it, what was charged, and how tax was applied.
+ * Those are what a customer holds a copy of and what a tax authority would
+ * compare against. So the guard freezes exactly those paths and leaves payment
+ * application alone, which is both the correct semantics and the only version
+ * that does not break code already in production.
+ */
+const FROZEN_PATHS = [
+  "invoiceNumber",
+  "seq",
+  "venue",
+  "booking",
+  "enquiry",
+  "lineItems",
+  "gstPercent",
+  "gstMode",
+  "discount",
+  "totals",
+  "kind",
+  "forMilestoneId",
+];
+
+VenueInvoiceSchema.pre("save", function freezeFinancials(next) {
+  if (this.isNew) return next();
+  const touched = FROZEN_PATHS.filter((p) => this.isModified(p));
+  if (touched.length) {
+    return next(
+      new Error(
+        `Invoice ${this.invoiceNumber} is immutable once generated — cannot change ${touched.join(", ")}. ` +
+          "Raise a new invoice instead."
+      )
+    );
+  }
+  return next();
+});
+
 VenueInvoiceSchema.index({ venue: 1, createdAt: -1 });
 VenueInvoiceSchema.index({ booking: 1 });
+// Booking-engine S5: the Documents tab's read.
+VenueInvoiceSchema.index({ enquiry: 1, createdAt: -1 });
 // Unique invoice number per venue.
 VenueInvoiceSchema.index({ venue: 1, invoiceNumber: 1 }, { unique: true });
 
