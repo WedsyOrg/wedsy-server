@@ -134,6 +134,72 @@ const FULL_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fenc
 }
 If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags/included and empty strings for suggestedName/description; still give best-effort size/complexity/style.`;
 
+
+// ── LISTING-mode schema (2026-08-17) — /decor/ai-analyze ONLY ────────────────
+//
+// ⛔ DO NOT ROUTE ANY PRICING PATH AT THIS BLOCK. Not /decor/analyse-image, not
+// /decor/demo-price, not the A2S draft path. It is scoped to POST
+// /decor/ai-analyze — the catalogue's "AI Analyse" button — which has no pricing
+// consumer, so a style wobble there costs nothing.
+//
+// WHY, with the evidence (verification gate, 2026-08-17):
+// Folding the listing copy into a vision call DESTABILISES THE STYLE READ, and
+// `style` drives decorPricing.STYLE_PREMIUM. Probed on st034 "Sage Elegance",
+// same image, 8 reads per arm, identical SHARED_RULES:
+//     current schema : Traditional 8/8  ·  Modern 0/8   (deterministic)
+//     this schema    : Traditional 3/8  ·  Modern 5/8   (a coin flip)
+// STYLE_PREMIUM.Stage is { Modern: 1, Traditional: 0.703125 }, so that flip
+// swings the Stage artificial price ₹37,734 → ₹53,667 = +42.2% on the same photo.
+// Size and complexity were IDENTICAL across all 16 reads — style was the only
+// field that moved.
+//
+// ⚠️ REMOVING `styleTags` WAS NECESSARY BUT NOT SUFFICIENT. An earlier attempt
+// added a free-form styleTags array alongside the scalar; that third channel
+// moved 6 of 12 price ladders by up to 43%. This block has ONE scalar style
+// field, no styleTags, and an explicit instruction that detectedAesthetic must
+// agree with it — verified clean 36/36 on the gate — and the style read STILL
+// drifts. The act of asking for catalogue copy in the same call is itself the
+// destabiliser. Do not assume a further prompt tweak fixes it; re-run the gate
+// (scratchpad/merged-gate.js + st034-probe.js, n≥8 per arm) before believing any
+// change here is safe for a pricing surface.
+//
+// Everything else about the merge held: category accuracy 91.7% both arms, size
+// exact-match 41.7% both arms, median |area error| 32.5% both arms.
+const LISTING_SCHEMA_INSTR = `After the judgement above, also write this product's catalogue listing.
+
+NAMING ("name"):
+- STRICTLY 2 words (3 only if absolutely necessary).
+- Luxury Indian wedding catalogue feel: non-generic, premium.
+- Traditional aesthetic → royal / classic / cultural (e.g. Ivory Grace, Regal Flora, Marigold Grandeur). Modern → sleek / premium (e.g. Velvet Aura, Opal Pavilion, Celestial Bloom). Fusion → blend the two.
+- Avoid colour-only names, generic names, and basic vendor-style names.
+- When the user message supplies existing_names, the name must NOT be similar to any of them.
+
+ATTRIBUTE VALUES — when the user message supplies attribute_options, "flowers", "colors", "fabric" and "occasions" must be drawn ONLY from the matching list there. Never invent a value; return [] when unsure. Without attribute_options, describe them freely.
+
+TAGS ("tags") — searchable tags read off the image, covering: décor style (floral, royal, modern, traditional, fusion), colour (pink, gold, white, red), occasion (wedding, reception, engagement), structure (backdrop, arch, mandap, stage, canopy), mood (romantic, grand, minimal, vibrant, elegant), and visible materials (fabric, fresh flowers, LED, mirror, drapes). 8-12 tags, one or two words each, all lowercase.
+
+Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys:
+{
+  "isDecorProduct": boolean,
+  "category": one of ${JSON.stringify(CATEGORY_LIST)} OR null (null when isDecorProduct is false),
+  "categoryConfidence": number 0.0-1.0,
+  "style": "Modern" | "Traditional" | null,
+  "flowers": string[],
+  "colors": string[],
+  "fabric": string[],
+  "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
+  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
+  "name": string,
+  "description": string (2-3 sentences, luxury emotional language),
+  "tags": string[],
+  "included": string[],
+  "seoKeywords": string[],
+  "occasions": string[],
+  "detectedAesthetic": "traditional" | "modern" | "fusion"
+}
+"style" is judged by the STYLE rule above and is the only style field — decide it once. "detectedAesthetic" is that SAME judgement written three-way, and must agree with it: "traditional" when style is Traditional, "modern" when style is Modern, and "fusion" only when the build genuinely blends both. Writing the listing must not change your style judgement.
+If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags/included/seoKeywords/occasions and empty strings for name/description; still give best-effort size/complexity/style.`;
+
 // Demo-only: `observations` uses the founder's concrete vocabulary. These are
 // OBSERVATIONS the staff member reads to place the quote within the range —
 // they are never graded and never touch a price (the Phase 3 measurement gate
@@ -225,6 +291,19 @@ const snapSize = (category, size) => {
   return { length: best[0], width: best[1] };
 };
 
+// `included` is a business rule, not a judgement call — derived from the
+// category server-side. (Absorbed from services/decorListing.js when the two
+// brains merged; POST /decor/ai-analyze has always applied exactly this.)
+const includedFor = (category) => {
+  const cat = String(category || "").toLowerCase();
+  const seaterCategories = ["stage", "mandap"];
+  const ledCategories = ["stage", "mandap", "photobooth", "pathway", "nameboard", "entrance arch"];
+  const included = ["Decor as shown in image", "Props as shown in image"];
+  if (ledCategories.some((c) => cat.includes(c))) included.unshift("LED PAR Cans included");
+  if (seaterCategories.some((c) => cat.includes(c))) included.unshift("Seaters included");
+  return included;
+};
+
 const asArray = (v) => (Array.isArray(v) ? v.filter((x) => x != null && x !== "") : []);
 const clamp01 = (v) => {
   const x = Number(v);
@@ -306,6 +385,28 @@ const postProcess = (raw = {}, mode = "full") => {
     return { ...base, observations, minBuildWidth, recommendedSize, stageMeasurements, occasion };
   }
 
+  // LISTING mode = full vision fields PLUS the catalogue copy. Reached only by
+  // POST /decor/ai-analyze — see the ⛔ note on LISTING_SCHEMA_INSTR. `included`
+  // is DERIVED from the category server-side, never left to the model, matching
+  // what /ai-analyze has always done.
+  if (mode === "listing") {
+    const AESTHETICS = ["traditional", "modern", "fusion"];
+    return {
+      ...base,
+      flowers: asArray(raw.flowers),
+      colors: asArray(raw.colors),
+      fabric: asArray(raw.fabric),
+      name: isDecorProduct ? asStr(raw.name) : "",
+      description: isDecorProduct ? asStr(raw.description) : "",
+      tags: isDecorProduct ? asArray(raw.tags) : [],
+      included: isDecorProduct ? includedFor(category) : [],
+      seoKeywords: isDecorProduct ? asArray(raw.seoKeywords) : [],
+      occasions: isDecorProduct ? asArray(raw.occasions) : [],
+      detectedAesthetic:
+        isDecorProduct && AESTHETICS.includes(raw.detectedAesthetic) ? raw.detectedAesthetic : null,
+    };
+  }
+
   return {
     ...base,
     flowers: asArray(raw.flowers),
@@ -346,14 +447,34 @@ const createWithRetry = async (client, params, attempts = 3) => {
 //   mode: 'demo' (default fields only, faster) | 'full' (everything).
 // Throws: err.code "NO_IMAGE" (bad input), "VISION_PARSE" (non-JSON — err.raw),
 // or the raw Anthropic SDK error (auth/rate/etc., after retries).
-const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
+const analyseImage = async ({ imageBase64, imageUrl, mode, listingContext } = {}) => {
   const source = buildImageSource({ imageBase64, imageUrl });
   if (!source) {
     const err = new Error("image (base64) or imageUrl is required");
     err.code = "NO_IMAGE";
     throw err;
   }
-  const useMode = mode === "demo" ? "demo" : "full";
+  // THREE modes. "full" and "demo" are UNCHANGED from HEAD — the pricing paths
+  // (/decor/analyse-image, /decor/demo-price, A2S) all use those. "listing" is
+  // the /ai-analyze-only merged block; see the ⛔ note on LISTING_SCHEMA_INSTR.
+  const useMode = mode === "demo" ? "demo" : mode === "listing" ? "listing" : "full";
+
+  // FULL mode only: the naming/attribute context the absorbed autofill brain
+  // received in ITS user message. Kept in the USER turn — never in a system
+  // block — so the cached SHARED_RULES prefix is untouched and demo is unaffected.
+  let contextText = "";
+  if (useMode === "listing" && listingContext) {
+    const names = asArray(listingContext.existingNames);
+    const opts = listingContext.attributeOptions;
+    const parts = [];
+    if (names.length) {
+      parts.push(`existing_names (the "name" you return must NOT be similar to any of these):\n${JSON.stringify(names)}`);
+    }
+    if (opts && typeof opts === "object" && Object.keys(opts).length) {
+      parts.push(`attribute_options (use ONLY these values for the matching fields; return [] if unsure):\n${JSON.stringify(opts)}`);
+    }
+    if (parts.length) contextText = `\n\n${parts.join("\n\n")}`;
+  }
 
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   const message = await createWithRetry(client, {
@@ -364,14 +485,14 @@ const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
     ...(THINKING_DEFAULTS_ON.test(MODEL) ? { thinking: { type: "disabled" } } : {}),
     system: [
       { type: "text", text: SHARED_RULES, cache_control: { type: "ephemeral" } },
-      { type: "text", text: useMode === "demo" ? DEMO_SCHEMA_INSTR : FULL_SCHEMA_INSTR },
+      { type: "text", text: useMode === "demo" ? DEMO_SCHEMA_INSTR : useMode === "listing" ? LISTING_SCHEMA_INSTR : FULL_SCHEMA_INSTR },
     ],
     messages: [
       {
         role: "user",
         content: [
           { type: "image", source },
-          { type: "text", text: "Analyse this image. Return only the JSON object." },
+          { type: "text", text: `Analyse this image. Return only the JSON object.${contextText}` },
         ],
       },
     ],
@@ -391,13 +512,32 @@ const analyseImage = async ({ imageBase64, imageUrl, mode } = {}) => {
     err.raw = text;
     throw err;
   }
-  return postProcess(parsed, useMode);
+  const out = postProcess(parsed, useMode);
+  // Token accounting, LISTING MODE ONLY — so "full" and "demo" return exactly
+  // what they returned before this change and the pricing paths are untouched.
+  if (useMode !== "listing") return out;
+  const u = (message && message.usage) || {};
+  const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
+  return {
+    ...out,
+    _usage: {
+      model: MODEL,
+      mode: useMode,
+      inputTokens: n(u.input_tokens),
+      outputTokens: n(u.output_tokens),
+      cacheCreationInputTokens: n(u.cache_creation_input_tokens),
+      cacheReadInputTokens: n(u.cache_read_input_tokens),
+    },
+  };
 };
 
 module.exports = {
   analyseImage,
   postProcess, // exported for the offline test harness / unit checks
+  includedFor,
   snapSize,
   SIZE_VOCAB,
+  FULL_SCHEMA_INSTR,    // exported so the verification gate tests the REAL artefact
+  LISTING_SCHEMA_INSTR, // /ai-analyze only — see the ⛔ note at its definition
   MODEL,
 };
