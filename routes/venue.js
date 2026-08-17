@@ -34,6 +34,7 @@ const docs = require("../controllers/venueDocs");
 const termsDoc = require("../controllers/venueTermsDocument");
 const leadDocs = require("../controllers/venueLeadDocument");
 const bookingSettings = require("../controllers/venueBookingSettings");
+const leadInvoice = require("../controllers/venueLeadInvoice");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
@@ -191,6 +192,16 @@ router.get("/:slug/enquiries/:enquiryId/terms/pdf", venueOwnerAuth, requireCapab
 router.get("/:slug/enquiries/:enquiryId/documents", venueOwnerAuth, requireCapability("documents"), leadDocs.listLeadDocuments);
 router.post("/:slug/enquiries/:enquiryId/documents/terms", venueOwnerAuth, requireCapability("documents"), leadDocs.generateTermsDocument);
 router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOwnerAuth, requireCapability("documents"), leadDocs.downloadLeadDocument);
+
+// ── BOOKING ENGINE S5: invoices raised from the lead ────────────────────────
+// bookings_money, not `documents`: an invoice is a money instrument and the GST
+// choice is a money decision, so it takes the same gate as every other money
+// surface. The rendered PDF still lands in the Documents tab, whose own read is
+// `documents`-gated — a member who may raise an invoice but not read documents
+// gets the record without the file, which is the correct split rather than an
+// accident. Scope is enforced INSIDE the controller (venueLeadScope, 404 never 403).
+router.get("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.listLeadInvoices);
+router.post("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.createLeadInvoice);
 
 // ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
