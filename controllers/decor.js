@@ -944,7 +944,11 @@ const shapeDemoPrice = (out) => {
     ...(out.recommendedSize ? { recommendedSize: out.recommendedSize } : {}),
     ...(m ? { stageMeasurements: shapeMeasurements(m) } : {}),
     // Operational signals in place of the threshold / rate / split.
-    structureHeavy: !!(out.structure && out.structure.applies),
+    // Keyed on `fabricated`, NOT `applies`. Since 2026-08-17 a sub-30ft build
+    // also carries a (light) structure charge, so `applies` is true for almost
+    // every Stage. This flag has to keep meaning "limited negotiating margin on
+    // a build fabricated from scratch" — gate it on the ≥30ft band only.
+    structureHeavy: !!(out.structure && out.structure.fabricated),
     confirmWidth: needsWidthConfirm(m),
     lowConfidence: !!(m && m.lowConfidence),
     ...(out.occasion ? { occasion: shapeOccasion(out.occasion) } : {}),

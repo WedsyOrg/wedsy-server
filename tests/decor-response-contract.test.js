@@ -85,8 +85,15 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
   const out = shapeClientResponse("demo-price", raw);
 
   // the engine still knows everything — the trim is at the boundary
-  ok(raw.floralRatePerFt > 0 && raw.headroomApplied > 1 && raw.structure.ratePerSqFt > 0,
-    "SERVICE stays fully expressive (rate, headroom, structure rate all present internally)");
+  // ⚠️ CHANGED 2026-08-17. This fixture's "haldi ceremony" caption re-labels the
+  // Stage to Haldi (asserted below), and haldi is now EXEMPT from the structure
+  // charge at any width — so there is no ratePerSqFt to assert here. Note the old
+  // behaviour this exposes: a 36ft haldi used to be charged the ₹390/sqft
+  // FABRICATION rate (~₹1.6L) because the pre-2026-08-17 code keyed on width
+  // alone and never on category. The exemption fixes that latent bug.
+  ok(raw.floralRatePerFt > 0 && raw.headroomApplied > 1,
+    "SERVICE stays fully expressive (rate + headroom present internally)");
+  eq(raw.structure.band, "exempt", "haldi is exempt from the structure charge at 36ft");
   ok(raw.stageMeasurements.reasoning && raw.stageMeasurements.widthBasis,
     "…including the derivation prose and the width basis");
 
@@ -107,7 +114,9 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
     "…repeatingElements trimmed to {count, estimatedWidthEachFt}");
 
   // transforms
-  eq(out.structureHeavy, true, "structureHeavy:true replaces the threshold/rate/split");
+  // CHANGED 2026-08-17: exempt (haldi) → no fabrication → structureHeavy false.
+  // The structureHeavy:true path is covered by the genuine-Stage block below.
+  eq(out.structureHeavy, false, "structureHeavy:false — haldi is exempt, nothing fabricated");
   eq(out.confirmWidth, true, "confirmWidth:true (36ft > 25ft)");
   eq(out.lowConfidence, false, "lowConfidence:false passthrough");
 
@@ -136,6 +145,39 @@ const MIN_BUILD = { minWidthFt: 30, reasoning: "backdrop fits six sofas across",
   const narrow = build({ spanWidthFt: 20, floralRunFt: 16, confidence: 0.8, widthToHeightRatio: 2 });
   eq(narrow.confirmWidth, false, "confirmWidth:false at 20ft with good confidence");
   eq(narrow.structureHeavy, false, "structureHeavy:false below the (unstated) threshold");
+
+  // ── ADDED 2026-08-17 — genuine Stage at 36ft, so structureHeavy:true is still
+  // covered after the haldi fixture above became exempt. Also pins the new
+  // two-band split at the wire: `fabricated` drives the flag, `applies` does not.
+  const fabricated = buildDemoPrice(
+    {
+      isDecorProduct: true, category: "Stage", categoryConfidence: 0.9,
+      observations: [], stageMeasurements: MEASURED,
+    },
+    [doc("st9", "Wide Build", { natural: 90000, mixed: 60000 }, [16, 12])],
+    {}
+  );
+  const fabOut = shapeClientResponse("demo-price", fabricated);
+  assertClean(fabOut, "demo-price");
+  eq(fabricated.structure.band, "fabricated", "36ft Stage is in the fabricated band");
+  eq(fabricated.structure.fabricated, true, "…and flagged fabricated");
+  eq(fabOut.structureHeavy, true, "structureHeavy:true replaces the threshold/rate/split");
+  ok(!("structure" in fabOut), "the structure OBJECT never reaches the wire — only the boolean");
+
+  // A sub-30ft Stage: a charge applies, but it is NOT fabricated, so the
+  // negotiating-margin flag must stay false. This is the distinction the
+  // 2026-08-17 light band introduced.
+  const light = buildDemoPrice(
+    {
+      isDecorProduct: true, category: "Stage", categoryConfidence: 0.9, observations: [],
+      stageMeasurements: { backdropWidthFt: 24, floralRunFt: 18, rawHeightEstimateFt: 12, confidence: 0.8, reasoning: "mid build" },
+    },
+    [], {}
+  );
+  const lightOut = shapeClientResponse("demo-price", light);
+  eq(light.structure.applies, true, "24ft Stage: a light charge DOES apply");
+  eq(light.structure.fabricated, false, "…but nothing is fabricated");
+  eq(lightOut.structureHeavy, false, "…so structureHeavy stays false — the flag keeps its meaning");
   eq(narrow.lowConfidence, false, "lowConfidence:false");
   // narrow but unsure → confidence is stripped, so the boolean carries the job
   const unsure = build({ spanWidthFt: 20, floralRunFt: 16, confidence: 0.05, widthToHeightRatio: 2 });
