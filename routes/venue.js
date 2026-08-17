@@ -33,6 +33,7 @@ const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const termsDoc = require("../controllers/venueTermsDocument");
 const leadDocs = require("../controllers/venueLeadDocument");
+const bookingSettings = require("../controllers/venueBookingSettings");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
@@ -217,6 +218,19 @@ router.post("/:slug/invoices/:invoiceId/payments/:paymentId/reject", venueOwnerA
 router.get("/:slug/terms-document", venueOwnerAuth, termsDoc.getTermsDocument);
 router.put("/:slug/terms-document", venueOwnerAuth, requireCapability("documents"), termsDoc.putTermsDocument);
 router.delete("/:slug/terms-document", venueOwnerAuth, requireCapability("documents"), termsDoc.deleteTermsDocument);
+
+// ── BOOKING ENGINE S1: venue-level configuration the engine reads ────────────
+// Gated on `documents` for the two document surfaces (brief, cancellation
+// policy) — the same capability that already gates /terms-document and the doc
+// templates they sit beside. Payment slabs are money configuration, so they take
+// `bookings_money`, matching every other money surface. The GET is open to any
+// authenticated venue user because the wizard needs it to pre-populate and a
+// member who can confirm a booking must be able to read the shapes.
+router.get("/:slug/booking-settings", venueOwnerAuth, bookingSettings.getBookingSettings);
+router.put("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.putBrief);
+router.delete("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.deleteBrief);
+router.put("/:slug/booking-settings/cancellation-policy", venueOwnerAuth, requireCapability("documents"), bookingSettings.putCancellationPolicy);
+router.put("/:slug/booking-settings/payment-slabs", venueOwnerAuth, requireCapability("bookings_money"), bookingSettings.putPaymentSlabs);
 router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);
 router.post("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.createTemplate);
 router.patch("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.updateTemplate);

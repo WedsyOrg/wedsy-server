@@ -217,6 +217,60 @@ const VenueSchema = new mongoose.Schema({
     uploadedBy: { type: mongoose.Schema.Types.ObjectId },
     uploadedByName: { type: String, default: "" },
   },
+
+  // ── S1b VENUE BRIEF ────────────────────────────────────────────────────────
+  // Deliberately the SAME shape as termsDocument above, because it is the same
+  // kind of thing: one venue-level PDF the owner uploaded and approved, sent
+  // AS-IS. Never converted, and unlike the T&Cs never stitched behind a cover —
+  // a brief is the venue describing itself, so there is nothing to personalise.
+  // The file goes up through the existing /file/upload → S3 path; this holds the
+  // pointer and the provenance.
+  briefDocument: {
+    url: { type: String, default: "" },
+    filename: { type: String, default: "" },
+    sizeBytes: { type: Number },
+    contentType: { type: String, default: "" },
+    uploadedAt: { type: Date },
+    uploadedBy: { type: mongoose.Schema.Types.ObjectId },
+    uploadedByName: { type: String, default: "" },
+  },
+
+  // ── S1c CANCELLATION POLICY ────────────────────────────────────────────────
+  // Rich text, stored as a CONSTRAINED BLOCK TREE rather than HTML.
+  //
+  // The editor (TipTap) hands us a ProseMirror document, which is already
+  // structured JSON. Storing that structure — instead of the HTML it could be
+  // serialised to — is what makes the PDF renderer tractable: it walks a typed
+  // tree of four node kinds with one inline mark, so there is no HTML to parse
+  // and no sanitiser to trust. Anything outside this schema is rejected at the
+  // controller rather than stored and rendered later.
+  //
+  // Four block kinds and one mark, matching exactly what the brief asks for:
+  // headings, bold, ordered and unordered lists. No merge fields, no import,
+  // no tables, no images, no links — the T&C editor we deferred is where those
+  // belong, and every one of them is a fidelity risk on a document that
+  // decides refunds.
+  cancellationPolicy: {
+    blocks: [
+      {
+        _id: false,
+        // "heading" | "paragraph" | "bulletList" | "orderedList"
+        type: { type: String, enum: ["heading", "paragraph", "bulletList", "orderedList"], required: true },
+        // 1..3, heading only. Deeper than 3 is not a policy, it is an outline.
+        level: { type: Number, min: 1, max: 3 },
+        // Inline runs. A block is a sequence of {text, bold} spans, which is the
+        // smallest thing that can express "bold this phrase" without inviting
+        // arbitrary markup.
+        spans: [{ _id: false, text: { type: String, default: "" }, bold: { type: Boolean, default: false } }],
+        // List items, each itself a span sequence. One level deep on purpose.
+        items: [{ _id: false, spans: [{ _id: false, text: { type: String, default: "" }, bold: { type: Boolean, default: false } }] }],
+      },
+    ],
+    updatedAt: { type: Date },
+    updatedBy: { type: mongoose.Schema.Types.ObjectId },
+    updatedByName: { type: String, default: "" },
+  },
+
   contact: {
     primaryName: { type: String, default: "" },
     primaryPhone: { type: String, default: "" },
@@ -247,6 +301,35 @@ const VenueSchema = new mongoose.Schema({
     // prices from experience and finds it noise can switch it off venue-wide
     // rather than dismissing it lead by lead forever.
     pricingAdvice: { type: Boolean, default: true },
+
+    // ── S1d PAYMENT SLAB DEFAULTS ────────────────────────────────────────────
+    // The venue's preferred schedule shapes. These PRE-POPULATE the Confirm
+    // Booking wizard and are always overridable there — they are a starting
+    // point, never a constraint, and nothing here is ever copied onto a lead.
+    //
+    // Percentages, not amounts, because a shape is reusable across bookings of
+    // any value; the wizard computes the money from the booking total. Each
+    // slab's percentages must total 100, enforced at the controller.
+    //
+    // offsetDays is relative to the EVENT date and negative means before it, so
+    // -30 reads as "thirty days before the event". null means "on booking",
+    // which is how a token or an up-front instalment is expressed without
+    // inventing a second concept.
+    paymentSlabs: [
+      {
+        _id: false,
+        name: { type: String, default: "" },
+        isDefault: { type: Boolean, default: false },
+        rows: [
+          {
+            _id: false,
+            label: { type: String, default: "" },
+            percent: { type: Number, default: 0, min: 0, max: 100 },
+            offsetDays: { type: Number, default: null },
+          },
+        ],
+      },
+    ],
   },
   // backward compat
   phone: { type: String, default: "" },
