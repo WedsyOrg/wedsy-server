@@ -9,3 +9,5 @@ ecosystem.config.js
 .next/
 # Migration backup dumps (contain pre-repair field values, incl. dead API keys)
 /scripts/backups/
+# PDF regression harness output (scripts/pdf-regression-fingerprint.js)
+scripts/pdf-fingerprints/
