@@ -79,37 +79,119 @@ const STAGE_TIER_DIVISORS = { artificial: 2, mixed: 1.5, natural: 1 }; // fresh 
 // used by the area-anchored ladders.
 const STAGE_RANGE_SPREAD = Number(process.env.DECOR_STAGE_RANGE_SPREAD) || 0.07;
 
-// ── Structure charge (founder 2026-08) ───────────────────────────────────────
-// UNDER 30ft there is NO structure charge at all: those builds come out of
-// existing inventory, nothing is fabricated, and floral run × rate is the
-// entire price. At 30ft AND ABOVE the structure is built from scratch, so it
-// is charged as built surface area (width × height) at a rate set by GEOMETRY.
-// Calibration: a 60×12 blocky steel build is 720 sq ft × ₹390 ≈ ₹2.8L of
-// structure, which with modest floral reaches the founder's ₹4L quote for that
-// design. That ₹4L reference is a QUOTE — it already carries the negotiating
-// margin — so the rate derived from it does NOT take DECOR_DEMO_HEADROOM on
-// top; see floralRunPrices. Any re-derivation of these rates must preserve
-// that: a rate taken from a quoted figure is already headroomed.
+// ── Structure charge (founder 2026-08, revised 2026-08-17) ───────────────────
+// TWO BANDS, both charged as built surface area (width × height):
+//
+//   width < 30ft  → LIGHT band, ₹65/sqft, no geometry split. Even a build
+//     assembled from existing inventory costs labour and consumables to erect.
+//   width ≥ 30ft  → FABRICATED band, ₹390/sqft blocky · ₹500/sqft curved_ornate.
+//     Built from scratch, so the rate is set by GEOMETRY.
+//
+// WHY THE LIGHT BAND EXISTS (2026-08-17). The original rule was "UNDER 30ft
+// there is NO structure charge at all" — founder-stated, on the reasoning that
+// those builds come out of existing inventory and nothing is fabricated. The
+// catalogue analysis of 2026-08-17 disproved it: against the founder's OWN
+// prices, the engine under-priced 106 of 126 Stage products with a MEDIAN
+// SIGNED ERROR of −49.7%. The founder corrected the rule. ₹65/sqft was
+// calibrated on the "Better Together" stage: 24.5ft × 12ft = 294 sqft × ₹65 =
+// ₹19,110, which added to the ₹44,000-51,000 artificial floral lands ~₹63-70k
+// against the founder's own ₹75,000 for that build. Landing slightly UNDER is
+// deliberate and is the founder's call, not an error to correct.
+//
+// Calibration for the fabricated band is unchanged: a 60×12 blocky steel build
+// is 720 sq ft × ₹390 ≈ ₹2.8L of structure, which with modest floral reaches
+// the founder's ₹4L quote for that design. That ₹4L reference is a QUOTE — it
+// already carries the negotiating margin — so the rate derived from it does NOT
+// take DECOR_DEMO_HEADROOM on top; see floralRunPrices. The ₹65 light rate is
+// treated the SAME way (flat addend, no ×1.15) for consistency with it.
+//
+// ⚠️ THE THRESHOLD CLIFF — KNOWN, DOCUMENTED, DELIBERATELY NOT SMOOTHED.
+// At height 12ft: 29.9ft → 359 sqft × ₹65 = ₹23,322, but 30ft → 360 sqft × ₹390
+// = ₹1,40,400. That is 6.0× for one tenth of a foot (7.7× on curved_ornate,
+// ₹1,80,000). Nothing damps it — structureCharge is a hard branch, and
+// sceneWidthCheck only FLAGS a disputed width, it never adjusts one.
+// This matters because backdropWidthFt carries roughly ±25% read noise (the
+// vision pipeline runs at temperature 1.0 and every sampling control is
+// deprecated on the current model), so a build genuinely near 30ft can flip
+// between ₹23,322 and ₹1,40,400 on two consecutive clicks of the same pin.
+// The intended mitigation is PIN-LEVEL CACHING — analyse a pin once and replay
+// the stored result — not a smoothing function here. Do not "fix" this by
+// interpolating between the bands without a founder ruling: the two rates
+// describe genuinely different work (erecting vs fabricating), and a blended
+// rate in the middle would describe neither.
 const STRUCTURE_MIN_WIDTH_FT = 30;
 const DECOR_STRUCTURE_RATE_STEEL = Number(process.env.DECOR_STRUCTURE_RATE_STEEL) || 390;
 const DECOR_STRUCTURE_RATE_FRP = Number(process.env.DECOR_STRUCTURE_RATE_FRP) || 500;
+// Sub-30ft erection charge. Single rate — NO geometry split: below the
+// fabrication threshold the cost is labour to put up an existing structure, and
+// that does not depend on whether the panels are square or shaped.
+const DECOR_STRUCTURE_RATE_LIGHT = Number(process.env.DECOR_STRUCTURE_RATE_LIGHT) || 65;
 const STRUCTURE_RATES = { blocky: DECOR_STRUCTURE_RATE_STEEL, curved_ornate: DECOR_STRUCTURE_RATE_FRP };
 
-// Always returns an object — staff details must be able to say WHICH SIDE of
-// the 30ft threshold a build fell on, which a bare null cannot express.
-const structureCharge = (m) => {
+// Always returns an object (except with no usable width) — staff details must
+// be able to say WHICH BAND a build fell in, which a bare null cannot express.
+//
+// `applies`    — a structure charge of SOME kind is being added to the price.
+// `fabricated` — the build is at/over the threshold and was built from scratch.
+//                THIS is what drives the client-facing structureHeavy flag; the
+//                light band must never set it, or "limited negotiating margin
+//                on a fabricated build" would come to mean "any build at all".
+// `band`       — "light" | "fabricated" | "no_height" | "exempt"
+//
+// fabricationExempt: HALDI. A haldi setup is a small floral backdrop the
+// founder calibrated as deliberately cheap (₹3,000/ft vs the Stage ₹6,250) and
+// involves essentially no fabrication, so it attracts NO structure charge at
+// any width — not even the light band. Without this exemption a 9×12 haldi
+// would gain 108 sqft × ₹65 = ₹7,020 on a ~₹27,000 build, a 26% increase to
+// the one category explicitly priced to be affordable.
+const structureCharge = (m, { fabricationExempt = false } = {}) => {
   if (!m) return null;
   const widthFt = Number(m.backdropWidthFt);
   const heightFt = Number(m.estimatedHeightFt);
   if (!(widthFt > 0)) return null;
-  if (widthFt < STRUCTURE_MIN_WIDTH_FT || !(heightFt > 0)) {
-    return { applies: false, thresholdFt: STRUCTURE_MIN_WIDTH_FT, widthFt };
+
+  if (fabricationExempt) {
+    return { applies: false, fabricated: false, band: "exempt", thresholdFt: STRUCTURE_MIN_WIDTH_FT, widthFt, cost: 0 };
   }
+
+  // No height read → no surface area → nothing to charge, in EITHER band. At or
+  // above the threshold that is a real hole (a 40ft build priced with zero
+  // structure), so make it visible rather than silent. Deliberately NOT patched
+  // with a fallback height: inventing a dimension to bill against is worse than
+  // under-billing a case someone can see in the logs.
+  if (!(heightFt > 0)) {
+    if (widthFt >= STRUCTURE_MIN_WIDTH_FT) {
+      console.warn(
+        `[decorDemoPrice] structure charge SKIPPED: ${widthFt}ft build is at/above the ` +
+          `${STRUCTURE_MIN_WIDTH_FT}ft threshold but no estimatedHeightFt was read — ` +
+          `billed with ZERO structure. Re-run the read or set the height manually.`
+      );
+    }
+    return { applies: false, fabricated: false, band: "no_height", thresholdFt: STRUCTURE_MIN_WIDTH_FT, widthFt, cost: 0 };
+  }
+
+  const areaSqFt = widthFt * heightFt;
+
+  if (widthFt < STRUCTURE_MIN_WIDTH_FT) {
+    return {
+      applies: true,
+      fabricated: false,
+      band: "light",
+      thresholdFt: STRUCTURE_MIN_WIDTH_FT,
+      widthFt,
+      heightFt,
+      areaSqFt,
+      ratePerSqFt: DECOR_STRUCTURE_RATE_LIGHT,
+      cost: areaSqFt * DECOR_STRUCTURE_RATE_LIGHT,
+    };
+  }
+
   const geometry = readStructureGeometry(m.structureGeometry);
   const ratePerSqFt = STRUCTURE_RATES[geometry];
-  const areaSqFt = widthFt * heightFt;
   return {
     applies: true,
+    fabricated: true,
+    band: "fabricated",
     thresholdFt: STRUCTURE_MIN_WIDTH_FT,
     widthFt,
     heightFt,
@@ -593,9 +675,12 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
   const bandTier = bandTierOf(tiers);
   const floralRunCategory = category === "Stage" || category === "Haldi";
   const stageMeasurements = floralRunCategory ? readStageMeasurements(analysis.stageMeasurements) : null;
-  // Fabrication charge for builds at/over 30ft. Width-driven, so it is a
-  // no-op for haldi (8-10ft backdrops) without needing a category exception.
-  const structure = structureCharge(stageMeasurements);
+  // Structure charge — light band under 30ft, fabrication at/over it.
+  // Haldi is EXEMPT at any width (see structureCharge): it used to be a no-op
+  // here purely because haldi backdrops are 8-10ft and the old rule charged
+  // nothing under 30ft. The light band removed that accident, so the exemption
+  // now has to be stated explicitly.
+  const structure = structureCharge(stageMeasurements, { fabricationExempt: category === "Haldi" });
   // Measured Stage replaces the size ladder with one floral-run price block.
   const buckets = stageMeasurements ? null : SIZE_BUCKETS[category];
   const sized = !!buckets;
@@ -751,6 +836,7 @@ module.exports = {
   STRUCTURE_GEOMETRIES,
   DECOR_STRUCTURE_RATE_STEEL,
   DECOR_STRUCTURE_RATE_FRP,
+  DECOR_STRUCTURE_RATE_LIGHT,
   sceneWidthCheck,
   SCENE_TYPES,
   SCENE_WIDTH_BANDS,

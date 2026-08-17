@@ -183,9 +183,13 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   eq(solid.pricingModel, "floral-run", "measured Stage prices by floral run");
   eq(solid.sized, false, "no size ladder for a measured Stage");
   eq(solid.ladder.length, 1, "single measured price block");
-  range(solid.ladder[0].prices.natural, 160500, 184500, "fresh = 150000 × 1.15 headroom, ±7%");
-  range(solid.ladder[0].prices.mixed, 107000, 123000, "mixed = fresh/1.5 (Stage divisor, not the Mandap ladder)");
-  range(solid.ladder[0].prices.artificial, 80000, 92500, "artificial = fresh/2");
+  // ⚠️ RANGES UPDATED 2026-08-17 — the sub-30ft LIGHT structure charge (₹65/sqft,
+  // flat, no ×1.15) is now part of every measured Stage figure. The floral half is
+  // unchanged; each range moved by exactly (width × snapped height × ₹65).
+  // 24ft wide × 12ft high = 288 sq ft × ₹65 = ₹18,720 added flat to each tier.
+  range(solid.ladder[0].prices.natural, 178000, 204500, "fresh 150000 × 1.15 + ₹18,720 light structure, ±7%");
+  range(solid.ladder[0].prices.mixed, 124500, 143000, "mixed = fresh/1.5 (Stage divisor) + ₹18,720");
+  range(solid.ladder[0].prices.artificial, 97500, 112500, "artificial = fresh/2 + ₹18,720");
   eq(solid.stageMeasurements.floralRunFt, 24, "measurements echoed in the response");
 
   // Same 24ft backdrop, garland + clusters → half the price at 12.5 floral ft.
@@ -195,7 +199,8 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     }),
     []
   );
-  range(garland.ladder[0].prices.natural, 83500, 96000, "12.5 floral ft fresh ≈ ₹78k base, headroomed ±7%");
+  // Same 24×12 build, garland-only floral → same ₹18,720 structure, less floral.
+  range(garland.ladder[0].prices.natural, 101000, 116000, "12.5 floral ft ≈ ₹78k × 1.15 + ₹18,720, ±7%");
   ok(
     garland.ladder[0].prices.natural.high < solid.ladder[0].prices.natural.low,
     "same width, garland-only build prices well below the solid wall"
@@ -320,14 +325,15 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     []
   );
   eq(solid10.stageMeasurements.estimatedHeightFt, 10, "9ft raw on a 24ft backdrop → 10ft snapped");
-  range(solid10.ladder[0].prices.natural, 160500, 184500, "₹1,50,000 calibration holds at 10ft height");
+  // 24 × 10 (snapped) = 240 sq ft × ₹65 = ₹15,600.
+  range(solid10.ladder[0].prices.natural, 175000, 201500, "₹1,50,000 calibration + ₹15,600 light structure at 10ft");
   const garland10 = buildDemoPrice(
     analysis("Stage", {
       stageMeasurements: { backdropWidthFt: 24, floralRunFt: 12.5, rawHeightEstimateFt: 9, confidence: 0.85, reasoning: "garland + clusters" },
     }),
     []
   );
-  range(garland10.ladder[0].prices.natural, 83500, 96000, "₹78,000 calibration holds at 10ft height");
+  range(garland10.ladder[0].prices.natural, 98000, 113000, "₹78,000 calibration + ₹15,600 light structure at 10ft");
 }
 
 // ── 3i. Width model — COUNTED, cross-checked against the scene, never averaged ─
@@ -528,11 +534,33 @@ const doc = (id, name, tiers, size) => normalizeComparable({
 {
   console.log("structure charge (30ft threshold, geometry-driven rate):");
 
-  // UNDER 30ft: no structure charge at all — built from existing inventory.
+  // ⚠️ CHANGED 2026-08-17. These assertions previously encoded "UNDER 30ft there
+  // is no structure charge at all — built from existing inventory", which was a
+  // founder-STATED rule, not an oversight. The founder CORRECTED it on
+  // 2026-08-17 after the catalogue analysis showed the engine under-pricing 106
+  // of 126 Stage products against his own prices, with a median signed error of
+  // −49.7%. Sub-30ft builds now carry a LIGHT band at ₹65/sqft (erection labour,
+  // not fabrication). The old expectation is preserved here as commentary so the
+  // change is legible rather than looking like a loosened test.
   const under = structureCharge({ backdropWidthFt: 29, estimatedHeightFt: 12 });
-  eq(under.applies, false, "29ft → no structure charge (built from inventory)");
+  eq(under.applies, true, "29ft → a LIGHT structure charge now applies (was: none)");
+  eq(under.band, "light", "…in the light band");
+  eq(under.fabricated, false, "…but NOT fabricated — that word is reserved for ≥30ft");
+  eq(under.ratePerSqFt, 65, "light rate is ₹65/sqft");
+  eq(under.cost, 29 * 12 * 65, "29×12 = 348 sq ft × ₹65 = ₹22,620");
   eq(under.thresholdFt, 30, "the threshold is recorded so staff details can name it");
-  ok(under.cost === undefined, "no cost figure at all below the threshold");
+  ok(under.geometry === undefined, "no geometry split below the threshold — a single rate");
+
+  // FOUNDER CALIBRATION for the light band — the "Better Together" stage.
+  const bt = structureCharge({ backdropWidthFt: 24.5, estimatedHeightFt: 12 });
+  eq(bt.areaSqFt, 294, "24.5×12 = 294 sq ft");
+  eq(bt.cost, 19110, "294 × ₹65 = ₹19,110 (founder calibration point)");
+
+  // No height read → nothing to charge in EITHER band, and never a fallback.
+  const noH = structureCharge({ backdropWidthFt: 40 });
+  eq(noH.applies, false, "40ft with no height read → no charge (hole is logged, not patched)");
+  eq(noH.band, "no_height", "…and the band says why");
+  eq(noH.cost, 0, "…with an explicit zero rather than an absent field");
 
   // AT/ABOVE 30ft: built surface area × the geometry rate.
   const at30 = structureCharge({ backdropWidthFt: 30, estimatedHeightFt: 10, structureGeometry: "blocky" });
@@ -620,23 +648,51 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   const gapWith = big.ladder[0].prices.natural.low - big.ladder[0].prices.artificial.low;
   const noStruct = buildDemoPrice(analysis("Stage", { stageMeasurements: sm(4.8, 7, "blocky") }), []);
   const gapWithout = noStruct.ladder[0].prices.natural.low - noStruct.ladder[0].prices.artificial.low;
-  eq(noStruct.structure.applies, false, "the 24ft version falls below the threshold");
+  // CHANGED 2026-08-17 (see the note in 3k): a sub-30ft build now carries the
+  // light band, so `applies` is true. `fabricated` is the field that still says
+  // which side of the threshold it fell on.
+  eq(noStruct.structure.applies, true, "the 24ft version now carries the light charge");
+  eq(noStruct.structure.fabricated, false, "…but is not fabricated — it is below the threshold");
   ok(gapWith > 0 && gapWithout > 0, "both keep a real tier gap");
 
-  // A sub-30ft build prices EXACTLY as it did before the structure charge existed.
+  // CHANGED 2026-08-17: a sub-30ft build no longer prices as it did before the
+  // structure charge existed — that is the entire point of the correction. This
+  // NOTE: estimatedHeightFt is the SNAPPED build height, not the raw estimate —
+  // rawHeightEstimateFt 9 resolves to the 10ft build height, so this is 24 × 10 =
+  // 240 sq ft × ₹65 = ₹15,600 (not 216 sq ft). The light charge bills the built
+  // structure, so the snapped height is the correct input.
   const preStructure = buildDemoPrice(
     analysis("Stage", { stageMeasurements: { backdropWidthFt: 24, floralRunFt: 24, rawHeightEstimateFt: 9, confidence: 0.85, reasoning: "solid wall" } }),
     []
   );
-  range(preStructure.ladder[0].prices.natural, 160500, 184500, "24ft solid wall unchanged by the structure charge");
+  eq(preStructure.structure.heightFt, 10, "rawHeight 9 snapped to the 10ft build height");
+  eq(preStructure.structure.cost, 24 * 10 * 65, "24 × 10 = 240 sq ft × ₹65 = ₹15,600 of light structure");
+  range(preStructure.ladder[0].prices.natural, 175000, 201500, "24ft solid wall + ₹15,600 light structure, ±7%");
 
-  // Haldi never attracts a structure charge — its backdrops are 8-10ft.
+  // HALDI IS EXEMPT AT ANY WIDTH — not merely below the threshold. A haldi setup
+  // is a small floral backdrop the founder calibrated as deliberately cheap
+  // (₹3,000/ft vs the Stage ₹6,250) with essentially no fabrication, so it takes
+  // NO structure charge — not even the light band. Before 2026-08-17 this passed
+  // by accident: haldi backdrops are 8-10ft and nothing under 30ft was charged.
+  // The light band removed that accident, so the exemption is now explicit.
   const haldi = buildDemoPrice(
     analysis("Stage", { stageMeasurements: { backdropWidthFt: 9, floralRunFt: 9, rawHeightEstimateFt: 7, confidence: 0.8, reasoning: "small" } }),
     [],
     { occasion: { value: "haldi", source: "caption", conflict: null } }
   );
-  eq(haldi.structure.applies, false, "a 9ft haldi backdrop is far below the threshold");
+  eq(haldi.structure.applies, false, "a 9ft haldi backdrop attracts no structure charge");
+  eq(haldi.structure.band, "exempt", "…because haldi is exempt, not because 9ft < 30ft");
+  eq(haldi.structure.cost, 0, "…with an explicit zero cost");
+
+  // A haldi build WIDE enough to clear the threshold is still exempt — the
+  // exemption is categorical, not width-driven.
+  const wideHaldi = buildDemoPrice(
+    analysis("Stage", { stageMeasurements: { backdropWidthFt: 34, floralRunFt: 20, rawHeightEstimateFt: 11, confidence: 0.8, reasoning: "wide haldi" } }),
+    [],
+    { occasion: { value: "haldi", source: "caption", conflict: null } }
+  );
+  eq(wideHaldi.structure.band, "exempt", "a 34ft haldi is STILL exempt — categorical, not width-driven");
+  eq(wideHaldi.structure.cost, 0, "…and costs nothing in structure");
 }
 
 // ── 3f. Haldi — its own pricing mode, not a discounted stage ─────────────────
@@ -709,7 +765,8 @@ const doc = (id, name, tiers, size) => normalizeComparable({
     occasion: resolveOccasion("sangeet night", vis(null, 0)),
   });
   eq(sangeetPin.category, "Stage", "sangeet does not change the pricing model");
-  range(sangeetPin.ladder[0].prices.natural, 60000, 69000, "stage rate applies (9ft × 6250, headroomed ±7%)");
+  // 9 × 10 (snapped) = 90 sq ft × ₹65 = ₹5,850 of light structure.
+  range(sangeetPin.ladder[0].prices.natural, 65500, 75500, "stage rate (9ft × 6250 × 1.15) + ₹5,850, ±7%");
   eq(sangeetPin.occasion.value, "sangeet", "occasion still surfaced");
 
   // Haldi caption on a Mandap: surfaced only — the model never flips.
@@ -725,7 +782,7 @@ const doc = (id, name, tiers, size) => normalizeComparable({
   });
   eq(unknown.occasion.value, null, "no occasion resolved");
   eq(unknown.occasion.defaultedToStageRate, true, "explicitly flags the stage-rate default");
-  range(unknown.ladder[0].prices.natural, 60000, 69000, "higher-revenue stage rate assumed");
+  range(unknown.ladder[0].prices.natural, 65500, 75500, "higher-revenue stage rate assumed, + ₹5,850 light structure");
 }
 
 // ── 3d. Vision size signals — passthrough + postProcess normalization ────────
