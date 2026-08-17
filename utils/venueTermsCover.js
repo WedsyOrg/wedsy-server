@@ -40,6 +40,7 @@ const {
   GOLD,
   GREY,
 } = require("./venuePdf");
+const { docDay, docDayWithWeekday } = require("./documentDate");
 
 const BODY = "#222222";
 const TEXT_W = 495; // matches the x-grid in venuePdf (left 50 → rule end 545)
@@ -58,30 +59,19 @@ function clean(v) {
   return s;
 }
 
-/** "Thursday, 26 November 2026" — weekday included, as the brief asks. */
-function longDate(d) {
-  const dt = new Date(d);
-  if (!d || Number.isNaN(dt.getTime())) return "";
-  return dt.toLocaleDateString("en-IN", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+/**
+ * "Thursday, 26 November 2026" — weekday included, as the brief asks.
+ *
+ * Composed by utils/documentDate rather than by toLocaleDateString, which
+ * printed "Thursday 26 November, 2026" on prod's Node 18 (ICU 74) and
+ * "Thursday, 26 November 2026" on dev's Node 20 (ICU 78). Couples received the
+ * first. Event dates are midnight-UTC calendar labels, so the UTC-based preset
+ * is the correct one — shifting them into a zone would move the wedding.
+ */
+const longDate = (d) => docDayWithWeekday(d);
 
 /** "26 November 2026" — no weekday, for running prose. */
-function plainDate(d) {
-  const dt = new Date(d);
-  if (!d || Number.isNaN(dt.getTime())) return "";
-  return dt.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-}
+const plainDate = (d) => docDay(d);
 
 const money = (n) => {
   const v = Number(n);

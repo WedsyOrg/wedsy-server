@@ -13,8 +13,22 @@ const err = (status, message) => Object.assign(new Error(message), { status });
 
 // Helvetica has no ₹ glyph — rupee amounts render as "Rs. 1,23,456".
 const money = (n) => `Rs. ${Number(n || 0).toLocaleString("en-IN")}`;
-const day = (d = new Date()) =>
-  new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "long", year: "numeric" });
+// Dates on a document are composed by utils/documentDate, not by
+// toLocaleDateString: ICU/CLDR data ships with the Node build, so the same code
+// printed "Thursday 26 November, 2026" on prod (Node 18 / ICU 74) and
+// "Thursday, 26 November 2026" on dev (Node 20 / ICU 78). This helper's plain
+// day/month/year shape happened to agree at those two versions, but agreement
+// at two arbitrary ICU releases is luck, not a contract.
+//
+// Two shapes, deliberately separate:
+//   dayKey   a calendar LABEL ("2026-11-26"). Parsed as digits, never through
+//            `new Date`, because `new Date("2026-11-26T00:00:00")` is LOCAL
+//            midnight and would name a different day on a non-UTC box.
+//   day      a real INSTANT (receivedAt, now). Rendered in the venue's zone,
+//            since the servers run UTC, which is nobody's idea of what day it is.
+const { docDayFromKey, docInstantDay } = require("../utils/documentDate");
+const dayKey = (key) => docDayFromKey(key);
+const day = (d = new Date()) => docInstantDay(d);
 
 const coupleOf = (lead) => {
   const q = lead.qualificationData || {};
@@ -24,9 +38,9 @@ const eventDatesOf = (lead) => {
   const q = lead.qualificationData || {};
   const dates = (q.eventDays || [])
     .filter((d) => !d.dateUnknown && d.date)
-    .map((d) => day(`${d.date}T00:00:00`));
+    .map((d) => dayKey(d.date));
   if (dates.length) return dates.join(", ");
-  return q.eventDate ? day(`${q.eventDate}T00:00:00`) : "to be finalised";
+  return q.eventDate ? dayKey(q.eventDate) : "to be finalised";
 };
 const venueOf = (lead) => {
   const q = lead.qualificationData || {};
