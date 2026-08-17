@@ -2,7 +2,7 @@ const Decor = require("../models/Decor");
 const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
-const { analyseImage } = require("../services/decorVision");
+const { analyseImage, includedFor } = require("../services/decorVision");
 const { buildDemoPrice, pinTextCategoryCheck, demoCategoryTiers, resolveOccasion } = require("../services/decorDemoPrice");
 const sharp = require("sharp");
 
@@ -1299,82 +1299,63 @@ const AiAnalyze = async (req, res) => {
       attributeOptions[a.name] = a.list || [];
     });
 
-    const userText = `Category: ${category}
-
-existing_names (avoid similarity):
-${JSON.stringify(existingNames)}
-
-attribute_options (use ONLY these values for the matching fields; return [] if unsure):
-${JSON.stringify(attributeOptions)}`;
-
-    let message;
+    // ── 2026-08-17: this endpoint now runs the MERGED vision+listing brain in
+    // "listing" mode (services/decorVision.js LISTING_SCHEMA_INSTR) instead of
+    // its own weak autofill prompt. One image, one call, off the calibrated
+    // brain. existing_names and attribute_options are still supplied
+    // (category-scoped, as before), so the strict 2-word naming rule and the
+    // don't-resemble-existing-names constraint are preserved verbatim.
+    //
+    // ⛔ "listing" mode is scoped to THIS endpoint only. It destabilises the
+    // `style` read (st034: 5/8 Modern vs the current schema's 0/8), and style
+    // drives STYLE_PREMIUM — a ±42% Stage price swing. /decor/analyse-image,
+    // /decor/demo-price and the A2S draft path all stay on "full"/"demo", which
+    // are unchanged. AI_SYSTEM_PROMPT below is retained because
+    // services/decorListing.js (still used by A2S) imports it.
+    let analysis;
     try {
-      const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-      message = await client.messages.create({
-        model: "claude-sonnet-4-5-20250929",
-        max_tokens: 1024,
-        system: AI_SYSTEM_PROMPT,
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: "image/jpeg",
-                  data: img.data,
-                },
-              },
-              { type: "text", text: userText },
-            ],
-          },
-        ],
+      analysis = await analyseImage({
+        imageBase64: img.data,
+        mode: "listing",
+        listingContext: { existingNames, attributeOptions },
       });
     } catch (apiErr) {
+      if (apiErr && apiErr.code === "VISION_PARSE") {
+        console.error("[AiAnalyze] JSON parse failed. Raw response:\n", apiErr.raw);
+        return res.status(502).send({
+          message: "AI returned an unexpected response format",
+          raw: apiErr.raw,
+        });
+      }
       return sendAnthropicError(res, apiErr, "AiAnalyze");
     }
 
-    const text = (message.content || [])
-      .filter((b) => b.type === "text")
-      .map((b) => b.text)
-      .join("\n");
-    try {
-      const parsed = JSON.parse(stripJsonFence(text));
-
-      // Hardcode the 'included' list based on category — the AI is no
-      // longer asked to think about it.
-      const cat = (category || "").toLowerCase();
-      const seaterCategories = ["stage", "mandap"];
-      const ledCategories = [
-        "stage",
-        "mandap",
-        "photobooth",
-        "pathway",
-        "nameboard",
-        "entrance arch",
-      ];
-      const included = [
-        "Decor as shown in image",
-        "Props as shown in image",
-      ];
-      if (seaterCategories.some((c) => cat.includes(c))) {
-        included.unshift("Seaters included");
-      }
-      if (ledCategories.some((c) => cat.includes(c))) {
-        included.unshift("LED PAR Cans included");
-      }
-      parsed.included = included;
-
-      return res.send(parsed);
-    } catch (e) {
-      console.error("[AiAnalyze] JSON parse failed. Raw response:\n", text);
-      return res.status(502).send({
-        message: "AI returned an unexpected response format",
-        error: e?.message || String(e),
-        raw: text,
-      });
-    }
+    // RESPONSE CONTRACT PRESERVED — the admin catalogue form reads these keys.
+    // `style` stays an ARRAY for the FE, built from the ONE scalar judgement:
+    // the catalogue's Attribute "Style" list is exactly ["Modern","Traditional"],
+    // so the scalar IS the attribute value and there is no second style field.
+    // `category` echoes the request, as it always did; `included` is derived from
+    // it by the same rule as before. Everything after `included` is NEW — the
+    // upgrade this surface gets from running on the calibrated brain.
+    return res.send({
+      name: analysis.name || "",
+      description: analysis.description || "",
+      seoKeywords: analysis.seoKeywords || [],
+      category,
+      style: analysis.style ? [analysis.style] : [],
+      colors: analysis.colors || [],
+      flowers: analysis.flowers || [],
+      occasions: analysis.occasions || [],
+      tags: analysis.tags || [],
+      detectedAesthetic: analysis.detectedAesthetic || null,
+      included: includedFor(category),
+      // NEW (additive — the FE can ignore these safely):
+      fabric: analysis.fabric || [],
+      detectedCategory: analysis.category || null,
+      categoryConfidence: analysis.categoryConfidence,
+      size: analysis.size || null,
+      complexity: analysis.complexity || null,
+    });
   } catch (err) {
     console.error("AiAnalyze error:", err?.message || err);
     return res

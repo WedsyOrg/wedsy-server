@@ -1,5 +1,7 @@
 const path = require("path");
 const PDFDocument = require("pdfkit");
+const { docDayFromKey, docInstantDayShort } = require("./documentDate");
+const { venueDateKey, VENUE_TZ } = require("./venueTime");
 
 function toProperCase(inputString) {
   if (typeof inputString !== "string" || inputString.length === 0) {
@@ -48,8 +50,16 @@ function generateCustomerInformation(doc, payment) {
     ? payment?.order?._id?.toString()?.toUpperCase()
     : "";
 
+  // eventDays[].date is a "YYYY-MM-DD" calendar LABEL (the same shape
+  // BillingDocService reads), so it takes the label formatter — no timezone to
+  // resolve. order/payment createdAt are real instants and take formatDate.
+  //
+  // Both used to go through toLocaleDateString, which printed the literal text
+  // "Invalid Date" onto a customer's invoice whenever an event had no eventDays
+  // (and "1 Jan 1970" for a null). Both now render as nothing, which is what an
+  // absent date should look like.
   const orderDate = isEvent
-    ? formatDate(
+    ? formatEventDay(
         payment?.event?.eventDays?.sort((a, b) => new Date(a.date) - new Date(b.date))?.[0]
           ?.date
       )
@@ -342,12 +352,22 @@ function generateTableRow(doc, y, data) {
       align: "center",
     });
 }
+// "26 Nov 2026". Composed by utils/documentDate rather than by
+// toLocaleDateString("en-GB"): CLDR ships with the Node build, so the same code
+// can print a different string on prod than in dev — the T&C cover page went
+// out to couples with a misplaced comma for exactly this reason. This shape
+// happened to agree at ICU 74 and 78, which is luck rather than a guarantee.
+//
+// Every caller passes a real instant (payment.createdAt / order.createdAt), so
+// it renders in the venue's zone. Previously it used the SERVER's zone, which
+// on a UTC box names the previous day for anything paid after 00:00 IST.
 function formatDate(date) {
-  return new Date(date).toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  return docInstantDayShort(date);
+}
+
+/** "26 Nov 2026" from a "YYYY-MM-DD" calendar label. */
+function formatEventDay(key) {
+  return docDayFromKey(key, { month: "short" });
 }
 
 function convertAmountToWords(amount) {
@@ -446,12 +466,14 @@ function convertAmountToWords(amount) {
   }
 }
 
+// "26112026", for the download filename. Not ICU-dependent, but it read the
+// SERVER's timezone via getDate/getMonth/getFullYear, so the same payment
+// produced a different filename on a UTC box than on an IST one. Resolved in
+// the venue's zone so the name matches the date printed inside the document.
 function formatDateString(dateString) {
-  let date = new Date(dateString);
-  const day = date.getDate().toString().padStart(2, "0");
-  const month = (date.getMonth() + 1).toString().padStart(2, "0");
-  const year = date.getFullYear();
-  return day + month + year;
+  const key = venueDateKey(new Date(dateString), VENUE_TZ); // "YYYY-MM-DD"
+  const [y, m, d] = key.split("-");
+  return `${d}${m}${y}`;
 }
 
 function generateHr(doc, y) {
