@@ -43,6 +43,34 @@ function startDoc(res, filename) {
   return doc;
 }
 
+/**
+ * The same document, collected into a Buffer instead of piped at a response.
+ *
+ * Every renderer here streams to Express, which is right when the PDF *is* the
+ * reply. The T&C cover page is not: it has to be stitched in front of the
+ * venue's own uploaded PDF before anything reaches the client, so it must exist
+ * as bytes first. This is the one addition needed to reuse the whole toolkit —
+ * same A4 geometry, same margin, so `venueHeader` and every x-coordinate below
+ * lands identically whichever way the doc was opened.
+ *
+ * `compress: false` matches services/BillingDocService: it keeps the text
+ * streams greppable so tests can assert on rendered content, which is how the
+ * cover's "never render undefined" rule is actually enforced rather than
+ * asserted by eye.
+ *
+ * @returns {{ doc: PDFDocument, done: Promise<Buffer> }} call doc.end() to settle.
+ */
+function bufferDoc() {
+  const doc = new PDFDocument({ size: "A4", margin: 50, compress: false });
+  const chunks = [];
+  const done = new Promise((resolve, reject) => {
+    doc.on("data", (c) => chunks.push(c));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+  });
+  return { doc, done };
+}
+
 function venueHeader(doc, venue, titleText, logoBuffer) {
   // Logo top-left when present; the venue text block shifts right beside it.
   let textX = 50;
@@ -378,4 +406,21 @@ async function streamSettlementPdf(res, { venue, allotment, roomName, booking })
   doc.end();
 }
 
-module.exports = { streamQuotePdf, streamInvoicePdf, streamContractPdf, streamBillPdf, streamSettlementPdf, streamTermsPdf };
+module.exports = {
+  streamQuotePdf,
+  streamInvoicePdf,
+  streamContractPdf,
+  streamBillPdf,
+  streamSettlementPdf,
+  streamTermsPdf,
+  // Exposed so utils/venueTermsCover can build the T&C cover page out of the
+  // SAME letterhead, footer, palette and A4 grid as every other venue document,
+  // rather than a lookalike that drifts the first time the logo block moves.
+  bufferDoc,
+  loadLogoBuffer,
+  venueHeader,
+  poweredByFooter,
+  BURGUNDY,
+  GOLD,
+  GREY,
+};
