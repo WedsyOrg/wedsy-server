@@ -36,6 +36,7 @@ const leadDocs = require("../controllers/venueLeadDocument");
 const bookingSettings = require("../controllers/venueBookingSettings");
 const leadInvoice = require("../controllers/venueLeadInvoice");
 const leadPayment = require("../controllers/venueLeadPayment");
+const bookingConfirm = require("../controllers/venueBookingConfirmation");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
@@ -207,6 +208,12 @@ router.post("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapab
 // ── BOOKING ENGINE S4: recording payments against the schedule ──────────────
 router.get("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.getLeadPayments);
 router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.recordPayment);
+
+// ── BOOKING ENGINE S3: the booking confirmation document ────────────────────
+// `documents`, matching every other document generator — it produces a
+// VenueLeadDocument and lands in the same Documents tab.
+router.get("/:slug/enquiries/:enquiryId/booking-confirmation/options", venueOwnerAuth, requireCapability("documents"), bookingConfirm.getConfirmationOptions);
+router.post("/:slug/enquiries/:enquiryId/booking-confirmation", venueOwnerAuth, requireCapability("documents"), bookingConfirm.generateBookingConfirmation);
 
 // ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
