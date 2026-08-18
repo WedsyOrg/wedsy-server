@@ -3,7 +3,8 @@ const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
 const { analyseImage, includedFor } = require("../services/decorVision");
-const { buildDemoPrice, pinTextCategoryCheck, demoCategoryTiers, resolveOccasion } = require("../services/decorDemoPrice");
+const { buildDemoPrice, buildStorePrice, pinTextCategoryCheck, demoCategoryTiers, resolveOccasion } = require("../services/decorDemoPrice");
+const readCache = require("../services/decorReadCache");
 const sharp = require("sharp");
 
 // Downscale a base64 or URL image before the vision call — cuts tokens/latency
@@ -914,11 +915,38 @@ const shapeExample = (e) => ({
 });
 // The ladder row keeps its size label and its tier→{low,high} prices. `area` is
 // dropped: with the size already present it only feeds the area exponent.
+// A size option is a ladder row plus its concrete dimensions — the panel needs
+// length/width to render the picker selection. `area` is DROPPED for the same
+// reason shapeLadderRow drops it: with the size present it only feeds the area
+// exponent, so it is method, not output. (The response-contract suite caught
+// this — it is an asserted invariant, not a style preference.)
+const shapeSizeOption = (o) => ({
+  size: o.size != null ? o.size : null,
+  length: o.length != null ? o.length : null,
+  width: o.width != null ? o.width : null,
+  prices: o.prices || {},
+});
 const shapeLadderRow = (row) => ({
   size: row.size != null ? row.size : null,
   prices: row.prices || {},
   ...(row.examplesAtThisSize
     ? { examplesAtThisSize: (row.examplesAtThisSize || []).map(shapeExample) }
+    : {}),
+});
+
+// Read provenance, allowlisted like everything else on this wire. `product` is
+// present only on a from-store reply — the panel says "this is our <code>"
+// instead of quoting an estimate for something we already sell.
+const shapeRead = (r) => ({
+  origin: r.origin,
+  ...(r.firstReadAt ? { firstReadAt: r.firstReadAt } : {}),
+  ...(r.product
+    ? {
+        product: {
+          ...(r.product.code ? { code: r.product.code } : {}),
+          ...(r.product.name ? { name: r.product.name } : {}),
+        },
+      }
     : {}),
 });
 
@@ -930,6 +958,9 @@ const shapeDemoPrice = (out) => {
       rejected: true,
       ...(out.reason ? { reason: out.reason } : {}),
       ...(out.pinTextCheck ? { pinTextCheck: out.pinTextCheck } : {}),
+      // A rejection is a read too — say whether it was replayed, so re-checking
+      // a non-décor photo doesn't look like a fresh (billed) verdict.
+      ...(out.read ? { read: shapeRead(out.read) } : {}),
     });
   }
   const m = out.stageMeasurements || null;
@@ -962,9 +993,29 @@ const shapeDemoPrice = (out) => {
     structureHeavy: !!(out.structure && out.structure.fabricated),
     confirmWidth: needsWidthConfirm(m),
     lowConfidence: !!(m && m.lowConfidence),
+    // ── READ PROVENANCE (2026-08-17) — where this answer came from ───────────
+    // fresh = the AI just looked at it · cached = a stored read was replayed, so
+    // the number is identical to last time by construction · from-store = the pin
+    // is already a published product and the human's price won. `firstReadAt`
+    // lets the panel say "read on 14 Aug" instead of implying it is live.
+    // Provenance, not pricing method: no rate, no multiplier, no model name.
+    ...(out.read ? { read: shapeRead(out.read) } : {}),
     ...(out.occasion ? { occasion: shapeOccasion(out.occasion) } : {}),
     applicableTiers: out.applicableTiers,
     ladder: (out.ladder || []).map(shapeLadderRow),
+    // ── Size bracket (additive 2026-08) — every key above is unchanged. ──────
+    // Two valid rungs bracketing the read, each with its own full price ladder,
+    // so staff pick a size instead of the pipeline betting on one draw at
+    // temperature 1.0. Omitted entirely when empty, so a category with no size
+    // model adds nothing to the payload.
+    ...(Array.isArray(out.sizeOptions) && out.sizeOptions.length
+      ? { sizeOptions: out.sizeOptions.map(shapeSizeOption) }
+      : {}),
+    // The full set of valid pairs, for a manual picker that can only offer real
+    // sizes. No prices — the picker chooses a size, the ladder carries money.
+    ...(Array.isArray(out.validSizes) && out.validSizes.length
+      ? { validSizes: out.validSizes.map((s) => ({ size: s.size, length: s.length, width: s.width })) }
+      : {}),
     ...(out.pinTextCheck ? { pinTextCheck: out.pinTextCheck } : {}),
   });
 };
@@ -1140,7 +1191,20 @@ const AnalyseImage = async (req, res) => {
 
 // ─── Demo panel — live client pricing ────────────────────────────────────────
 // POST /decor/demo-price  { imageBase64? | imageUrl? | image?, pinText?,
-//                           includeExamples?, categoryOverride? }
+//                           includeExamples?, categoryOverride?, pinId?,
+//                           reanalyse? }
+//
+// READ CACHING (2026-08-17). The vision read is cached per image, so revisiting a
+// pin returns the SAME measurement and therefore the same price — the founder's
+// requirement, and the fix for a temperature-1.0 model that reads the same photo
+// ±25% differently. Lookup order:
+//   (a) the pin is already an approved+published product → the LIVE product price
+//   (b) a stored read exists                            → replay it
+//   (c) miss                                            → one AI call, then store
+// `reanalyse: true` forces (c) and overwrites the stored read. It is never
+// automatic: a re-read is a staff decision, because it can legitimately change a
+// price the client was already quoted. It also skips (a) — a staff member who
+// asks the AI to look again must not be handed the store price instead.
 // Read-only. Vision (demo mode) → category; non-décor → { rejected }. Otherwise a
 // category-aware PRICE LADDER (per size bucket for Stage/Mandap, one category-band
 // row otherwise) from the Phase A engine. Raw prices, NO uplift. The size ladder
@@ -1149,9 +1213,12 @@ const AnalyseImage = async (req, res) => {
 // prices that category directly: the panel's staff dropdown must be instant, and
 // a wrong category is a ~2× price error only the human on the call can fix.
 const DemoPrice = async (req, res) => {
-  const { imageBase64, imageUrl, image, pinText, includeExamples, categoryOverride, stageMeasurements } = req.body || {};
+  const { imageBase64, imageUrl, image, pinText, includeExamples, categoryOverride, stageMeasurements, pinId, reanalyse } = req.body || {};
+  const forceRead = reanalyse === true;
 
   let analysis;
+  // Where the answer came from — attached to the response as `read`.
+  let read = { origin: "fresh", firstReadAt: null };
   if (categoryOverride != null) {
     // demoCategoryTiers also admits demo-only categories (Haldi) that have no
     // catalog taxonomy entry.
@@ -1161,6 +1228,14 @@ const DemoPrice = async (req, res) => {
     // Staff said what it is — no vision, so no confidence and no observations.
     // The panel may resend the earlier vision backdrop measurement so an
     // override TO Stage keeps floral-run pricing (buildDemoPrice validates it).
+    //
+    // ⛔ THE CACHE IS NOT TOUCHED ON THIS PATH — neither read nor written.
+    // Not read: there is no AI spend to save (no vision call happens here) and
+    // the "analysis" is two fields the caller already asserted.
+    // NOT WRITTEN, and this is the important half: a category override is a
+    // STAFF CORRECTION, not a reading of the image. Storing a hand-asserted
+    // category under an image key would poison the next genuine read of that
+    // pin — the correction would come back as though the model had made it.
     analysis = {
       isDecorProduct: true,
       category: categoryOverride,
@@ -1168,32 +1243,97 @@ const DemoPrice = async (req, res) => {
       observations: [],
       stageMeasurements: stageMeasurements || null,
     };
+    // No image was read, so there is no provenance to report. Claiming "fresh"
+    // here would tell the panel the AI had just looked at the photo.
+    read = null;
   } else {
     const b64 = imageBase64 || (typeof image === "string" && !/^https?:\/\//i.test(image) ? image : undefined);
     const url = imageUrl || (typeof image === "string" && /^https?:\/\//i.test(image) ? image : undefined);
     if (!b64 && !url) {
       return res.status(400).send({ message: "image (base64) or imageUrl is required" });
     }
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).send({ message: "ANTHROPIC_API_KEY not configured" });
+
+    // ── PIN-LEVEL READ CACHE (2026-08-17) ────────────────────────────────────
+    // Sits HERE deliberately: after URL resolution (we need the URL to build the
+    // key) and BEFORE the API-key guard below, so a known image is answered even
+    // with no key configured — and, more to the point, before the image fetch and
+    // before the AI call. Everything downstream (pinTextCheck, occasion,
+    // comparables) still runs per-request; only the READ is replayed.
+    //
+    // A base64-only caller has no stable key and skips the cache entirely rather
+    // than us inventing a content hash (see decorImageKey).
+    const key = readCache.imageKeyFor({ imageUrl: url, pinId });
+    if (key.usable && !forceRead) {
+      try {
+        // (a) The pin is already a product → the human's price wins outright.
+        const published = await readCache.publishedForImage({ imageUrl: url, pinId });
+        if (published) {
+          const prior = await readCache.lookupRead(key);
+          const out = buildStorePrice(published.decor, { analysis: prior && prior.analysis });
+          // pinTextCheck is computed here rather than at the shared line below
+          // because this branch returns early — it never reaches the estimator.
+          const storeCheck = pinTextCategoryCheck(pinText, published.decor.category);
+          return res.status(200).send(
+            shapeClientResponse("demo-price", {
+              ...out,
+              ...(storeCheck ? { pinTextCheck: storeCheck } : {}),
+              read: {
+                origin: "from-store",
+                firstReadAt: prior ? prior.firstReadAt : null,
+                product: {
+                  code: (published.decor.productInfo && published.decor.productInfo.id) || "",
+                  name: published.decor.name || "",
+                },
+              },
+            })
+          );
+        }
+
+        // (b) Cache hit → replay the stored read.
+        const hit = await readCache.lookupRead(key);
+        if (hit) {
+          analysis = hit.analysis;
+          read = { origin: "cached", firstReadAt: hit.firstReadAt };
+          readCache.touchRead(hit._id);
+        }
+      } catch (e) {
+        // A cache failure must never take down a live sales call — fall through
+        // and pay for a fresh read.
+        console.warn("[DemoPrice] cache lookup failed", e && e.message);
+      }
     }
 
-    // Downscale before the vision call. A read failure must not throw a stack
-    // trace onto a live call — return a graceful message the panel can render.
-    let downscaled;
-    try {
-      downscaled = await downscaleToBase64({ imageBase64: b64, imageUrl: url });
-    } catch (e) {
-      return res.status(502).send({ message: "Couldn't read this image — try another." });
-    }
+    // (c) Miss (or a deliberate reanalyse) → one AI call, then store it.
+    if (!analysis) {
+      if (!process.env.ANTHROPIC_API_KEY) {
+        return res.status(500).send({ message: "ANTHROPIC_API_KEY not configured" });
+      }
 
-    try {
-      analysis = await analyseImage({ imageBase64: downscaled, mode: "demo" });
-    } catch (apiErr) {
-      if (apiErr && apiErr.code === "VISION_PARSE") {
+      // Downscale before the vision call. A read failure must not throw a stack
+      // trace onto a live call — return a graceful message the panel can render.
+      let downscaled;
+      try {
+        downscaled = await downscaleToBase64({ imageBase64: b64, imageUrl: url });
+      } catch (e) {
         return res.status(502).send({ message: "Couldn't read this image — try another." });
       }
-      return sendAnthropicError(res, apiErr, "DemoPrice");
+
+      try {
+        analysis = await analyseImage({ imageBase64: downscaled, mode: "demo" });
+      } catch (apiErr) {
+        if (apiErr && apiErr.code === "VISION_PARSE") {
+          return res.status(502).send({ message: "Couldn't read this image — try another." });
+        }
+        return sendAnthropicError(res, apiErr, "DemoPrice");
+      }
+
+      if (key.usable) {
+        const stored = await readCache.storeRead(
+          { imageUrl: url, pinId, analysis, reanalyse: forceRead },
+          req.auth && req.auth.user_id
+        );
+        read = { origin: "fresh", firstReadAt: (stored && stored.firstReadAt) || null };
+      }
     }
   }
 
@@ -1203,10 +1343,17 @@ const DemoPrice = async (req, res) => {
   // dropdown is the correction path and must never be re-flipped.
   const occasion = categoryOverride != null ? null : resolveOccasion(pinText, analysis.occasion);
 
-  // Non-décor → reject, no pricing, no comparables.
+  // Non-décor → reject, no pricing, no comparables. The rejection is cached like
+  // any other read: re-checking the same non-décor photo must not re-bill it.
   if (!analysis.isDecorProduct) {
     const out = buildDemoPrice(analysis, [], { includeExamples: false });
-    return res.status(200).send(shapeClientResponse("demo-price", { ...out, ...(pinTextCheck ? { pinTextCheck } : {}) }));
+    return res.status(200).send(
+      shapeClientResponse("demo-price", {
+        ...out,
+        ...(pinTextCheck ? { pinTextCheck } : {}),
+        ...(read ? { read } : {}),
+      })
+    );
   }
 
   try {
@@ -1217,7 +1364,13 @@ const DemoPrice = async (req, res) => {
     ).lean();
     const comparables = docs.map(normalizeComparable);
     const out = buildDemoPrice(analysis, comparables, { includeExamples: !!includeExamples, occasion });
-    return res.status(200).send(shapeClientResponse("demo-price", { ...out, ...(pinTextCheck ? { pinTextCheck } : {}) }));
+    return res.status(200).send(
+      shapeClientResponse("demo-price", {
+        ...out,
+        ...(pinTextCheck ? { pinTextCheck } : {}),
+        ...(read ? { read } : {}),
+      })
+    );
   } catch (error) {
     return res.status(400).send({ message: "error", error });
   }

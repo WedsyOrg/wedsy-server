@@ -30,7 +30,11 @@
 // Every other category → a single category-band row (size doesn't predict price
 // there), each applicable tier anchored on its own p75.
 
-const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS } = require("./decorPricing");
+const { suggestPrice, CATEGORY_TIERS, SIZE_LOOKUP, TIER_LADDER, PREMIUM_OUTLIERS, tierOf } = require("./decorPricing");
+// The size ladder is the single source of truth for valid length×width pairs.
+// SIZE_BUCKETS below is the LEGACY demo ladder and does NOT agree with it —
+// see the reconciliation note in services/decorSizeLadder.js.
+const sizeLadder = require("./decorSizeLadder");
 
 // Common size buckets to show, in the order the panel lists them. Only these
 // two categories get a size ladder.
@@ -643,6 +647,62 @@ const rangesForCategory = (category, tiers, comps) => {
 //   analysis: Phase B demo output { isDecorProduct, category, categoryConfidence, ... }
 //   comparables: normalizeComparable() results, pre-filtered to visible+available
 //   opts.includeExamples: attach up to 3 scale/price-point examples per row
+// ── Size-bracket builder ─────────────────────────────────────────────────────
+// Prices each offered rung through the SAME anchor mechanism as the sized
+// ladder (reference anchor × area-ratio^exponent → ladderRanges), so a rung's
+// price is consistent with the ladder row of the same size.
+//
+// Raw width, in preference order:
+//   1. stageMeasurements.backdropWidthFt — the COUNTED width (count ×
+//      per-unit), the only genuinely raw number the pipeline preserves.
+//   2. analysis.size.length — already snapped by decorVision.postProcess, so
+//      it is a fallback, not a raw read. An exact rung hit here yields that
+//      rung + the next one up, which is the documented behaviour anyway.
+const buildSizeOptions = ({ analysis, category, comps, stageMeasurements, occasion }) => {
+  const validSizes = sizeLadder.validSizes();
+  const empty = { sizeOptions: [], validSizes };
+
+  // Only categories with a size model. Haldi prices purely by floral run.
+  if (!REFERENCE_SIZE[category] || !SIZE_BUCKETS[category]) return empty;
+
+  const measuredWidth = stageMeasurements ? Number(stageMeasurements.backdropWidthFt) : NaN;
+  const snappedLength = Number(analysis && analysis.size && analysis.size.length);
+  const rawWidthFt =
+    Number.isFinite(measuredWidth) && measuredWidth > 0
+      ? measuredWidth
+      : Number.isFinite(snappedLength) && snappedLength > 0
+        ? snappedLength
+        : null;
+  if (rawWidthFt == null) return empty;
+
+  const bracket = sizeLadder.bracketFor({
+    rawWidthFt,
+    occasion: occasion ? occasion.value : null,
+    sizeConfidence: analysis && analysis.size ? analysis.size.confidence : null,
+    backdropWidthFt: Number.isFinite(measuredWidth) && measuredWidth > 0 ? measuredWidth : rawWidthFt,
+  });
+  if (!bracket || !bracket.options.length) return empty;
+
+  const anchor = referenceAnchor(category, Array.isArray(comps) ? comps : []);
+  const tierLadder = DEMO_TIER_LADDER[category];
+
+  const sizeOptions = bracket.options.map((rung) => {
+    const natAnchor =
+      anchor && anchor.natAnchor != null
+        ? anchor.natAnchor * Math.pow(rung.area / anchor.area, DECOR_AREA_EXPONENT)
+        : null;
+    return {
+      size: rung.size,
+      length: rung.length,
+      width: rung.width,
+      area: rung.area,
+      prices: natAnchor == null ? {} : ladderRanges(natAnchor, tierLadder),
+    };
+  });
+
+  return { sizeOptions, validSizes };
+};
+
 const buildDemoPrice = (analysis, comparables, opts = {}) => {
   const includeExamples = !!opts.includeExamples;
   const occasion = opts.occasion || null;
@@ -753,10 +813,24 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
     ladder = [row];
   }
 
+  // ── SIZE BRACKET (additive, 2026-08) ──────────────────────────────────────
+  // The pipeline runs at temperature 1.0, so one draw is a bet. Offer the two
+  // ladder rungs the read falls between, each with its own full price ladder,
+  // and let the human pick. Deliberately ALONGSIDE floral-run pricing, never
+  // instead of it: floral run is the founder-calibrated path (24ft fresh
+  // ~₹1.5L) and stays the headline on a measured Stage.
+  const sizeBracket = buildSizeOptions({ analysis, category, comps, stageMeasurements, occasion });
+
   return {
     rejected: false,
     category,
     categoryConfidence: analysis.categoryConfidence,
+    // Two valid rungs bracketing the read; [] when this category has no size
+    // model or nothing gave a usable width.
+    sizeOptions: sizeBracket.sizeOptions,
+    // Every valid length×width pair, so the panel's manual picker can offer
+    // ONLY real sizes. Always present — it is a constant, not a derivation.
+    validSizes: sizeBracket.validSizes,
     // Vision observations in the founder's vocabulary — evidence for the staff
     // member to place the quote within the range. NEVER graded, never priced on
     // (the Phase 3 gate proved they don't predict price).
@@ -815,6 +889,71 @@ const buildDemoPrice = (analysis, comparables, opts = {}) => {
   };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// buildStorePrice(decorDoc, { analysis }) — the pin is ALREADY A PRODUCT.
+//
+// Step (a) of the read-cache lookup order (2026-08-17). When a pin resolves to
+// an approved draft with a live published product, the panel must show THAT
+// PRODUCT'S PRICE, not an AI estimate of it: a human set that number and it is
+// what the store will actually charge. It also means a catalogue price edit is
+// reflected immediately — the deliberate exception to "a revisit must not
+// differ", because there the new number IS the wanted answer.
+//
+// Emits the same response contract as buildDemoPrice so the panel needs no
+// second renderer: one ladder row, tier prices as a POINT (low === high — a
+// store price is not a range), and no headroom arithmetic anywhere near it.
+// `comparables` is deliberately not a parameter: nothing here is estimated.
+//
+// The cached vision read, when we have one, contributes ONLY its descriptive
+// fields (observations, measurements) so the panel keeps its measurement line.
+// It never touches the price.
+// ─────────────────────────────────────────────────────────────────────────────
+const buildStorePrice = (decorDoc, { analysis } = {}) => {
+  const doc = decorDoc || {};
+  const category = doc.category || "";
+  const tiers = demoCategoryTiers(category);
+  const info = doc.productInfo || {};
+  const m = info.measurements || {};
+
+  // Live selling prices off productTypes, per tier — the same mapping the
+  // comparable normaliser uses, so a tier is named the same way everywhere.
+  const prices = {};
+  (Array.isArray(doc.productTypes) ? doc.productTypes : []).forEach((pt) => {
+    if (!pt) return;
+    const tier = tierOf(pt.name);
+    const price = Number(pt.sellingPrice);
+    if (Number.isFinite(price) && price > 0 && (prices[tier] === undefined || price > prices[tier])) {
+      prices[tier] = price;
+    }
+  });
+
+  const sizeLabel =
+    Number(m.length) > 0 && Number(m.width) > 0 ? `${Number(m.length)}x${Number(m.width)}` : null;
+
+  return {
+    rejected: false,
+    category,
+    // Not a guess — a human classified this product on approval.
+    categoryConfidence: 1,
+    observations: Array.isArray(analysis && analysis.observations) ? analysis.observations : [],
+    minBuildWidth: (analysis && analysis.minBuildWidth) || null,
+    recommendedSize: sizeLabel,
+    stageMeasurements: readStageMeasurements(analysis && analysis.stageMeasurements),
+    // No structure charge and no floral-run model: nothing was estimated.
+    floralRunPriced: false,
+    applicableTiers: tiers || Object.keys(prices),
+    sized: false,
+    upliftApplied: 1,
+    headroomApplied: 1, // the store price already is what we charge
+    ladder: [
+      {
+        size: sizeLabel,
+        prices: Object.fromEntries(Object.entries(prices).map(([t, p]) => [t, { low: p, high: p }])),
+      },
+    ],
+  };
+};
+
 // Optional pin-text cross-check (spec: VERIFICATION only, never a prompt input,
 // never shown to the client — a quiet staff signal). Compact Hinglish keyword
 // map; returns the caption's implied category and whether it agrees with the
@@ -842,6 +981,7 @@ const pinTextCategoryCheck = (pinText, modelCategory) => {
 
 module.exports = {
   buildDemoPrice,
+  buildStorePrice,
   pinTextCategoryCheck,
   SIZE_BUCKETS,
   DECOR_DEMO_HEADROOM,
