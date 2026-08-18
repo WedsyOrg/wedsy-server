@@ -113,6 +113,81 @@ const nearestTwo = (rawWidthFt) => {
   return [RUNGS[upperIdx - 1], RUNGS[upperIdx]];
 };
 
+// ── THE RECOMMENDED-SIZE RULE ───────────────────────────────────────────────
+// The two rungs offered must ALWAYS include recommendedSize when one exists.
+//
+// WHY IT LIVES HERE AND NOT IN THE PANEL: the panel can only swap in a rung the
+// response already priced, so it silently no-ops in exactly the case the rule
+// exists for — when the recommendation falls OUTSIDE the two bracketed rungs.
+// The server can price any rung (the ladder anchor is a pure function of area),
+// so the swap belongs on this side of the wire.
+//
+// WHY IT MATTERS MORE THAN IT LOOKS: the width read is the largest known error
+// in the system — 13% to 45% LOW across four founder-verified builds, always in
+// the same direction, because the model measures the visually dominant element
+// rather than the full build. So the bracket (built from that width) and
+// recommendedSize (an independent read) can disagree meaningfully, and the
+// bracket is the half we know is biased small.
+//
+// ⛔ ONLY WHEN recommendedSize IS ALREADY A RUNG. It is NOT snapped onto the
+// ladder first, and that is deliberate. recommendedSize is snapped by
+// decorVision.snapSize against SIZE_VOCAB — A DIFFERENT LIST. On Stage the
+// off-ladder vocab values are 16x16, 30x16 and 12x12, and the first two are the
+// HEAVILY POPULATED ones (24 and 21 live products), so they will be recommended
+// often. Snapping 16x16 to 16x12 would badge RECOMMENDED onto a size the model
+// never recommended, which is worse than not badging one at all. Off-ladder
+// recommendations stay reachable through the picker (validSizes).
+const rungBySize = (size) =>
+  RUNGS.find((r) => r.size === String(size || "").trim()) || null;
+
+// Which of two rungs is FURTHER from the recommendation, i.e. the one to drop.
+//   1. LENGTH — width is a function of length on this ladder, so length is the
+//      primary axis.
+//   2. AREA as the tie-break.
+//   3. POSITION as the last resort.
+//
+// ⚠️ ONLY LINK 1 IS LIVE TODAY. `nearestTwo` always returns ADJACENT rungs, and
+// an adjacent pair can only tie on length if the recommendation sits exactly
+// midway — which puts it between them, so it is either one of the two already or
+// off the ladder entirely. Exhaustive sweep (asserted in the bracket suite):
+// ZERO length ties reachable through nearestTwo, and ZERO (rec, a, b) triples on
+// the current ladder tie on BOTH length and area. Links 2 and 3 are GUARDS FOR
+// FUTURE RUNGS, not dead code — they exist so that adding a rung can never make
+// the choice non-deterministic. Both are pinned by unit tests that call this
+// function directly with a non-adjacent pair. Do not delete them.
+const furtherFromRecommended = (rec, a, b) => {
+  const dl = Math.abs(rec.length - a.length) - Math.abs(rec.length - b.length);
+  if (dl !== 0) return dl > 0 ? a : b;
+  const da = Math.abs(rec.area - a.area) - Math.abs(rec.area - b.area);
+  if (da !== 0) return da > 0 ? a : b;
+  const ia = indexOfRung(a);
+  const ib = indexOfRung(b);
+  const ir = indexOfRung(rec);
+  const di = Math.abs(ir - ia) - Math.abs(ir - ib);
+  if (di !== 0) return di > 0 ? a : b;
+  return ia > ib ? a : b; // last resort: drop the larger rung
+};
+
+// Returns the pair with recommendedSize guaranteed present, or the input
+// untouched when the rule does not apply. Always sorted ascending by length —
+// the panel and every test read the pair in array order.
+const swapInRecommended = (options, recommendedSize) => {
+  if (!Array.isArray(options) || options.length !== 2) return options;
+  const rec = rungBySize(recommendedSize);
+  if (!rec) return options; // absent, or off-ladder → skip (see above)
+  if (options.some((r) => r.size === rec.size)) return options; // already offered
+  const drop = furtherFromRecommended(rec, options[0], options[1]);
+  const keep = options[0] === drop ? options[1] : options[0];
+  return [keep, rec].sort((a, b) => a.length - b.length);
+};
+
+// SCOPED TO STAGE. Mandap's vocabulary is 4/5 off-ladder (16x16, 12x12, 20x20,
+// 15x15 — only 20x16 is a rung), and the rungs themselves are Stage shapes, not
+// Mandap ones. Applying the rule there would swap almost never and, when it did,
+// would badge a shape Mandap does not use. Widen this only alongside a Mandap
+// ladder.
+const RECOMMENDED_SWAP_CATEGORIES = new Set(["Stage"]);
+
 // ── The policy layer ────────────────────────────────────────────────────────
 const homeFunctionApplies = ({ sizeConfidence, backdropWidthFt }) => {
   const conf = Number(sizeConfidence);
@@ -146,25 +221,51 @@ const pullToSmallEnd = (options) => {
   return options.every((r) => r.length <= SMALL_END_CEILING_FT) ? options : small.slice(0, 2);
 };
 
-// bracketFor({ rawWidthFt, occasion, sizeConfidence, backdropWidthFt })
-//   → { options: [rung, rung], floorApplied, smallEndApplied, homeFunctionException }
+// bracketFor({ rawWidthFt, occasion, sizeConfidence, backdropWidthFt,
+//              recommendedSize, category })
+//   → { options: [rung, rung], floorApplied, smallEndApplied,
+//       homeFunctionException, recommendedApplied }
 // `occasion` is the resolved occasion VALUE (string) or null/undefined when
 // unknown — unknown is floored, same as reception.
-const bracketFor = ({ rawWidthFt, occasion, sizeConfidence, backdropWidthFt } = {}) => {
+//
+// ORDER IS LOAD-BEARING: SWAP FIRST, POLICY LAST.
+// The recommended-size swap runs on the raw geometric bracket, and the occasion
+// floor / small-end bias then apply on top of the result. That way a
+// recommendation can never defeat the floor — which is the whole point of
+// ordering it this way. The floor encodes a founder rule about what a function
+// physically IS (a reception is not held on an 8ft backdrop); recommendedSize
+// derives from a width read measured 13-45% LOW on every founder-verified build
+// we have. When the two disagree, the rule wins and the read loses.
+const bracketFor = ({
+  rawWidthFt,
+  occasion,
+  sizeConfidence,
+  backdropWidthFt,
+  recommendedSize,
+  category,
+} = {}) => {
   const base = nearestTwo(rawWidthFt);
   if (!base) return null;
 
+  // ① SWAP — on the raw bracket, before any policy.
+  const picked = RECOMMENDED_SWAP_CATEGORIES.has(category)
+    ? swapInRecommended(base, recommendedSize)
+    : base;
+
   const occ = typeof occasion === "string" ? occasion : null;
   const out = {
-    options: base,
+    options: picked,
     floorApplied: false,
     smallEndApplied: false,
     homeFunctionException: false,
+    recommendedApplied: picked !== base,
   };
 
+  // ② POLICY — on the swapped pair. Every flag below is measured against
+  // `picked`, not `base`, so it reports what the policy layer actually moved.
   if (SMALL_END_OCCASIONS.has(occ)) {
-    const pulled = pullToSmallEnd(base);
-    out.smallEndApplied = pulled !== base;
+    const pulled = pullToSmallEnd(picked);
+    out.smallEndApplied = pulled !== picked;
     out.options = pulled;
     return out;
   }
@@ -175,8 +276,8 @@ const bracketFor = ({ rawWidthFt, occasion, sizeConfidence, backdropWidthFt } = 
       out.homeFunctionException = true;
       return out;
     }
-    const lifted = liftToFloor(base);
-    out.floorApplied = lifted.length !== base.length || lifted.some((r, i) => r !== base[i]);
+    const lifted = liftToFloor(picked);
+    out.floorApplied = lifted.length !== picked.length || lifted.some((r, i) => r !== picked[i]);
     out.options = lifted;
   }
   return out;
@@ -194,6 +295,10 @@ module.exports = {
   prevRungDown,
   nearestTwo,
   bracketFor,
+  rungBySize,
+  swapInRecommended,
+  furtherFromRecommended,
+  RECOMMENDED_SWAP_CATEGORIES,
   homeFunctionApplies,
   FLOOR_FT,
   FLOORED_OCCASIONS,

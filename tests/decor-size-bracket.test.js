@@ -110,6 +110,40 @@ ok(bracket(9, { occasion: null }).floorApplied === true, "floorApplied flag is s
 eq(opts(30, { occasion: "reception" }), "24x16 + 32x16", "reception at 30ft is unchanged");
 ok(bracket(30, { occasion: "reception" }).floorApplied === false, "no floor flag when nothing moved");
 
+// ── THE REGRESSION A SWAP INTRODUCES (added 2026-08-18) ─────────────────────
+// A small recommendation must NOT pull the pair back under the floor. The swap
+// runs BEFORE the floor precisely so that the floor gets the last word: the
+// floor is a founder rule about what a function physically is, while
+// recommendedSize derives from a width read measured 13-45% LOW on every
+// founder-verified build. Nothing caught this before the rule existed.
+const smallRec = bracket(9, { occasion: "reception", recommendedSize: "12x8", category: "Stage" });
+ok(
+  smallRec.options.every((r) => r.length >= 20),
+  `9ft reception + rec 12x8 → still all ≥20ft (${labels(smallRec.options)})`,
+);
+eq(labels(smallRec.options), "20x16 + 24x16", "…and it is the same floored pair as with no recommendation");
+ok(smallRec.floorApplied === true, "…with floorApplied set, so the override is visible");
+for (const occ of ["reception", "engagement", "sangeet", "nikah", "varmala", "muhurtham", null]) {
+  for (const rec of ["8x8", "12x8", "16x12"]) {
+    const b = bracket(9, { occasion: occ, recommendedSize: rec, category: "Stage" });
+    ok(
+      b.options.every((r) => r.length >= 20),
+      `${occ === null ? "unknown" : occ} + rec ${rec}: floor holds (${labels(b.options)})`,
+    );
+  }
+}
+// The mirror case: a recommendation ABOVE the floor is honoured, not discarded.
+const bigRec = bracket(9, { occasion: "reception", recommendedSize: "40x20", category: "Stage" });
+ok(bigRec.options.some((r) => r.size === "40x20"), `a recommendation above the floor survives (${labels(bigRec.options)})`);
+ok(bigRec.options.every((r) => r.length >= 20), "…and the pair is still entirely at/above the floor");
+
+// small-end (mehendi) is defended the same way
+const mehendiRec = bracket(9, { occasion: "mehendi", recommendedSize: "40x20", category: "Stage" });
+ok(
+  mehendiRec.options.every((r) => r.length <= sizeLadder.SMALL_END_CEILING_FT),
+  `mehendi + rec 40x20 → still small-end only (${labels(mehendiRec.options)})`,
+);
+
 // a bracket straddling the floor keeps only the valid side, then extends up
 const straddle = bracket(18, { occasion: "reception" }).options;
 ok(straddle.every((r) => r.length >= 20), `straddling bracket is lifted (${labels(straddle)})`);
@@ -159,24 +193,56 @@ for (const occ of ["haldi", "mehendi"]) {
 // ── 7. NOTHING off-ladder can ever be produced ──────────────────────────────
 console.log("7. no arbitrary combination can be produced");
 const OCCS = [null, "haldi", "mehendi", "reception", "engagement", "sangeet", "nikah", "varmala", "muhurtham", "bogus"];
+// EXTENDED 2026-08-18 for the recommended-size swap. The swap is the only thing
+// that can put a rung into the pair which `nearestTwo` never chose, so it has to
+// be inside the sweep — this is the assertion that catches an OFF-LADDER
+// recommendation (16x16 / 30x16 / 12x12, all real SIZE_VOCAB values) leaking
+// through as an offered option, and the one that catches a swap producing one
+// rung or three.
+const RECS = [
+  undefined, null, "",
+  // every valid rung
+  ...sizeLadder.RUNGS.map((r) => r.size),
+  // the SIZE_VOCAB values that are NOT rungs — these must never be offered
+  "16x16", "30x16", "12x12", "20x20", "15x15",
+  // junk the model could conceivably emit
+  "0x0", "999x999", "abc", "16 x 12", "16X12",
+];
+const OFF_LADDER_RECS = ["16x16", "30x16", "12x12", "20x20", "15x15"];
 let produced = 0,
   offLadder = 0,
-  wrongCount = 0;
+  wrongCount = 0,
+  dupes = 0,
+  unsorted = 0,
+  offLadderRecOffered = 0;
 for (let w = 1; w <= 80; w += 0.5) {
   for (const occ of OCCS) {
     for (const conf of [0, 0.5, 0.75, 1]) {
-      const b = sizeLadder.bracketFor({ rawWidthFt: w, occasion: occ, sizeConfidence: conf, backdropWidthFt: w });
-      if (!b) continue;
-      if (b.options.length !== 2) wrongCount++;
-      for (const r of b.options) {
-        produced++;
-        if (!sizeLadder.isValidPair(r.length, r.width)) offLadder++;
+      for (const rec of RECS) {
+        const b = sizeLadder.bracketFor({
+          rawWidthFt: w, occasion: occ, sizeConfidence: conf, backdropWidthFt: w,
+          recommendedSize: rec, category: "Stage",
+        });
+        if (!b) continue;
+        if (b.options.length !== 2) wrongCount++;
+        if (b.options.length === 2) {
+          if (b.options[0].size === b.options[1].size) dupes++;
+          if (b.options[0].length > b.options[1].length) unsorted++;
+        }
+        for (const r of b.options) {
+          produced++;
+          if (!sizeLadder.isValidPair(r.length, r.width)) offLadder++;
+          if (OFF_LADDER_RECS.includes(r.size)) offLadderRecOffered++;
+        }
       }
     }
   }
 }
 eq(offLadder, 0, `every offered pair is on the ladder (${produced} generated)`);
 eq(wrongCount, 0, "every bracket offers exactly two rungs");
+eq(dupes, 0, "a swap never produces the same rung twice");
+eq(unsorted, 0, "the pair is always sorted ascending by length, swapped or not");
+eq(offLadderRecOffered, 0, "an OFF-LADDER recommendation is never offered as an option");
 
 // ── 8. 32x16 is priced ──────────────────────────────────────────────────────
 console.log("8. 32x16 price data");
@@ -280,6 +346,146 @@ const nameboard = shapeClientResponse("demo-price", {
 });
 ok(!("sizeOptions" in nameboard), "no sizeOptions key for a category without a size model");
 ok("ladder" in nameboard, "…but the existing ladder key is still there");
+
+// ── 11. THE RECOMMENDED-SIZE RULE ───────────────────────────────────────────
+console.log("11. recommendedSize is always among the two offered rungs");
+
+// Geometry only — the home-function shape neutralises the floor so the swap is
+// observable on its own.
+const rec = (rawWidthFt, recommendedSize, extra = {}) =>
+  labels(bracket(rawWidthFt, { ...HALDI_OFF(), recommendedSize, category: "Stage", ...extra }).options);
+
+// The case the panel-side version could not do: the recommendation is OUTSIDE
+// the bracket, so there was nothing to swap to and it silently no-opped.
+eq(rec(24, "40x20"), "32x16 + 40x20", "rec OUTSIDE the bracket is swapped in (24x16 dropped, further by length)");
+eq(rec(24, "8x8"), "8x8 + 24x16", "…in the other direction too (32x16 dropped)");
+eq(rec(9, "40x20"), "12x8 + 40x20", "a far-away recommendation still lands in the pair");
+
+// Already present → untouched, and NOT duplicated.
+eq(rec(24, "24x16"), "24x16 + 32x16", "rec already offered → pair unchanged");
+eq(rec(24, "32x16"), "24x16 + 32x16", "…either member");
+ok(bracket(24, { ...HALDI_OFF(), recommendedSize: "24x16", category: "Stage" }).recommendedApplied === false,
+  "recommendedApplied is false when nothing moved");
+ok(bracket(24, { ...HALDI_OFF(), recommendedSize: "40x20", category: "Stage" }).recommendedApplied === true,
+  "recommendedApplied is true when a swap happened");
+
+// Absent / off-ladder → skip. NOT snapped: snapping would badge RECOMMENDED
+// onto a size the model never recommended. 16x16 and 30x16 are real SIZE_VOCAB
+// values with 24 and 21 live products, so this path is common, not exotic.
+eq(rec(24, null), "24x16 + 32x16", "no recommendation → untouched");
+eq(rec(24, undefined), "24x16 + 32x16", "undefined → untouched");
+for (const off of ["16x16", "30x16", "12x12", "20x20", "15x15"]) {
+  eq(rec(24, off), "24x16 + 32x16", `OFF-LADDER rec ${off} is skipped, never snapped`);
+}
+for (const junk of ["", "abc", "0x0", "999x999", "16 x 12", "16X12", 42, {}, []]) {
+  eq(rec(24, junk), "24x16 + 32x16", `junk rec ${JSON.stringify(junk)} is ignored`);
+}
+
+// SCOPED TO STAGE — Mandap's vocab is 4/5 off-ladder and the rungs are Stage shapes.
+eq(
+  labels(bracket(24, { ...HALDI_OFF(), recommendedSize: "40x20", category: "Mandap" }).options),
+  "24x16 + 32x16",
+  "Mandap does NOT swap — the rule is scoped to Stage",
+);
+eq(
+  labels(bracket(24, { ...HALDI_OFF(), recommendedSize: "40x20" }).options),
+  "24x16 + 32x16",
+  "…nor does a caller that passes no category at all",
+);
+
+// THE TIE-BREAK CHAIN: length → area → position.
+// ⚠️ ONLY THE FIRST LINK IS LIVE. nearestTwo always returns ADJACENT rungs, and
+// for an adjacent pair a length tie needs the recommendation exactly midway —
+// which puts it between them, so it is either one of the two or off-ladder.
+// Proven by exhaustive sweep below. The area and position links are guards for
+// future rungs; they are asserted at the unit level so a ladder edit that DOES
+// reach them fails here rather than silently picking arbitrarily.
+eq(rec(18, "20x16"), "16x12 + 20x16", "rec already in the bracket → unchanged (adjacency, not a tie)");
+{
+  let ties = 0;
+  for (let w = 0.5; w <= 90; w += 0.25) {
+    const b = sizeLadder.nearestTwo(w);
+    if (!b || b.length !== 2) continue;
+    for (const r of sizeLadder.RUNGS) {
+      if (r.size === b[0].size || r.size === b[1].size) continue;
+      if (Math.abs(r.length - b[0].length) === Math.abs(r.length - b[1].length)) ties++;
+    }
+  }
+  eq(ties, 0, "no length tie is reachable through nearestTwo — brackets are always adjacent");
+}
+// Unit level: hand the metric a NON-adjacent pair, which is the only way to make
+// the area link fire. rec 20x16 sits 4ft from both 16x12 and 24x16; areas are
+// rec 320, 16x12=192 (Δ128), 24x16=384 (Δ64) → 16x12 is further, so it is dropped.
+ok(
+  sizeLadder.furtherFromRecommended(
+    sizeLadder.rungBySize("20x16"),
+    sizeLadder.rungBySize("16x12"),
+    sizeLadder.rungBySize("24x16"),
+  ).size === "16x12",
+  "furtherFromRecommended picks 16x12 over 24x16 for rec 20x16 (AREA breaks the length tie)",
+);
+eq(
+  labels(sizeLadder.swapInRecommended(
+    [sizeLadder.rungBySize("16x12"), sizeLadder.rungBySize("24x16")],
+    "20x16",
+  )),
+  "20x16 + 24x16",
+  "…and the swap drops it, keeping the pair sorted",
+);
+// Length alone, no tie.
+ok(
+  sizeLadder.furtherFromRecommended(
+    sizeLadder.rungBySize("40x20"),
+    sizeLadder.rungBySize("24x16"),
+    sizeLadder.rungBySize("32x16"),
+  ).size === "24x16",
+  "…and 24x16 over 32x16 for rec 40x20, on LENGTH alone",
+);
+
+// The position tie-break is a guard for future rungs, not a live branch —
+// asserted so that adding a rung which DOES reach it fails here first.
+{
+  let doubleTies = 0;
+  for (const r of sizeLadder.RUNGS)
+    for (const a of sizeLadder.RUNGS)
+      for (const b of sizeLadder.RUNGS) {
+        if (a === b || r === a || r === b) continue;
+        if (
+          Math.abs(r.length - a.length) === Math.abs(r.length - b.length) &&
+          Math.abs(r.area - a.area) === Math.abs(r.area - b.area)
+        )
+          doubleTies++;
+      }
+  eq(doubleTies, 0, "no (rec, a, b) triple ties on BOTH length and area — position stays unreachable");
+}
+
+// Every swapped-in rung is PRICED, not blank — the panel-side version could only
+// re-label a rung the response had already priced.
+{
+  const swapped = buildDemoPrice(
+    { ...analysisAt(24), recommendedSize: "40x20" },
+    comps,
+    { occasion: { value: "reception" } },
+  );
+  eq(swapped.sizeOptions.map((o) => o.size).join(" + "), "32x16 + 40x20", "end-to-end: 40x20 is swapped in");
+  ok(
+    swapped.sizeOptions.every((o) => o.prices.artificial && o.prices.mixed && o.prices.natural),
+    "…and BOTH rungs carry a full artificial/mixed/natural ladder",
+  );
+  const rung40 = swapped.sizeOptions.find((o) => o.size === "40x20");
+  ok(rung40.prices.natural.low > 0, "the swapped-in rung is priced, not blank");
+  // It must price identically to the same size reached any other way.
+  const viaLadder = buildDemoPrice(analysisAt(24), comps, { occasion: { value: "reception" } })
+    .ladder.find((r) => r.size === "40x20");
+  eq(
+    JSON.stringify(rung40.prices.natural),
+    JSON.stringify(viaLadder.prices.natural),
+    "…at exactly the price the ladder row of that size carries",
+  );
+  const wire = shapeClientResponse("demo-price", { ...swapped });
+  ok(wire.sizeOptions.every((o) => sizeLadder.isValidPair(o.length, o.width)), "…and it reaches the wire as a valid pair");
+  eq(wire.sizeOptions.map((o) => o.size).join(" + "), "32x16 + 40x20", "…in ascending order");
+}
 
 function HALDI_OFF() {
   // mehendi keeps the small-end rule out of the way ONLY below 12ft; for the
