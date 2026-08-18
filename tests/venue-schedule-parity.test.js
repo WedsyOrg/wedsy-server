@@ -40,6 +40,13 @@ const clientEqualSplit = (n) => {
 const clientAmountsFor = (hundredths, totalValue) => {
   const value = Math.max(0, Math.round(totalValue || 0));
   const amounts = hundredths.map((h) => Math.floor((value * h) / FULL));
+  // Mirrors the client: the residue only lands on the last row when the
+  // percentages total exactly 100. Below 100 each row shows what its own
+  // percentage is worth, so a row cannot contradict the number beside it while
+  // the owner is still editing. The server only ever generates AT 100%, so the
+  // two agree everywhere it matters.
+  const total = hundredths.reduce((sum, h) => sum + h, 0);
+  if (total !== FULL) return amounts;
   const residue = value - amounts.reduce((s, a) => s + a, 0);
   if (amounts.length) amounts[amounts.length - 1] += residue;
   return amounts;
