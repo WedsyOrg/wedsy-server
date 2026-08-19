@@ -55,6 +55,7 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       paymentSchedule: [
         { label: "Advance", amount: 400000, dueDate: new Date("2026-08-20T00:00:00Z") },
         { label: "Balance", amount: 800000, dueDate: new Date("2026-11-19T00:00:00Z") },
+        { label: "Final settlement", amount: 250000, dueDate: new Date("2026-11-25T00:00:00Z") },
       ],
     });
 
@@ -115,11 +116,50 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(other.code === 201, "…but the OTHER instalment can be invoiced");
     ok(other.body.invoice.totals.grandTotal === 944000, "…at its own value with GST (8,00,000 + 18%)");
 
+    // ══ TWO MEMBERS, SAME MILESTONE, SAME MOMENT ════════════════════════════
+    // The review finding. The findOne check above cannot see a write that has
+    // not landed yet, so simultaneous requests both passed it and both created
+    // an immutable tax invoice for one instalment. The unique index is what
+    // actually stops it; this asserts the endpoint turns that into the same
+    // 409 the friendly path gives, rather than a 500.
+    console.log("\n[two members raising an invoice for the SAME milestone, simultaneously]");
+    const b2 = await VenueBooking.findById(booking._id);
+    const raceMs = b2.paymentSchedule[2];
+    const memberReq = (name) => ({
+      params: { slug: venue.slug, enquiryId: String(lead._id) },
+      query: {}, body: { gst: false, milestoneId: String(raceMs._id) },
+      venueOwner: { type: "venue_owner", venueId: venue._id, venueOwnerId: owner._id, name },
+      venueMember: null,
+    });
+    const uploadsBefore = uploaded.length;
+    const [r1, r2] = await Promise.all([
+      call(li.createLeadInvoice, memberReq("Member A")),
+      call(li.createLeadInvoice, memberReq("Member B")),
+    ]);
+    const codes = [r1.code, r2.code].sort();
+    ok(codes[0] === 201 && codes[1] === 409, `exactly one won: got ${codes.join(" and ")}`);
+    const loser = r1.code === 409 ? r1 : r2;
+    const winner = r1.code === 201 ? r1 : r2;
+    ok(loser.body.code === "invoice_exists", "…the loser gets invoice_exists, not a 500");
+    ok(
+      loser.body.invoiceNumber === winner.body.invoice.invoiceNumber,
+      `…naming the number that covers the milestone (${loser.body.invoiceNumber})`
+    );
+    ok(
+      (await VenueInvoice.countDocuments({ enquiry: lead._id, forMilestoneId: raceMs._id })) === 1,
+      "…and exactly ONE invoice covers that instalment"
+    );
+    ok(uploaded.length === uploadsBefore + 1, "…and only the winner's PDF was uploaded");
+    ok(
+      (await VenueLeadDocument.countDocuments({ enquiry: lead._id, kind: "invoice", forMilestoneId: raceMs._id })) <= 1,
+      "…and the loser filed no document in the Documents tab"
+    );
+
     console.log("\n[document versions are independent and earlier ones unchanged]");
     const allDocs = await VenueLeadDocument.find({ enquiry: lead._id, kind: "invoice" }).sort({ version: 1 }).lean();
-    ok(allDocs.length === 3 && allDocs.map((d) => d.version).join(",") === "1,2,3", "three invoice documents, versions 1,2,3");
-    ok(allDocs[0].note === "at booking", "v1's note is unchanged after v2 and v3 were made");
-    ok(new Set(allDocs.map((d) => d.url)).size === 3, "…and each has its own stored file");
+    ok(allDocs.length === 4 && allDocs.map((d) => d.version).join(",") === "1,2,3,4", "four invoice documents, versions 1,2,3,4");
+    ok(allDocs[0].note === "at booking", "v1's note is unchanged after the later versions were made");
+    ok(new Set(allDocs.map((d) => d.url)).size === 4, "…and each has its own stored file");
 
     // ══ REFUSALS ════════════════════════════════════════════════════════════
     console.log("\n[refusals that protect the owner]");
@@ -151,7 +191,7 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     // ══ THE LIST ════════════════════════════════════════════════════════════
     console.log("\n[the list the UI reads]");
     const list = await call(li.listLeadInvoices, req());
-    ok(list.code === 200 && list.body.invoices.length === 3, "lists this lead's three invoices");
+    ok(list.code === 200 && list.body.invoices.length === 4, "lists this lead's four invoices");
     ok(list.body.invoices[0].seq > list.body.invoices[2].seq, "…newest first");
     ok(list.body.canChargeGst === true && list.body.gstin === "29ABCDE1234F1Z5", "…and reports whether GST can be offered at all");
     ok(list.body.bookingValue === 1200000 && list.body.hasBooking === true, "…plus the booking value for the UI");

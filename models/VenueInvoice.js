@@ -141,4 +141,26 @@ VenueInvoiceSchema.index({ enquiry: 1, createdAt: -1 });
 // Unique invoice number per venue.
 VenueInvoiceSchema.index({ venue: 1, invoiceNumber: 1 }, { unique: true });
 
+// ── ONE INVOICE PER MILESTONE, ENFORCED BY THE DATABASE ─────────────────────
+// controllers/venueLeadInvoice checks for an existing invoice before raising
+// one, but a read-then-write cannot stop two members pressing the button at the
+// same moment: both reads miss, both writes succeed, and the lead ends up with
+// two immutable tax invoices covering one instalment. Neither can be deleted.
+// So the check stays as the friendly path and THIS is the guarantee.
+//
+// PARTIAL, NOT SPARSE. `forMilestoneId` carries `default: null`, so it is
+// present on every document; a sparse compound index indexes a document when
+// ANY of its keys is present, which would pull in every createFromBooking /
+// checkin / bill-conversion invoice as {missing, null} and collide them with
+// each other — several invoices per booking is legitimate on those paths. The
+// partial filter says what is actually meant: only invoices raised against a
+// LEAD are one-per-milestone. Those are exactly the ones that set `enquiry`.
+//
+// Within that filter, {enquiry, null} is also unique, which is the same rule
+// the controller's check applies: one booking-level invoice per lead.
+VenueInvoiceSchema.index(
+  { enquiry: 1, forMilestoneId: 1 },
+  { unique: true, partialFilterExpression: { enquiry: { $type: "objectId" } } }
+);
+
 module.exports = mongoose.models.VenueInvoice || mongoose.model("VenueInvoice", VenueInvoiceSchema);

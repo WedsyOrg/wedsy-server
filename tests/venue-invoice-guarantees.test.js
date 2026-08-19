@@ -23,7 +23,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueInvoice = require("../models/VenueInvoice");
 const VenueCounter = require("../models/VenueCounter");
 
-const { allocateInvoice } = require("../controllers/venueInvoice");
+const { allocateInvoice, isMilestoneCollision } = require("../controllers/venueInvoice");
 
 const TAG = `inv-${Date.now()}`;
 let pass = 0, fail = 0;
@@ -56,9 +56,16 @@ const created = { venues: [], owners: [] };
       days: [{ date: new Date("2026-11-26T00:00:00Z"), eventType: "wedding", guestCount: 300 }],
     });
 
+    // Each allocation gets its own forMilestoneId. That is not test decoration:
+    // {enquiry, forMilestoneId} is now unique, so twelve invoices against ONE
+    // lead are only legitimate when they cover twelve different instalments —
+    // which is exactly the shape real usage has. Reusing a single milestone here
+    // would be testing the duplicate guard, not the numbering, and section 4
+    // does that deliberately.
     const baseFields = () => ({
       booking: booking._id,
       enquiry: lead._id,
+      forMilestoneId: new mongoose.Types.ObjectId(),
       lineItems: [{ label: "Venue hire", qty: 1, unitPrice: 1200000 }],
       gstPercent: 18,
       gstMode: "exclusive",
@@ -159,6 +166,114 @@ const created = { venues: [], owners: [] };
     ok(noGst.seq !== results[0].seq, "…and both consumed their own number");
     const withVenue = await Venue.findById(venue._id).select("gstin").lean();
     ok(withVenue.gstin === "29ABCDE1234F1Z5", "the GSTIN itself stays in Settings — never copied onto the invoice row");
+
+    // ══ 4 · ONE INVOICE PER MILESTONE, UNDER CONCURRENCY ════════════════════
+    // The review case: two members press Raise on the SAME instalment at the
+    // same moment. The controller's findOne check misses on both, because
+    // neither write has landed when either read runs. Before the unique index
+    // this produced two immutable tax invoices covering one instalment, and
+    // neither can be deleted.
+    console.log("\n[4. one invoice per milestone, under real concurrency]");
+    const milestoneIdx = await VenueInvoice.collection.indexes();
+    const msUniq = milestoneIdx.find(
+      (i) => i.unique && i.key && i.key.enquiry === 1 && i.key.forMilestoneId === 1
+    );
+    ok(Boolean(msUniq), "the unique {enquiry, forMilestoneId} index EXISTS before any assertion is trusted");
+    ok(
+      Boolean(msUniq && msUniq.partialFilterExpression && msUniq.partialFilterExpression.enquiry),
+      "…and is PARTIAL on enquiry, so the older createFromBooking path is untouched"
+    );
+
+    const sharedMilestone = new mongoose.Types.ObjectId();
+    const contenders = await Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        allocateInvoice(venue, { ...baseFields(), forMilestoneId: sharedMilestone })
+      )
+    );
+    const won = contenders.filter((r) => r.status === "fulfilled");
+    const lost = contenders.filter((r) => r.status === "rejected");
+    ok(won.length === 1, `6 simultaneous invoices for ONE instalment produced exactly 1 winner (got ${won.length})`);
+    ok(lost.length === 5, `…and ${lost.length} losers, none of which created a row`);
+    ok(
+      lost.every((r) => isMilestoneCollision(r.reason)),
+      "…every loser failed on the milestone index, not on the number index"
+    );
+    const covering = await VenueInvoice.countDocuments({ enquiry: lead._id, forMilestoneId: sharedMilestone });
+    ok(covering === 1, `invoices now covering that ONE milestone: ${covering}`);
+
+    // ── what a refused allocation costs the sequence ────────────────────────
+    // A refused attempt has already drawn a number by the time the index turns
+    // it away. allocateInvoice hands that number back when it is still the top
+    // of the counter, which is always true for the ordinary sequential refusal
+    // and true for some orderings of a concurrent one. The invariant that must
+    // hold absolutely is the one below it: no number is ever issued twice.
+    const countRows = async () => (await VenueInvoice.countDocuments({ venue: venue._id }));
+    const counterNow = async () =>
+      (await VenueCounter.findOne({ key: `${venue._id}:invoice` }).lean()).seq;
+
+    const rowsAfterStorm = await countRows();
+    const counterAfterStorm = await counterNow();
+    const burnt = counterAfterStorm - rowsAfterStorm;
+    ok(
+      burnt <= 5,
+      `the 5 losers burnt ${burnt} number(s), not 15 — a refused attempt no longer retries three times`
+    );
+    console.log(`     · counter ${counterAfterStorm}, invoices ${rowsAfterStorm} → ${burnt} number(s) unissued`);
+
+    // The ordinary sequential refusal — the double-click — must cost NOTHING,
+    // because its number is still the top of the counter when it is handed back.
+    const beforeSeq = await counterNow();
+    let sequentialErr = null;
+    try {
+      await allocateInvoice(venue, { ...baseFields(), forMilestoneId: sharedMilestone });
+    } catch (e) { sequentialErr = e; }
+    ok(isMilestoneCollision(sequentialErr), "a later attempt on the same instalment is refused by the index too");
+    ok(
+      (await counterNow()) === beforeSeq,
+      "…and that refusal cost the sequence NOTHING — the number was handed back"
+    );
+
+    // And a booking-level invoice (forMilestoneId null) is one-per-lead as well.
+    const bookingLevel = await allocateInvoice(venue, { ...baseFields(), forMilestoneId: null });
+    ok(Boolean(bookingLevel.invoiceNumber), "a booking-level invoice (no milestone) is allowed");
+    const beforeSecond = await counterNow();
+    let secondBookingLevel = null;
+    try {
+      await allocateInvoice(venue, { ...baseFields(), forMilestoneId: null });
+    } catch (e) { secondBookingLevel = e; }
+    ok(isMilestoneCollision(secondBookingLevel), "…but only one of them per lead");
+    ok((await counterNow()) === beforeSecond, "…and that refusal cost the sequence nothing either");
+
+    // THE invariant. Handing a number back is only ever safe if it cannot be
+    // issued twice; this is the assertion that would catch it if it were.
+    const everySeq = (await VenueInvoice.find({ venue: venue._id }).select("seq invoiceNumber").lean());
+    ok(
+      new Set(everySeq.map((r) => r.seq)).size === everySeq.length,
+      `no sequence value was issued twice across ${everySeq.length} invoices, handbacks included`
+    );
+    ok(
+      new Set(everySeq.map((r) => r.invoiceNumber)).size === everySeq.length,
+      "…and no invoice number was issued twice"
+    );
+
+    // The older venue-level path has no `enquiry`, so the partial filter must
+    // let several of its invoices coexist on one booking.
+    const legacyA = await allocateInvoice(venue, {
+      booking: booking._id, kind: "advance",
+      lineItems: [{ label: "Venue hire", qty: 1, unitPrice: 100 }],
+      gstPercent: 18, gstMode: "exclusive",
+      totals: { subtotal: 100, taxable: 100, gst: 18, grandTotal: 118 },
+    });
+    const legacyB = await allocateInvoice(venue, {
+      booking: booking._id, kind: "addon",
+      lineItems: [{ label: "Extra chairs", qty: 1, unitPrice: 200 }],
+      gstPercent: 18, gstMode: "exclusive",
+      totals: { subtotal: 200, taxable: 200, gst: 36, grandTotal: 236 },
+    });
+    ok(
+      Boolean(legacyA.invoiceNumber && legacyB.invoiceNumber && legacyA.seq !== legacyB.seq),
+      "the older createFromBooking path can still raise SEVERAL invoices per booking — the partial filter excludes it"
+    );
 
     console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   } catch (e) {

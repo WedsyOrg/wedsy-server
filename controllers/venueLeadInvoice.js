@@ -24,11 +24,19 @@
  * cannot be edited away. So a second invoice for the same (booking, milestone)
  * is refused with 409 and the existing number, rather than silently allocated.
  *
- * The guard is scoped by `enquiry`, which is deliberate: invoices created by the
+ * TWO LAYERS, AND ONLY ONE OF THEM IS A GUARANTEE. The findOne check below is
+ * the friendly path: it produces the good message on the overwhelmingly common
+ * double-click. It cannot stop two members pressing Raise in the same instant —
+ * both reads miss, both writes proceed — so the real rule is the unique index
+ * {enquiry, forMilestoneId} on models/VenueInvoice, and the 11000 it raises is
+ * translated back into the same 409. Read-then-write alone let two immutable
+ * tax invoices cover one instalment; that was a review finding, not a theory.
+ *
+ * The rule is scoped by `enquiry`, which is deliberate: invoices created by the
  * older venue-level path (controllers/venueInvoice.createFromBooking) have no
- * `enquiry` field, and several may legitimately exist for one booking. Scoping
- * this way means the new rule cannot retroactively block anything that already
- * works.
+ * `enquiry` field, and several may legitimately exist for one booking. The index
+ * carries a matching partial filter, so the new rule cannot retroactively block
+ * anything that already works.
  */
 const mongoose = require("mongoose");
 const Venue = require("../models/Venue");
@@ -42,7 +50,7 @@ const { computeTotals } = require("../utils/venueMoney");
 const { resolveBranding, BRANDING_SELECT } = require("../utils/venueBranding");
 const { buildInvoicePdf } = require("../utils/venueInvoicePdf");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
-const { allocateInvoice } = require("./venueInvoice");
+const { allocateInvoice, isMilestoneCollision } = require("./venueInvoice");
 const { insertNextVersion } = require("./venueLeadDocument");
 
 const DEFAULT_GST_PERCENT = 18;
@@ -197,18 +205,41 @@ const createLeadInvoice = async (req, res) => {
     const totals = computeTotals(lineItems, gstPercent, 0, gstMode);
 
     // ── the number, via the ONE existing allocator ─────────────────────────
-    const invoice = await allocateInvoice(venue, {
-      booking: booking._id,
-      enquiry: lead._id,
-      forMilestoneId,
-      kind: milestone ? "final" : "advance",
-      lineItems,
-      gstPercent,
-      gstMode,
-      discount: 0,
-      totals,
-      whiteLabel: brand.whiteLabel,
-    });
+    // The check above is the friendly path; the {enquiry, forMilestoneId} unique
+    // index is the guarantee. Two members pressing Raise at the same moment both
+    // pass the check — only one of them gets past this write.
+    let invoice;
+    try {
+      invoice = await allocateInvoice(venue, {
+        booking: booking._id,
+        enquiry: lead._id,
+        forMilestoneId,
+        kind: milestone ? "final" : "advance",
+        lineItems,
+        gstPercent,
+        gstMode,
+        discount: 0,
+        totals,
+        whiteLabel: brand.whiteLabel,
+      });
+    } catch (e) {
+      if (!isMilestoneCollision(e)) throw e;
+      // The winner's row is already committed — name it, so the loser sees the
+      // same 409 the friendly path would have given rather than a 500.
+      const winner = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId })
+        .select("invoiceNumber _id")
+        .lean();
+      return res.status(409).json({
+        message: winner
+          ? milestone
+            ? `${winner.invoiceNumber} already covers that instalment.`
+            : `${winner.invoiceNumber} is already this booking's invoice.`
+          : "An invoice for that instalment was raised a moment ago.",
+        code: "invoice_exists",
+        invoiceNumber: winner ? winner.invoiceNumber : undefined,
+        invoiceId: winner ? winner._id : undefined,
+      });
+    }
 
     // ── render, store, and file it in the Documents tab ────────────────────
     let rendered;
