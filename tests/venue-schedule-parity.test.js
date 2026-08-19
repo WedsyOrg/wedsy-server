@@ -94,8 +94,10 @@ const clientEqualSplit = (n) => {
   });
 };
 
-const clientAmountsFor = (hundredths, totalValue) => {
-  const value = Math.max(0, Math.round(totalValue || 0));
+const clientAmountsFor = (hundredths, totalValue, advanceAmount = 0) => {
+  const booking = Math.max(0, Math.round(totalValue || 0));
+  const advance = Math.min(booking, Math.max(0, Math.round(advanceAmount || 0)));
+  const value = booking - advance;
   const amounts = hundredths.map((h) => Math.floor((value * h) / FULL));
   const total = hundredths.reduce((sum, h) => sum + h, 0);
   if (total !== FULL) return amounts;
@@ -107,9 +109,15 @@ const clientAmountsFor = (hundredths, totalValue) => {
 let keySeq = 0;
 const nextKey = () => `r${++keySeq}`;
 
-const clientRowsFromShape = (shape, totalValue, eventDate) => {
+const clientSplitBase = (totalValue, advanceAmount = 0) => {
+  const booking = Math.max(0, Math.round(totalValue || 0));
+  const advance = Math.min(booking, Math.max(0, Math.round(advanceAmount || 0)));
+  return { booking, advance, balance: booking - advance };
+};
+
+const clientRowsFromShape = (shape, totalValue, eventDate, advanceAmount = 0) => {
   const hs = shape.rows.map((r) => clientToHundredths(r.percent) ?? 0);
-  const amounts = clientAmountsFor(hs, totalValue);
+  const amounts = clientAmountsFor(hs, totalValue, advanceAmount);
   const ev = eventDate ? new Date(eventDate) : null;
   const evValid = ev && !Number.isNaN(ev.getTime());
   return shape.rows.map((r, i) => ({
@@ -389,6 +397,45 @@ const row = (label, percent, amount = "", dueDate = "") => ({ key: nextKey(), la
   const three = clientEqualSplit(3);
   ok(three.reduce((a, b) => a + b, 0) === FULL, "…but the integer split totals exactly 100 on the client");
   ok(sched.checkTotal(three.map((h) => ({ percentHundredths: h }))).ok, "…and the server accepts it");
+
+  // ── THE BALANCE RULE, both sides ──────────────────────────────────────────
+  // The percentages apply to what remains AFTER the advance. A client that
+  // still splits the full booking value builds a schedule the server now
+  // refuses (schedule_value_mismatch), which is exactly the drift this mirror
+  // exists to catch.
+  console.log("\n[percentages split the BALANCE, not the booking]");
+  {
+    const fifty = [{ label: "First", percent: 50, offsetDays: null }, { label: "Balance", percent: 50, offsetDays: -7 }];
+    const hs = fifty.map((r) => clientToHundredths(r.percent));
+
+    const c = clientAmountsFor(hs, 100000, 25000);
+    const sv = sched.generateSchedule({ rows: fifty, totalValue: 100000, advanceAmount: 25000 });
+    ok(c.join(",") === "37500,37500", "client: ₹1L booking, ₹25k advance, 50/50 → 37,500 + 37,500");
+    ok(sv.rows.map((r) => r.amount).join(",") === c.join(","), "…and the server agrees exactly");
+    ok(sv.totals.balance === 75000, "…the balance being split is 75,000");
+    ok(sv.totals.advanceAmount + sv.totals.amount === 100000, "…advance + instalments = the booking value");
+
+    // The case that must NOT change.
+    const c0 = clientAmountsFor(hs, 100000, 0);
+    const s0 = sched.generateSchedule({ rows: fifty, totalValue: 100000 });
+    ok(c0.join(",") === "50000,50000", "NO ADVANCE: the shape still splits the whole booking");
+    ok(s0.rows.map((r) => r.amount).join(",") === c0.join(","), "…and both sides still agree");
+
+    // Rounding survives on the balance.
+    const thirds = clientEqualSplit(3);
+    const c3 = clientAmountsFor(thirds, 100000, 25000);
+    const s3 = sched.generateSchedule({
+      rows: thirds.map((h, i) => ({ label: `R${i}`, percent: clientFromHundredths(h) })),
+      totalValue: 100000, advanceAmount: 25000,
+    });
+    ok(c3.reduce((a, b) => a + b, 0) === 75000, "33.33×3 over a 75,000 balance still totals the balance exactly");
+    ok(s3.rows.map((r) => r.amount).join(",") === c3.join(","), "…and the server rounds it the same way");
+
+    // splitBase is what the wizard renders; it must not disagree with either.
+    const b = clientSplitBase(100000, 25000);
+    ok(b.balance === sv.totals.balance, "the wizard's stated balance matches the server's");
+    ok(clientSplitBase(100000, 250000).advance === 100000, "an advance larger than the booking is clamped, not negative");
+  }
 
   console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
