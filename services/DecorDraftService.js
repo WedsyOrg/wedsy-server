@@ -6,7 +6,7 @@ const { suggestProductCode, isCodeTaken } = require("../utils/decorCode");
 const { storeRemoteImage, toAnalysisBase64 } = require("../utils/remoteImageToS3");
 const { analyseImage } = require("./decorVision");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("./decorPricing");
-const { analyseListing } = require("./decorListing");
+const { buildListingContext } = require("./decorListingContext");
 const { normalizeImageUrl } = require("./decorImageKey");
 const { lookupRead, panelQuoteFor } = require("./decorReadCache");
 
@@ -82,7 +82,8 @@ const unitFor = async (category) => {
 // reads. Demo mode adds observations/measurements/occasion on top; only the
 // LISTING copy fields (flowers, colors, fabric, suggestedName, description, tags,
 // included) are missing from a demo read, and none of them price anything. That
-// is why A2S can drop to one AI call while still needing analyseListing.
+// is why a cache hit still costs ONE call: the cached read settles the price, and
+// the call supplies only the copy it cannot carry.
 const priceFromAnalysis = async (analysis) => {
   const out = { analysis, pricing: null, fallbacks: [], rejected: false };
   if (!analysis.isDecorProduct) {
@@ -149,10 +150,18 @@ const priceFromAnalysis = async (analysis) => {
   return out;
 };
 
-// Brain 2: vision + pricing. Mirrors POST /decor/analyse-image, but keeps the
-// FULL result (shapeClientResponse trims the wire response, not this).
-const runPricingBrain = async (imageBase64) =>
-  priceFromAnalysis(await analyseImage({ imageBase64, mode: "full" }));
+// THE BRAIN (2026-08-19: one, not two). FULL mode now returns the pricing
+// judgement AND the catalogue copy from a single call, so `analysis` here
+// carries suggestedName / description / tags / colors / flowers / fabric /
+// included alongside category / size / complexity / style.
+const runPricingBrain = async (imageBase64, listingContext) =>
+  priceFromAnalysis(await analyseImage({ imageBase64, mode: "full", listingContext }));
+
+// Copy only. Used on a CACHE HIT, where pricing comes from the cached demo read
+// (so the draft keeps the exact read the client was quoted from) but that read
+// carries no copy fields. One call either way — never two.
+const analyseForCopy = async (imageBase64, listingContext) =>
+  analyseImage({ imageBase64, mode: "full", listingContext });
 
 // Injection seam so the test suite never calls Anthropic or S3.
 const deps = {
@@ -160,7 +169,8 @@ const deps = {
   toAnalysisBase64,
   runPricingBrain,
   priceFromAnalysis,
-  analyseListing,
+  analyseForCopy,
+  buildListingContext,
   lookupRead,
   panelQuoteFor,
 };
@@ -265,23 +275,33 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
     }
   }
 
-  // The listing brain always needs the image; the pricing brain needs it only on
-  // a cache miss. Compute the base64 once, and only if something still has to run.
+  // ── ONE CALL (2026-08-19) ─────────────────────────────────────────────────
+  // Pre-merge this was two: a vision+pricing call, then a separate listing call
+  // told what the first one had decided. FULL mode now returns both.
+  //
+  // On a CACHE HIT the pricing half still comes from the cached DEMO read — that
+  // is what keeps the draft on the exact read the client was quoted from — and
+  // the single call made here supplies only the copy, which a demo read does not
+  // carry. So it is one call on a hit and one on a miss, never two.
   if (!pricingBrain || !listing) {
     const b64 = await deps.toAnalysisBase64(stored.buffer);
+    // Category-scoped names when the cached read already told us the category;
+    // otherwise every name, because on a miss the category is decided by the very
+    // call we are about to make. See services/decorListingContext.
+    const listingContext = await deps.buildListingContext(
+      cachedAnalysis ? cachedAnalysis.category : ""
+    );
     if (!pricingBrain) {
-      pricingBrain = await deps.runPricingBrain(b64);
+      pricingBrain = await deps.runPricingBrain(b64, listingContext);
       pricingBrain.analysisMode = "full";
       sourceRead = { source: "fresh", cacheId: null, firstReadAt: new Date(), usedAt: new Date() };
-    }
-    if (!listing) {
-      // The vision brain names the category; the listing brain is told what it
-      // is looking at. A listing failure must NOT lose the pricing work.
+      // Same call, so the copy is the same read — no second opinion to reconcile.
+      if (!listing) listing = pricingBrain.analysis;
+    } else if (!listing) {
+      // Cache hit: pricing is already settled from the cached read. A copy
+      // failure must NOT lose the pricing work, exactly as before.
       try {
-        listing = await deps.analyseListing({
-          imageBase64: b64,
-          category: pricingBrain.analysis && pricingBrain.analysis.category,
-        });
+        listing = await deps.analyseForCopy(b64, listingContext);
       } catch (e) {
         listing = { error: e.message, code: e.code || "LISTING_FAILED" };
       }
@@ -300,18 +320,30 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
   const category = visionCategory || listingCategory || "";
   const priceLadder = (pricingBrain && pricingBrain.pricing) || {};
 
+  // The merged brain names the field `suggestedName` (the key /decor/analyse-image
+  // has always echoed); `name` is still accepted so a caller supplying its own
+  // pre-built analysis keeps working. seoKeywords and occasions are GONE from the
+  // listing half by ruling: seoKeywords was unused, and the occasion the pricing
+  // brain reads is better — it gave "haldi 85%" where the listing brain guessed
+  // four occasions at once.
   const suggested = {
     category,
-    name: (listing && listing.name) || "",
+    name: (listing && (listing.suggestedName || listing.name)) || "",
     description: (listing && listing.description) || "",
     tags: Array.isArray(listing && listing.tags) ? listing.tags : [],
     included: Array.isArray(listing && listing.included) ? listing.included : [],
     attributes: {
-      style: (listing && listing.style) || [],
+      // The scalar style judgement, boxed for the catalogue form — the Style
+      // attribute list is exactly ["Modern","Traditional"], so the scalar IS the
+      // attribute value. An array from a pre-built analysis passes through.
+      style: Array.isArray(listing && listing.style)
+        ? listing.style
+        : listing && listing.style
+          ? [listing.style]
+          : [],
       colors: (listing && listing.colors) || [],
       flowers: (listing && listing.flowers) || [],
-      occasions: (listing && listing.occasions) || [],
-      seoKeywords: (listing && listing.seoKeywords) || [],
+      fabric: (listing && listing.fabric) || [],
     },
     measurements:
       (pricingBrain && pricingBrain.analysis && pricingBrain.analysis.stageMeasurements) ||

@@ -129,9 +129,9 @@ const SIZE_SNAP_WIDEN = Number(process.env.DECOR_SIZE_SNAP_WIDEN) || 0.2;
 // alone would only recreate the same contradiction.
 //
 // ⛔ BEFORE RE-WIRING ANYWHERE: as of 2026-08-19 no pricing path reads `style`,
-// which removes the PRICE objection to the merged listing schema (its documented
-// defect is an unstable style read — see LISTING_SCHEMA_INSTR in
-// services/decorVision.js). It does not remove every objection: style is still
+// which is what allowed the listing merge to ship on 2026-08-19 (its documented
+// defect is an unstable style read — see the note above FULL_SCHEMA_INSTR in
+// services/decorVision.js). That did not remove every objection: style is still
 // STORED as a product attribute (/decor/ai-analyze and the A2S draft's
 // suggested.attributes.style), so an unstable read still mislabels a product —
 // it just can no longer misprice one. Restoring style as a price input re-arms

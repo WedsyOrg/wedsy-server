@@ -3,6 +3,7 @@ const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
 const { analyseImage, includedFor } = require("../services/decorVision");
+const { buildListingContext } = require("../services/decorListingContext");
 const { buildDemoPrice, buildStorePrice, pinTextCategoryCheck, demoCategoryTiers, resolveOccasion } = require("../services/decorDemoPrice");
 const readCache = require("../services/decorReadCache");
 const sharp = require("sharp");
@@ -1384,50 +1385,6 @@ const DemoPrice = async (req, res) => {
 
 // ─── AI listing helpers ──────────────────────────────────────────────────────
 
-const AI_SYSTEM_PROMPT = `You are a luxury Indian wedding decor product naming expert. Analyze the uploaded product image carefully.
-
-Detect: decor style (traditional Indian / modern contemporary / fusion), color palette, floral types, ambience, structure, lighting, occasions it suits.
-
-NAMING RULES:
-- Traditional/Indian aesthetic → royal, classic, cultural names (e.g. Ivory Grace, Regal Flora, Marigold Grandeur)
-- Modern/contemporary aesthetic → sleek, premium, aesthetic names (e.g. Velvet Aura, Opal Pavilion, Celestial Bloom)
-- Fusion → blend both styles
-- STRICTLY 2 words (3 only if absolutely necessary)
-- Must NOT be similar to any name in existing_names list
-- Luxury Indian wedding catalog feel, non-generic, premium
-- Avoid: color-only names, generic names, basic/local vendor-style names
-
-ATTRIBUTE RULES:
-- ONLY use values from attribute_options provided
-- If unsure → return empty array, never invent values
-
-TAGS RULES — also generate searchable tags for the 'tags' field by analyzing the image:
-- Decor style tags (floral, royal, modern, traditional, fusion etc)
-- Color tags (pink, gold, white, red etc)
-- Occasion tags (wedding, reception, engagement etc)
-- Structural tags (backdrop, arch, mandap, stage, canopy etc)
-- Mood/aesthetic tags (romantic, grand, minimal, vibrant, elegant etc)
-- Material tags if visible (fabric, fresh flowers, LED, mirror, drapes etc)
-
-TAGS FORMAT:
-- Short single or double word tags only
-- 8-12 tags per product
-- All lowercase
-- Return as array of strings
-
-Return ONLY valid JSON no markdown:
-{
-  name: string,
-  description: string (2-3 sentences, luxury emotional language),
-  seoKeywords: string[],
-  category: string,
-  style: string[],
-  colors: string[],
-  flowers: string[],
-  occasions: string[],
-  tags: string[],
-  detectedAesthetic: 'traditional' | 'modern' | 'fusion'
-}`;
 
 const AiAnalyze = async (req, res) => {
   try {
@@ -1448,36 +1405,23 @@ const AiAnalyze = async (req, res) => {
       return res.status(400).send({ message: "invalid imageBase64" });
     }
 
-    const [existing, attrs] = await Promise.all([
-      Decor.find({ category }, "name").lean(),
-      Attribute.find({}, "name list").lean(),
-    ]);
-    const existingNames = existing.map((d) => d.name).filter(Boolean);
-    const attributeOptions = {};
-    attrs.forEach((a) => {
-      attributeOptions[a.name] = a.list || [];
-    });
+    // Live catalogue context — one shared builder, so A2S and this endpoint can
+    // never supply different context to the same prompt.
+    const listingContext = await buildListingContext(category);
 
-    // ── 2026-08-17: this endpoint now runs the MERGED vision+listing brain in
-    // "listing" mode (services/decorVision.js LISTING_SCHEMA_INSTR) instead of
-    // its own weak autofill prompt. One image, one call, off the calibrated
-    // brain. existing_names and attribute_options are still supplied
-    // (category-scoped, as before), so the strict 2-word naming rule and the
-    // don't-resemble-existing-names constraint are preserved verbatim.
+    // ── ONE BRAIN (2026-08-19) ────────────────────────────────────────────
+    // This endpoint used to run its own weak autofill prompt, then briefly a
+    // fenced "listing" mode. Both are gone: FULL mode now makes the pricing
+    // judgement and writes the catalogue copy in a single call, and A2S runs the
+    // same one. The fence that kept them apart protected `style` from moving a
+    // price; since 2026-08-19 no pricing path reads style at all, so there is
+    // nothing left to fence. See the note above FULL_SCHEMA_INSTR.
     //
-    // ⛔ "listing" mode is scoped to THIS endpoint only. It destabilises the
-    // `style` read (st034: 5/8 Modern vs the current schema's 0/8), and style
-    // drives STYLE_PREMIUM — a ±42% Stage price swing. /decor/analyse-image,
-    // /decor/demo-price and the A2S draft path all stay on "full"/"demo", which
-    // are unchanged. AI_SYSTEM_PROMPT below is retained because
-    // services/decorListing.js (still used by A2S) imports it.
+    // It also inherits the vision layer's retry: the deleted listing brain had
+    // NONE, so a momentary 429/529 silently cost the name, description and tags.
     let analysis;
     try {
-      analysis = await analyseImage({
-        imageBase64: img.data,
-        mode: "listing",
-        listingContext: { existingNames, attributeOptions },
-      });
+      analysis = await analyseImage({ imageBase64: img.data, mode: "full", listingContext });
     } catch (apiErr) {
       if (apiErr && apiErr.code === "VISION_PARSE") {
         console.error("[AiAnalyze] JSON parse failed. Raw response:\n", apiErr.raw);
@@ -1494,26 +1438,30 @@ const AiAnalyze = async (req, res) => {
     // the catalogue's Attribute "Style" list is exactly ["Modern","Traditional"],
     // so the scalar IS the attribute value and there is no second style field.
     // `category` echoes the request, as it always did; `included` is derived from
-    // it by the same rule as before. Everything after `included` is NEW — the
-    // upgrade this surface gets from running on the calibrated brain.
+    // it by the same rule as before.
+    //
+    // seoKeywords, occasions and detectedAesthetic are GONE by ruling: the first
+    // was unused, the second is read better by the pricing half, and nothing ever
+    // consumed the third. They are returned as empty/null for one release so the
+    // form does not break on a missing key.
     return res.send({
-      name: analysis.name || "",
+      name: analysis.suggestedName || "",
       description: analysis.description || "",
-      seoKeywords: analysis.seoKeywords || [],
       category,
       style: analysis.style ? [analysis.style] : [],
       colors: analysis.colors || [],
       flowers: analysis.flowers || [],
-      occasions: analysis.occasions || [],
-      tags: analysis.tags || [],
-      detectedAesthetic: analysis.detectedAesthetic || null,
-      included: includedFor(category),
-      // NEW (additive — the FE can ignore these safely):
       fabric: analysis.fabric || [],
+      tags: analysis.tags || [],
+      included: includedFor(category),
       detectedCategory: analysis.category || null,
       categoryConfidence: analysis.categoryConfidence,
       size: analysis.size || null,
       complexity: analysis.complexity || null,
+      // Retired 2026-08-19 — see above. Remove once the form stops reading them.
+      seoKeywords: [],
+      occasions: [],
+      detectedAesthetic: null,
     });
   } catch (err) {
     console.error("AiAnalyze error:", err?.message || err);
@@ -1596,7 +1544,4 @@ module.exports = {
   CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder, SuggestPrice, AnalyseImage, DemoPrice,
   // exported for the response-contract test — the wire-shaping boundary
   shapeClientResponse, shapeDemoPrice, shapeAnalyseImage,
-  // A2S: services/decorListing runs this same listing analysis off-HTTP for the
-  // draft-create path. Shared (not copied) so the two can never drift.
-  AI_SYSTEM_PROMPT,
 };

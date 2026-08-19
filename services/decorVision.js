@@ -116,67 +116,44 @@ STYLE: only "Modern" or "Traditional" (Indian classical / royal). Return null un
 Calibrate every confidence honestly.`;
 
 // ── mode-specific output schema (NOT cached; small). ─────────────────────────
-const FULL_SCHEMA_INSTR = `Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys:
-{
-  "isDecorProduct": boolean,
-  "category": one of ${JSON.stringify(CATEGORY_LIST)} OR null (null when isDecorProduct is false),
-  "categoryConfidence": number 0.0-1.0,
-  "style": "Modern" | "Traditional" | null,
-  "flowers": string[],
-  "colors": string[],
-  "fabric": string[],
-  "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
-  "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
-  "suggestedName": string,
-  "description": string,
-  "tags": string[],
-  "included": string[]
-}
-If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags/included and empty strings for suggestedName/description; still give best-effort size/complexity/style.`;
-
-
-// ── LISTING-mode schema (2026-08-17) — /decor/ai-analyze ONLY ────────────────
 //
-// ⛔ DO NOT ROUTE ANY PRICING PATH AT THIS BLOCK. Not /decor/analyse-image, not
-// /decor/demo-price, not the A2S draft path. It is scoped to POST
-// /decor/ai-analyze — the catalogue's "AI Analyse" button — which has no pricing
-// consumer, so a style wobble there costs nothing.
+// THE MERGE (2026-08-19). FULL mode now writes the catalogue listing as well as
+// making the pricing judgement — one image, one call. The separate listing brain
+// (services/decorListing.js + AI_SYSTEM_PROMPT) is DELETED; A2S and
+// POST /decor/ai-analyze both route here.
 //
-// WHY, with the evidence (verification gate, 2026-08-17):
-// Folding the listing copy into a vision call DESTABILISES THE STYLE READ, and
-// `style` drives decorPricing.STYLE_PREMIUM. Probed on st034 "Sage Elegance",
-// same image, 8 reads per arm, identical SHARED_RULES:
-//     current schema : Traditional 8/8  ·  Modern 0/8   (deterministic)
-//     this schema    : Traditional 3/8  ·  Modern 5/8   (a coin flip)
-// STYLE_PREMIUM.Stage is { Modern: 1, Traditional: 0.703125 }, so that flip
-// swings the Stage artificial price ₹37,734 → ₹53,667 = +42.2% on the same photo.
-// Size and complexity were IDENTICAL across all 16 reads — style was the only
-// field that moved.
+// HISTORY, because this was refused twice and the reasoning should not be lost:
+// asking for catalogue copy in the same call DESTABILISES THE STYLE READ. Probed
+// on st034 "Sage Elegance", same image, 8 reads per arm, identical SHARED_RULES:
+//     pricing-only schema : Traditional 8/8 · Modern 0/8   (deterministic)
+//     schema with copy    : Traditional 3/8 · Modern 5/8   (a coin flip)
+// That was blocking because `style` fed decorPricing.STYLE_PREMIUM, worth ±42%
+// on a Stage price. It no longer does: as of 2026-08-19 NO pricing path passes
+// style into suggestPrice (verified across the panel's sizeOptions and ladder,
+// the anchor lookup fallback, A2S aiSuggested, and the real /analyse-image
+// controller — all byte-identical across Modern/Traditional/null). The residual
+// cost of a style wobble is a wrong LABEL on a product, not a wrong price.
 //
-// ⚠️ REMOVING `styleTags` WAS NECESSARY BUT NOT SUFFICIENT. An earlier attempt
-// added a free-form styleTags array alongside the scalar; that third channel
-// moved 6 of 12 price ladders by up to 43%. This block has ONE scalar style
-// field, no styleTags, and an explicit instruction that detectedAesthetic must
-// agree with it — verified clean 36/36 on the gate — and the style read STILL
-// drifts. The act of asking for catalogue copy in the same call is itself the
-// destabiliser. Do not assume a further prompt tweak fixes it; re-run the gate
-// (scratchpad/merged-gate.js + st034-probe.js, n≥8 per arm) before believing any
-// change here is safe for a pricing surface.
+// ⚠️ SO THE ONE THING THAT WOULD RE-ARM THIS is re-wiring style as a price input.
+// If that ever happens, this block has to be split again — see the note on
+// STYLE_PREMIUM in services/decorPricing.js.
 //
-// Everything else about the merge held: category accuracy 91.7% both arms, size
-// exact-match 41.7% both arms, median |area error| 32.5% both arms.
-const LISTING_SCHEMA_INSTR = `After the judgement above, also write this product's catalogue listing.
+// Category and size were UNAFFECTED by the copy fields in that same gate
+// (category 91.7% both arms, size exact-match 41.7% both arms), which is why the
+// re-run bar is "no worse on category and size".
+const FULL_SCHEMA_INSTR = `Make the judgement above, then write this product's catalogue listing.
 
-NAMING ("name"):
-- STRICTLY 2 words (3 only if absolutely necessary).
-- Luxury Indian wedding catalogue feel: non-generic, premium.
-- Traditional aesthetic → royal / classic / cultural (e.g. Ivory Grace, Regal Flora, Marigold Grandeur). Modern → sleek / premium (e.g. Velvet Aura, Opal Pavilion, Celestial Bloom). Fusion → blend the two.
-- Avoid colour-only names, generic names, and basic vendor-style names.
-- When the user message supplies existing_names, the name must NOT be similar to any of them.
+NAME — two words preferred; three is fine when it genuinely reads better.
+- Luxury Indian wedding register: premium, and specific to this build.
+- A traditional-looking build gets a royal / classic / cultural name — Ivory Grace, Regal Flora, Marigold Grandeur. A modern-looking one gets a sleek / premium name — Velvet Aura, Opal Pavilion, Celestial Bloom.
+- When the user message supplies existing_names, the name must not resemble any of them.
+- No colour-only names, no generic names, nothing that reads like a local vendor.
 
-ATTRIBUTE VALUES — when the user message supplies attribute_options, "flowers", "colors", "fabric" and "occasions" must be drawn ONLY from the matching list there. Never invent a value; return [] when unsure. Without attribute_options, describe them freely.
+DESCRIPTION — 2 to 5 sentences, luxury emotional language. Write to how the setup feels to walk into, not to a specification. This voice is deliberate.
 
-TAGS ("tags") — searchable tags read off the image, covering: décor style (floral, royal, modern, traditional, fusion), colour (pink, gold, white, red), occasion (wedding, reception, engagement), structure (backdrop, arch, mandap, stage, canopy), mood (romantic, grand, minimal, vibrant, elegant), and visible materials (fabric, fresh flowers, LED, mirror, drapes). 8-12 tags, one or two words each, all lowercase.
+TAGS — 8 to 12 tags, one or two words each, all lowercase. Invent these freely; they are NOT restricted to any supplied list. Between them cover: style, colour, occasion, structure, mood, and material where it is visible.
+
+COLOURS, FLOWERS, FABRIC — when the user message supplies attribute_options, "colors", "flowers" and "fabric" must be drawn ONLY from the matching list there. Never invent a value; return [] when unsure. Without attribute_options, describe them freely.
 
 Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys:
 {
@@ -189,16 +166,14 @@ Return ONLY a JSON object (no prose, no markdown fences) with EXACTLY these keys
   "fabric": string[],
   "size": { "length": number, "width": number, "confidence": number 0.0-1.0 },
   "complexity": { "tier": "simple"|"standard"|"elaborate"|"premium", "confidence": number 0.0-1.0, "reasoning": string },
-  "name": string,
-  "description": string (2-3 sentences, luxury emotional language),
-  "tags": string[],
-  "included": string[],
-  "seoKeywords": string[],
-  "occasions": string[],
-  "detectedAesthetic": "traditional" | "modern" | "fusion"
+  "suggestedName": string,
+  "description": string,
+  "tags": string[]
 }
-"style" is judged by the STYLE rule above and is the only style field — decide it once. "detectedAesthetic" is that SAME judgement written three-way, and must agree with it: "traditional" when style is Traditional, "modern" when style is Modern, and "fusion" only when the build genuinely blends both. Writing the listing must not change your style judgement.
-If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags/included/seoKeywords/occasions and empty strings for name/description; still give best-effort size/complexity/style.`;
+"style" is the single style judgement made above — decide it once, from the build, and do not revisit it while writing the copy. There is no second style field and no three-way aesthetic: only "Modern" or "Traditional", or null when you are not confident.
+Do NOT return occasions, seoKeywords, detectedAesthetic or included. The occasion is judged elsewhere, and what a product includes is a business rule applied server-side from the category.
+If isDecorProduct is false: set category=null, return empty arrays for flowers/colors/fabric/tags and empty strings for suggestedName/description; still give best-effort size/complexity/style.`;
+
 
 // Demo-only: `observations` uses the founder's concrete vocabulary. These are
 // OBSERVATIONS the staff member reads to place the quote within the range —
@@ -297,7 +272,11 @@ const snapSize = (category, size) => {
 const includedFor = (category) => {
   const cat = String(category || "").toLowerCase();
   const seaterCategories = ["stage", "mandap"];
-  const ledCategories = ["stage", "mandap", "photobooth", "pathway", "nameboard", "entrance arch"];
+  // ⚠️ FIXED 2026-08-19: this list said "entrance arch", but the real catalogue
+  // category is "Entrance" — so the match never fired and entrance arches
+  // shipped with NO lights while Nameboards got them. Matched to the real
+  // category name. Keep these strings equal to live category names.
+  const ledCategories = ["stage", "mandap", "photobooth", "pathway", "nameboard", "entrance"];
   const included = ["Decor as shown in image", "Props as shown in image"];
   if (ledCategories.some((c) => cat.includes(c))) included.unshift("LED PAR Cans included");
   if (seaterCategories.some((c) => cat.includes(c))) included.unshift("Seaters included");
@@ -385,28 +364,10 @@ const postProcess = (raw = {}, mode = "full") => {
     return { ...base, observations, minBuildWidth, recommendedSize, stageMeasurements, occasion };
   }
 
-  // LISTING mode = full vision fields PLUS the catalogue copy. Reached only by
-  // POST /decor/ai-analyze — see the ⛔ note on LISTING_SCHEMA_INSTR. `included`
-  // is DERIVED from the category server-side, never left to the model, matching
-  // what /ai-analyze has always done.
-  if (mode === "listing") {
-    const AESTHETICS = ["traditional", "modern", "fusion"];
-    return {
-      ...base,
-      flowers: asArray(raw.flowers),
-      colors: asArray(raw.colors),
-      fabric: asArray(raw.fabric),
-      name: isDecorProduct ? asStr(raw.name) : "",
-      description: isDecorProduct ? asStr(raw.description) : "",
-      tags: isDecorProduct ? asArray(raw.tags) : [],
-      included: isDecorProduct ? includedFor(category) : [],
-      seoKeywords: isDecorProduct ? asArray(raw.seoKeywords) : [],
-      occasions: isDecorProduct ? asArray(raw.occasions) : [],
-      detectedAesthetic:
-        isDecorProduct && AESTHETICS.includes(raw.detectedAesthetic) ? raw.detectedAesthetic : null,
-    };
-  }
-
+  // FULL mode (2026-08-19: now also the listing mode). `included` is DERIVED
+  // from the category server-side and never asked of the model — it is a
+  // business rule, not a judgement. `suggestedName` keeps its key because
+  // /decor/analyse-image already echoes it; /ai-analyze maps it to `name`.
   return {
     ...base,
     flowers: asArray(raw.flowers),
@@ -415,22 +376,53 @@ const postProcess = (raw = {}, mode = "full") => {
     suggestedName: isDecorProduct ? asStr(raw.suggestedName) : "",
     description: isDecorProduct ? asStr(raw.description) : "",
     tags: isDecorProduct ? asArray(raw.tags) : [],
-    included: isDecorProduct ? asArray(raw.included) : [], // no included[] for non-décor
+    included: isDecorProduct ? includedFor(category) : [],
   };
 };
 
-// Retry the model call on transient overload (429 rate limit / 529 overloaded).
+// Retry the model call on transient overload (429 rate limit / 529 overloaded)
+// AND on a malformed JSON body — see PARSE_RETRY_LIMIT below.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RETRYABLE = new Set([429, 529]);
 const isRetryable = (e) =>
   RETRYABLE.has(e && e.status) ||
   (e && e.error && e.error.type === "overloaded_error") ||
   e?.name === "APIConnectionError";
-const createWithRetry = async (client, params, attempts = 3) => {
+
+// ── MALFORMED JSON IS RETRYABLE, ONCE (2026-08-19) ──────────────────────────
+// The model occasionally returns a body that is not valid JSON — observed once
+// in 42 merged calls, inside the free-prose `description`, at stop_reason
+// "end_turn" with output nowhere near the token cap. It is not truncation and it
+// is not reproducible: 6 further calls on the same image and prompt all parsed.
+//
+// It is retried because of what it COSTS, not how often it happens: on an A2S
+// cache miss a parse failure loses the entire draft — the pricing work, the copy
+// and the human's click — and a re-ask is one cheap call against that.
+//
+// CAPPED AT ONE RE-ASK. A second malformed body in a row is not a bad sample, it
+// is something structural (a prompt change, a model change, an image that reliably
+// derails the copy), and looping on it would burn tokens and latency while hiding
+// the real fault. After the cap the original VISION_PARSE error is thrown with
+// `.raw` intact, exactly as before this change — every caller's failure handling
+// is unchanged.
+//
+// Parse retries share the SAME 3-attempt budget and the same 500ms/1000ms
+// backoff as overload retries, so a mix of the two can never exceed three calls.
+const PARSE_RETRY_LIMIT = Number(process.env.DECOR_VISION_PARSE_RETRIES) || 1;
+
+// createWithRetry(client, params, { attempts, parse })
+//   without `parse` → resolves to the raw SDK message (unchanged behaviour)
+//   with `parse`    → runs it INSIDE the retry loop and resolves to
+//                     { message, parsed }. The parse must throw to signal a bad
+//                     body; that throw is what makes a re-ask possible at all,
+//                     since the parse used to happen after the loop had returned.
+const createWithRetry = async (client, params, { attempts = 3, parse } = {}) => {
   let lastErr;
+  let parseFailures = 0;
   for (let i = 0; i < attempts; i++) {
+    let message;
     try {
-      return await client.messages.create(params);
+      message = await client.messages.create(params);
     } catch (e) {
       lastErr = e;
       if (i < attempts - 1 && isRetryable(e)) {
@@ -438,6 +430,23 @@ const createWithRetry = async (client, params, attempts = 3) => {
         continue;
       }
       throw e;
+    }
+
+    if (!parse) return message;
+
+    try {
+      return { message, parsed: parse(message) };
+    } catch (parseErr) {
+      lastErr = parseErr;
+      parseFailures += 1;
+      if (i < attempts - 1 && parseFailures <= PARSE_RETRY_LIMIT) {
+        console.warn(
+          `[decorVision] malformed JSON from the model (attempt ${i + 1}/${attempts}) — re-asking`
+        );
+        await sleep(500 * Math.pow(2, i));
+        continue;
+      }
+      throw parseErr; // .code "VISION_PARSE", .raw intact
     }
   }
   throw lastErr;
@@ -454,16 +463,18 @@ const analyseImage = async ({ imageBase64, imageUrl, mode, listingContext } = {}
     err.code = "NO_IMAGE";
     throw err;
   }
-  // THREE modes. "full" and "demo" are UNCHANGED from HEAD — the pricing paths
-  // (/decor/analyse-image, /decor/demo-price, A2S) all use those. "listing" is
-  // the /ai-analyze-only merged block; see the ⛔ note on LISTING_SCHEMA_INSTR.
-  const useMode = mode === "demo" ? "demo" : mode === "listing" ? "listing" : "full";
+  // TWO modes. "demo" is the live sales panel and is UNCHANGED — its schema and
+  // its cached SHARED_RULES prefix are byte-identical to before the merge, and
+  // its reads are cached per pin. "full" is the merged pricing+listing brain.
+  const useMode = mode === "demo" ? "demo" : "full";
 
-  // FULL mode only: the naming/attribute context the absorbed autofill brain
+  // FULL mode only: the naming/attribute context the absorbed listing brain
   // received in ITS user message. Kept in the USER turn — never in a system
   // block — so the cached SHARED_RULES prefix is untouched and demo is unaffected.
+  // existing_names is what makes the don't-repeat-a-name rule mean anything; the
+  // rule is inert without it.
   let contextText = "";
-  if (useMode === "listing" && listingContext) {
+  if (useMode === "full" && listingContext) {
     const names = asArray(listingContext.existingNames);
     const opts = listingContext.attributeOptions;
     const parts = [];
@@ -476,8 +487,25 @@ const analyseImage = async ({ imageBase64, imageUrl, mode, listingContext } = {}
     if (parts.length) contextText = `\n\n${parts.join("\n\n")}`;
   }
 
+  // The body is parsed INSIDE the retry loop (see createWithRetry) so a malformed
+  // JSON response can be re-asked rather than losing the whole call.
+  const parseBody = (message) => {
+    const text = (message.content || [])
+      .filter((b) => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+    try {
+      return JSON.parse(stripJsonFence(text));
+    } catch (e) {
+      const err = new Error("Vision model returned non-JSON output");
+      err.code = "VISION_PARSE";
+      err.raw = text;
+      throw err;
+    }
+  };
+
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  const message = await createWithRetry(client, {
+  const { message, parsed } = await createWithRetry(client, {
     model: MODEL,
     max_tokens: useMode === "demo" ? 1024 : 1024, // demo carries observations + min-width + the three-part width working
     // See the model-capability guards above — API-forced, not tuning.
@@ -485,7 +513,7 @@ const analyseImage = async ({ imageBase64, imageUrl, mode, listingContext } = {}
     ...(THINKING_DEFAULTS_ON.test(MODEL) ? { thinking: { type: "disabled" } } : {}),
     system: [
       { type: "text", text: SHARED_RULES, cache_control: { type: "ephemeral" } },
-      { type: "text", text: useMode === "demo" ? DEMO_SCHEMA_INSTR : useMode === "listing" ? LISTING_SCHEMA_INSTR : FULL_SCHEMA_INSTR },
+      { type: "text", text: useMode === "demo" ? DEMO_SCHEMA_INSTR : FULL_SCHEMA_INSTR },
     ],
     messages: [
       {
@@ -496,26 +524,13 @@ const analyseImage = async ({ imageBase64, imageUrl, mode, listingContext } = {}
         ],
       },
     ],
-  });
+  }, { parse: parseBody });
 
-  const text = (message.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-
-  let parsed;
-  try {
-    parsed = JSON.parse(stripJsonFence(text));
-  } catch (e) {
-    const err = new Error("Vision model returned non-JSON output");
-    err.code = "VISION_PARSE";
-    err.raw = text;
-    throw err;
-  }
   const out = postProcess(parsed, useMode);
-  // Token accounting, LISTING MODE ONLY — so "full" and "demo" return exactly
-  // what they returned before this change and the pricing paths are untouched.
-  if (useMode !== "listing") return out;
+  // Token accounting on FULL only. Demo returns exactly what it always did —
+  // its output is what the pin cache stores, and a usage blob would be recorded
+  // into every cached read for no reason.
+  if (useMode === "demo") return out;
   const u = (message && message.usage) || {};
   const n = (v) => (Number.isFinite(Number(v)) ? Number(v) : null);
   return {
@@ -538,6 +553,5 @@ module.exports = {
   snapSize,
   SIZE_VOCAB,
   FULL_SCHEMA_INSTR,    // exported so the verification gate tests the REAL artefact
-  LISTING_SCHEMA_INSTR, // /ai-analyze only — see the ⛔ note at its definition
   MODEL,
 };

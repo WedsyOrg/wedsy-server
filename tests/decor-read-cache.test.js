@@ -301,17 +301,17 @@ const createdDecors = [];
       buffer: jpeg,
     });
     DecorDraftService.__deps.toAnalysisBase64 = async () => "FAKEBASE64";
-    DecorDraftService.__deps.analyseListing = async () => ({
-      name: "Ivory Cascade",
+    DecorDraftService.__deps.buildListingContext = async () => ({ existingNames: [], attributeOptions: {}, scopedTo: null });
+    DecorDraftService.__deps.analyseForCopy = async () => ({
+      suggestedName: "Ivory Cascade",
       description: "d",
       tags: ["floral"],
       included: ["Decor as shown in image"],
       category: "Stage",
-      style: ["modern"],
+      style: "Modern",
       colors: ["ivory"],
       flowers: ["rose"],
-      occasions: ["wedding"],
-      seoKeywords: ["ivory backdrop"],
+      fabric: [],
     });
     DecorDraftService.__deps.runPricingBrain = async () => {
       throw new Error("A2S ran its own vision call — the cached read was ignored");

@@ -74,17 +74,18 @@ const runChain = (handlers, req) =>
   });
 
 // ── Stub the expensive edges ────────────────────────────────────────────────
+// The merged FULL brain returns copy and pricing judgement together, so the
+// "listing" stub is now just the copy half of one analysis (2026-08-19).
 const FAKE_LISTING = {
-  name: "Ivory Cascade",
+  suggestedName: "Ivory Cascade",
   description: "A luxury test backdrop.",
   tags: ["floral", "ivory"],
   included: ["Decor as shown in image"],
   category: CAT,
-  style: ["modern"],
+  style: "Modern",
   colors: ["ivory"],
   flowers: ["rose"],
-  occasions: ["wedding"],
-  seoKeywords: ["ivory backdrop"],
+  fabric: ["Silk"],
 };
 const FAKE_PRICING = {
   analysis: {
@@ -112,8 +113,14 @@ DecorDraftService.__deps.storeRemoteImage = async ({ id }) => ({
   buffer: Buffer.from("fake-jpeg"),
 });
 DecorDraftService.__deps.toAnalysisBase64 = async () => "FAKEBASE64";
-DecorDraftService.__deps.runPricingBrain = async () => JSON.parse(JSON.stringify(FAKE_PRICING));
-DecorDraftService.__deps.analyseListing = async () => JSON.parse(JSON.stringify(FAKE_LISTING));
+DecorDraftService.__deps.runPricingBrain = async () => {
+  const p = JSON.parse(JSON.stringify(FAKE_PRICING));
+  // ONE call now: the merged brain returns the copy on the same analysis.
+  Object.assign(p.analysis, JSON.parse(JSON.stringify(FAKE_LISTING)));
+  return p;
+};
+DecorDraftService.__deps.analyseForCopy = async () => JSON.parse(JSON.stringify(FAKE_LISTING));
+DecorDraftService.__deps.buildListingContext = async () => ({ existingNames: [], attributeOptions: {}, scopedTo: null });
 
 const PIN = (n) => `${TAG}-pin-${n}`;
 const IMG = (n) => `https://i.pinimg.com/564x/ab/cd/${TAG}${n}.jpg`;
@@ -179,7 +186,7 @@ let createdIndex = false;
     ok(d1.status === "queued", "status is queued");
     ok(String(d1.addedBy) === String(staff._id), "addedBy is the staff member who clicked");
     ok(/^https:\/\/s3\.test\//.test(d1.storedImage), "storedImage is OUR asset, not the pinimg URL");
-    ok(!!d1.aiAnalysis.listing && !!d1.aiAnalysis.pricing, "BOTH brains stored as distinct sub-objects");
+    ok(!!d1.aiAnalysis.listing && !!d1.aiAnalysis.pricing, "listing + pricing still stored as distinct sub-objects (one call, two records)");
     ok(d1.aiAnalysis.pricing.pricing.observedBand.n === 12, "pricing stored UNTRIMMED (observedBand survives)");
     ok(!!d1.aiAnalysis.pricing.pricing.comparables, "untrimmed: comparables survive");
     ok(d1.aiAnalysis.pricing.analysis.complexity.reasoning === "balanced", "untrimmed: complexity.reasoning survives");
@@ -289,7 +296,7 @@ let createdIndex = false;
     const stillThere = await DecorDraft.findById(d1._id).lean();
     ok(
       stillThere.aiAnalysis.pricing.pricing.observedBand.n === 12 &&
-        stillThere.aiAnalysis.listing.name === "Ivory Cascade",
+        stillThere.aiAnalysis.listing.suggestedName === "Ivory Cascade",
       "after every attempt the original analysis is intact",
     );
     ok(stillThere.pricing.aiSuggested.suggested.flat === 30000, "pricing.aiSuggested intact");
