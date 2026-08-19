@@ -113,10 +113,17 @@ const priceFromAnalysis = async (analysis) => {
   if (!useComplexity) {
     out.fallbacks.push(`complexity: low confidence (${cxConf}) — defaulted to standard (median)`);
   }
-  const style =
-    cat === "Stage" && (analysis.style === "Modern" || analysis.style === "Traditional")
-      ? analysis.style
-      : undefined;
+  // ── STYLE IS NO LONGER A PRICING INPUT (2026-08-19) ──────────────────────
+  // `style` was passed here and applied decorPricing.STYLE_PREMIUM, a ×0.703125
+  // Stage discount for Traditional. Removed on the founder's ruling. The reason
+  // is a CONTRADICTION, not a doubt about the pattern: the demo panel's price is
+  // style-invariant (verified byte-identical across Modern/Traditional/null on
+  // every path), and the panel's midpoint is what publishes via
+  // pricing.panelQuote — so a 30% style multiplier here produced a number on the
+  // same draft that disagreed with the price the client was actually quoted and
+  // the store actually charges. A second opinion nobody acts on.
+  // STYLE_PREMIUM is deliberately KEPT in decorPricing with its catalogue
+  // evidence — see the note there before re-wiring it anywhere.
 
   if (!applicable) {
     out.fallbacks.push(`category "${cat}" is not in the pricing model — no price computed`);
@@ -133,7 +140,6 @@ const priceFromAnalysis = async (analysis) => {
       category: cat,
       length: useSize ? analysis.size.length : undefined,
       width: useSize ? analysis.size.width : undefined,
-      style,
       complexity: complexityTier,
       source: "extension",
       mode: "full",

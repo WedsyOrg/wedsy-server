@@ -103,6 +103,39 @@ const SIZE_SNAP_WIDEN = Number(process.env.DECOR_SIZE_SNAP_WIDEN) || 0.2;
 // ₹45,000. Expressed relative to Modern (the dominant style the bands reflect:
 // n=165 vs 25), so Modern is unchanged and Traditional is discounted to match
 // its observed median. Applied only where style is confidently identified.
+//
+// ⚠️ UNREFERENCED BY ANY PRICING PATH SINCE 2026-08-19. `input.style` is still
+// honoured by suggestPrice below, but NOTHING PASSES IT ANY MORE. The two call
+// sites that did — DecorDraftService.priceFromAnalysis (A2S → pricing.aiSuggested)
+// and controllers/decor.js AnalyseImage (/decor/analyse-image → pricing.suggested)
+// — were changed to omit the key. This table is therefore dead config today, kept
+// on purpose.
+//
+// WHY IT WAS UNWIRED (founder ruling): the DEMO PANEL is the source of truth for
+// price, and the panel is style-invariant — verified byte-identical responses
+// across Modern / Traditional / null on the floral-run path, the area-anchored
+// size-bucket path, and both branches of referenceAnchor. The panel's midpoint is
+// also what publishes, via pricing.panelQuote. So applying a ×0.703125 multiplier
+// on the draft path produced an aiSuggested figure that CONTRADICTED the quoted
+// and published price on the very same draft — 29.7% below it — while no human
+// ever acted on it. It was not a pricing signal; it was a second opinion nobody
+// used. The contradiction is the reason, NOT a finding that style is unpredictive.
+//
+// WHY THE TABLE IS KEPT: the catalogue evidence behind it is real and was
+// expensive to establish — Stage artificial medians, Modern ₹64,000 (n=165) vs
+// Traditional ₹45,000 (n=25). If style is ever wanted again it belongs on the
+// PANEL path (services/decorDemoPrice — referenceAnchor / ladderRanges), which is
+// where the number a client hears is produced. Re-wiring it on the draft path
+// alone would only recreate the same contradiction.
+//
+// ⛔ BEFORE RE-WIRING ANYWHERE: as of 2026-08-19 no pricing path reads `style`,
+// which removes the PRICE objection to the merged listing schema (its documented
+// defect is an unstable style read — see LISTING_SCHEMA_INSTR in
+// services/decorVision.js). It does not remove every objection: style is still
+// STORED as a product attribute (/decor/ai-analyze and the A2S draft's
+// suggested.attributes.style), so an unstable read still mislabels a product —
+// it just can no longer misprice one. Restoring style as a price input re-arms
+// the pricing defect in full; re-run the verification gate before doing it.
 const STYLE_PREMIUM = {
   Stage: { Modern: 1.0, Traditional: 45000 / 64000 },
 };

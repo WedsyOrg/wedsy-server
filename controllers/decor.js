@@ -1148,10 +1148,17 @@ const AnalyseImage = async (req, res) => {
     );
   }
 
-  // Style only applies to Stage and only when the model committed to one.
-  const style = cat === "Stage" && (analysis.style === "Modern" || analysis.style === "Traditional")
-    ? analysis.style
-    : undefined;
+  // ── STYLE IS NO LONGER A PRICING INPUT (2026-08-19) ──────────────────────
+  // `style` was passed here and applied decorPricing.STYLE_PREMIUM, a ×0.703125
+  // Stage discount for Traditional. Removed on the founder's ruling. The reason
+  // is a CONTRADICTION, not a doubt about the pattern: the demo panel's price is
+  // style-invariant (verified byte-identical across Modern/Traditional/null on
+  // every path), and the panel's midpoint is what publishes via
+  // pricing.panelQuote — so a 30% style multiplier here produced a number on the
+  // same draft that disagreed with the price the client was actually quoted and
+  // the store actually charges. A second opinion nobody acts on.
+  // STYLE_PREMIUM is deliberately KEPT in decorPricing with its catalogue
+  // evidence — see the note there before re-wiring it anywhere.
 
   if (!applicable) {
     return res.status(200).send(shapeClientResponse("analyse-image", {
@@ -1174,7 +1181,6 @@ const AnalyseImage = async (req, res) => {
         category: cat,
         length: useSize ? analysis.size.length : undefined,
         width: useSize ? analysis.size.width : undefined,
-        style,
         complexity: complexityTier,
         source: source === "extension" ? "extension" : "internal",
         // demo → range instead of a complexity-adjusted point price
