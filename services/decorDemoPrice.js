@@ -658,6 +658,11 @@ const rangesForCategory = (category, tiers, comps) => {
 //   2. analysis.size.length — already snapped by decorVision.postProcess, so
 //      it is a fallback, not a raw read. An exact rung hit here yields that
 //      rung + the next one up, which is the documented behaviour anyway.
+//
+// The pair is then guaranteed to CONTAIN analysis.recommendedSize whenever that
+// is a valid ladder rung (Stage only) — the swap happens inside bracketFor,
+// before the occasion floor, and every offered rung is priced here regardless of
+// how it was chosen, because the price is a pure function of rung.area.
 const buildSizeOptions = ({ analysis, category, comps, stageMeasurements, occasion }) => {
   const validSizes = sizeLadder.validSizes();
   const empty = { sizeOptions: [], validSizes };
@@ -680,6 +685,16 @@ const buildSizeOptions = ({ analysis, category, comps, stageMeasurements, occasi
     occasion: occasion ? occasion.value : null,
     sizeConfidence: analysis && analysis.size ? analysis.size.confidence : null,
     backdropWidthFt: Number.isFinite(measuredWidth) && measuredWidth > 0 ? measuredWidth : rawWidthFt,
+    // The model's own best-fit size. The ladder guarantees it is among the two
+    // offered rungs whenever it IS a rung — see the recommended-size rule in
+    // decorSizeLadder. It is deliberately an independent signal from rawWidthFt
+    // above: the width read is 13-45% LOW on every build we have verified, so
+    // the two can disagree and the disagreement is informative.
+    recommendedSize: analysis && analysis.recommendedSize,
+    // Scoped to Stage inside the ladder; passed through so the guard lives in
+    // one place. `category` here is the possibly-relabelled one (Stage→Haldi),
+    // which is correct: a haldi build is not offered Stage rungs at all.
+    category,
   });
   if (!bracket || !bracket.options.length) return empty;
 
