@@ -219,10 +219,15 @@ async function run() {
   for (const p of plans) {
     for (const r of p.rows) {
       try {
-        // The filter re-asserts paidAmount is still unset, so a payment recorded
-        // by a human between the scan and here is never overwritten.
+        // The filter re-asserts paidAmount is still unset ON THIS ROW, so a
+        // payment recorded by a human between the scan and here is never
+        // overwritten. $elemMatch is load-bearing: as two sibling predicates
+        // the id and the paidAmount conditions can be satisfied by DIFFERENT
+        // array elements while $ still resolves to this one, so a token row
+        // that a human had just paid was overwritten whenever any other row in
+        // the schedule was unpaid — which is nearly always. Found in review.
         const res = await VenueBooking.updateOne(
-          { _id: p.bookingId, "paymentSchedule._id": r._id, $or: [{ "paymentSchedule.paidAmount": 0 }, { "paymentSchedule.paidAmount": { $exists: false } }] },
+          { _id: p.bookingId, paymentSchedule: { $elemMatch: { _id: r._id, $or: [{ paidAmount: 0 }, { paidAmount: { $exists: false } }] } } },
           {
             $set: {
               "paymentSchedule.$.paidAmount": r.amount,
