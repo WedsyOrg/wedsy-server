@@ -33,6 +33,10 @@ const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const termsDoc = require("../controllers/venueTermsDocument");
 const leadDocs = require("../controllers/venueLeadDocument");
+const bookingSettings = require("../controllers/venueBookingSettings");
+const leadInvoice = require("../controllers/venueLeadInvoice");
+const leadPayment = require("../controllers/venueLeadPayment");
+const bookingConfirm = require("../controllers/venueBookingConfirmation");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
@@ -191,6 +195,26 @@ router.get("/:slug/enquiries/:enquiryId/documents", venueOwnerAuth, requireCapab
 router.post("/:slug/enquiries/:enquiryId/documents/terms", venueOwnerAuth, requireCapability("documents"), leadDocs.generateTermsDocument);
 router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOwnerAuth, requireCapability("documents"), leadDocs.downloadLeadDocument);
 
+// ── BOOKING ENGINE S5: invoices raised from the lead ────────────────────────
+// bookings_money, not `documents`: an invoice is a money instrument and the GST
+// choice is a money decision, so it takes the same gate as every other money
+// surface. The rendered PDF still lands in the Documents tab, whose own read is
+// `documents`-gated — a member who may raise an invoice but not read documents
+// gets the record without the file, which is the correct split rather than an
+// accident. Scope is enforced INSIDE the controller (venueLeadScope, 404 never 403).
+router.get("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.listLeadInvoices);
+router.post("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.createLeadInvoice);
+
+// ── BOOKING ENGINE S4: recording payments against the schedule ──────────────
+router.get("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.getLeadPayments);
+router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.recordPayment);
+
+// ── BOOKING ENGINE S3: the booking confirmation document ────────────────────
+// `documents`, matching every other document generator — it produces a
+// VenueLeadDocument and lands in the same Documents tab.
+router.get("/:slug/enquiries/:enquiryId/booking-confirmation/options", venueOwnerAuth, requireCapability("documents"), bookingConfirm.getConfirmationOptions);
+router.post("/:slug/enquiries/:enquiryId/booking-confirmation", venueOwnerAuth, requireCapability("documents"), bookingConfirm.generateBookingConfirmation);
+
 // ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
 router.post("/:slug/quotes", venueOwnerAuth, requireCapability("leads"), createQuote);
@@ -217,6 +241,19 @@ router.post("/:slug/invoices/:invoiceId/payments/:paymentId/reject", venueOwnerA
 router.get("/:slug/terms-document", venueOwnerAuth, termsDoc.getTermsDocument);
 router.put("/:slug/terms-document", venueOwnerAuth, requireCapability("documents"), termsDoc.putTermsDocument);
 router.delete("/:slug/terms-document", venueOwnerAuth, requireCapability("documents"), termsDoc.deleteTermsDocument);
+
+// ── BOOKING ENGINE S1: venue-level configuration the engine reads ────────────
+// Gated on `documents` for the two document surfaces (brief, cancellation
+// policy) — the same capability that already gates /terms-document and the doc
+// templates they sit beside. Payment slabs are money configuration, so they take
+// `bookings_money`, matching every other money surface. The GET is open to any
+// authenticated venue user because the wizard needs it to pre-populate and a
+// member who can confirm a booking must be able to read the shapes.
+router.get("/:slug/booking-settings", venueOwnerAuth, bookingSettings.getBookingSettings);
+router.put("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.putBrief);
+router.delete("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.deleteBrief);
+router.put("/:slug/booking-settings/cancellation-policy", venueOwnerAuth, requireCapability("documents"), bookingSettings.putCancellationPolicy);
+router.put("/:slug/booking-settings/payment-slabs", venueOwnerAuth, requireCapability("bookings_money"), bookingSettings.putPaymentSlabs);
 router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);
 router.post("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.createTemplate);
 router.patch("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.updateTemplate);

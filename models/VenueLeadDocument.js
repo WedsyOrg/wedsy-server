@@ -53,7 +53,17 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     // What kind of document. Only terms exists today; the enum is here so the
     // Documents tab does not have to change shape when agreements or proposals
     // join it.
-    kind: { type: String, enum: ["terms"], default: "terms", required: true },
+    // Booking-engine S3/S5 extend this enum. The Documents tab is kind-agnostic
+    // by design (#130), so adding a kind needs no tab change — only a generator.
+    //   terms                 the T&C cover stitched onto the venue's PDF (#130)
+    //   booking_confirmation  generated from the booking (S3)
+    //   invoice               generated from the booking + a payment (S5)
+    kind: {
+      type: String,
+      enum: ["terms", "booking_confirmation", "invoice"],
+      default: "terms",
+      required: true,
+    },
 
     // Per-lead, 1-based, gapless. Assigned by the controller under a retry on
     // the unique index below, so two simultaneous generations cannot collide.

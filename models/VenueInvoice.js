@@ -76,9 +76,178 @@ const VenueInvoiceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Booking-engine S5 (additive): the lead this invoice belongs to, so the
+// Documents tab can list invoices without going through the booking. Denormalised
+// rather than joined because every read of the tab needs it and the booking↔lead
+// link is immutable once set.
+VenueInvoiceSchema.add({
+  enquiry: { type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" },
+  // The VenueLeadDocument row holding the rendered PDF, so download and version
+  // history come from the same infrastructure as every other lead document.
+  leadDocument: { type: mongoose.Schema.Types.ObjectId, ref: "VenueLeadDocument" },
+  // Set when this invoice was raised against ONE recorded payment (S5: "one at
+  // booking, then one per recorded payment"). The subdocument id of the
+  // VenueBooking.paymentSchedule row, or null for the at-booking invoice.
+  forMilestoneId: { type: mongoose.Schema.Types.ObjectId, default: null },
+});
+
+/**
+ * ── IMMUTABILITY, SCOPED TO WHAT "IMMUTABLE" CAN MEAN HERE ──────────────────
+ * S5 requires an invoice to be immutable once generated. That cannot mean the
+ * whole document is frozen: `payments` and `status` are mutated by four existing
+ * flows (venueInvoice.addPayment/approvePayment/rejectPayment, venueCheckin),
+ * and a tax invoice legitimately accumulates payments against it over time.
+ *
+ * What must never change is the FINANCIAL CONTENT — the number it was issued
+ * under, the sequence backing it, what was charged, and how tax was applied.
+ * Those are what a customer holds a copy of and what a tax authority would
+ * compare against. So the guard freezes exactly those paths and leaves payment
+ * application alone, which is both the correct semantics and the only version
+ * that does not break code already in production.
+ */
+const FROZEN_PATHS = [
+  "invoiceNumber",
+  "seq",
+  "venue",
+  "booking",
+  "enquiry",
+  "lineItems",
+  "gstPercent",
+  "gstMode",
+  "discount",
+  "totals",
+  "kind",
+  "forMilestoneId",
+];
+
+/** One sentence, whichever door the write came through. */
+function frozenMessage(label, touched) {
+  return (
+    `Invoice ${label || "(unidentified)"} is immutable once generated — cannot change ${touched.join(", ")}. ` +
+    "Raise a new invoice instead."
+  );
+}
+
+VenueInvoiceSchema.pre("save", function freezeFinancials(next) {
+  if (this.isNew) return next();
+  const touched = FROZEN_PATHS.filter((p) => this.isModified(p));
+  if (touched.length) return next(new Error(frozenMessage(this.invoiceNumber, touched)));
+  return next();
+});
+
+// ── THE SAME RULE FOR QUERY WRITES ──────────────────────────────────────────
+// pre("save") is DOCUMENT middleware. It does not run for updateOne,
+// findOneAndUpdate or any other query write, so until this existed the whole
+// immutability guarantee could be stepped around by writing the update through
+// a query instead of a document — proven in review by setting invoiceNumber to
+// "HACKED-0001" and grandTotal to 1 with a single updateOne. This branch's own
+// controllers/venueLeadInvoice used updateOne, so that was not a hypothetical
+// path: it was the path already in use.
+//
+// WHY MIDDLEWARE RATHER THAN ROUTING THAT ONE CALL SITE THROUGH .save():
+// converting the call site fixes today's single instance and leaves the hole
+// open. The next person to reach for updateOne — reasonably, since it is the
+// cheaper write and leadDocument is not frozen — reopens it silently, and
+// nothing fails to tell them. Middleware makes the model the thing that
+// refuses, so the guarantee holds for writers that do not exist yet. The
+// existing updateOne is then free to stay as it is, because it only touches
+// leadDocument; it is now covered rather than trusted.
+const FROZEN_ROOTS = new Set(FROZEN_PATHS);
+const UPDATE_OPERATORS = new Set([
+  "$set", "$unset", "$setOnInsert", "$inc", "$mul", "$min", "$max", "$rename",
+  "$push", "$pull", "$pullAll", "$pop", "$addToSet", "$bit",
+]);
+
+/** Root field of a possibly-dotted, possibly-positional path: totals.gst -> totals */
+const rootOf = (path) => String(path).split(".")[0];
+
+/**
+ * Every frozen root an update document would touch.
+ * Covers operator form ({$set:{"totals.gst":1}}), replacement form
+ * ({totals:{…}}), and $rename's destination as well as its source.
+ */
+function frozenPathsInUpdate(update) {
+  if (!update || typeof update !== "object") return [];
+  const hit = new Set();
+  for (const [key, value] of Object.entries(update)) {
+    if (UPDATE_OPERATORS.has(key)) {
+      if (!value || typeof value !== "object") continue;
+      for (const [path, target] of Object.entries(value)) {
+        if (FROZEN_ROOTS.has(rootOf(path))) hit.add(rootOf(path));
+        // $rename moves a field TO a name; landing on a frozen one counts.
+        if (key === "$rename" && FROZEN_ROOTS.has(rootOf(target))) hit.add(rootOf(target));
+      }
+    } else if (!key.startsWith("$")) {
+      // Replacement-style update: { totals: {...} } or { "totals.gst": 1 }.
+      if (FROZEN_ROOTS.has(rootOf(key))) hit.add(rootOf(key));
+    }
+  }
+  return [...hit];
+}
+
+function guardQueryWrite(next) {
+  // An upsert that inserts is a creation, not a mutation — but nothing in this
+  // codebase upserts invoices (allocateInvoice is the one creation path), so
+  // rather than guess at insert-vs-update we refuse frozen paths either way and
+  // keep the rule single-sentence: after creation, these fields do not change.
+  const touched = frozenPathsInUpdate(this.getUpdate());
+  if (touched.length) {
+    const filter = this.getFilter ? this.getFilter() : {};
+    const label = filter && filter.invoiceNumber ? filter.invoiceNumber : filter && filter._id ? String(filter._id) : "";
+    return next(new Error(frozenMessage(label, touched)));
+  }
+  return next();
+}
+
+// replaceOne is included deliberately: replacing a document is the most
+// complete way to change a frozen field.
+for (const op of ["updateOne", "updateMany", "findOneAndUpdate", "findOneAndReplace", "replaceOne"]) {
+  VenueInvoiceSchema.pre(op, guardQueryWrite);
+}
+
+// Model.bulkWrite bypasses query middleware entirely — it is not a Query, so
+// none of the hooks above see it. Mongoose 7 has no pre("bulkWrite") either:
+// registering one is accepted silently and never fires, which is how this was
+// found (the hook "passed" while seq changed to 31337 underneath it). So the
+// static itself is wrapped. bulkWrite is unused for invoices today; this makes
+// that stay true rather than depending on it.
+VenueInvoiceSchema.statics.bulkWrite = function guardedBulkWrite(ops, ...rest) {
+  for (const op of ops || []) {
+    const body = (op && (op.updateOne || op.updateMany || op.replaceOne)) || null;
+    if (!body) continue;
+    const touched = frozenPathsInUpdate(body.update || body.replacement);
+    if (touched.length) return Promise.reject(new Error(frozenMessage("", touched)));
+  }
+  return mongoose.Model.bulkWrite.call(this, ops, ...rest);
+};
+
 VenueInvoiceSchema.index({ venue: 1, createdAt: -1 });
 VenueInvoiceSchema.index({ booking: 1 });
+// Booking-engine S5: the Documents tab's read.
+VenueInvoiceSchema.index({ enquiry: 1, createdAt: -1 });
 // Unique invoice number per venue.
 VenueInvoiceSchema.index({ venue: 1, invoiceNumber: 1 }, { unique: true });
+
+// ── ONE INVOICE PER MILESTONE, ENFORCED BY THE DATABASE ─────────────────────
+// controllers/venueLeadInvoice checks for an existing invoice before raising
+// one, but a read-then-write cannot stop two members pressing the button at the
+// same moment: both reads miss, both writes succeed, and the lead ends up with
+// two immutable tax invoices covering one instalment. Neither can be deleted.
+// So the check stays as the friendly path and THIS is the guarantee.
+//
+// PARTIAL, NOT SPARSE. `forMilestoneId` carries `default: null`, so it is
+// present on every document; a sparse compound index indexes a document when
+// ANY of its keys is present, which would pull in every createFromBooking /
+// checkin / bill-conversion invoice as {missing, null} and collide them with
+// each other — several invoices per booking is legitimate on those paths. The
+// partial filter says what is actually meant: only invoices raised against a
+// LEAD are one-per-milestone. Those are exactly the ones that set `enquiry`.
+//
+// Within that filter, {enquiry, null} is also unique, which is the same rule
+// the controller's check applies: one booking-level invoice per lead.
+VenueInvoiceSchema.index(
+  { enquiry: 1, forMilestoneId: 1 },
+  { unique: true, partialFilterExpression: { enquiry: { $type: "objectId" } } }
+);
 
 module.exports = mongoose.models.VenueInvoice || mongoose.model("VenueInvoice", VenueInvoiceSchema);

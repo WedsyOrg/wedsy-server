@@ -25,6 +25,25 @@ function paymentStatus(grandTotal, received) {
   return "partially_paid";
 }
 
+/**
+ * Did this duplicate-key error come from the invoice-NUMBER index?
+ * Driver populates keyPattern; the message is the fallback for older drivers
+ * and for errors that arrive re-wrapped.
+ */
+function isNumberCollision(err) {
+  const kp = err && err.keyPattern;
+  if (kp && typeof kp === "object") return Object.prototype.hasOwnProperty.call(kp, "invoiceNumber");
+  return /invoiceNumber/.test(String((err && err.message) || ""));
+}
+
+/** True when the write lost to the one-invoice-per-milestone guarantee. */
+function isMilestoneCollision(err) {
+  if (!err || err.code !== 11000) return false;
+  const kp = err.keyPattern;
+  if (kp && typeof kp === "object") return Object.prototype.hasOwnProperty.call(kp, "forMilestoneId");
+  return /forMilestoneId/.test(String(err.message || ""));
+}
+
 // Allocate the per-venue invoice number and create the invoice doc — the ONE
 // numbering path (D8: bill conversion reuses it; the sequence machinery is
 // untouched). Atomic per-venue sequence: lazy-init the counter to the current
@@ -44,7 +63,21 @@ async function allocateInvoice(venue, fields) {
     try {
       return await VenueInvoice.create({ ...fields, venue: venue._id, invoiceNumber, seq });
     } catch (e) {
-      if (e.code === 11000 && attempt < 2) continue; // allocate next
+      // Retry ONLY when the number itself collided. Any other unique index —
+      // notably {enquiry, forMilestoneId} — means this invoice must not exist
+      // at all, and retrying would burn two more sequence numbers chasing a
+      // write that can never succeed. Rethrow so the caller can turn it into
+      // the 409 that names the invoice already covering the milestone.
+      if (e.code === 11000 && isNumberCollision(e) && attempt < 2) continue; // allocate next
+      // This attempt is over and it produced no row, so the number it drew is
+      // about to become a hole in a sequence that GST requires to be gapless.
+      // Hand it back if it is still the top of the counter. The condition is
+      // what makes this safe: seq only matches when nobody has allocated after
+      // us, so the number cannot already be in someone else's hands, and the
+      // next caller simply draws it again. If someone HAS moved past us the
+      // update matches nothing and the hole stands — correct, because handing
+      // back a number below the high-water mark would issue it twice.
+      await VenueCounter.updateOne({ key: counterKey, seq }, { $inc: { seq: -1 } }).catch(() => {});
       throw e;
     }
   }
@@ -264,4 +297,4 @@ const invoicePdf = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf, allocateInvoice, sumPayments };
+module.exports = { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf, allocateInvoice, sumPayments, isMilestoneCollision };
