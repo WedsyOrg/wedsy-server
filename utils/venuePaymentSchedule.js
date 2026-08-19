@@ -23,6 +23,27 @@
  * exactly 100. The extra hundredth goes to the FIRST row, because the earliest
  * payment is the one the venue would rather have a rupee more of.
  *
+ * ══ PERCENTAGES SPLIT THE BALANCE, NOT THE BOOKING VALUE ════════════════════
+ * The advance is negotiated per client — ₹25,000 on a ₹1,00,000 booking,
+ * whatever gets agreed — and the shape splits WHAT REMAINS AFTER IT. So a
+ * "50/50" on that booking is ₹37,500 and ₹37,500 over the ₹75,000 balance, not
+ * ₹50,000 twice.
+ *
+ * THIS WAS A LIVE OVER-COLLECTION BUG, not a wording problem. The advance
+ * already existed as `tokenAmount`, and controllers/venueBooking.js PREPENDS it
+ * to the schedule as a paid row while the rows themselves were costed against
+ * the full booking value. Measured before the fix:
+ *
+ *     ₹1,00,000 booking + ₹25,000 token + 50/50
+ *       → token 25,000 (paid) + rows 50,000 + 50,000
+ *       → ₹1,25,000 scheduled against a ₹1,00,000 booking
+ *
+ * The couple was billed 125% of the price and the outstanding read ₹1,00,000 on
+ * a booking with ₹25,000 already in hand.
+ *
+ * WITH NO ADVANCE NOTHING CHANGES. advanceAmount defaults to 0, the balance is
+ * the booking value, and every existing schedule generates byte-identically.
+ *
  * ══ MONEY ROUNDS SEPARATELY, AND MUST TOTAL THE BOOKING ═════════════════════
  * A percentage split that sums to 100 still does not guarantee the amounts sum
  * to the booking value — 33.34% of 1,000,000 is 333,400 and the three rows come
@@ -197,11 +218,13 @@ const DAY_MS = 86400000;
  * @param {object} args
  * @param {Array}  args.rows        [{ label, percent, offsetDays }]
  * @param {number} args.totalValue  the booking value in whole rupees
+ * @param {number} [args.advanceAmount=0]  already negotiated and collected; the
+ *        percentages apply to what remains after it
  * @param {Date|string} [args.eventDate]  earliest event day; offsets hang off it
  * @param {Date} [args.now]
  * @returns {{ rows: Array, totals: object }}
  */
-function generateSchedule({ rows, totalValue, eventDate, now = new Date() }) {
+function generateSchedule({ rows, totalValue, advanceAmount = 0, eventDate, now = new Date() }) {
   if (!Array.isArray(rows) || !rows.length) throw new ScheduleError("A schedule needs at least one row");
   if (rows.length > MAX_ROWS) throw new ScheduleError(`At most ${MAX_ROWS} rows`);
 
@@ -216,13 +239,21 @@ function generateSchedule({ rows, totalValue, eventDate, now = new Date() }) {
   if (!total.ok) throw new ScheduleError(`Schedule totals ${total.totalPercent}% — it must total exactly 100%`);
 
   const value = Math.max(0, Math.round(Number(totalValue) || 0));
+  const advance = Math.max(0, Math.round(Number(advanceAmount) || 0));
+  if (advance > value) {
+    throw new ScheduleError("The advance is more than the booking value");
+  }
+  // THE BASE THE PERCENTAGES APPLY TO. With no advance this IS the booking
+  // value, so the no-advance case is unchanged.
+  const balance = value - advance;
   const ev = eventDate ? new Date(eventDate) : null;
   const evValid = ev && !Number.isNaN(ev.getTime());
 
   // Amounts: floor each row, then hand the residue to the last row so the
-  // schedule adds up to the booking value exactly.
-  const amounts = prepared.map((r) => Math.floor((value * r.percentHundredths) / FULL));
-  const residue = value - amounts.reduce((s, a) => s + a, 0);
+  // schedule adds up to the BALANCE exactly — and the advance plus the rows
+  // add up to the booking value.
+  const amounts = prepared.map((r) => Math.floor((balance * r.percentHundredths) / FULL));
+  const residue = balance - amounts.reduce((s, a) => s + a, 0);
   if (amounts.length) amounts[amounts.length - 1] += residue;
 
   const out = prepared.map((r, i) => {
@@ -248,8 +279,14 @@ function generateSchedule({ rows, totalValue, eventDate, now = new Date() }) {
       percent: total.totalPercent,
       amount: out.reduce((s, r) => s + r.amount, 0),
       bookingValue: value,
-      // The assertion a caller should trust rather than recompute.
-      amountsMatchBookingValue: out.reduce((s, r) => s + r.amount, 0) === value,
+      advanceAmount: advance,
+      // What the percentages were applied to — the number the wizard shows so
+      // an owner never has to work out why 50% is not half the booking.
+      balance,
+      // The assertions a caller should trust rather than recompute. The rows
+      // total the BALANCE; the advance plus the rows total the booking.
+      amountsMatchBalance: out.reduce((s, r) => s + r.amount, 0) === balance,
+      amountsMatchBookingValue: advance + out.reduce((s, r) => s + r.amount, 0) === value,
     },
   };
 }

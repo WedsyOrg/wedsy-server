@@ -248,6 +248,36 @@ const confirmBookingFromLead = async (req, res) => {
           deltaPercent: total.deltaPercent,
         });
       }
+
+      // ADVANCE + INSTALMENTS MUST EQUAL THE BOOKING VALUE.
+      //
+      // Percentages totalling 100 is not the same as the money adding up: the
+      // percentages now apply to the BALANCE after the advance, so a client
+      // that still splits the full booking value produces rows totalling 100%
+      // that overshoot. That is not hypothetical — it is what shipped. A
+      // ₹1,00,000 booking with a ₹25,000 token and a 50/50 shape stored
+      // ₹25,000 paid plus ₹50,000 + ₹50,000 due: ₹1,25,000 scheduled against a
+      // ₹1,00,000 booking, with the outstanding reading the full price on a
+      // booking that already had a quarter of it in hand.
+      //
+      // Checked only when the caller states the booking value. An amounts-only
+      // schedule with no declared total still derives it, exactly as before.
+      if (totalV.value !== undefined) {
+        const tokenNow = tokenV.value || 0;
+        const scheduled = schedule.reduce((sum, r) => sum + (r.amount || 0), 0);
+        if (tokenNow + scheduled !== totalV.value) {
+          return res.status(400).json({
+            message:
+              `The advance and the instalments come to ${tokenNow + scheduled}, but the booking is ${totalV.value}. ` +
+              `The percentages apply to the ${totalV.value - tokenNow} balance after the advance.`,
+            code: "schedule_value_mismatch",
+            bookingValue: totalV.value,
+            advanceAmount: tokenNow,
+            balance: totalV.value - tokenNow,
+            scheduledAmount: scheduled,
+          });
+        }
+      }
     }
     let agreementDoc;
     if (body.agreementDocId !== undefined && body.agreementDocId !== null && body.agreementDocId !== "") {
