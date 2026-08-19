@@ -275,6 +275,72 @@ const created = { venues: [], owners: [] };
       "the older createFromBooking path can still raise SEVERAL invoices per booking — the partial filter excludes it"
     );
 
+    // ══ 5 · IMMUTABILITY HOLDS THROUGH QUERY WRITES TOO ═════════════════════
+    // pre("save") is DOCUMENT middleware and never runs for updateOne or
+    // findOneAndUpdate. Review proved the hole by setting invoiceNumber to
+    // "HACKED-0001" through a single updateOne. Section 2 above only exercises
+    // the .save() door; this exercises every other one.
+    console.log("\n[5. the same immutability through query writes, not just .save()]");
+    const target = results[1];
+    const beforeQ = await VenueInvoice.findById(target._id).lean();
+
+    const queryAttempts = [
+      ["updateOne $set scalar", () => VenueInvoice.updateOne({ _id: target._id }, { $set: { invoiceNumber: "HACKED-0001" } })],
+      ["updateOne $set nested", () => VenueInvoice.updateOne({ _id: target._id }, { $set: { "totals.grandTotal": 1 } })],
+      ["updateOne $inc", () => VenueInvoice.updateOne({ _id: target._id }, { $inc: { seq: 500 } })],
+      ["updateOne $unset", () => VenueInvoice.updateOne({ _id: target._id }, { $unset: { gstPercent: 1 } })],
+      ["updateOne $push into lineItems", () => VenueInvoice.updateOne({ _id: target._id }, { $push: { lineItems: { label: "X", qty: 1, unitPrice: 1 } } })],
+      ["updateOne positional path", () => VenueInvoice.updateOne({ _id: target._id }, { $set: { "lineItems.0.unitPrice": 5 } })],
+      ["updateOne $rename onto a frozen name", () => VenueInvoice.updateOne({ _id: target._id }, { $rename: { status: "kind" } })],
+      ["updateMany", () => VenueInvoice.updateMany({ venue: venue._id }, { $set: { gstMode: "none" } })],
+      ["findOneAndUpdate", () => VenueInvoice.findOneAndUpdate({ _id: target._id }, { $set: { discount: 99 } })],
+      ["findByIdAndUpdate", () => VenueInvoice.findByIdAndUpdate(target._id, { $set: { booking: new mongoose.Types.ObjectId() } })],
+      ["replaceOne", () => VenueInvoice.replaceOne({ _id: target._id }, { ...beforeQ, totals: { ...beforeQ.totals, grandTotal: 7 } })],
+      ["bulkWrite", () => VenueInvoice.bulkWrite([{ updateOne: { filter: { _id: target._id }, update: { $set: { seq: 31337 } } } }])],
+    ];
+    for (const [name, run] of queryAttempts) {
+      let msg = "";
+      try { await run(); } catch (e) { msg = e.message; }
+      ok(/immutable once generated/.test(msg), `${name} is refused`);
+    }
+
+    const untouched = await VenueInvoice.findById(target._id).lean();
+    ok(untouched.invoiceNumber === beforeQ.invoiceNumber, "…and the row on disk still has its original number");
+    ok(untouched.seq === beforeQ.seq, "…its original seq");
+    ok(untouched.totals.grandTotal === beforeQ.totals.grandTotal, "…its original grand total");
+    ok(untouched.gstPercent === beforeQ.gstPercent, "…its original GST percentage");
+    ok(untouched.lineItems.length === beforeQ.lineItems.length, "…and its original line items");
+    ok(
+      (await VenueInvoice.countDocuments({ venue: venue._id, gstMode: "none" })) === 1,
+      "…and the refused updateMany did not touch any OTHER invoice either"
+    );
+
+    // The mutable half must keep working through the same door — the write
+    // below is exactly what controllers/venueLeadInvoice performs after
+    // rendering a PDF, and the payment flows depend on query writes staying
+    // available. A guard that closed those would be a worse bug than the hole.
+    console.log("\n[5b. …while the mutable fields still move through query writes]");
+    const docId = new mongoose.Types.ObjectId();
+    let linkErr = "";
+    try {
+      await VenueInvoice.updateOne({ _id: target._id }, { $set: { leadDocument: docId } });
+    } catch (e) { linkErr = e.message; }
+    ok(!linkErr, `linking leadDocument via updateOne still works — the write this branch itself uses${linkErr ? ` (got: ${linkErr})` : ""}`);
+    ok(
+      String((await VenueInvoice.findById(target._id).lean()).leadDocument) === String(docId),
+      "…and the link landed"
+    );
+    let statusErr = "";
+    try {
+      await VenueInvoice.updateOne(
+        { _id: target._id },
+        { $set: { status: "paid" }, $push: { payments: { amount: 1, mode: "cash", status: "approved" } } }
+      );
+    } catch (e) { statusErr = e.message; }
+    ok(!statusErr, `recording a payment via updateOne still works${statusErr ? ` (got: ${statusErr})` : ""}`);
+    const afterPay = await VenueInvoice.findById(target._id).lean();
+    ok(afterPay.status === "paid" && afterPay.payments.length === 1, "…and both the status and the payment landed");
+
     console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   } catch (e) {
     console.error("FATAL", e);
