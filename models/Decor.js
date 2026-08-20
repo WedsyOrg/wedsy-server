@@ -13,6 +13,18 @@ const DecorSchema = new mongoose.Schema(
       // enum: ["BestSeller", "Popular", ""],
       default: "",
     },
+    // ── HOW THIS PRODUCT GOT HERE (2026-08-20) ───────────────────────────────
+    // "extension" = published from the A2S approval queue (Chrome extension →
+    // draft → approve). UNSET ("") = created directly, which covers every
+    // manually-added product and all ~800 that predate A2S.
+    //
+    // Deliberately NOT written as "manual" on POST /decor: an explicit value
+    // there would need a backfill to be meaningful, and absence already says the
+    // same thing. Deliberately NOT a string in `tags` either — tags are edited
+    // freely by approvers and this must survive that.
+    // Same vocabulary as decorPricing's `source: "extension"`: both mean "this
+    // came from the extension", so they read as one concept.
+    source: { type: String, default: "" },
     rating: { type: Number, default: 0, required: true },
     productVisibility: { type: Boolean, default: false },
     productAvailability: { type: Boolean, default: false },

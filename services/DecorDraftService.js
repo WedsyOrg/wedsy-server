@@ -630,6 +630,9 @@ const approveDraft = async (id, body = {}, actorId) => {
     category,
     name,
     unit,
+    // Stamps the published product as extension-added. A real field, not a tag:
+    // an approver editing tags cannot delete it, and GET /decor can filter on it.
+    source: "extension",
     description,
     tags,
     label: String(body.label || ""),
@@ -736,6 +739,35 @@ const approveDraft = async (id, body = {}, actorId) => {
   return { draft: draft.toObject(), decorId: created._id, productCode };
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// E) REVERSE LOOKUP — the AI analysis behind a PUBLISHED product.
+//
+// A read, never a copy. draft.aiAnalysis is immutable and is the training
+// record, so it stays the single source of truth: nothing is duplicated onto the
+// Decor document, and editing a product can never drift its analysis.
+//
+// The link already exists — DecorDraft.publishedDecorId is stamped on approve —
+// so this is just that index read backwards.
+//
+// Throws 404 with code NO_DRAFT when a product has no draft. That is the NORMAL
+// case, not an error: every manually-created product and all ~800 predating A2S
+// will land here, and the catalogue uses the miss to decide whether to show the
+// tab at all. The code is what it should branch on, not the message.
+const analysisForDecor = async (decorId) => {
+  if (!isId(decorId)) throw err(400, "Invalid decor id");
+  const draft = await DecorDraft.findOne({ publishedDecorId: decorId })
+    .sort({ addedAt: -1, _id: -1 })
+    .populate("pricing.decidedBy", "name")
+    .populate("addedBy", "name")
+    .lean();
+  if (!draft) {
+    throw err(404, "This product wasn't added from the extension, so there's no AI analysis for it.", {
+      code: "NO_DRAFT",
+    });
+  }
+  return draft;
+};
+
 // ── D) reject ───────────────────────────────────────────────────────────────
 const rejectDraft = async (id, { reason } = {}, actorId) => {
   if (!isId(id)) throw err(400, "Invalid draft id");
@@ -758,6 +790,7 @@ module.exports = {
   getDraft,
   approveDraft,
   rejectDraft,
+  analysisForDecor,
   normalizeImageUrl,
   toCatalogueMeasurements,
   measurementsFromAnalysis,

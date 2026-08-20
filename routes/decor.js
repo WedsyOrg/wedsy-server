@@ -49,6 +49,11 @@ router.post("/", CheckAdminLogin, canPublish, decor.CreateNew);
 router.get("/", decor.GetAll);
 // S3 — curation reorder (literal path — MUST stay above /:_id).
 router.put("/reorder", CheckAdminLogin, canPublish, decor.Reorder);
+// The AI analysis behind a published product — a REVERSE lookup into the draft
+// that published it, never a copy. Two segments, so it cannot be captured by
+// "/:_id"; kept above it anyway to match this file's convention. Admin-gated:
+// it exposes the internal price ladder and who approved it.
+router.get("/:_id/analysis", CheckAdminLogin, decor.DecorAnalysis);
 router.get("/:_id", decor.Get);
 router.put("/:_id", CheckAdminLogin, canPublish, decor.Update);
 router.delete("/:_id", CheckAdminLogin, canPublish, decor.Delete);

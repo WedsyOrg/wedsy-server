@@ -6,6 +6,7 @@ const { analyseImage, includedFor } = require("../services/decorVision");
 const { buildListingContext } = require("../services/decorListingContext");
 const { buildDemoPrice, buildStorePrice, pinTextCategoryCheck, demoCategoryTiers, resolveOccasion } = require("../services/decorDemoPrice");
 const readCache = require("../services/decorReadCache");
+const DecorDraftService = require("../services/DecorDraftService");
 const sharp = require("sharp");
 
 // Downscale a base64 or URL image before the vision call — cuts tokens/latency
@@ -225,6 +226,7 @@ const GetAll = (req, res) => {
     displayAvailable,
     productVisibility,
     productAvailability,
+    source,
   } = req.query;
   if (checkId) {
     Decor.find({ "productInfo.id": checkId })
@@ -359,6 +361,13 @@ const GetAll = (req, res) => {
     }
     if (category) {
       query.category = category;
+    }
+    // How the product was added — "extension" for A2S-published items. Plain
+    // equality, matching `label`/`category` above. Manually-added products leave
+    // the field UNSET, so they are not addressable by equality; see the note on
+    // Decor.source.
+    if (source) {
+      query.source = source;
     }
     if (displayVisible === "true") {
       query.productVisibility = true;
@@ -1079,6 +1088,105 @@ const shapeAnalyseImage = (payload = {}) => {
 };
 
 // The single boundary every décor AI response passes through.
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /decor/:_id/analysis — the AI analysis behind a published product.
+//
+// SAME TRIM DISCIPLINE as the other décor surfaces: an explicit allowlist, so a
+// field added to the draft later cannot leak by default. Everything that would
+// narrate HOW a price was produced is dropped — observedBand and its percentile
+// machinery, the comparables table, sizeBasis, upliftApplied, bandPosition,
+// headroom, rates and divisors. What survives is the JUDGEMENT and the outcome.
+//
+// ⚠️ ONE DELIBERATE DEPARTURE from shapeAnalysis: `complexity.reasoning` IS
+// returned. shapeAnalysis strips complexity wholesale because there it is a
+// pricing INPUT (the band-position lever) on a response the sales panel renders.
+// Here the endpoint exists to show a human why the AI judged a build the way it
+// did, and that sentence describes the BUILD, not the price — "heavy floral
+// coverage across six bays" reveals no rate. The confidence GATES are still
+// stripped, so what is shown is the judgement, never the machinery that weighed
+// it.
+const shapeAnalysisMeasurements = (m) => {
+  if (!m || typeof m !== "object") return null;
+  const out = {};
+  if (m.backdropWidthFt != null) out.backdropWidthFt = m.backdropWidthFt;
+  if (m.estimatedHeightFt != null) out.estimatedHeightFt = m.estimatedHeightFt;
+  if (m.floralRunFt != null) out.floralRunFt = m.floralRunFt;
+  const re = m.repeatingElements;
+  if (re && re.count != null && re.estimatedWidthEachFt != null) {
+    out.repeatingElements = { count: re.count, estimatedWidthEachFt: re.estimatedWidthEachFt };
+  }
+  return Object.keys(out).length ? out : null;
+};
+
+const shapeDecorAnalysis = (draft) => {
+  const ai = draft.aiAnalysis || {};
+  const brain = ai.pricing || {};
+  const a = brain.analysis || {};
+  const copy = ai.listing && !ai.listing.error ? ai.listing : a;
+  const ladder = brain.pricing || {};
+  const decided = draft.pricing || {};
+  const who = (v) => (v && typeof v === "object" && v.name ? { name: v.name } : null);
+
+  return {
+    draftId: String(draft._id),
+    // ── the read ──────────────────────────────────────────────────────────
+    category: a.category != null ? a.category : null,
+    categoryConfidence: a.categoryConfidence != null ? a.categoryConfidence : null,
+    ...(ai.categoryDisagreement ? { categoryDisagreement: ai.categoryDisagreement } : {}),
+    style: a.style != null ? a.style : null,
+    ...(a.complexity
+      ? { complexity: { tier: a.complexity.tier || null, reasoning: a.complexity.reasoning || "" } }
+      : {}),
+    ...(a.size && (a.size.length > 0 || a.size.width > 0)
+      ? { size: { length: a.size.length, width: a.size.width } }
+      : {}),
+    ...(a.recommendedSize ? { recommendedSize: a.recommendedSize } : {}),
+    ...(a.occasion && a.occasion.value ? { occasion: { value: a.occasion.value } } : {}),
+    ...(a.minBuildWidth && a.minBuildWidth.minWidthFt != null
+      ? { minBuildWidth: { minWidthFt: a.minBuildWidth.minWidthFt } }
+      : {}),
+    observations: Array.isArray(a.observations) ? a.observations : [],
+    measurements: shapeAnalysisMeasurements(a.stageMeasurements),
+
+    // ── what the AI proposed ──────────────────────────────────────────────
+    // The per-tier figures and which tiers applied. NOT observedBand, NOT the
+    // comparables table, NOT sizeBasis or upliftApplied — those are the method.
+    priceLadder: {
+      applicableTiers: Array.isArray(ladder.applicableTiers) ? ladder.applicableTiers : [],
+      suggested: ladder.suggested || {},
+    },
+    copy: {
+      name: copy.suggestedName || copy.name || "",
+      description: copy.description || "",
+      tags: Array.isArray(copy.tags) ? copy.tags : [],
+      colors: Array.isArray(copy.colors) ? copy.colors : [],
+      flowers: Array.isArray(copy.flowers) ? copy.flowers : [],
+      fabric: Array.isArray(copy.fabric) ? copy.fabric : [],
+      included: Array.isArray(copy.included) ? copy.included : [],
+    },
+
+    // ── what the human did — the half that matters a year from now ────────
+    decision: {
+      approvedBy: who(decided.decidedBy),
+      approvedAt: decided.decidedAt || null,
+      tierDecisions: (decided.tierDecisions || []).map((t) => ({
+        tier: t.tier,
+        name: t.name,
+        aiSuggested: t.aiSuggested != null ? t.aiSuggested : null,
+        panelQuote: t.panelQuote != null ? t.panelQuote : null,
+        finalPrice: t.finalPrice != null ? t.finalPrice : null,
+        overridden: !!t.overridden,
+        reason: t.reason || "",
+        deltaPct: t.deltaPct != null ? t.deltaPct : null,
+      })),
+    },
+    addedBy: who(draft.addedBy),
+    addedAt: draft.addedAt || null,
+    // Whether this draft was priced from the panel's own cached read.
+    readSource: (draft.sourceRead && draft.sourceRead.source) || null,
+  };
+};
+
 const shapeClientResponse = (kind, payload) =>
   kind === "demo-price" ? shapeDemoPrice(payload) : shapeAnalyseImage(payload);
 
@@ -1383,6 +1491,23 @@ const DemoPrice = async (req, res) => {
   }
 };
 
+// GET /decor/:_id/analysis — the AI analysis behind a published product.
+// 404 + code NO_DRAFT is the NORMAL answer for a manually-added product; the
+// catalogue branches on the code to decide whether to show the tab.
+const DecorAnalysis = async (req, res) => {
+  try {
+    const draft = await DecorDraftService.analysisForDecor(req.params._id);
+    return res.send(shapeDecorAnalysis(draft));
+  } catch (error) {
+    const status = error && error.status ? error.status : 500;
+    if (status >= 500) console.error("[DecorAnalysis]", error && error.message, error);
+    return res.status(status).send({
+      message: (error && error.message) || "error",
+      ...(error && error.code ? { code: error.code } : {}),
+    });
+  }
+};
+
 // ─── AI listing helpers ──────────────────────────────────────────────────────
 
 
@@ -1542,6 +1667,7 @@ Return ONLY valid JSON:
 
 module.exports = {
   CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder, SuggestPrice, AnalyseImage, DemoPrice,
+  DecorAnalysis,
   // exported for the response-contract test — the wire-shaping boundary
-  shapeClientResponse, shapeDemoPrice, shapeAnalyseImage,
+  shapeClientResponse, shapeDemoPrice, shapeAnalyseImage, shapeDecorAnalysis,
 };
