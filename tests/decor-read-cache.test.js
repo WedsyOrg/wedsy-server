@@ -290,8 +290,30 @@ const createdDecors = [];
     eq(panel.body.read.origin, "fresh", "panel priced the pin");
     const panelEntry = await DecorImageRead.findOne({ pinId: PIN(6) }).lean();
     createdReads.push(panelEntry._id);
-    const quotedRange = rowPrices(panel.body).artificial;
-    ok(!!quotedRange, "the panel quoted an artificial range");
+    // ⚠️ CHANGED 2026-08-21. This used to read ladder[0] — the FLORAL-RUN row —
+    // which the panel stopped displaying when it moved to size options, so the
+    // quote and the display had drifted apart (₹51,000 quoted vs ₹93,333 in the
+    // tier table on a real pin). The quote now comes from the rung the panel
+    // actually shows and badges RECOMMENDED, so that is what this compares to.
+    const recRung = (panel.body.sizeOptions || []).find((o) => o.size === panel.body.recommendedSize)
+      || (panel.body.sizeOptions || [])[0];
+    ok(!!recRung, "the panel displayed a size rung");
+    // NOTE: this fixture's recommendedSize (16x12) is NOT among the shown rungs —
+    // the caption is "reception stage", and the occasion FLOOR evicts everything
+    // under 20ft after the swap runs. That is swap-first / floor-last behaving
+    // exactly as ruled, and it means "the recommendation is always one of the two
+    // shown" holds only BEFORE the floor. So the quote falls back to the rung
+    // nearest the read, and what matters is that it is one the panel displayed.
+    ok(
+      (panel.body.sizeOptions || []).some((o) => o.size === recRung.size),
+      "…and the quote lands on a rung the panel actually displayed"
+    );
+    const quotedRange = recRung.prices.artificial;
+    ok(!!quotedRange, "the panel quoted an artificial range on it");
+    ok(
+      JSON.stringify(quotedRange) !== JSON.stringify(rowPrices(panel.body).artificial),
+      "…which is a DIFFERENT figure from the floral-run row — the drift this fixes"
+    );
 
     // Stub A2S's expensive edges. runPricingBrain THROWS: if A2S still runs its
     // own vision call on a cache hit, this test fails instead of quietly pricing
@@ -346,6 +368,9 @@ const createdDecors = [];
     eq(pq.high, quotedRange.high, "high matches the panel");
     eq(pq.midpoint, mid(quotedRange), "the pre-filled price IS the midpoint of the panel's range");
     ok(pq.headroomApplied > 1, "…with the negotiating headroom still in it");
+    ok((panel.body.sizeOptions || []).some((o) => o.size === pq.size), "…quoted on a DISPLAYED rung");
+    eq(pq.basis, "size-ladder", "…and records that it came from the size ladder");
+    eq(pq.tierPrices.artificial.midpoint, pq.midpoint, "tierPrices agrees with the headline midpoint");
     ok(
       pq.midpoint > quotedRange.low && pq.midpoint < quotedRange.high,
       "…and it sits inside the quoted range"

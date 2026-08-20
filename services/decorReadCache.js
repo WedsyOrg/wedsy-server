@@ -161,25 +161,25 @@ const publishedForImage = async ({ pinId, imageUrl } = {}) => {
 // ─────────────────────────────────────────────────────────────────────────────
 const round500 = (n) => Math.round(n / 500) * 500;
 
-// Which row was the client looking at? A floral-run or band ladder has exactly
-// one. A size ladder has many, and the panel badges the vision's best-fit size —
-// so that row is the quote; failing that, the row nearest the read's own area.
-const pickPanelRow = (ladder, analysis) => {
-  const rows = Array.isArray(ladder) ? ladder.filter(Boolean) : [];
-  if (rows.length <= 1) return rows[0] || null;
+// Which row was the client looking at? A size ladder has two rungs and the panel
+// badges the recommended one; a band or floral-run reply has exactly one row.
+// Failing a recommendedSize match, take the row nearest the read's own area.
+const pickPanelRow = (rows, analysis) => {
+  const list = Array.isArray(rows) ? rows.filter(Boolean) : [];
+  if (list.length <= 1) return list[0] || null;
   const rec = analysis && analysis.recommendedSize;
   if (rec) {
-    const hit = rows.find((r) => r.size === rec);
+    const hit = list.find((r) => r.size === rec);
     if (hit) return hit;
   }
   const size = (analysis && analysis.size) || {};
   const area = Number(size.length) * Number(size.width);
   if (Number.isFinite(area) && area > 0) {
-    return rows.reduce((best, r) =>
+    return list.reduce((best, r) =>
       Math.abs((r.area || 0) - area) < Math.abs((best.area || 0) - area) ? r : best
     );
   }
-  return rows[0];
+  return list[0];
 };
 
 const panelQuoteFor = async (analysis, { pinText } = {}) => {
@@ -195,7 +195,24 @@ const panelQuoteFor = async (analysis, { pinText } = {}) => {
   });
   if (!out || out.rejected) return null;
 
-  const row = pickPanelRow(out.ladder, analysis);
+  // ── QUOTE FROM WHAT THE PANEL DISPLAYS (2026-08-21) ───────────────────────
+  // This used to read out.ladder unconditionally, which on a Stage is the
+  // FLORAL-RUN row — a figure the panel stopped displaying when it moved to size
+  // options. The result was two prices for one pin: Ivory Cascade quoted ₹51,000
+  // on floral run while the tier table read ₹93,333. The founder's requirement
+  // has always been ONE number — what the client was quoted is what publishes —
+  // so the quote now comes from the same rows the panel renders.
+  //
+  // sizeOptions exist for STAGE and MANDAP only (they are the only categories
+  // with a REFERENCE_SIZE and SIZE_BUCKETS). The other ELEVEN — Haldi,
+  // Photobooth, Entrance, Pathway, Nameboard, Mala & More, Phoolon Ki Chadar,
+  // Partitions, Furniture, Sound & Light, Entries & Effects — have no size model,
+  // so the panel displays the single ladder row and that is what we quote. Haldi
+  // therefore keeps its floral-run quote, which is correct because floral run IS
+  // its engine; it falls out of the rule rather than being a special case.
+  const sized = Array.isArray(out.sizeOptions) && out.sizeOptions.length > 0;
+  const rows = sized ? out.sizeOptions : out.ladder;
+  const row = pickPanelRow(rows, analysis);
   if (!row || !row.prices) return null;
 
   // The tier the PUBLISH step will name (approveDraft uses the category's first
@@ -213,6 +230,9 @@ const panelQuoteFor = async (analysis, { pinText } = {}) => {
     category: out.category,
     tier,
     size: row.size || null,
+    // Which set of rows the quote came from, so a stored quote stays readable a
+    // year from now without re-deriving it.
+    basis: sized ? "size-ladder" : out.floralRunPriced ? "floral-run" : "category-band",
     low: range.low,
     high: range.high,
     // The pre-filled price. Rounded to ₹500 like every figure on the ladder.
@@ -221,6 +241,18 @@ const panelQuoteFor = async (analysis, { pinText } = {}) => {
     // the client was quoted (ruling 3).
     headroomApplied: out.headroomApplied,
     floralRunPriced: !!out.floralRunPriced,
+    // EVERY applicable tier of the quoted row, so the approval modal's tier table
+    // can pre-fill each line from the same figures the client saw. `midpoint`
+    // above stays the headline (applicableTiers[0]) exactly as before — this is
+    // additive, and without it the table has no agreeing number to show for
+    // mixed or natural.
+    tierPrices: tiers.reduce((acc, t) => {
+      const r = row.prices[t];
+      if (r && r.low != null && r.high != null) {
+        acc[t] = { low: r.low, high: r.high, midpoint: round500((Number(r.low) + Number(r.high)) / 2) };
+      }
+      return acc;
+    }, {}),
   };
 };
 
