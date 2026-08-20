@@ -150,6 +150,50 @@ const fn = (date) => [{ date, name: "Wedding", space: String(venue.spaces[0]._id
       "a second 'Sharma' with a different phone is a SECOND PERSON — silently merging them would corrupt People");
     ok(l4after.contacts.filter((c) => c.isPrimary).length === 1, "…and exactly one is primary, still");
 
+
+    // ── [D2] the overwrite this build nearly shipped ──
+    console.log("\n[D2. a stale contactId must not rename someone]");
+    const l4b = await newLead({
+      contacts: [
+        { name: "Kavita Nair", phone: "9800012345", relation: "bride", isPrimary: true },
+        { name: "Suresh Nair", phone: "9800067890", relation: "brides_father", isDecisionMaker: true },
+      ],
+    });
+    const before = await VenueEnquiry.findById(l4b._id).lean();
+    const sureshId = String(before.contacts[1]._id);
+    // Exactly what driving the UI produced: a contactId from picking Suresh,
+    // with a DIFFERENT party's name and phone typed over the top. The server
+    // honours the id — so the portal must drop it when the identity fields are
+    // edited, which is now what the client step does.
+    await call(bookings.confirmBookingFromLead, ownerReq({
+      params: { enquiryId: String(l4b._id) },
+      body: {
+        functions: fn(nextDate()),
+        client: { contactId: sureshId, name: "Northwind Offsites Pvt Ltd", phone: "9871122334" },
+      },
+    }));
+    const l4bAfter = await VenueEnquiry.findById(l4b._id).lean();
+    const suresh = l4bAfter.contacts.find((c) => String(c._id) === sureshId);
+    ok(suresh && suresh.name === "Northwind Offsites Pvt Ltd",
+      "an explicit contactId IS honoured — the server does what it is told, which is why the CLIENT must stop sending a stale one");
+    ok(l4bAfter.contacts.length === 2, "…and no duplicate is created when an id is given");
+
+    // …and with the id dropped, as the fixed UI now sends it, Suresh survives.
+    const l4c = await newLead({
+      contacts: [
+        { name: "Kavita Nair", phone: "9800012345", relation: "bride", isPrimary: true },
+        { name: "Suresh Nair", phone: "9800067890", relation: "brides_father" },
+      ],
+    });
+    await call(bookings.confirmBookingFromLead, ownerReq({
+      params: { enquiryId: String(l4c._id) },
+      body: { functions: fn(nextDate()), client: { name: "Northwind Offsites Pvt Ltd", phone: "9871122334" } },
+    }));
+    const l4cAfter = await VenueEnquiry.findById(l4c._id).lean();
+    ok(l4cAfter.contacts.length === 3, "WITHOUT the stale id, the new billing party is a THIRD contact");
+    ok(l4cAfter.contacts.some((c) => c.name === "Suresh Nair" && c.phone === "9800067890"),
+      "…and Suresh Nair still exists, unrenamed — the data loss found by driving the wizard");
+
     // ── [E] the GSTIN, end to end, onto a real invoice PDF ──
     console.log("\n[E. the client GSTIN reaches the invoice — the B2B path]");
     ok(normaliseGstin("27aapfu0939f1zv").value === "27AAPFU0939F1ZV", "a GSTIN is upper-cased and stripped on the way in");
