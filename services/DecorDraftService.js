@@ -688,14 +688,45 @@ const approveDraft = async (id, body = {}, actorId) => {
       : "name is required");
   }
 
-  const productCode = String(body.productCode || draft.draft.productCode || "").trim();
-  // Re-check uniqueness AT APPROVE TIME — the approver may have changed it, and
-  // the queue may have sat for days.
+  // ── PRODUCT CODE (2026-08-21) ─────────────────────────────────────────────
+  // Re-checked AT APPROVE TIME — the approver may have changed it, and the queue
+  // may have sat for days while the catalogue moved underneath it.
+  //
+  // AUTO-ADVANCE, but only past a code NOBODY CHOSE. A provisional code is a
+  // server-generated guess; when it turns out to be taken, silently taking the
+  // next free one costs the approver nothing. A code the approver TYPED is a
+  // decision, and overriding a human's explicit choice without saying so would
+  // be far worse than refusing — so that still 409s.
+  //
+  // The signal is whether the submitted code differs from the one this draft was
+  // created with. Equal, or absent, means the modal sent back the suggestion
+  // untouched.
+  const submittedCode = String(body.productCode || "").trim();
+  const provisionalCodeOnDraft = String(draft.draft.productCode || "").trim();
+  const codeWasChosenByHuman = !!submittedCode && submittedCode !== provisionalCodeOnDraft;
+  let productCode = submittedCode || provisionalCodeOnDraft;
+  let codeAutoAssigned = null;
+
   if (productCode && (await isCodeTaken(productCode))) {
-    throw err(409, `Product code "${productCode}" is already in use. Pick another.`, {
-      code: "DUPLICATE_PRODUCT_CODE",
-      productCode,
-    });
+    if (codeWasChosenByHuman) {
+      throw err(409, `Product code "${productCode}" is already in use. Pick another.`, {
+        code: "DUPLICATE_PRODUCT_CODE",
+        productCode,
+      });
+    }
+    // excludeDraftId so this draft does not treat its OWN reservation as a
+    // reason to skip a code.
+    const next = await suggestProductCode(category, { excludeDraftId: draft._id });
+    if (!next || (await isCodeTaken(next))) {
+      // Could not derive a free code — refuse rather than publish an empty or
+      // colliding one.
+      throw err(409, `Product code "${productCode}" is already in use. Pick another.`, {
+        code: "DUPLICATE_PRODUCT_CODE",
+        productCode,
+      });
+    }
+    codeAutoAssigned = { from: productCode, to: next };
+    productCode = next;
   }
 
   // Decor requires a non-empty image AND thumbnail. storedImage is set at
@@ -946,6 +977,14 @@ const approveDraft = async (id, body = {}, actorId) => {
   draft.pricing.decidedAt = new Date();
   draft.status = "approved";
   draft.publishedDecorId = created._id;
+  if (codeAutoAssigned) {
+    draft.history.push({
+      action: "code_reassigned",
+      by: actorId || null,
+      at: new Date(),
+      note: `provisional code ${codeAutoAssigned.from} was already in use — published as ${codeAutoAssigned.to}`,
+    });
+  }
   draft.history.push({
     action: "approved",
     by: actorId || null,
@@ -958,7 +997,13 @@ const approveDraft = async (id, body = {}, actorId) => {
   });
   await draft.save();
 
-  return { draft: draft.toObject(), decorId: created._id, productCode };
+  // The approver must not learn the code changed by noticing it later.
+  return {
+    draft: draft.toObject(),
+    decorId: created._id,
+    productCode,
+    ...(codeAutoAssigned ? { codeAutoAssigned } : {}),
+  };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

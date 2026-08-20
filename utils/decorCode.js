@@ -1,4 +1,5 @@
 const Decor = require("../models/Decor");
+const DecorDraft = require("../models/DecorDraft");
 
 // ── Server-side product-code generator ───────────────────────────────────────
 // Format (confirmed from prod after the Aug-2026 catalogue clean):
@@ -75,21 +76,78 @@ const maxSuffixForPrefix = async (prefix) => {
   return max;
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// TWO SEPARATE QUESTIONS. Do not merge them.
+//
+//   isCodeTaken(code)     — is this code LIVE IN THE CATALOGUE?
+//   isCodeReserved(code)  — is a QUEUED DRAFT holding it?
+//
+// ⚠️ isCodeTaken MUST NOT become drafts-aware. approveDraft calls it to decide
+// whether a code collides, and a draft always holds its own provisional code —
+// so a drafts-aware isCodeTaken would make EVERY draft block its own approval.
+// The separation is pinned by a test ("a code held only by a queued draft is
+// NOT 'taken'"), so this cannot drift back together unnoticed.
 const isCodeTaken = async (code) => {
   if (!code) return false;
   return !!(await Decor.exists({ "productInfo.id": code }));
 };
 
+// Codes spoken for by drafts still sitting in the approvals queue.
+//
+// WHY THIS EXISTS: the generator read only the catalogue, so every draft created
+// before the first approval was handed the same "next free" code — five queued
+// drafts all carrying st236, and the second approval 409ing after the approver
+// had already done the review. A queued draft's code is a RESERVATION.
+//
+// Scoped to status:"queued" deliberately. An approved draft's code is live in
+// the catalogue and isCodeTaken already covers it; a REJECTED draft's code
+// should go back in the pool rather than leaving a permanent gap.
+const reservedDraftCodes = async (prefix) => {
+  const match = prefix
+    ? { $regex: `^${prefix}\\d+$`, $options: "i" }
+    : { $nin: [null, ""] };
+  const docs = await DecorDraft.find(
+    { status: "queued", "draft.productCode": match },
+    { "draft.productCode": 1 }
+  ).lean();
+  return new Set(
+    docs
+      .map((d) => String((d.draft && d.draft.productCode) || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+};
+
+const isCodeReserved = async (code) => {
+  if (!code) return false;
+  const reserved = await reservedDraftCodes(null);
+  return reserved.has(String(code).trim().toLowerCase());
+};
+
 // Suggest the next free code for a category. Returns "" when the category has
 // no prefix we can justify (rather than inventing one).
-const suggestProductCode = async (category) => {
+// Suggest the next free code for a category. Returns "" when the category has
+// no prefix we can justify (rather than inventing one).
+//
+// "Free" means neither LIVE in the catalogue nor RESERVED by a queued draft.
+// `excludeDraftId` skips one draft's own reservation — used when re-deriving a
+// code for that very draft, so it does not step over itself.
+const suggestProductCode = async (category, { excludeDraftId } = {}) => {
   const prefix = await prefixForCategory(category);
   if (!prefix) return "";
 
+  const reserved = await reservedDraftCodes(prefix);
+  if (excludeDraftId) {
+    const own = await DecorDraft.findById(excludeDraftId, { "draft.productCode": 1 }).lean();
+    const ownCode = String((own && own.draft && own.draft.productCode) || "").trim().toLowerCase();
+    if (ownCode) reserved.delete(ownCode);
+  }
+
   let n = (await maxSuffixForPrefix(prefix)) + 1;
-  // Walk forward past anything already taken (gaps, or codes created since).
+  // Walk forward past anything already taken (gaps, or codes created since) or
+  // reserved by another queued draft.
   for (let guard = 0; guard < 10000; guard++, n++) {
     const code = `${prefix}${String(n).padStart(3, "0")}`;
+    if (reserved.has(code.toLowerCase())) continue;
     if (!(await isCodeTaken(code))) return code;
   }
   return "";
@@ -100,6 +158,8 @@ module.exports = {
   prefixForCategory,
   maxSuffixForPrefix,
   isCodeTaken,
+  isCodeReserved,
+  reservedDraftCodes,
   parseCode,
   FALLBACK_PREFIX,
 };
