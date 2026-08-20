@@ -36,8 +36,15 @@ const VenueBookingSchema = new mongoose.Schema(
         // paidAmount vs amount rather than stored, so the two cannot drift.
         paidAmount: { type: Number, default: 0, min: 0 },
         paidAt: { type: Date },
-        paidMode: { type: String, enum: ["bank_transfer", "cash", "cheque", "upi", "card", ""], default: "" },
+        // "other" carries its own name in paidModeOther. Without it, a method
+        // outside this list had nowhere to go: the confirm path silently
+        // mapped anything unrecognised to "" and the owner's answer was lost.
+        paidMode: { type: String, enum: ["bank_transfer", "cash", "cheque", "upi", "card", "other", ""], default: "" },
+        /** What the owner called it when they picked "Other". */
+        paidModeOther: { type: String, default: "" },
         paidReference: { type: String, default: "" },
+        /** Free note against this payment — "paid by the bride's father", etc. */
+        paidNote: { type: String, default: "" },
         recordedBy: { type: mongoose.Schema.Types.ObjectId },
         recordedByName: { type: String, default: "" },
       },
