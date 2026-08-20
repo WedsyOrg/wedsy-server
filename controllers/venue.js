@@ -88,6 +88,8 @@ const getVenueBySlug = async (req, res) => {
   }
 };
 
+const { backfillNewSpaceIntoWholeVenueBlocks } = require("../utils/venueWholeVenue");
+
 const updateVenue = async (req, res) => {
   try {
     const { slug } = req.params;
@@ -104,13 +106,64 @@ const updateVenue = async (req, res) => {
     // D10: identify the actor so the activity spine records who changed what.
     const { actorFromReq } = require("../utils/venueActivity");
     const actor = await actorFromReq(req);
+    // Space ids BEFORE the write, so a newly added space can be identified
+    // afterwards. See the backfill below for why that matters.
+    const beforeVenue = await VenueService.getVenueBySlug(slug).catch(() => null);
+    const beforeSpaceIds = new Set(((beforeVenue && beforeVenue.spaces) || []).map((s) => String(s._id)));
+
     const venue = await VenueService.updateVenueBySlug(
       slug,
       ownerVenueId,
       req.body || {},
       actor
     );
-    return res.status(200).json({ venue });
+
+    /**
+     * A SPACE ADDED WHILE THE WHOLE PROPERTY IS ALREADY SOLD.
+     *
+     * "Entire property" is stored by claiming every bookable space on the date
+     * (see utils/venueWholeVenue.js). A space created afterwards has no row on
+     * those dates, so it would be bookable — "impossible unless someone edits
+     * their listing", which is not impossible.
+     *
+     * So every newly added space is backfilled onto EVERY future date the whole
+     * property is already claimed for, not just the next one. The result is
+     * REPORTED rather than assumed: a partial backfill comes back in the
+     * response instead of passing quietly, because the failure mode it guards
+     * against is a silent double-booking.
+     */
+    const newSpaceIds = ((venue && venue.spaces) || [])
+      .map((s) => s._id)
+      .filter((id) => !beforeSpaceIds.has(String(id)));
+
+    const backfills = [];
+    for (const id of newSpaceIds) {
+      const r = await backfillNewSpaceIntoWholeVenueBlocks(venue._id, id, {});
+      if (r.dates > 0) backfills.push({ space: String(id), ...r });
+      if (!r.ok) {
+        console.error(
+          `[venue:${slug}] entire-property backfill INCOMPLETE for space ${id}: ` +
+            `${r.inserted + r.alreadyPresent}/${r.dates} dates covered, ${r.failed.length} failed`
+        );
+      }
+    }
+
+    const incomplete = backfills.filter((b) => !b.ok);
+    if (incomplete.length) {
+      // 207-shaped truth in a 200 body: the venue DID save, and the calendar is
+      // not fully protected. Saying only one of those would be a lie.
+      return res.status(200).json({
+        venue,
+        wholeVenueBackfill: { ok: false, details: backfills },
+        warning:
+          "The venue was saved, but a new space could not be added to every date where the entire property is already booked. " +
+          "Check those dates before taking another booking.",
+      });
+    }
+    return res.status(200).json({
+      venue,
+      ...(backfills.length ? { wholeVenueBackfill: { ok: true, details: backfills } } : {}),
+    });
   } catch (err) {
     if (err.message === "Venue not found") return res.status(404).json({ message: err.message });
     if (err.message === "Forbidden") return res.status(403).json({ message: err.message });

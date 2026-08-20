@@ -135,7 +135,18 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       params: { enquiryId: String(lead4._id) },
       body: { functions: [{ date: "2027-03-03", name: "Wedding" }] },
     }));
-    ok(r4.code === 200 && r4.body.blocked === 2, "spaceless function blocks all bookable spaces (2), never the non-bookable one");
+    // 2 bookable spaces + the whole-venue SENTINEL = 3 rows. The sentinel is
+    // what makes a second whole-property claim collide on a venue with no
+    // spaces, and what lets a space added later be backfilled onto this date.
+    // See utils/venueWholeVenue.js.
+    ok(r4.code === 200 && r4.body.blocked === 3,
+      "spaceless function blocks all bookable spaces (2) + the whole-venue sentinel, never the non-bookable one");
+    {
+      const { WHOLE_VENUE_SPACE_ID } = require("../utils/venueWholeVenue");
+      const rows = await VenueSpaceDate.find({ venue: venue._id, date: new Date("2027-03-03T00:00:00.000Z") }).select("space").lean();
+      ok(rows.some((r) => String(r.space) === String(WHOLE_VENUE_SPACE_ID)),
+        "…and the extra row is the sentinel, not an accidental duplicate");
+    }
 
     // ── validation ──
     console.log("\n[validation]");
