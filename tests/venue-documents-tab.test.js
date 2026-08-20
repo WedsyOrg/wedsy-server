@@ -126,7 +126,8 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     const { Readable } = require("stream");
     const axios = require("axios");
     const realGet = axios.get;
-    axios.get = async () => ({ data: Readable.from([Buffer.from("%PDF-1.4 stub")]) });
+    const STUB = Buffer.from("%PDF-1.4 stub");
+    axios.get = async () => ({ headers: { "content-length": String(STUB.length) }, data: Readable.from([STUB]) });
 
     const dl = await call(ld.downloadLeadDocument, req({ params: { documentId: String(byKV("invoice", 1)._id) } }));
     ok(
@@ -146,6 +147,19 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       "…with the stored content type, so the browser knows how to render it"
     );
 
+    // Content-Length must describe the response, not the row. A stored size
+    // larger than the body leaves the browser waiting for bytes that never
+    // come — the download hangs. This is the regression guard for that.
+    ok(
+      pv.headers["content-length"] === String(Buffer.from("%PDF-1.4 stub").length),
+      `Content-Length comes from the upstream object, not the stored sizeBytes (got ${pv.headers["content-length"]}, row says ${1001})`
+    );
+    axios.get = async () => ({ headers: {}, data: Readable.from([Buffer.from("%PDF-1.4 stub")]) });
+    const noLen = await call(ld.downloadLeadDocument, req({ params: { documentId: String(byKV("invoice", 1)._id) } }));
+    ok(
+      noLen.headers["content-length"] === undefined,
+      "…and when upstream does not say, no header is sent rather than a wrong one"
+    );
     axios.get = realGet;
 
     console.log("\n[5. preview is still scoped — it is the same guarded route]");

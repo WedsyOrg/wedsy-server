@@ -490,7 +490,16 @@ const downloadLeadDocument = async (req, res) => {
     const safeName = (doc.filename || "document.pdf").replace(/"/g, "");
     res.setHeader("Content-Type", doc.contentType || "application/pdf");
     res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${safeName}"`);
-    if (doc.sizeBytes) res.setHeader("Content-Length", String(doc.sizeBytes));
+    // Content-Length must describe THIS RESPONSE, so it comes from the upstream
+    // object — not from the sizeBytes we recorded when the row was written.
+    // Those two can disagree (a re-uploaded file, a truncated store, a size
+    // recorded before a stitch), and a Content-Length larger than the body
+    // leaves the browser waiting for bytes that never arrive: the download
+    // hangs, and a page previewing several documents at once stalls. Found in
+    // the browser drive, where a stored size and the real file diverged.
+    // When upstream does not say, no header is better than a wrong one.
+    const upstreamLength = upstream.headers && upstream.headers["content-length"];
+    if (upstreamLength) res.setHeader("Content-Length", String(upstreamLength));
     // A mid-stream upstream failure cannot become a JSON error — headers are
     // already sent — so the socket is closed and the client sees a truncated
     // download rather than a PDF with an error message inside it.
