@@ -18,6 +18,7 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
+const { PAYMENT_MODES, normaliseMode } = require("../utils/venuePaymentMode");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optStr, optNumber, optDate, optCount, MAXLEN } = require("../utils/venueInput");
@@ -207,6 +208,28 @@ const confirmBookingFromLead = async (req, res) => {
     if (!tokenV.ok) return res.status(400).json({ message: tokenV.message });
     const modeV = optStr(body.tokenMode, "tokenMode", MAXLEN.label);
     if (!modeV.ok) return res.status(400).json({ message: modeV.message });
+    // A TOKEN IS A PAYMENT, so it is described the same way every other payment
+    // is: the shared paidMode vocabulary, an optional reference (UTR, cheque
+    // no.), and an optional note. Previously the mode arrived as free text and
+    // was pattern-matched against the enum — anything that did not match was
+    // dropped to "", so "Gpay" or "paytm" recorded a token with NO method at
+    // all. Now an unrecognised value is refused rather than silently discarded,
+    // and "other" exists precisely so there is somewhere legitimate for it.
+    const modeOtherV = optStr(body.tokenModeOther, "tokenModeOther", MAXLEN.label);
+    if (!modeOtherV.ok) return res.status(400).json({ message: modeOtherV.message });
+    const refV = optStr(body.tokenReference, "tokenReference", MAXLEN.label);
+    if (!refV.ok) return res.status(400).json({ message: refV.message });
+    const noteV = optStr(body.tokenNote, "tokenNote", MAXLEN.notes || MAXLEN.label);
+    if (!noteV.ok) return res.status(400).json({ message: noteV.message });
+    const tokenMode = normaliseMode(modeV.value);
+    if (modeV.value && tokenMode === null) {
+      return res.status(400).json({
+        message: `tokenMode must be one of ${PAYMENT_MODES.join(", ")} — use "other" and tokenModeOther for anything else`,
+      });
+    }
+    // What a human should read. For "other" that is the name they typed, since
+    // "(other)" tells the next person nothing.
+    const tokenModeLabel = tokenMode === "other" ? modeOtherV.value || "other" : tokenMode;
     // DECLARED HERE, WITH THE OTHER MONEY VALIDATORS, AND NOT LOWER DOWN.
     // The 100%-rule guard inside the schedule block below reads totalV. When
     // this `const` lived after that block it was a temporal dead zone: the
@@ -415,16 +438,20 @@ const confirmBookingFromLead = async (req, res) => {
       // The token is money already in hand, so it is recorded as a PAID row
       // rather than a due one — S4 reads paidAmount, and a token that shows as
       // outstanding would put the booking permanently in arrears on day one.
+      // The label reads back what the owner chose, and for "other" that means
+      // the name they typed — "Token — received (other)" would be worse than
+      // saying nothing.
       rows.push({
-        label: `Token — received${modeV.value ? ` (${modeV.value})` : ""}`,
+        label: `Token — received${tokenModeLabel ? ` (${tokenModeLabel})` : ""}`,
         dueDate: new Date(),
         amount: token,
         percent: null,
         paidAmount: token,
         paidAt: new Date(),
-        paidMode: ["bank_transfer", "cash", "cheque", "upi", "card"].includes((modeV.value || "").toLowerCase().replace(/\s+/g, "_"))
-          ? (modeV.value || "").toLowerCase().replace(/\s+/g, "_")
-          : "",
+        paidMode: tokenMode,
+        paidModeOther: tokenMode === "other" ? modeOtherV.value || "" : "",
+        paidReference: refV.value || "",
+        paidNote: noteV.value || "",
         recordedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
       });
     }
@@ -442,7 +469,7 @@ const confirmBookingFromLead = async (req, res) => {
     const blockedCount = converted + inserts.length;
     const summary =
       `BOOKED — ${blocks.length} function(s), ${blockedCount} date-space(s) blocked on the calendar.` +
-      (token > 0 ? ` Token ₹${token.toLocaleString("en-IN")}${modeV.value ? ` (${modeV.value})` : ""}.` : "") +
+      (token > 0 ? ` Token ₹${token.toLocaleString("en-IN")}${tokenModeLabel ? ` (${tokenModeLabel})` : ""}.` : "") +
       (agreementDoc ? " Agreement on file." : "") +
       (releasedLeftover > 0 ? ` ${releasedLeftover} unused held date-space(s) released with the confirmation.` : "");
     if (enquiry.stage !== "booked") {
