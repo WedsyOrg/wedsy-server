@@ -18,12 +18,14 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
+const { windowDays, applyWindowChange } = require("../utils/venueEventWindow");
 const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
 const { mergeClientIntoContacts } = require("../utils/venueClientContact");
 const { sanitizeContacts } = require("../utils/venueContacts");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
-const { optStr, optNumber, optDate, optCount, MAXLEN } = require("../utils/venueInput");
+const { optStr, optNumber, optDate, optCount, MAXLEN, eventWindow } = require("../utils/venueInput");
+const { venueDateKey, endOfVenueDay } = require("../utils/venueTime");
 
 async function resolveOwnedVenue(req, res, select = "_id") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
@@ -121,6 +123,77 @@ const updateBooking = async (req, res) => {
     if (req.body.days !== undefined) await seedRunsheetForBooking(booking);
     return res.status(200).json({ booking });
   } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── PATCH /venues/:slug/bookings/:bookingId/window ──────────────────────────
+// The booking side of the ONE window. The lead's PATCH and this endpoint are
+// the same edit seen from two screens: both write both copies and both
+// re-derive calendar inventory, through utils/venueEventWindow.
+//
+// This is the path the lead's old refusal used to point at — "change the dates
+// through the booking, not the lead" — which never existed. It does now, and
+// the lead's own path works too, because they are not two different dates.
+//
+// Body: { checkIn, checkOut, acknowledgeStaleHolds? }
+const updateBookingWindow = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces settings blockedDates");
+    if (!venue) return;
+
+    const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    // The lead is resolved through venueLeadScope, so a member who cannot see
+    // this lead cannot move its dates from the booking screen either — 404,
+    // never 403, exactly as every other lead read behaves.
+    if (!booking.enquiry) {
+      return res.status(400).json({
+        message: "This booking is not linked to a lead, so its window cannot be kept in step.",
+        code: "no_linked_lead",
+      });
+    }
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, booking.enquiry);
+    if (!enquiry) return res.status(404).json({ message: "Booking not found" });
+
+    const win = eventWindow((req.body || {}).checkIn, (req.body || {}).checkOut);
+    if (!win.ok) return res.status(400).json({ message: win.message });
+    if (!win.checkIn || !win.checkOut) {
+      return res.status(400).json({
+        message: "A booking needs both a check-in and a check-out — it is already sold.",
+        code: "window_required",
+      });
+    }
+
+    const result = await applyWindowChange({
+      venue,
+      enquiry,
+      booking,
+      checkIn: win.checkIn,
+      checkOut: win.checkOut,
+      acknowledgeStaleHolds: (req.body || {}).acknowledgeStaleHolds === true,
+    });
+    if (!result.ok) return res.status(result.status).json(result.body);
+
+    enquiry.activities.push({
+      type: "dates_changed",
+      description:
+        `Event window moved to ${venueDateKey(win.checkIn)} → ${venueDateKey(win.checkOut)} from the booking` +
+        ` · calendar re-derived (+${result.calendar.added} / −${result.calendar.removed} date-spaces)`,
+      actor: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+      timestamp: new Date(),
+    });
+    await enquiry.save();
+
+    return res.status(200).json({
+      success: true,
+      booking: { _id: booking._id, checkIn: booking.checkIn, checkOut: booking.checkOut },
+      enquiry: { _id: enquiry._id, checkIn: enquiry.checkIn, checkOut: enquiry.checkOut, eventDate: enquiry.eventDate },
+      calendar: { added: result.calendar.added, removed: result.calendar.removed, kept: result.calendar.kept },
+    });
+  } catch (err) {
+    if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
+    return res.status(500).json({ message: err.message });
+  }
 };
 
 // ── MB-CRM-2 S2: POST /venues/:slug/enquiries/:enquiryId/confirm-booking ──
@@ -350,11 +423,30 @@ const confirmBookingFromLead = async (req, res) => {
     // ── the booking (single creation path — invariant #4) ──
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
 
-    // ── calendar blocking: convert the lead's own held rows, insert the rest ──
+    // ── calendar blocking: the WINDOW is what is sold ──────────────────────
+    // Every venue-day in [checkIn, checkOut] is blocked, not merely the days
+    // carrying a function. A window of 29 Sept → 1 Oct with functions on the
+    // 30th and 1st used to leave the 29th sellable while the couple had the
+    // venue; a window nobody enforces is decorative.
+    //
+    // Spaces are the UNION across the booking's functions: the couple holds
+    // those spaces for the whole window, not only on the day each is used.
     const targetPairs = new Map(); // "space|day" -> { space, day }
-    for (const b of blocks) {
-      for (const s of b.spaces) {
-        targetPairs.set(`${s._id}|${b.day.getTime()}`, { space: s._id, day: b.day });
+    if (enquiry.checkIn && enquiry.checkOut) {
+      // The couple holds these spaces for the WHOLE window, not only on the day
+      // each one is used, so the union of function spaces is claimed across
+      // every day of the window.
+      const spaceUnion = new Map();
+      for (const b of blocks) for (const s of b.spaces) spaceUnion.set(String(s._id), s._id);
+      for (const day of windowDays(enquiry.checkIn, enquiry.checkOut)) {
+        for (const s of spaceUnion.values()) targetPairs.set(`${s}|${day.getTime()}`, { space: s, day });
+      }
+    } else {
+      // No finalised window — nothing has been sold beyond the functions
+      // themselves, so block exactly those date-spaces, as before. Widening
+      // this would take inventory from leads the ruling says nothing about.
+      for (const b of blocks) {
+        for (const s of b.spaces) targetPairs.set(`${s._id}|${b.day.getTime()}`, { space: s._id, day: b.day });
       }
     }
     const leadHolds = await VenueHold.find({ venue: venue._id, linkedEnquiry: enquiry._id, status: "approved" }).select("_id").lean();
@@ -438,6 +530,27 @@ const confirmBookingFromLead = async (req, res) => {
     booking.days = [...byDay.values()]
       .sort((a, b) => a.date - b.date)
       .map((d) => ({ date: d.date, eventType: d.names.join(" + "), guestCount: d.pax || enquiry.guestCount || 0, spaces: [...d.spaces].filter(Boolean) }));
+
+    // ── the window comes across with the booking ───────────────────────────
+    // The lead's window IS the booking's window. Confirming used to drop it,
+    // leaving days[] as the only record of "when" and losing any part of the
+    // window no function happened to sit on. When the lead has no finalised
+    // window the function days ARE the window, so it is derived from them and
+    // the two still agree.
+    if (enquiry.checkIn && enquiry.checkOut) {
+      booking.checkIn = enquiry.checkIn;
+      booking.checkOut = enquiry.checkOut;
+    } else if (booking.days.length) {
+      const first = booking.days[0].date;
+      const last = booking.days[booking.days.length - 1].date;
+      booking.checkIn = first;
+      // End of the last event day ON THE VENUE'S CALENDAR, so a single-day
+      // booking reads as a window rather than a zero-length instant — and does
+      // not spill into the following day. Plain "+24h − 1ms" lands at
+      // 23:59:59.999Z, which in IST is already 05:29 the NEXT morning, so the
+      // window would silently claim a day the couple never bought.
+      booking.checkOut = endOfVenueDay(new Date(last));
+    }
     const token = tokenV.value || 0;
     const rows = [];
     if (token > 0) {
@@ -537,4 +650,5 @@ module.exports = {
   createBooking,
   updateBooking,
   confirmBookingFromLead,
+  updateBookingWindow,
 };

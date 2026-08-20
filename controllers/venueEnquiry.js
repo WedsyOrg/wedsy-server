@@ -4,6 +4,7 @@ const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const VenueHold = require("../models/VenueHold");
+const VenueSpaceDate = require("../models/VenueSpaceDate");
 const VenueConversation = require("../models/VenueConversation");
 const VenueBooking = require("../models/VenueBooking");
 const { createOrGetConversation } = require("./venueConversation");
@@ -23,6 +24,14 @@ const VenueOwner = require("../models/VenueOwner");
 const LOST_REASON_ENUM = ["", "too_expensive", "date_unavailable", "chose_competitor", "no_response", "other"];
 const { reqStr, optStr, optDate, optNumber, optCount, cleanStr, MAXLEN, eventWindow, approximatePeriod } = require("../utils/venueInput");
 const { venueDateKey, addVenueDays } = require("../utils/venueTime");
+const {
+  rederiveCalendar,
+  conflictSentence,
+  bookingSpaceIds,
+  desiredPairs,
+  describeConflicts,
+  pairKey,
+} = require("../utils/venueEventWindow");
 const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeriod, leadDays } = require("../utils/venueContention");
 const { resolveBlock, resolveRange } = require("../utils/weddingCalendar");
 const { composeCalendarNote, HOLIDAY_ADJACENT_DAYS } = require("../utils/venueCalendarNote");
@@ -887,6 +896,11 @@ const updateEnquiry = async (req, res) => {
     // Set when a window move strands holds AND the caller acknowledged them —
     // echoed back so the UI can offer release/re-placement after the save.
     let staleHoldsAcknowledged = null;
+    // The booking that shares this lead's window, and what re-deriving its
+    // calendar did. Both are written only after the lead saves, so the two
+    // copies of the window can never be left disagreeing.
+    let bookingForWindow = null;
+    let windowCalendarResult = null;
 
     // BUILD A — the event type is CHANGEABLE. A lead typed in as a wedding that
     // turns out to be a corporate offsite must never need deleting and
@@ -982,16 +996,21 @@ const updateEnquiry = async (req, res) => {
         String(enquiry.checkOut || "") !== String(win.checkOut || ""));
 
     if (windowMoving || goingUnfinalised) {
-      // (c) A confirmed booking owns real calendar inventory. Moving the lead's
-      // dates underneath it would leave the blocks on the old days and the
-      // paperwork on the new ones. Refuse — the booking is the only path that
-      // may move a booked date, and it is not this endpoint.
-      const booking = await VenueBooking.findOne({ enquiry: enquiry._id }).select("_id status").lean();
-      if (booking) {
+      // (c) A confirmed booking owns real calendar inventory.
+      //
+      // This USED to refuse outright — "change the dates through the booking,
+      // not the lead" — which was a dead end, because no such path existed. A
+      // lead's dates and its booking's dates are the same thing, so the edit is
+      // now applied to both, or to neither. See utils/venueEventWindow.
+      bookingForWindow = await VenueBooking.findOne({ enquiry: enquiry._id });
+      if (bookingForWindow && goingUnfinalised) {
+        // Un-finalising would leave a booking with no dates at all, holding
+        // calendar inventory for an event nobody can name a day for. That is
+        // still a refusal — but now for a reason, not for lack of a path.
         return res.status(409).json({
-          message: "This lead has a booking — change the dates through the booking, not the lead",
-          bookingId: booking._id,
-          bookingStatus: booking.status,
+          message: "This lead has a booking — a booked event cannot go back to having no dates. Cancel the booking first.",
+          bookingId: bookingForWindow._id,
+          bookingStatus: bookingForWindow.status,
         });
       }
 
@@ -1023,6 +1042,31 @@ const updateEnquiry = async (req, res) => {
         });
       }
       if (stranded.length) staleHoldsAcknowledged = stranded;
+
+      // (d) Re-derive the booking's calendar for the new window. Done here,
+      // AFTER the function and hold checks, so a change that was going to be
+      // refused never touches inventory — and BEFORE either window is written,
+      // so a calendar conflict means nothing at all moved.
+      //
+      // rederiveCalendar claims every new date before releasing a single old
+      // one, so a refusal leaves the booking holding exactly what it held.
+      if (bookingForWindow) {
+        const calendar = await rederiveCalendar({
+          venueId: venue._id,
+          booking: bookingForWindow,
+          checkIn: win.checkIn,
+          checkOut: win.checkOut,
+        });
+        if (!calendar.ok) {
+          return res.status(409).json({
+            message: `These dates cannot be moved — ${conflictSentence(calendar.conflicts)}. Nothing was changed.`,
+            code: "calendar_conflict",
+            conflicts: calendar.conflicts,
+            bookingId: bookingForWindow._id,
+          });
+        }
+        windowCalendarResult = calendar;
+      }
     }
 
     // ── S0d fine-grained capability gates (coarse "leads" already required by
@@ -1223,6 +1267,28 @@ const updateEnquiry = async (req, res) => {
     }
 
     await enquiry.save();
+
+    // ── the booking's copy of the window, in the same operation ────────────
+    // The calendar has already been re-derived and the lead has saved, so this
+    // is a plain field write on a document whose validation has nothing to say
+    // about it. Writing it here rather than earlier means a lead that fails to
+    // save cannot leave the booking on dates the lead never accepted.
+    if (bookingForWindow && win.checkIn && win.checkOut) {
+      bookingForWindow.checkIn = win.checkIn;
+      bookingForWindow.checkOut = win.checkOut;
+      await bookingForWindow.save();
+      enquiry.activities.push({
+        type: "dates_changed",
+        description:
+          `Event window moved to ${venueDateKey(win.checkIn)} → ${venueDateKey(win.checkOut)}` +
+          (windowCalendarResult
+            ? ` · calendar re-derived (+${windowCalendarResult.added} / −${windowCalendarResult.removed} date-spaces)`
+            : ""),
+        actor: actorIdOf(req),
+        timestamp: new Date(),
+      });
+      await enquiry.save();
+    }
 
     // Route the legacy follow-up fields through the module, then refresh the
     // in-memory mirror so the response body matches what was persisted.
@@ -1609,16 +1675,43 @@ const getWindowImpact = async (req, res) => {
     const staleHolds = liveHolds.filter((h) => (h.dates || []).some((d) => !newDays.has(venueDateKey(d))));
     const conflictingFunctions = outsideWindow(enquiry.functions, win.checkIn, win.checkOut);
 
+    // ── what this window would do to the booking's calendar ────────────────
+    // A booking no longer BLOCKS a window change — the lead's dates and the
+    // booking's dates are the same thing, so the change flows to both. What
+    // the caller needs to know instead is which date-spaces would be claimed,
+    // which released, and whether anything already holds a day being claimed.
+    let calendar;
+    if (booking && win.checkIn && win.checkOut) {
+      const spaces = await bookingSpaceIds(booking._id);
+      const desired = desiredPairs(win.checkIn, win.checkOut, spaces);
+      const current = await VenueSpaceDate.find({ bookingRef: booking._id }).select("space date").lean();
+      const currentKeys = new Set(current.map((r) => pairKey(r.space, r.date)));
+      const willAdd = [...desired.entries()].filter(([k]) => !currentKeys.has(k)).map(([, v]) => v);
+      const willRemove = current.filter((r) => !desired.has(pairKey(r.space, r.date)));
+      // Read-only: describeConflicts only looks, it never writes.
+      const conflicts = willAdd.length ? await describeConflicts(venue._id, willAdd, booking._id) : [];
+      calendar = {
+        willAdd: willAdd.map((p) => ({ space: p.space, day: venueDateKey(p.date) })),
+        willRemove: willRemove.map((r) => ({ space: r.space, day: venueDateKey(r.date) })),
+        keeps: current.length - willRemove.length,
+        conflicts,
+      };
+    }
+
     return res.status(200).json({
       // blocked = the PATCH would refuse no matter what the caller sends.
-      blocked: Boolean(booking),
+      // A booking is no longer one of those reasons; an unresolvable calendar
+      // conflict is, because someone else genuinely holds the date.
+      blocked: Boolean(calendar && calendar.conflicts.length),
       booking: booking ? { _id: booking._id, status: booking.status } : undefined,
       conflictingFunctions,
       staleHolds: staleHolds.map((h) => ({ _id: h._id, status: h.status, dates: h.dates, expiresAt: h.expiresAt, space: h.space })),
+      calendar,
       // What the caller must do to make the PATCH succeed.
       requires: {
         resolveFunctions: conflictingFunctions.length > 0,
         acknowledgeStaleHolds: staleHolds.length > 0,
+        resolveCalendarConflicts: Boolean(calendar && calendar.conflicts.length),
       },
     });
   } catch (err) {
