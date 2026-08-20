@@ -25,6 +25,20 @@ const DecorSchema = new mongoose.Schema(
     // Same vocabulary as decorPricing's `source: "extension"`: both mean "this
     // came from the extension", so they read as one concept.
     source: { type: String, default: "" },
+    // ── WHO PUT THIS PRODUCT IN THE CATALOGUE (2026-08-20) ───────────────────
+    // Set from the authenticated admin on POST /decor, and to the APPROVER on
+    // A2S approve — the same meaning on both paths, "the person who published
+    // it", which is what makes the filter usable.
+    //
+    // NULL on every product that predates this, permanently. The information was
+    // never captured and cannot be recovered from the documents, the timestamps
+    // or git history, so the UI shows "Unknown" and that is the correct answer —
+    // a heuristic here would be a guess wearing the clothes of a record.
+    //
+    // For A2S products the person who CLICKED A2S can differ from the approver by
+    // days; both are already returned by GET /decor/:_id/analysis as addedBy /
+    // approvedBy. This field is deliberately the publisher, not the finder.
+    createdBy: { type: ObjectId, ref: "Admin", default: null },
     rating: { type: Number, default: 0, required: true },
     productVisibility: { type: Boolean, default: false },
     productAvailability: { type: Boolean, default: false },

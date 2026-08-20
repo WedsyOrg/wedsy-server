@@ -156,6 +156,11 @@ const CreateNew = async (req, res) => {
       }
     }
     new Decor({
+      // From the AUTHENTICATED admin, never from the body — this is an
+      // accountability record, so a caller must not be able to claim it was
+      // someone else. (PUT /decor/:_id destructures an explicit allowlist that
+      // does not include createdBy, so it cannot be rewritten later either.)
+      createdBy: (req.auth && req.auth.user_id) || null,
       category,
       label,
       rating,
@@ -227,6 +232,7 @@ const GetAll = (req, res) => {
     productVisibility,
     productAvailability,
     source,
+    createdBy,
   } = req.query;
   if (checkId) {
     Decor.find({ "productInfo.id": checkId })
@@ -368,6 +374,13 @@ const GetAll = (req, res) => {
     // Decor.source.
     if (source) {
       query.source = source;
+    }
+    // Who published it. Plain equality on the admin's _id, matching `source` and
+    // `category` above. Products predating createdBy match nothing here — that
+    // is correct, but it means this filter hides them, so the catalogue should
+    // offer an explicit "Unknown" option rather than leaving them unreachable.
+    if (createdBy) {
+      query.createdBy = createdBy;
     }
     if (displayVisible === "true") {
       query.productVisibility = true;
@@ -552,9 +565,15 @@ const Reorder = (req, res) => {
 const Get = (req, res) => {
   const { _id } = req.params;
   const { displayVisible, displayAvailable, populate } = req.query;
+  // createdBy is populated on BOTH branches so the details view always has the
+  // name. The list (GetAll) deliberately returns the raw id instead: its curated
+  // branch is an aggregate, which populate does not apply to, and one branch
+  // returning a name while the other returns an id is a worse trap than a
+  // consistent id the caller maps itself.
   if (populate) {
     Decor.findById({ _id })
       .populate(populate)
+      .populate("createdBy", "name")
       .exec()
       .then((result) => {
         if (!result) {
@@ -568,6 +587,7 @@ const Get = (req, res) => {
       });
   } else {
     Decor.findById({ _id })
+      .populate("createdBy", "name")
       .then((result) => {
         if (!result) {
           res.status(404).send();

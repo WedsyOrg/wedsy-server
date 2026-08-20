@@ -633,6 +633,12 @@ const approveDraft = async (id, body = {}, actorId) => {
     // Stamps the published product as extension-added. A real field, not a tag:
     // an approver editing tags cannot delete it, and GET /decor can filter on it.
     source: "extension",
+    // The APPROVER, not draft.addedBy. Same meaning as on POST /decor — "the
+    // person who put this product in the catalogue" — because a filter whose
+    // meaning changes with the creation path is not a filter. The person who
+    // clicked A2S stays visible as addedBy on GET /decor/:_id/analysis, which is
+    // where the two can legitimately be days apart.
+    createdBy: actorId || null,
     description,
     tags,
     label: String(body.label || ""),
