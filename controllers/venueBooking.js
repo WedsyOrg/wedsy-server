@@ -207,6 +207,14 @@ const confirmBookingFromLead = async (req, res) => {
     if (!tokenV.ok) return res.status(400).json({ message: tokenV.message });
     const modeV = optStr(body.tokenMode, "tokenMode", MAXLEN.label);
     if (!modeV.ok) return res.status(400).json({ message: modeV.message });
+    // DECLARED HERE, WITH THE OTHER MONEY VALIDATORS, AND NOT LOWER DOWN.
+    // The 100%-rule guard inside the schedule block below reads totalV. When
+    // this `const` lived after that block it was a temporal dead zone: the
+    // guard ran first and threw "Cannot access 'totalV' before initialization"
+    // — a 500 on the one path the guard existed to protect. Keeping every
+    // body validator in one place is what stops that recurring.
+    const totalV = optNumber(body.totalValue, "totalValue");
+    if (!totalV.ok) return res.status(400).json({ message: totalV.message });
     const schedRaw = Array.isArray(body.paymentSchedule) ? body.paymentSchedule : [];
     if (schedRaw.length > MAX_SCHEDULE_ROWS) return res.status(400).json({ message: `paymentSchedule is too long (max ${MAX_SCHEDULE_ROWS})` });
     const schedule = [];
@@ -300,8 +308,6 @@ const confirmBookingFromLead = async (req, res) => {
       }
       agreementDoc = body.agreementDocId;
     }
-    const totalV = optNumber(body.totalValue, "totalValue");
-    if (!totalV.ok) return res.status(400).json({ message: totalV.message });
 
     // ── already-booked refusal ──
     const existing = await VenueBooking.findOne({ enquiry: enquiry._id }).select("_id").lean();
