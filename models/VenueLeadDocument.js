@@ -58,12 +58,38 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     //   terms                 the T&C cover stitched onto the venue's PDF (#130)
     //   booking_confirmation  generated from the booking (S3)
     //   invoice               generated from the booking + a payment (S5)
+    //
+    // ── VENUE DOCS vs CLIENT DOCS ────────────────────────────────────────────
+    // The kinds above are things WE generate and send. `address_proof` and
+    // `client_document` are things the CLIENT gives US, and they are kinds on
+    // this same model rather than a second collection — the versioning, the
+    // immutability, the lead scoping and the "which one did we actually have"
+    // question are identical whichever direction the paper travelled. A second
+    // model would have meant re-earning all four.
+    //
+    // The Documents tab splits them on `origin` (derived below), not on a
+    // hand-maintained list, so a new kind lands on the correct side of the tab
+    // by declaring itself rather than by someone remembering to update a UI.
     kind: {
       type: String,
-      enum: ["terms", "booking_confirmation", "invoice"],
+      enum: ["terms", "booking_confirmation", "invoice", "address_proof", "client_document"],
       default: "terms",
       required: true,
     },
+
+    // ── CLIENT DOCUMENTS ONLY ────────────────────────────────────────────────
+    // Which identity document this is — the owner picks from a list, and
+    // "other" carries the name they gave it. Empty for anything we generated.
+    proofType: {
+      type: String,
+      enum: ["driving_licence", "aadhaar", "pan", "passport", "other", ""],
+      default: "",
+    },
+    proofTypeOther: { type: String, default: "", maxlength: 120 },
+    /** Which contact this proof belongs to, when the owner said. */
+    contactName: { type: String, default: "", maxlength: 200 },
+    /** Who uploaded it (client docs) as opposed to who generated it. */
+    uploadedByName: { type: String, default: "" },
 
     // Per-lead, 1-based, gapless. Assigned by the controller under a retry on
     // the unique index below, so two simultaneous generations cannot collide.
@@ -140,6 +166,16 @@ VenueLeadDocumentSchema.pre("save", function refuseMutation(next) {
   return next();
 });
 
+/**
+ * WHICH SIDE OF THE DOCUMENTS TAB A KIND BELONGS TO.
+ *
+ * Derived from the kind rather than stored, so it cannot disagree with it, and
+ * exported so the controller and the tests read the same definition instead of
+ * each keeping a list that drifts.
+ */
+const CLIENT_KINDS = ["address_proof", "client_document"];
+const originOfKind = (kind) => (CLIENT_KINDS.includes(kind) ? "client" : "venue");
+
 // Newest-first read for the Documents tab, and the max(version) lookup.
 VenueLeadDocumentSchema.index({ enquiry: 1, kind: 1, version: -1 });
 // Venue-wide listing / counts.
@@ -148,5 +184,9 @@ VenueLeadDocumentSchema.index({ venue: 1, createdAt: -1 });
 // concurrent generations cannot both claim v2.
 VenueLeadDocumentSchema.index({ enquiry: 1, kind: 1, version: 1 }, { unique: true });
 
-module.exports =
+const VenueLeadDocument =
   mongoose.models.VenueLeadDocument || mongoose.model("VenueLeadDocument", VenueLeadDocumentSchema);
+
+module.exports = VenueLeadDocument;
+module.exports.CLIENT_KINDS = CLIENT_KINDS;
+module.exports.originOfKind = originOfKind;

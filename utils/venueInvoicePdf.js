@@ -66,10 +66,23 @@ async function buildInvoicePdf({ venue, booking, invoice, payment } = {}) {
     doc.moveDown(0.32);
   };
 
+  // ── WHO IS BEING BILLED ──────────────────────────────────────────────────
+  // From the invoice's frozen billedTo when it has one, falling back to the
+  // booking for invoices raised before billing details existed. Reading the
+  // lead's contacts live would let an already-issued invoice change.
+  const billedTo = inv.billedTo || {};
+  const clientGstin = String(billedTo.gstin || "").trim();
+
   row("Invoice no.", inv.invoiceNumber);
   row("Issued", docInstantDay(inv.createdAt || new Date()));
-  row("Billed to", bk.coupleName);
-  row("Phone", bk.couplePhone);
+  row("Billed to", billedTo.name || bk.coupleName);
+  row("Phone", billedTo.phone || bk.couplePhone);
+  // THE CLIENT'S GSTIN — the B2B half of the document. Without it the
+  // recipient cannot claim input tax credit on what they just paid, which is
+  // the entire reason a company asks for a tax invoice rather than a receipt.
+  // Labelled "Client GSTIN" and placed in the bill-to block, so it can never
+  // be mistaken for the venue's own GSTIN printed up in the header.
+  if (clientGstin) row("Client GSTIN", clientGstin);
 
   // Event dates with their weekdays — day keys, so formatted in UTC.
   const days = (bk.days || []).map((d) => d && d.date).filter(Boolean);

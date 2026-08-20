@@ -19,6 +19,8 @@ const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
 const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
+const { mergeClientIntoContacts } = require("../utils/venueClientContact");
+const { sanitizeContacts } = require("../utils/venueContacts");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optStr, optNumber, optDate, optCount, MAXLEN } = require("../utils/venueInput");
@@ -147,6 +149,10 @@ function parseConfirmDay(s) {
 }
 
 const confirmBookingFromLead = async (req, res) => {
+  // Reported back so the portal can say "added to People" rather than leaving
+  // the owner to go and check whether their new contact actually landed.
+  let clientSync = null;
+  let clientWarnings = [];
   try {
     const venue = await resolveOwnedVenue(req, res, "_id name slug spaces settings blockedDates");
     if (!venue) return;
@@ -461,6 +467,25 @@ const confirmBookingFromLead = async (req, res) => {
     if (totalV.value !== undefined) booking.totalValue = totalV.value;
     else if (computedTotal > 0) booking.totalValue = computedTotal;
     if (agreementDoc) booking.agreementDoc = agreementDoc;
+
+    // ── THE CLIENT STEP, WRITTEN INTO contacts[] AND NOWHERE ELSE ───────────
+    // No `client` subdocument on the booking. The lead's contacts[] is the one
+    // people model, so the wizard upserts into it (utils/venueClientContact)
+    // and the result goes through the PEOPLE TAB'S OWN sanitizer — same
+    // validation, same primary-contact rule, same GSTIN normalisation. A
+    // client added here is therefore in People the moment the booking exists,
+    // because it is the same array.
+    if (body.client && typeof body.client === "object") {
+      const merged = mergeClientIntoContacts(enquiry.contacts, body.client);
+      if (merged.index >= 0) {
+        const cV = sanitizeContacts(merged.contacts, enquiry.eventType);
+        if (!cV.ok) return res.status(400).json({ message: `client — ${cV.message}` });
+        enquiry.contacts = cV.value;
+        clientSync = { matchedBy: merged.matchedBy, created: merged.created };
+        if (cV.warnings && cV.warnings.length) clientWarnings = cV.warnings;
+      }
+    }
+
     booking.status = "confirmed";
     await booking.save();
     await seedRunsheetForBooking(booking);
@@ -492,6 +517,12 @@ const confirmBookingFromLead = async (req, res) => {
       blocked: blockedCount,
       converted,
       releasedLeftover,
+      // What happened to the client's contact, so the success panel can say
+      // "added to People" instead of leaving the owner to go and check.
+      clientSync,
+      // Non-blocking notes — a GSTIN whose check digit looks wrong is worth
+      // re-reading, and is never a reason to refuse a confirmed booking.
+      clientWarnings,
     });
   } catch (err) {
     if (err.name === "ValidationError") return res.status(400).json({ message: err.message });

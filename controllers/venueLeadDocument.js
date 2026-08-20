@@ -44,6 +44,12 @@ const axios = require("axios");
 const Venue = require("../models/Venue");
 const VenueQuoteRound = require("../models/VenueQuoteRound");
 const VenueLeadDocument = require("../models/VenueLeadDocument");
+const { originOfKind, CLIENT_KINDS } = require("../models/VenueLeadDocument");
+
+/** Must match the proofType enum on the model. */
+const PROOF_TYPES = ["driving_licence", "aadhaar", "pan", "passport", "other"];
+/** Mirrors the client-side cap and the T&C upload — the server decides. */
+const MAX_CLIENT_DOC_BYTES = 10 * 1024 * 1024;
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
@@ -115,6 +121,14 @@ const present = (d) => ({
   sourceFilename: (d.source && d.source.filename) || "",
   sourceVerified: Boolean(d.sourceVerified),
   quoteRound: d.quoteRound || null,
+  // Which side of the tab this belongs on. Derived from the kind by the model,
+  // so a new kind cannot land on the wrong side through an out-of-date list.
+  origin: originOfKind(d.kind),
+  proofType: d.proofType || "",
+  proofTypeOther: d.proofTypeOther || "",
+  contactName: d.contactName || "",
+  uploadedByName: d.uploadedByName || "",
+  url: d.url || "",
 });
 
 // ── GET /venues/:slug/enquiries/:enquiryId/documents ────────────────────────
@@ -454,10 +468,94 @@ const downloadLeadDocument = async (req, res) => {
   }
 };
 
+
+// ── POST /venues/:slug/enquiries/:enquiryId/documents/client ────────────────
+// A document the CLIENT gave US — an address proof at confirmation, or
+// anything collected afterwards. Body:
+//   { url, filename, contentType?, sizeBytes?, kind?, proofType?,
+//     proofTypeOther?, contactName?, note? }
+//
+// The FILE never passes through here. It goes up via the existing
+// POST /file/upload the rest of the product uses, and this records the result
+// — same decision, and the same reasoning, as the venue's T&C upload.
+//
+// Versioned through insertNextVersion like every other kind, so replacing a
+// blurry proof adds v2 rather than overwriting v1. "Which proof did we hold
+// when we took the booking" stays answerable, which is the entire reason this
+// model refuses mutation.
+const uploadClientDocument = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { venue, lead } = owned;
+    const body = req.body || {};
+
+    const url = cleanStr(body.url);
+    if (!url) return res.status(400).json({ message: "url is required — upload the file first" });
+    // Must be a link WE stored. An arbitrary URL would let a lead's identity
+    // document point somewhere that can change after the fact.
+    if (!/^https:\/\//i.test(url)) {
+      return res.status(400).json({ message: "url must be an https link from the upload step" });
+    }
+
+    const kind = CLIENT_KINDS.includes(body.kind) ? body.kind : "address_proof";
+
+    let proofType = cleanStr(body.proofType);
+    if (kind === "address_proof") {
+      if (!PROOF_TYPES.includes(proofType)) {
+        return res.status(400).json({
+          message: `proofType must be one of ${PROOF_TYPES.join(", ")}`,
+        });
+      }
+    } else {
+      proofType = "";
+    }
+    const proofTypeOther = proofType === "other" ? cleanStr(body.proofTypeOther).slice(0, 120) : "";
+    if (proofType === "other" && !proofTypeOther) {
+      return res.status(400).json({ message: "Name the document when the type is Other." });
+    }
+
+    const sizeBytes = body.sizeBytes == null ? null : Number(body.sizeBytes);
+    if (sizeBytes != null && (!Number.isFinite(sizeBytes) || sizeBytes < 0)) {
+      return res.status(400).json({ message: "sizeBytes is not a valid number" });
+    }
+    if (sizeBytes === 0) return res.status(400).json({ message: "That file is empty" });
+    // The server is the authority on the cap, not the browser.
+    if (sizeBytes != null && sizeBytes > MAX_CLIENT_DOC_BYTES) {
+      return res.status(400).json({
+        message: `That file is ${(sizeBytes / 1024 / 1024).toFixed(1)} MB — the limit is 10 MB.`,
+      });
+    }
+
+    const doc = await insertNextVersion({
+      venue: venue._id,
+      enquiry: lead._id,
+      kind,
+      note: cleanStr(body.note).slice(0, 2000),
+      url,
+      filename: cleanStr(body.filename).slice(0, 200) || "document",
+      contentType: cleanStr(body.contentType) || "application/octet-stream",
+      sizeBytes: sizeBytes == null ? undefined : sizeBytes,
+      proofType,
+      proofTypeOther,
+      contactName: cleanStr(body.contactName).slice(0, 200),
+      generatedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+      generatedByName: cleanStr(body.uploadedByName).slice(0, 120),
+      uploadedByName: cleanStr(body.uploadedByName).slice(0, 120),
+    });
+
+    return res.status(201).json({ document: present(doc) });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+
 module.exports = {
   listLeadDocuments,
   generateTermsDocument,
   downloadLeadDocument,
   present,
   insertNextVersion,
+  uploadClientDocument,
 };

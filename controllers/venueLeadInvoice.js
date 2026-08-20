@@ -48,6 +48,7 @@ const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
 const { computeTotals } = require("../utils/venueMoney");
 const { resolveBranding, BRANDING_SELECT } = require("../utils/venueBranding");
+const { billedToSnapshot } = require("../utils/venueBilledTo");
 const { buildInvoicePdf } = require("../utils/venueInvoicePdf");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { allocateInvoice, isMilestoneCollision } = require("./venueInvoice");
@@ -221,6 +222,9 @@ const createLeadInvoice = async (req, res) => {
         discount: 0,
         totals,
         whiteLabel: brand.whiteLabel,
+        // Frozen at the moment of raising — see the model on why this is a
+        // snapshot and not a live read of contacts[].
+        billedTo: billedToSnapshot(lead.contacts, booking),
       });
     } catch (e) {
       if (!isMilestoneCollision(e)) throw e;

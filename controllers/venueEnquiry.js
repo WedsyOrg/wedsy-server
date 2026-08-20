@@ -27,6 +27,7 @@ const { contentionForLead, approximateMonthDemand, monthKeyOfDay, monthKeyOfPeri
 const { resolveBlock, resolveRange } = require("../utils/weddingCalendar");
 const { composeCalendarNote, HOLIDAY_ADJACENT_DAYS } = require("../utils/venueCalendarNote");
 const { isTradition, cleanTraditions, labelList, PARENTS, TRADITION_PARENT, TRADITION_LABEL } = require("../utils/weddingTraditions");
+const { sanitizeContacts } = require("../utils/venueContacts");
 
 // The tradition vocabulary, served WITH the lead so the portal never keeps its
 // own copy. A hardcoded frontend list would drift the moment a tradition is
@@ -101,51 +102,9 @@ function toNumberOrNull(v) {
 
 // ── MB-CRM-2 S1 sanitizers ──
 // Each returns { ok, value } or { ok:false, message } (venueInput convention).
-
-// S1a contacts[]: name-or-phone required per row, role coerced to the enum,
-// EXACTLY one isPrimary in the result — first explicitly-marked wins, else the
-// first contact. Empty array is allowed (legacy rows).
-function sanitizeContacts(list, eventType) {
-  if (!Array.isArray(list)) return { ok: false, message: "contacts must be an array" };
-  if (list.length > MAX_CONTACTS) return { ok: false, message: `contacts is too long (max ${MAX_CONTACTS})` };
-  const type = cleanEventType(eventType);
-  const out = [];
-  for (let i = 0; i < list.length; i++) {
-    const c = list[i] || {};
-    const name = cleanStr(c.name).slice(0, MAXLEN.name);
-    const phone = cleanStr(c.phone).slice(0, MAXLEN.phone);
-    if (!name && !phone) return { ok: false, message: `contacts[${i}] needs a name or phone` };
-    const email = cleanStr(c.email).slice(0, MAXLEN.name).toLowerCase();
-    if (email && !EMAIL_RE.test(email)) {
-      return { ok: false, message: `contacts[${i}].email is not a valid email address` };
-    }
-    // `relation` is the field; `role` is accepted as the legacy input name so a
-    // client mid-deploy keeps working. Unknown values coerce to "other" rather
-    // than 400 — the vocabulary is type-dependent and a lead that just switched
-    // type would otherwise be unsaveable until every row was re-picked.
-    const incoming = c.relation !== undefined ? c.relation : c.role;
-    const relation = relationAllowed(type, incoming) ? incoming : "other";
-    out.push({
-      name,
-      phone,
-      email,
-      relation,
-      // Legacy mirror, written never read — see the model.
-      role: relation,
-      isPrimary: Boolean(c.isPrimary),
-      isDecisionMaker: Boolean(c.isDecisionMaker),
-    });
-  }
-  if (out.length > 0) {
-    const primaryIdx = out.findIndex((c) => c.isPrimary);
-    out.forEach((c, i) => { c.isPrimary = i === (primaryIdx === -1 ? 0 : primaryIdx); });
-    // Decision maker is NOT forced to exist and NOT forced to be unique-or-first
-    // the way primary is: "we don't know yet" is a real answer, and two parents
-    // sharing the cheque is a real arrangement. Only the "exactly one person to
-    // call" rule is a genuine invariant.
-  }
-  return { ok: true, value: out };
-}
+// sanitizeContacts moved to utils/venueContacts — the Confirm Booking wizard
+// writes the same contacts[] and importing it from here made venueEnquiry and
+// venueBooking require each other. See that file.
 
 // S1b functions[]: name from the enum (custom requires customLabel), strict
 // date inside [checkIn, checkOut] when the window is set, space must be a
@@ -1819,4 +1778,8 @@ const getImports = async (req, res) => {
   }
 };
 
-module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, getWindowImpact, importLeads, getImports, importLeadRows };
+module.exports = { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, getWindowImpact, importLeads, getImports, importLeadRows,
+  // Exported so the Confirm Booking wizard writes its client through the SAME
+  // validation the People tab uses. A second sanitizer would be a second set of
+  // rules about what a contact is.
+};

@@ -24,6 +24,25 @@ const VenueInvoiceSchema = new mongoose.Schema(
     // D8 (additive): how GST was applied. Pre-existing invoices read as
     // "exclusive" — exactly the math they were created with.
     gstMode: { type: String, enum: ["exclusive", "inclusive", "none"], default: "exclusive" },
+
+    // ── WHO THIS WAS BILLED TO, FROZEN ───────────────────────────────────────
+    // A SNAPSHOT, taken when the invoice is raised, and never a live join to
+    // the lead's contacts[]. An issued tax invoice is a financial record: if
+    // someone corrects a client's GSTIN or phone in People next month, the
+    // invoice that already went out must keep saying what it said. Reading the
+    // contact live would silently rewrite history — and for the GSTIN
+    // specifically, would change the number a client filed their input tax
+    // credit against.
+    //
+    // contacts[] remains the one source for who the client IS. This is what we
+    // told them at the moment we billed them.
+    billedTo: {
+      name: { type: String, default: "" },
+      phone: { type: String, default: "" },
+      email: { type: String, default: "" },
+      /** The CLIENT's GSTIN. The venue's own lives on Venue.gstin. */
+      gstin: { type: String, default: "" },
+    },
     // E3x white-label: true → PDF renders venue-branding-only (small
     // "Powered by Wedsy" footer, no system line). Defaults per venue setting;
     // bill conversion carries the bill's flag.
