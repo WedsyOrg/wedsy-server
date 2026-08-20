@@ -517,6 +517,12 @@ const confirmBookingFromLead = async (req, res) => {
       blocked: blockedCount,
       converted,
       releasedLeftover,
+      // What happened to the client's contact, so the success panel can say
+      // "added to People" instead of leaving the owner to go and check.
+      clientSync,
+      // Non-blocking notes — a GSTIN whose check digit looks wrong is worth
+      // re-reading, and is never a reason to refuse a confirmed booking.
+      clientWarnings,
     });
   } catch (err) {
     if (err.name === "ValidationError") return res.status(400).json({ message: err.message });

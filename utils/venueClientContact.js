@@ -38,8 +38,23 @@
  * strip data the People tab spent longer collecting.
  */
 
-/** Digits only, so formatting differences never split one person into two. */
-const phoneKey = (s) => String(s || "").replace(/\D/g, "");
+/**
+ * The LAST TEN DIGITS, which is what actually identifies an Indian mobile.
+ *
+ * Digits-only alone is not enough and the first version of this was wrong
+ * because of it: "+91 98765 00011" reduces to "919876500011" while the same
+ * person stored from a webform is "9876500011". Those are not equal, so the
+ * upsert created a duplicate contact — the precise failure this function
+ * exists to prevent. Country codes and a leading 0 are both routinely typed,
+ * and neither changes who is being called.
+ *
+ * Numbers shorter than ten digits are compared whole rather than padded, so a
+ * partially-entered number cannot collide with a real one by suffix.
+ */
+const phoneKey = (s) => {
+  const digits = String(s || "").replace(/\D/g, "");
+  return digits.length > 10 ? digits.slice(-10) : digits;
+};
 const emailKey = (s) => String(s || "").trim().toLowerCase();
 
 /**

@@ -193,6 +193,14 @@ router.get("/:slug/enquiries/:enquiryId/terms/pdf", venueOwnerAuth, requireCapab
 // venueLeadScope first, so a miss is 404 and never 403.
 router.get("/:slug/enquiries/:enquiryId/documents", venueOwnerAuth, requireCapability("documents"), leadDocs.listLeadDocuments);
 router.post("/:slug/enquiries/:enquiryId/documents/terms", venueOwnerAuth, requireCapability("documents"), leadDocs.generateTermsDocument);
+// CLIENT documents — what the client gives US (address proof, and anything
+// collected later). Same `documents` capability as every other document
+// surface, and deliberately so: these are identity documents, so the gate
+// must not be LOOSER than the one on a T&C PDF. It is not tied to
+// bookings_money either — collecting a proof is a records job, and a member
+// who files paperwork should not need the capability that lets them see what
+// the booking is worth.
+router.post("/:slug/enquiries/:enquiryId/documents/client", venueOwnerAuth, requireCapability("documents"), leadDocs.uploadClientDocument);
 router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOwnerAuth, requireCapability("documents"), leadDocs.downloadLeadDocument);
 
 // ── BOOKING ENGINE S5: invoices raised from the lead ────────────────────────
