@@ -99,6 +99,34 @@ const DecorDraftSchema = new mongoose.Schema(
       // e.g. A2S clicked without the panel ever pricing it). Deliberately not
       // faked: an estimate computed here was never quoted to anyone.
       panelQuote: { type: Mixed, default: null },
+      // ── PER-TIER LEARNING RECORD (2026-08-20) ─────────────────────────────
+      // ADDITIVE, not a replacement. A draft used to publish ONE price row, so
+      // one finalPrice/overridden/reason described the whole decision. It now
+      // publishes every tier the approver kept, so the decision is per tier —
+      // but the three fields below keep their exact meaning for the HEADLINE
+      // tier (the first published row), so nothing already stored in the
+      // collection loses its interpretation or needs backfilling.
+      //
+      // One entry per PUBLISHED row: what the AI ladder suggested for that tier,
+      // what the panel quoted (only the tier the panel actually quoted on), what
+      // the human set, and why if it differs.
+      // NOT immutable — it is written once at approve time, alongside finalPrice.
+      // The "before" evidence it is measured against (aiSuggested, panelQuote) is.
+      tierDecisions: {
+        type: [
+          {
+            tier: { type: String, default: "" },        // artificial|mixed|natural|flat
+            name: { type: String, default: "" },        // the published row's label
+            aiSuggested: { type: Number, default: null },
+            panelQuote: { type: Number, default: null },
+            finalPrice: { type: Number, default: null },
+            overridden: { type: Boolean, default: false },
+            reason: { type: String, default: "" },
+            deltaPct: { type: Number, default: null },  // final vs the AI figure
+          },
+        ],
+        default: [],
+      },
       finalPrice: { type: Number, default: null },
       // overridden=false is the POSITIVE signal (the human accepted the AI
       // price) and needs no reason. overridden=true REQUIRES one.

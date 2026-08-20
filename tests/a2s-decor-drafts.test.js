@@ -240,7 +240,11 @@ let createdIndex = false;
     ok(published.productInfo.id === CODE_A, "productInfo.id carries the approved code");
     ok(published.image === d2.storedImage, "the product uses OUR stored image");
     ok(published.productTypes[0].sellingPrice === 30000, "the human's finalPrice is the published price");
-    ok(published.productVisibility === false, "published switched OFF (curation is a separate act)");
+    // ⚠️ REVERSED 2026-08-20 (founder ruling): both were hardcoded false, which
+    // left an approved product in the collection invisible and unbuyable behind a
+    // second manual switch nobody was told about. Approving IS publishing now.
+    ok(published.productVisibility === true, "published goes LIVE on approve (visibility)");
+    ok(published.productAvailability === true, "…and orderable (availability)");
     const reload5 = await DecorDraft.findById(d2._id).lean();
     ok(String(reload5.publishedDecorId) === String(r4.decorId), "publishedDecorId stamped on the draft");
     ok(reload5.status === "approved", "draft status approved");

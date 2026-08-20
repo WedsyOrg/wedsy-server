@@ -188,6 +188,19 @@ const swapInRecommended = (options, recommendedSize) => {
 // ladder.
 const RECOMMENDED_SWAP_CATEGORIES = new Set(["Stage"]);
 
+// The single closest rung to a measured length. Used to turn a vision backdrop
+// reading into a CATALOGUE size pair — width is a function of length here, so
+// snapping the length settles the width too, and the result is guaranteed to be
+// a pair the pricing engine can size-match against. Ties go to the smaller rung:
+// quoting a build one rung under is recoverable, over is not.
+const nearestRung = (lengthFt) => {
+  const w = Number(lengthFt);
+  if (!Number.isFinite(w) || w <= 0) return null;
+  return RUNGS.reduce((best, r) =>
+    Math.abs(r.length - w) < Math.abs(best.length - w) ? r : best
+  );
+};
+
 // ── The policy layer ────────────────────────────────────────────────────────
 const homeFunctionApplies = ({ sizeConfidence, backdropWidthFt }) => {
   const conf = Number(sizeConfidence);
@@ -294,6 +307,7 @@ module.exports = {
   nextRungUp,
   prevRungDown,
   nearestTwo,
+  nearestRung,
   bracketFor,
   rungBySize,
   swapInRecommended,

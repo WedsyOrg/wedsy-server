@@ -7,6 +7,8 @@ const { storeRemoteImage, toAnalysisBase64 } = require("../utils/remoteImageToS3
 const { analyseImage } = require("./decorVision");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("./decorPricing");
 const { buildListingContext } = require("./decorListingContext");
+const sizeLadder = require("./decorSizeLadder");
+const { tierOf } = require("./decorPricing");
 const { normalizeImageUrl } = require("./decorImageKey");
 const { lookupRead, panelQuoteFor } = require("./decorReadCache");
 
@@ -39,6 +41,77 @@ const dedupeFilterFor = ({ pinId, normalizedUrl }) =>
   pinId
     ? { "sourceImage.pinId": pinId }
     : { "sourceImage.normalizedUrl": normalizedUrl };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MEASUREMENTS — vision reading → CATALOGUE {length, width, height, area}
+//
+// THE BUG THIS FIXES (2026-08-20). `suggested.measurements` was
+//   analysis.stageMeasurements || analysis.size || {}
+// and a stageMeasurements object has backdropWidthFt / floralRunFt / spanWidthFt
+// and NO length or width. approveDraft then did `Number(measurements.length) || 0`
+// and published a product with ZERO measurements — on every CACHE-HIT draft,
+// which are precisely the drafts that carry a panel quote, i.e. the good ones. A
+// zero-measurement product is excluded from size-matched pricing for good, so the
+// better the draft, the worse the published record. Reordering the `||` would not
+// fix it: the demo analysis carries BOTH fields, so `size` would silently win and
+// the counted backdrop reading — the reliable one — would be thrown away.
+//
+// THE MAPPING, and why each axis is what it is:
+//   length ← backdropWidthFt, SNAPPED to the nearest ladder rung.
+//     backdropWidthFt is count × width-each — the counted number the whole
+//     measurement design exists to produce, and the one the prompt calls reliable
+//     where eyeballing a span is not. It is snapped because an unsnapped 26ft
+//     matches no catalogue bucket and would be excluded from size-matched pricing
+//     exactly like a zero would.
+//   width  ← that same rung's width. On this ladder width IS a function of
+//     length, so taking both from one rung is the only way to get a pair the
+//     engine can match. Never mixed from two sources.
+//   height ← estimatedHeightFt, already resolved to a real build height
+//     (10/12/15) by readStageMeasurements. Passed through, never snapped again.
+//   area   ← length × width, computed. Never read from the vision payload.
+//
+// A catalogue-shaped input (a human's edit, or a cache-miss draft whose analysis
+// carried `size`) is passed through untouched — this only rescues the shape that
+// has no length/width of its own.
+const toCatalogueMeasurements = (m) => {
+  const src = m && typeof m === "object" ? m : {};
+  const zero = { length: 0, width: 0, height: 0, area: 0, radius: 0, other: "" };
+
+  const L = Number(src.length);
+  const W = Number(src.width);
+  if (L > 0 && W > 0) {
+    return {
+      length: L,
+      width: W,
+      height: Number(src.height) || 0,
+      area: Number(src.area) > 0 ? Number(src.area) : L * W,
+      radius: Number(src.radius) || 0,
+      other: String(src.other || ""),
+    };
+  }
+
+  const rung = sizeLadder.nearestRung(src.backdropWidthFt);
+  if (rung) {
+    return {
+      length: rung.length,
+      width: rung.width,
+      height: Number(src.estimatedHeightFt) || 0,
+      area: rung.area,
+      radius: 0,
+      other: String(src.other || ""),
+    };
+  }
+  return zero;
+};
+
+// What a draft should PRE-FILL as its measurements. Prefers the counted backdrop
+// reading and falls back to the model's snapped size guess.
+const measurementsFromAnalysis = (analysis) => {
+  const a = analysis || {};
+  const fromBackdrop = toCatalogueMeasurements(a.stageMeasurements);
+  if (fromBackdrop.length > 0) return fromBackdrop;
+  return toCatalogueMeasurements(a.size);
+};
 
 const nameOf = async (adminId) => {
   if (!adminId) return "someone";
@@ -345,10 +418,8 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
       flowers: (listing && listing.flowers) || [],
       fabric: (listing && listing.fabric) || [],
     },
-    measurements:
-      (pricingBrain && pricingBrain.analysis && pricingBrain.analysis.stageMeasurements) ||
-      (pricingBrain && pricingBrain.analysis && pricingBrain.analysis.size) ||
-      {},
+    // Catalogue-shaped {length,width,height,area} — see toCatalogueMeasurements.
+    measurements: measurementsFromAnalysis(pricingBrain && pricingBrain.analysis),
     priceLadder,
   };
 
@@ -453,20 +524,6 @@ const approveDraft = async (id, body = {}, actorId) => {
   if (draft.status === "approved") throw err(409, "This draft is already approved");
   if (draft.status === "rejected") throw err(409, "This draft was rejected — re-add the pin to queue it again");
 
-  const overridden = body.overridden === true;
-  const reason = typeof body.reason === "string" ? body.reason.trim() : "";
-  const finalPrice = Number(body.finalPrice);
-
-  if (!Number.isFinite(finalPrice) || finalPrice <= 0) {
-    throw err(400, "finalPrice must be a positive number");
-  }
-  // THE TRAINING LOOP: an override without a reason is a lost training pair.
-  // Accepting the AI price (overridden:false) IS the positive signal and needs
-  // no reason.
-  if (overridden && !reason) {
-    throw err(400, "A reason is required when you override the AI's suggested price");
-  }
-
   const category = String(body.category || draft.draft.category || "").trim();
   if (!category) throw err(400, "category is required");
   const name = String(body.name || draft.draft.name || "").trim();
@@ -489,18 +546,85 @@ const approveDraft = async (id, body = {}, actorId) => {
     throw err(422, "This draft has no stored image — re-add the pin so the server can fetch it again");
   }
 
+  // ── PRICE ROWS (2026-08-20) — every tier the approver kept ────────────────
+  // Was: ONE row derived from CATEGORY_TIERS[category][0], whatever the human had
+  // actually priced. The modal now sends productTypes[] and we publish it as-is.
+  // Nothing here validates a row's name against a tier vocabulary, deliberately:
+  // Phoolon Ki Chadar and Partitions have an EMPTY Category.productTypes list, so
+  // the modal cannot pre-fill them and the approver types the labels. Pathway
+  // legitimately carries all four.
+  //
+  // ⚠️ DEPRECATED FALLBACK: a body with no productTypes but a legacy finalPrice
+  // still publishes one derived row, so approvals keep working between this
+  // deploy and the modal's. An EMPTY array is REJECTED — that is a modal sending
+  // nothing, not an old caller. Delete the fallback once the new modal is live.
+  const legacyFinalPrice = Number(body.finalPrice);
+  let rows;
+  if (Array.isArray(body.productTypes)) {
+    if (!body.productTypes.length) {
+      throw err(400, "productTypes must not be empty — a product needs at least one price");
+    }
+    rows = body.productTypes;
+  } else if (Number.isFinite(legacyFinalPrice) && legacyFinalPrice > 0) {
+    const tiers = CATEGORY_TIERS[category];
+    rows = [{
+      name: TIER_LABEL[(tiers && tiers[0]) || "flat"] || "Price",
+      costPrice: 0,
+      sellingPrice: legacyFinalPrice,
+      discount: 0,
+    }];
+  } else {
+    throw err(400, "productTypes must be a non-empty array of price rows");
+  }
+
+  // Per-row validation. Errors name the row — a bare "invalid price" on a
+  // four-tier form does not tell the approver which line to fix.
+  const priceRows = rows.map((row, i) => {
+    const label = String((row && row.name) || "").trim();
+    const at = `row ${i + 1}${label ? ` ("${label}")` : ""}`;
+    if (!label) throw err(400, `${at}: name is required`);
+    const sellingPrice = Number(row.sellingPrice);
+    if (!Number.isFinite(sellingPrice) || sellingPrice <= 0) {
+      throw err(400, `${at}: sellingPrice must be a positive number`);
+    }
+    const costPrice = row.costPrice === undefined || row.costPrice === null ? 0 : Number(row.costPrice);
+    if (!Number.isFinite(costPrice) || costPrice < 0) {
+      throw err(400, `${at}: costPrice cannot be negative`);
+    }
+    const discount = row.discount === undefined || row.discount === null ? 0 : Number(row.discount);
+    if (!Number.isFinite(discount) || discount < 0 || discount > 100) {
+      throw err(400, `${at}: discount must be between 0 and 100`);
+    }
+    // THE TRAINING LOOP, now per tier: an override without a reason is a lost
+    // training pair; accepting the AI price IS the positive signal and needs no
+    // reason. A top-level reason still covers every row, so a modal with one
+    // reason box for the whole form keeps working.
+    const rowOverridden = row.overridden === undefined ? body.overridden === true : row.overridden === true;
+    const rowReason =
+      (typeof row.reason === "string" && row.reason.trim()) ||
+      (typeof body.reason === "string" && body.reason.trim()) ||
+      "";
+    if (rowOverridden && !rowReason) {
+      throw err(400, `${at}: a reason is required when you override the AI's suggested price`);
+    }
+    return { name: label, costPrice, sellingPrice, discount, overridden: rowOverridden, reason: rowReason };
+  });
+
   const description = body.description !== undefined ? String(body.description) : draft.draft.description;
   const tags = Array.isArray(body.tags) ? body.tags : draft.draft.tags || [];
   const included = Array.isArray(body.included) ? body.included : draft.draft.included || [];
   const unit = String(body.unit || draft.draft.unit || "").trim() || (await unitFor(category));
-  const measurements = body.measurements || draft.draft.measurements || {};
+  // Rescues a stageMeasurements-shaped draft and passes a catalogue-shaped one
+  // through untouched — see toCatalogueMeasurements. Without it every CACHE-HIT
+  // draft published length/width 0 and was excluded from size-matched pricing.
+  const measurements = toCatalogueMeasurements(body.measurements || draft.draft.measurements || {});
 
-  // The published price is exactly what the human approved — ONE tier row,
-  // named from the category's applicable ladder. The full AI ladder stays on
-  // the draft (immutably) for the training loop; we never re-derive prices the
-  // approver did not see.
-  const tiers = CATEGORY_TIERS[category];
-  const tierName = TIER_LABEL[(tiers && tiers[0]) || "flat"] || "Price";
+  // Pass-through fields the approval form now sends. Each falls back to what the
+  // draft already held and then to the schema default — approving must never
+  // blank a field the form simply did not include.
+  const arr = (v, fallback) => (Array.isArray(v) ? v : Array.isArray(fallback) ? fallback : []);
+  const obj = (v, fallback) =>
+    v && typeof v === "object" && !Array.isArray(v) ? v : fallback && typeof fallback === "object" ? fallback : {};
 
   const decorDoc = {
     category,
@@ -508,22 +632,31 @@ const approveDraft = async (id, body = {}, actorId) => {
     unit,
     description,
     tags,
+    label: String(body.label || ""),
     image: draft.storedImage || "",
     thumbnail: draft.storedImage || "",
-    productVisibility: false, // published into the store, not yet switched on
-    productAvailability: false,
-    productTypes: [{ name: tierName, costPrice: 0, sellingPrice: finalPrice, discount: 0 }],
+    additionalImages: arr(body.additionalImages),
+    video: String(body.video || ""),
+    // ── LIVE ON APPROVE (2026-08-20) ────────────────────────────────────────
+    // Both were hardcoded false, so a product landed in the collection invisible
+    // and unbuyable and needed a second manual switch nobody was told about.
+    // Founder's ruling: approving IS publishing.
+    productVisibility: true,
+    productAvailability: true,
+    productTypes: priceRows.map(({ name: n, costPrice, sellingPrice, discount }) => ({
+      name: n, costPrice, sellingPrice, discount,
+    })),
+    attributes: arr(body.attributes),
+    productVariation: obj(body.productVariation, draft.draft.productVariation),
+    productVariants: arr(body.productVariants),
+    productAddOns: arr(body.productAddOns),
+    rawMaterials: arr(body.rawMaterials),
+    // seoTags is DROPPED by ruling — `tags` is the only tag surface. Neither
+    // accepted from the body nor written, so the schema default stands.
     productInfo: {
       id: productCode,
       included,
-      measurements: {
-        length: Number(measurements.length) || 0,
-        width: Number(measurements.width) || 0,
-        height: Number(measurements.height) || 0,
-        area: Number(measurements.area) || 0,
-        radius: Number(measurements.radius) || 0,
-        other: String(measurements.other || ""),
-      },
+      measurements,
     },
   };
 
@@ -550,9 +683,42 @@ const approveDraft = async (id, body = {}, actorId) => {
   draft.draft.included = included;
   draft.draft.unit = unit;
   draft.draft.measurements = measurements;
-  draft.pricing.finalPrice = finalPrice;
-  draft.pricing.overridden = overridden;
-  draft.pricing.reason = reason;
+
+  // ── THE LEARNING RECORD, NOW PER TIER ─────────────────────────────────────
+  // For each PUBLISHED row: what the AI ladder suggested for that tier, what the
+  // panel quoted, what the human set, and why if it differs. aiSuggested and
+  // panelQuote are IMMUTABLE and are read here, never written.
+  const aiLadder = (draft.pricing.aiSuggested && draft.pricing.aiSuggested.suggested) || {};
+  const panel = draft.pricing.panelQuote || null;
+  const tierDecisions = priceRows.map((row) => {
+    const tier = tierOf(row.name);
+    const aiNum = Number(aiLadder[tier]);
+    const ai = Number.isFinite(aiNum) && aiNum > 0 ? aiNum : null;
+    return {
+      tier,
+      name: row.name,
+      aiSuggested: ai,
+      // The panel quotes exactly ONE tier. Recording its midpoint against any
+      // other tier would invent a comparison nobody was ever shown.
+      panelQuote:
+        panel && panel.tier === tier && Number.isFinite(Number(panel.midpoint))
+          ? Number(panel.midpoint)
+          : null,
+      finalPrice: row.sellingPrice,
+      overridden: row.overridden,
+      reason: row.reason,
+      deltaPct: ai ? Number((((row.sellingPrice - ai) / ai) * 100).toFixed(1)) : null,
+    };
+  });
+
+  // The HEADLINE row keeps the legacy fields' exact meaning — "the price this
+  // draft published" — so every draft already in the collection still reads the
+  // same way and nothing needs backfilling.
+  const headline = tierDecisions[0];
+  draft.pricing.tierDecisions = tierDecisions;
+  draft.pricing.finalPrice = headline.finalPrice;
+  draft.pricing.overridden = tierDecisions.some((t) => t.overridden);
+  draft.pricing.reason = (tierDecisions.find((t) => t.overridden && t.reason) || { reason: "" }).reason;
   draft.pricing.decidedBy = actorId || null;
   draft.pricing.decidedAt = new Date();
   draft.status = "approved";
@@ -561,7 +727,9 @@ const approveDraft = async (id, body = {}, actorId) => {
     action: "approved",
     by: actorId || null,
     at: new Date(),
-    note: overridden ? `price overridden: ${reason}` : "accepted the AI price",
+    note: draft.pricing.overridden
+      ? `${tierDecisions.filter((t) => t.overridden).length} of ${tierDecisions.length} tier(s) overridden: ${draft.pricing.reason}`
+      : `accepted the AI price on all ${tierDecisions.length} tier(s)`,
   });
   await draft.save();
 
@@ -591,6 +759,8 @@ module.exports = {
   approveDraft,
   rejectDraft,
   normalizeImageUrl,
+  toCatalogueMeasurements,
+  measurementsFromAnalysis,
   runPricingBrain,
   priceFromAnalysis,
   __deps: deps, // test seam
