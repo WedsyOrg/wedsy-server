@@ -9,7 +9,7 @@
 //   D. S2(a) a window move that would strand functions NAMES them.
 //   E. S2(b) a window move that strands a hold refuses until acknowledged,
 //      and NEVER releases the hold (invariant #12's rule, applied to edits).
-//   F. S2(c) a booked lead refuses the date change outright.
+//   F. ONE DATE: a booked lead moves its dates and the booking follows.
 //   G. window-impact preflight answers all three without changing anything.
 require("dotenv").config();
 const mongoose = require("mongoose");
@@ -180,26 +180,41 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(moveAck.body.staleHolds && moveAck.body.staleHolds.length === 1, "…and the response still hands back the hold to release or re-place");
     ok((await VenueHold.findById(hold._id).lean()).status === "approved", "…the hold STILL was not released — the owner does that, not us");
 
-    // ── F. S2(c) a booking refuses the change outright ──
-    console.log("\n[F. S2(c): a booked lead does not move its dates from here]");
+    // ── F. ONE DATE: a booked lead now MOVES its dates, and the booking follows ──
+    // This section used to assert the opposite — that a booking refused the
+    // change and told the owner to "go through the booking instead", a path
+    // that did not exist. A lead's dates and its booking's dates are the same
+    // thing, so the edit is applied to both or to neither.
+    console.log("\n[F. ONE DATE: a booked lead moves its dates, and the booking follows]");
     const bookedLead = await VenueEnquiry.create({
       venueId: venue._id, coupleName: "Booked", couplePhone: "9000812", stage: "booked",
       checkIn: new Date("2026-12-20T10:30:00Z"), checkOut: new Date("2026-12-21T10:30:00Z"),
     });
-    const bk = await VenueBooking.create({ venue: venue._id, enquiry: bookedLead._id, coupleName: "Booked", status: "confirmed" });
+    const bk = await VenueBooking.create({
+      venue: venue._id, enquiry: bookedLead._id, coupleName: "Booked", status: "confirmed",
+      checkIn: new Date("2026-12-20T10:30:00Z"), checkOut: new Date("2026-12-21T10:30:00Z"),
+    });
     const moveBooked = await call(enq.updateEnquiry, req({
       params: { enquiryId: String(bookedLead._id) },
       body: { checkIn: "2026-12-27T10:30:00Z", checkOut: "2026-12-28T10:30:00Z" },
     }));
-    ok(moveBooked.code === 409, "a lead with a booking refuses the date change (409)");
-    ok(String(moveBooked.body.bookingId) === String(bk._id), "…and points at the booking to go through instead");
-    ok((await VenueEnquiry.findById(bookedLead._id).lean()).checkIn.toISOString() === "2026-12-20T10:30:00.000Z",
-      "…and the calendar-bearing dates were NOT moved underneath the booking");
-    const ackBooked = await call(enq.updateEnquiry, req({
+    ok(moveBooked.code === 200, `a lead with a booking now MOVES its dates (got ${moveBooked.code})`);
+    ok(
+      (await VenueEnquiry.findById(bookedLead._id).lean()).checkIn.toISOString() === "2026-12-27T10:30:00.000Z",
+      "…the lead's window moved"
+    );
+    ok(
+      (await VenueBooking.findById(bk._id).lean()).checkIn.toISOString() === "2026-12-27T10:30:00.000Z",
+      "…and the BOOKING followed, rather than being left on the old dates"
+    );
+    // Un-finalising is still refused, and now for a stated reason: a booked
+    // event cannot go back to having no dates at all.
+    const unfinalise = await call(enq.updateEnquiry, req({
       params: { enquiryId: String(bookedLead._id) },
-      body: { checkIn: "2026-12-27T10:30:00Z", checkOut: "2026-12-28T10:30:00Z", acknowledgeStaleHolds: true },
+      body: { datesFinalised: false, approximatePeriod: { month: 12, year: 2026 } },
     }));
-    ok(ackBooked.code === 409, "…and no acknowledgement flag can talk it into moving them");
+    ok(unfinalise.code === 409, "…but a booked lead still cannot go back to having NO dates");
+    ok(String(unfinalise.body.bookingId) === String(bk._id), "…naming the booking that stands in the way");
 
     // ── G. the preflight ──
     console.log("\n[G. S2: window-impact answers all three, changing nothing]");
@@ -215,8 +230,15 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       params: { enquiryId: String(bookedLead._id) },
       query: { checkIn: "2026-12-27T10:30:00Z", checkOut: "2026-12-28T10:30:00Z" },
     }));
-    ok(impactBooked.body.blocked === true && String(impactBooked.body.booking._id) === String(bk._id),
-      "…and reports a booked lead as blocked, so the UI never offers the edit");
+    // A booking is no longer a reason to block the edit — it is the reason the
+    // edit has consequences. The preflight now names the booking and previews
+    // what the change would do to its calendar instead of forbidding it.
+    ok(impactBooked.body.blocked === false, "…a booked lead is NOT blocked any more — the edit flows to the booking");
+    ok(String(impactBooked.body.booking._id) === String(bk._id), "…the booking is still named, so the UI can warn");
+    ok(
+      impactBooked.body.calendar && Array.isArray(impactBooked.body.calendar.willAdd),
+      "…and the preflight previews the calendar change rather than forbidding it"
+    );
     ok((await VenueEnquiry.findById(withFns._id).lean()).checkOut.toISOString() === "2026-10-01T16:30:00.000Z",
       "…the preflight wrote nothing");
 

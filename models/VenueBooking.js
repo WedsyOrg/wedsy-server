@@ -8,6 +8,31 @@ const VenueBookingSchema = new mongoose.Schema(
     enquiry: { type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" },
     coupleName: { type: String, default: "" },
     couplePhone: { type: String, default: "" },
+
+    // ── THE EVENT WINDOW ────────────────────────────────────────────────────
+    // The same window the lead carries, and the SAME FACT — not a copy that
+    // drifts. A lead's dates and its booking's dates are one thing: the window
+    // is when the venue is sold, and every day inside it is sold. There is no
+    // separate "setup time" or "access period" concept anywhere in this model;
+    // if the couple has the venue from 4 PM on the 29th, the 29th is inside the
+    // window and the 29th is blocked.
+    //
+    // Before this existed, confirming a booking DISCARDED the lead's window and
+    // kept only days[], so a lead reading "29 Sept → 1 Oct" became a booking
+    // reading "30 Sept – 1 Oct" and nothing downstream could recover the
+    // difference. utils/venueEventWindow is now the only writer of both copies,
+    // and it writes them in the same operation.
+    checkIn: { type: Date },
+    checkOut: { type: Date },
+
+    // What HAPPENS on each date, inside the window. days[] is the per-date
+    // record — the functions, their spaces and their headcount — and it is
+    // never what either screen calls "the dates". Dropping a function does not
+    // shorten the booking; only the window does that.
+    //
+    // NOTE spaces here are NAMES, for display. The authoritative space IDs live
+    // on the VenueSpaceDate rows keyed by bookingRef, which is what the window
+    // machinery reads — see venueEventWindow.bookingSpaceIds.
     days: [
       {
         date: { type: Date },
