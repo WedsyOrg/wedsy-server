@@ -105,6 +105,19 @@ const VenueEnquirySchema = new mongoose.Schema(
         // is worth more than the relation labels are, which is why it is its
         // own flag rather than inferred from one.
         isDecisionMaker: { type: Boolean, default: false },
+        // ── THE CLIENT'S GST NUMBER ──────────────────────────────────────────
+        // Here, on the contact, and NOT on the booking. A GSTIN belongs to the
+        // party being billed, not to the event: a company booking its offsite
+        // and the bride's father paying for a wedding are different billing
+        // parties with different numbers, and the same client returning next
+        // year should not have to retype it.
+        //
+        // Putting it on the booking would have made a second, quietly
+        // divergent client record — the exact thing contacts[] exists to
+        // prevent. Invoices snapshot it at the moment they are raised (see
+        // VenueInvoice.billedTo), because an issued tax invoice must not
+        // change when someone later corrects a typo here.
+        gstin: { type: String, default: "" },
       },
     ],
     // MB-CRM-2 S1b (additive): per-function event mapping across the stay.
