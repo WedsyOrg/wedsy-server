@@ -248,7 +248,7 @@ const deps = {
   // The copy pass is scheduled, never awaited — the response must not wait on it.
   scheduleCopyPass: (draftId, buffer) =>
     setImmediate(() => {
-      runCopyPass(draftId, buffer).catch((e) => console.warn("[A2S] copy pass threw", e && e.message));
+      runCopyPass(draftId, { buffer }).catch((e) => console.warn("[A2S] copy pass threw", e && e.message));
     }),
   lookupRead,
   panelQuoteFor,
@@ -516,10 +516,29 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
 //
 // The image buffer is passed in on the immediate path (it is already in hand)
 // and RE-FETCHED FROM S3 on a retry, which is why retry works after a restart.
-const runCopyPass = async (draftId, buffer) => {
+const runCopyPass = async (draftId, { buffer = null, force = false } = {}) => {
   const draft = await DecorDraft.findById(draftId).lean();
   if (!draft) return { skipped: "gone" };
-  if (draft.copy && draft.copy.status === "ready") return { skipped: "already written" };
+  // ── THE ALREADY-WRITTEN GUARD, and what it is actually for ────────────────
+  // It exists to stop the AUTOMATIC path burning a second model call on
+  // accidental re-entry — a double-schedule, or a future sweep over pending
+  // drafts that races a pass already in flight. That reason is real, so the
+  // guard stays.
+  //
+  // It must NOT apply to an explicit retry. POST /decor/drafts/:id/copy is a
+  // human asking for the copy again — usually for a better name on a draft
+  // whose copy is already "ready" — and the guard used to swallow exactly that
+  // call, returning {skipped:"already written"} with a 200 and doing nothing.
+  //
+  // `force` rather than "was a buffer passed": buffer-presence happens to line
+  // up with the create path today, but it conflates "do I have the bytes in
+  // hand" with "did a human ask for this". A recovery sweep would call this with
+  // no buffer and would then be treated as an explicit retry, re-running the AI
+  // on drafts that are already done. Intent is the thing being tested, so intent
+  // is what the parameter says.
+  if (!force && draft.copy && draft.copy.status === "ready") {
+    return { skipped: "already written" };
+  }
 
   await DecorDraft.updateOne(
     { _id: draftId },
@@ -607,8 +626,11 @@ const retryCopy = async (draftId) => {
   if (draft.status !== "queued") throw err(409, `This draft is ${draft.status} — the copy can only be re-run while it is queued`);
   if (!draft.storedImage) throw err(422, "This draft has no stored image — re-add the pin so the server can fetch it again");
   // Deliberately allowed on a "ready" draft too: re-running the copy is how an
-  // approver asks for a better name, not only how they recover a failure.
-  const result = await runCopyPass(draftId, null);
+  // approver asks for a better name, not only how they recover a failure. That
+  // is what `force` is for — without it the already-written guard swallows this
+  // call. No buffer: the stored S3 image is re-fetched, which is why retry works
+  // after a restart.
+  const result = await runCopyPass(draftId, { force: true });
   return { draft: (await DecorDraft.findById(draftId).lean()), ...result };
 };
 

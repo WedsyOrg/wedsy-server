@@ -104,7 +104,7 @@ const newDraft = async ({ cached }) => {
 
     // ── 2. THE PASS FILLS IT IN ─────────────────────────────────────────────
     console.log("\n2. the copy pass patches the draft afterwards");
-    const res2 = await DecorDraftService.runCopyPass(scheduled[0].draftId, scheduled[0].buffer);
+    const res2 = await DecorDraftService.runCopyPass(scheduled[0].draftId, { buffer: scheduled[0].buffer });
     eq(res2.status, "ready", "the pass reports ready");
     eq(copyCalls, 1, "…having made exactly one copy call");
     const after = await DecorDraft.findById(d1._id).lean();
@@ -141,7 +141,7 @@ const newDraft = async ({ cached }) => {
     eq(stranded.copy.completedAt, null, "nothing half-written");
     ok(!!stranded.storedImage && !!stranded.pricing.aiSuggested, "the image and price survived the restart");
     // Recovery is a RE-RUN, not a repair — and without the original buffer.
-    const res4 = await DecorDraftService.runCopyPass(d4._id, null);
+    const res4 = await DecorDraftService.runCopyPass(d4._id, {});
     eq(res4.status, "ready", "re-running after a restart works");
     const rec = await DecorDraft.findById(d4._id).lean();
     eq(rec.suggested.name, "Ivory Cascade", "…and writes the copy");
@@ -172,7 +172,7 @@ const newDraft = async ({ cached }) => {
     copyCalls = 0; scheduled = [];
     const d6 = await newDraft({ cached: true });
     copyBehaviour = "throw";
-    const res6 = await DecorDraftService.runCopyPass(d6._id, Buffer.from("x"));
+    const res6 = await DecorDraftService.runCopyPass(d6._id, { buffer: Buffer.from("x") });
     eq(res6.status, "failed", "the pass reports failure");
     const f6 = await DecorDraft.findById(d6._id).lean();
     eq(f6.copy.status, "failed", "copy.status = failed — a distinct third state Rohaan can filter");
@@ -197,12 +197,45 @@ const newDraft = async ({ cached }) => {
     const onApproved = await call(decorDraft.RetryCopy, { id: String(d5._id) });
     eq(onApproved.status, 409, "an already-approved draft is 409 — the copy has nowhere to go");
 
+    // ── 7b. THE GUARD SKIPS THE AUTOMATIC PATH ONLY ─────────────────────────
+    // The already-written guard exists to stop accidental re-entry burning a
+    // second model call. It must not swallow an explicit retry — it used to, and
+    // retryCopy returned 200 having done nothing at all.
+    console.log("\n7b. already-written guard: automatic skips, explicit retry re-runs");
+    copyCalls = 0; scheduled = [];
+    const d7 = await newDraft({ cached: true });
+    await DecorDraftService.runCopyPass(d7._id, { buffer: Buffer.from("x") });
+    eq(copyCalls, 1, "the first automatic pass runs");
+    const firstName = (await DecorDraft.findById(d7._id).lean()).suggested.name;
+    eq(firstName, "Ivory Cascade", "…and writes the copy");
+
+    // (a) the CREATE path re-entering a ready draft — must still skip
+    const reEntry = await DecorDraftService.runCopyPass(d7._id, { buffer: Buffer.from("x") });
+    eq(reEntry.skipped, "already written", "a create-path re-entry STILL skips");
+    eq(copyCalls, 1, "…spending nothing — the guard's actual purpose");
+    const sched = await DecorDraftService.runCopyPass(d7._id, {});
+    eq(sched.skipped, "already written", "…and so does a buffer-less automatic run (e.g. a future sweep)");
+    eq(copyCalls, 1, "…still nothing spent");
+    eq((await DecorDraft.findById(d7._id).lean()).copy.attempts, 1, "attempts is not inflated by a skip");
+
+    // (b) an EXPLICIT retry on that same ready draft — must actually re-run
+    COPY.suggestedName = "Second Attempt Name";
+    const explicit = await call(decorDraft.RetryCopy, { id: String(d7._id) });
+    eq(explicit.status, 200, "an explicit retry returns 200");
+    eq(explicit.body.status, "ready", "…reporting ready, not skipped");
+    ok(!explicit.body.skipped, "…and NOT { skipped: \"already written\" }");
+    eq(copyCalls, 2, "…having actually made the model call");
+    const d7after = await DecorDraft.findById(d7._id).lean();
+    eq(d7after.suggested.name, "Second Attempt Name", "the copy is genuinely regenerated");
+    eq(d7after.copy.attempts, 2, "…and the attempt is counted");
+    COPY.suggestedName = "Ivory Cascade";
+
     // ── 8. A HUMAN'S EDIT IS NOT CLOBBERED ──────────────────────────────────
     console.log("\n8. the pass never overwrites what the approver typed");
     copyCalls = 0; scheduled = [];
     const d8 = await newDraft({ cached: true });
     await DecorDraft.updateOne({ _id: d8._id }, { $set: { "draft.name": "Typed While Waiting" } });
-    await DecorDraftService.runCopyPass(d8._id, Buffer.from("x"));
+    await DecorDraftService.runCopyPass(d8._id, { buffer: Buffer.from("x") });
     const a8 = await DecorDraft.findById(d8._id).lean();
     eq(a8.draft.name, "Typed While Waiting", "the human's draft.name survives the pass");
     eq(a8.suggested.name, "Ivory Cascade", "…while suggested.name still records what the AI said");
