@@ -25,7 +25,7 @@ const { sanitizeContacts } = require("../utils/venueContacts");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optStr, optNumber, optDate, optCount, MAXLEN, eventWindow } = require("../utils/venueInput");
-const { venueDateKey } = require("../utils/venueTime");
+const { venueDateKey, endOfVenueDay } = require("../utils/venueTime");
 
 async function resolveOwnedVenue(req, res, select = "_id") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
@@ -544,9 +544,12 @@ const confirmBookingFromLead = async (req, res) => {
       const first = booking.days[0].date;
       const last = booking.days[booking.days.length - 1].date;
       booking.checkIn = first;
-      // End of the last event day, so a single-day booking still reads as a
-      // window rather than a zero-length instant.
-      booking.checkOut = new Date(new Date(last).getTime() + 24 * 60 * 60 * 1000 - 1);
+      // End of the last event day ON THE VENUE'S CALENDAR, so a single-day
+      // booking reads as a window rather than a zero-length instant — and does
+      // not spill into the following day. Plain "+24h − 1ms" lands at
+      // 23:59:59.999Z, which in IST is already 05:29 the NEXT morning, so the
+      // window would silently claim a day the couple never bought.
+      booking.checkOut = endOfVenueDay(new Date(last));
     }
     const token = tokenV.value || 0;
     const rows = [];
