@@ -17,6 +17,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
+const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optStr, optNumber, optDate, optCount, MAXLEN } = require("../utils/venueInput");
@@ -159,7 +160,15 @@ const confirmBookingFromLead = async (req, res) => {
     if (fns.length === 0) return res.status(400).json({ message: "functions must list at least one date to block" });
     if (fns.length > MAX_CONFIRM_FUNCTIONS) return res.status(400).json({ message: `functions is too long (max ${MAX_CONFIRM_FUNCTIONS})` });
     const bookable = (venue.spaces || []).filter((s) => s.isBookable !== false);
-    if (bookable.length === 0) return res.status(400).json({ message: "Venue has no bookable spaces" });
+    // A venue with no spaces defined can still sell the WHOLE PROPERTY — which
+    // is normal for a wedding, and was previously refused outright. The
+    // sentinel row carries the claim on its own in that case; see
+    // utils/venueWholeVenue.js on why a sentinel alone is not enough once real
+    // spaces exist.
+    const wantsAnyNamedSpace = fns.some((f) => f && f.space !== undefined && f.space !== null && f.space !== "");
+    if (bookable.length === 0 && wantsAnyNamedSpace) {
+      return res.status(400).json({ message: "Venue has no bookable spaces" });
+    }
     const spaceById = new Map((venue.spaces || []).map((s) => [String(s._id), s]));
     const blocks = [];
     for (let i = 0; i < fns.length; i++) {
@@ -173,7 +182,12 @@ const confirmBookingFromLead = async (req, res) => {
         if (match.isBookable === false) return res.status(400).json({ message: `functions[${i}].space is not bookable` });
         spaces = [match];
       } else {
-        spaces = bookable; // venue-wide block, same semantics as holds
+        // ENTIRE PROPERTY. Every bookable space PLUS the sentinel, so the
+        // existing unique {venue, space, date} index refuses an individual
+        // space on this date and refuses a second whole-property claim —
+        // structurally, not by an application check. The sentinel is also what
+        // lets a space added later be backfilled onto this date.
+        spaces = wholeVenueSpaceIds(venue).map((id) => spaceById.get(String(id)) || { _id: id });
       }
       const paxV = optCount(f.pax, `functions[${i}].pax`);
       if (!paxV.ok) return res.status(400).json({ message: paxV.message });
@@ -380,7 +394,11 @@ const confirmBookingFromLead = async (req, res) => {
       const d = byDay.get(k);
       if (b.name) d.names.push(b.name);
       d.pax = Math.max(d.pax, b.pax || 0);
-      for (const s of b.spaces) d.spaces.add(s.name || "");
+      // A whole-property block is ONE fact, not a list of every space. Listing
+      // them would also read identically to "they happened to tick all of
+      // them", and those two diverge the moment a space is added.
+      if (b.spaces.some((s) => isWholeVenueSpace(s._id))) d.spaces.add("Entire property");
+      else for (const s of b.spaces) d.spaces.add(s.name || "");
     }
     booking.days = [...byDay.values()]
       .sort((a, b) => a.date - b.date)
