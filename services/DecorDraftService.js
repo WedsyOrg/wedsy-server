@@ -619,6 +619,49 @@ const approveDraft = async (id, body = {}, actorId) => {
   // draft published length/width 0 and was excluded from size-matched pricing.
   const measurements = toCatalogueMeasurements(body.measurements || draft.draft.measurements || {});
 
+  // ── DIMENSION CORRECTIONS (2026-08-20) ────────────────────────────────────
+  // The "before" half comes from the IMMUTABLE aiAnalysis, computed here — never
+  // from the request. The client is trusted for what the human chose, never for
+  // what the AI said; a body that could set aiRead could make any correction
+  // look like an agreement. Same principle as pricing.aiSuggested.
+  //
+  // draft.draft.measurements is deliberately NOT the source: it is the mutable
+  // pre-fill and may already carry an earlier human edit.
+  const aiMeasurements = measurementsFromAnalysis(
+    draft.aiAnalysis && draft.aiAnalysis.pricing ? draft.aiAnalysis.pricing.analysis : null
+  );
+  // ONE SHARED REASON covers price and size (founder ruling). A category
+  // correction rides in this same text rather than getting a record of its own.
+  const sharedReason = typeof body.reason === "string" ? body.reason.trim() : "";
+  const measurementDecisions = ["length", "width", "height"].map((field) => {
+    const aiRaw = Number(aiMeasurements[field]);
+    const aiRead = Number.isFinite(aiRaw) && aiRaw > 0 ? aiRaw : null;
+    const finalRaw = Number(measurements[field]);
+    const finalValue = Number.isFinite(finalRaw) ? finalRaw : 0;
+    // A move is only a CORRECTION when there was a reading to correct. With no
+    // AI reading there is nothing the human contradicted, so it is not an
+    // override and demanding a reason for it would be noise.
+    const overridden = aiRead !== null && finalValue !== aiRead;
+    return {
+      field,
+      aiRead,
+      finalValue,
+      overridden,
+      reason: overridden ? sharedReason : "",
+      deltaPct: aiRead ? Number((((finalValue - aiRead) / aiRead) * 100).toFixed(1)) : null,
+    };
+  });
+
+  // Mirrors the per-tier rule: a correction without a reason is a lost training
+  // pair, and silently dropping the explanation is exactly the bug this fixes.
+  const movedDims = measurementDecisions.filter((m) => m.overridden);
+  if (movedDims.length && !sharedReason) {
+    throw err(
+      400,
+      `A reason is required when you change the ${movedDims.map((m) => m.field).join(", ")} the AI measured`
+    );
+  }
+
   // Pass-through fields the approval form now sends. Each falls back to what the
   // draft already held and then to the schema default — approving must never
   // blank a field the form simply did not include.
@@ -725,9 +768,21 @@ const approveDraft = async (id, body = {}, actorId) => {
   // same way and nothing needs backfilling.
   const headline = tierDecisions[0];
   draft.pricing.tierDecisions = tierDecisions;
+  draft.pricing.measurementDecisions = measurementDecisions;
   draft.pricing.finalPrice = headline.finalPrice;
+  // `overridden` keeps meaning THE PRICE WAS OVERRIDDEN — tiers only. A height
+  // correction must not flip it: that would make a draft where the human
+  // ACCEPTED the AI price read as a price override, poisoning the one signal the
+  // price training loop depends on.
   draft.pricing.overridden = tierDecisions.some((t) => t.overridden);
-  draft.pricing.reason = (tierDecisions.find((t) => t.overridden && t.reason) || { reason: "" }).reason;
+  // `reason` no longer derives from tiers ALONE. A dimension-only correction
+  // used to set this to "" and lose the approver's explanation outright; now the
+  // shared text survives whichever half of the decision moved. Tier reasons keep
+  // precedence so existing records read exactly as before.
+  draft.pricing.reason =
+    (tierDecisions.find((t) => t.overridden && t.reason) || { reason: "" }).reason ||
+    (measurementDecisions.find((m) => m.overridden && m.reason) || { reason: "" }).reason ||
+    "";
   draft.pricing.decidedBy = actorId || null;
   draft.pricing.decidedAt = new Date();
   draft.status = "approved";
@@ -738,7 +793,9 @@ const approveDraft = async (id, body = {}, actorId) => {
     at: new Date(),
     note: draft.pricing.overridden
       ? `${tierDecisions.filter((t) => t.overridden).length} of ${tierDecisions.length} tier(s) overridden: ${draft.pricing.reason}`
-      : `accepted the AI price on all ${tierDecisions.length} tier(s)`,
+      : movedDims.length
+        ? `accepted the AI price; corrected ${movedDims.map((m) => m.field).join(", ")}: ${draft.pricing.reason}`
+        : `accepted the AI price on all ${tierDecisions.length} tier(s)`,
   });
   await draft.save();
 

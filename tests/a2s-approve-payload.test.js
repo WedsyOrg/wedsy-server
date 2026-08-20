@@ -197,6 +197,10 @@ const newDraft = async () => {
       productVariants: [{ name: "wide", priceModifier: 5000 }],
       rawMaterials: [{ name: "MDF", quantity: 4 }],
       measurements: { length: 12, width: 2, height: 8 },
+      // ADDED 2026-08-20: this fixture re-categorises a Stage read as a Partition
+      // and resizes all three dimensions, so the new dimension-correction rule
+      // requires the shared reason — exactly the case it exists for.
+      reason: "re-categorised as a partition screen and re-measured to suit",
       // Partitions has an EMPTY Category.productTypes list — the approver types it.
       productTypes: [{ name: "Price", sellingPrice: 40000 }],
     }, null);

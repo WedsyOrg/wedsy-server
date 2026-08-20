@@ -1189,6 +1189,17 @@ const shapeDecorAnalysis = (draft) => {
     decision: {
       approvedBy: who(decided.decidedBy),
       approvedAt: decided.decidedAt || null,
+      // Dimension corrections sit ALONGSIDE the tier ones, never inside them —
+      // see the note on DecorDraft.pricing.measurementDecisions for why mixing
+      // the two would make a length row the product's price.
+      measurementDecisions: (decided.measurementDecisions || []).map((m) => ({
+        field: m.field,
+        aiRead: m.aiRead != null ? m.aiRead : null,
+        finalValue: m.finalValue != null ? m.finalValue : null,
+        overridden: !!m.overridden,
+        reason: m.reason || "",
+        deltaPct: m.deltaPct != null ? m.deltaPct : null,
+      })),
       tierDecisions: (decided.tierDecisions || []).map((t) => ({
         tier: t.tier,
         name: t.name,

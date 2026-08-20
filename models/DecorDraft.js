@@ -127,6 +127,35 @@ const DecorDraftSchema = new mongoose.Schema(
         ],
         default: [],
       },
+
+      // ── DIMENSION CORRECTIONS (2026-08-20) ────────────────────────────────
+      // A SIBLING of tierDecisions, not a row inside it. It cannot live there:
+      // finalPrice is taken from tierDecisions[0], so a "length" row at index 0
+      // would silently become the product's price — and it would also break
+      // tierOf() normalisation, the per-tier approval UI and the /analysis
+      // response, all of which assume every entry is a flower tier.
+      //
+      // Before this existed a dimension-only correction had nowhere to put its
+      // reason: pricing.reason derived exclusively from an overridden TIER, so
+      // changing only the height set it to "" and the approver's explanation was
+      // discarded without a word.
+      //
+      // `aiRead` is derived SERVER-SIDE from the immutable aiAnalysis, never
+      // taken from the request — same principle as aiSuggested. The client is
+      // trusted for what the human chose, never for what the AI said.
+      measurementDecisions: {
+        type: [
+          {
+            field: { type: String, default: "" }, // length | width | height
+            aiRead: { type: Number, default: null },
+            finalValue: { type: Number, default: null },
+            overridden: { type: Boolean, default: false },
+            reason: { type: String, default: "" },
+            deltaPct: { type: Number, default: null },
+          },
+        ],
+        default: [],
+      },
       finalPrice: { type: Number, default: null },
       // overridden=false is the POSITIVE signal (the human accepted the AI
       // price) and needs no reason. overridden=true REQUIRES one.
