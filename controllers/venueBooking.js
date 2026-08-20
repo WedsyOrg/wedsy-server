@@ -18,7 +18,7 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
-const { PAYMENT_MODES, normaliseMode } = require("../utils/venuePaymentMode");
+const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optStr, optNumber, optDate, optCount, MAXLEN } = require("../utils/venueInput");
@@ -229,7 +229,7 @@ const confirmBookingFromLead = async (req, res) => {
     }
     // What a human should read. For "other" that is the name they typed, since
     // "(other)" tells the next person nothing.
-    const tokenModeLabel = tokenMode === "other" ? modeOtherV.value || "other" : tokenMode;
+    const tokenModeLabel = modeLabel(tokenMode, modeOtherV.value);
     // DECLARED HERE, WITH THE OTHER MONEY VALIDATORS, AND NOT LOWER DOWN.
     // The 100%-rule guard inside the schedule block below reads totalV. When
     // this `const` lived after that block it was a temporal dead zone: the

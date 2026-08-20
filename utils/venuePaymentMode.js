@@ -37,4 +37,25 @@ function normaliseMode(value) {
   return PAYMENT_MODES.includes(v) ? v : null;
 }
 
-module.exports = { PAYMENT_MODES, normaliseMode };
+/**
+ * How each mode is written for a human. The STORED value is the enum key;
+ * anything a person reads goes through here, so a token does not end up
+ * labelled "Token — received (upi)" or "(bank_transfer)".
+ */
+const MODE_LABEL = {
+  bank_transfer: "Bank transfer",
+  cash: "Cash",
+  cheque: "Cheque",
+  upi: "UPI",
+  card: "Card",
+  other: "Other",
+};
+
+/** `other` reads as the name the owner gave it — "(Other)" says nothing. */
+function modeLabel(mode, other) {
+  if (!mode) return "";
+  if (mode === "other") return (other || "").trim() || "Other";
+  return MODE_LABEL[mode] || mode;
+}
+
+module.exports = { PAYMENT_MODES, MODE_LABEL, normaliseMode, modeLabel };
