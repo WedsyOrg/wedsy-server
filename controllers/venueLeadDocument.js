@@ -114,6 +114,11 @@ const present = (d) => ({
   note: d.note || "",
   filename: d.filename || "",
   sizeBytes: d.sizeBytes || null,
+  // The tab has to know whether this is a picture or a PDF before it can decide
+  // how to preview it — an <img> for a photographed licence, an embedded PDF
+  // viewer for a generated invoice. It was stored but never presented, so the
+  // client had only the filename extension to guess from.
+  contentType: d.contentType || "application/pdf",
   pageCount: d.pageCount || null,
   sourcePages: d.sourcePages || null,
   createdAt: d.createdAt,
@@ -148,8 +153,28 @@ const listLeadDocuments = async (req, res) => {
     // with a reason instead of a dead button.
     const resolved = await resolveTermsSource(venue);
 
+    // ── "Latest" is per KIND, because versions are ────────────────────────
+    // insertNextVersion scopes the sequence to {enquiry, kind}, and the unique
+    // index says the same, so every kind starts again at v1. latestVersion was
+    // a single max() ACROSS kinds, so with terms v1–v2 plus an invoice v1 the
+    // invoice — the only one of its kind, and obviously current — never got the
+    // badge, while terms v2 did. Each row now carries its own answer, and
+    // versionsOfKind lets the tab hide the version entirely when there is only
+    // one of something, which is the common case.
+    const countByKind = docs.reduce((m, d) => m.set(d.kind, (m.get(d.kind) || 0) + 1), new Map());
+    const topByKind = docs.reduce(
+      (m, d) => m.set(d.kind, Math.max(m.get(d.kind) || 0, d.version)),
+      new Map()
+    );
+
     return res.status(200).json({
-      documents: docs.map(present),
+      documents: docs.map((d) => ({
+        ...present(d),
+        isLatest: d.version === topByKind.get(d.kind),
+        versionsOfKind: countByKind.get(d.kind) || 1,
+      })),
+      // Kept for callers that still read it, but it is the max across kinds and
+      // therefore not what "latest" means for any single document.
       latestVersion: docs.length ? Math.max(...docs.map((d) => d.version)) : 0,
       // The UI needs all three to decide what to render: whether it CAN
       // generate, and if not, why not.
@@ -452,9 +477,29 @@ const downloadLeadDocument = async (req, res) => {
       return res.status(502).json({ message: "The stored document could not be retrieved." });
     }
 
+    // ── download vs preview ────────────────────────────────────────────────
+    // Same bytes, same scoping, same route — only the disposition differs.
+    // `attachment` stays the default so every existing caller is unchanged;
+    // `?disposition=inline` lets the tab show a document in place instead of
+    // pushing it into the downloads folder just to look at it.
+    //
+    // Preview goes through HERE rather than at the stored S3 URL on purpose:
+    // this is the only path that resolves the lead through venueLeadScope, so
+    // previewing cannot become the one way to read a document you cannot open.
+    const inline = String((req.query || {}).disposition || "").toLowerCase() === "inline";
+    const safeName = (doc.filename || "document.pdf").replace(/"/g, "");
     res.setHeader("Content-Type", doc.contentType || "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="${(doc.filename || "document.pdf").replace(/"/g, "")}"`);
-    if (doc.sizeBytes) res.setHeader("Content-Length", String(doc.sizeBytes));
+    res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${safeName}"`);
+    // Content-Length must describe THIS RESPONSE, so it comes from the upstream
+    // object — not from the sizeBytes we recorded when the row was written.
+    // Those two can disagree (a re-uploaded file, a truncated store, a size
+    // recorded before a stitch), and a Content-Length larger than the body
+    // leaves the browser waiting for bytes that never arrive: the download
+    // hangs, and a page previewing several documents at once stalls. Found in
+    // the browser drive, where a stored size and the real file diverged.
+    // When upstream does not say, no header is better than a wrong one.
+    const upstreamLength = upstream.headers && upstream.headers["content-length"];
+    if (upstreamLength) res.setHeader("Content-Length", String(upstreamLength));
     // A mid-stream upstream failure cannot become a JSON error — headers are
     // already sent — so the socket is closed and the client sees a truncated
     // download rather than a PDF with an error message inside it.
