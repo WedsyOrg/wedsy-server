@@ -61,6 +61,18 @@ const Approve = async (req, res) => {
   }
 };
 
+// POST /decor/drafts/:id/copy — re-run the copy pass from the approvals queue.
+// Not gated on canPublish: writing copy is not publishing, and the staff member
+// who queued the pin should be able to ask for it again.
+const RetryCopy = async (req, res) => {
+  try {
+    const result = await DecorDraftService.retryCopy(req.params.id);
+    return res.send({ message: result.status || result.skipped || "done", ...result });
+  } catch (error) {
+    return respondErr(res, error, "A2S:RetryCopy");
+  }
+};
+
 // POST /decor/drafts/:id/reject
 const Reject = async (req, res) => {
   try {
@@ -75,4 +87,4 @@ const Reject = async (req, res) => {
   }
 };
 
-module.exports = { Create, List, Get, Approve, Reject };
+module.exports = { Create, List, Get, Approve, Reject, RetryCopy };

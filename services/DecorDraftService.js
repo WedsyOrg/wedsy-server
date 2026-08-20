@@ -3,7 +3,7 @@ const DecorDraft = require("../models/DecorDraft");
 const Decor = require("../models/Decor");
 const Admin = require("../models/Admin");
 const { suggestProductCode, isCodeTaken } = require("../utils/decorCode");
-const { storeRemoteImage, toAnalysisBase64 } = require("../utils/remoteImageToS3");
+const { storeRemoteImage, toAnalysisBase64, fetchRemoteImage } = require("../utils/remoteImageToS3");
 const { analyseImage } = require("./decorVision");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("./decorPricing");
 const { buildListingContext } = require("./decorListingContext");
@@ -244,6 +244,12 @@ const deps = {
   priceFromAnalysis,
   analyseForCopy,
   buildListingContext,
+  fetchRemoteImage,
+  // The copy pass is scheduled, never awaited — the response must not wait on it.
+  scheduleCopyPass: (draftId, buffer) =>
+    setImmediate(() => {
+      runCopyPass(draftId, buffer).catch((e) => console.warn("[A2S] copy pass threw", e && e.message));
+    }),
   lookupRead,
   panelQuoteFor,
 };
@@ -348,36 +354,35 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
     }
   }
 
-  // ── ONE CALL (2026-08-19) ─────────────────────────────────────────────────
-  // Pre-merge this was two: a vision+pricing call, then a separate listing call
-  // told what the first one had decided. FULL mode now returns both.
+  // ── SECURE THE IMAGE, REPLY, WRITE THE COPY AFTER (2026-08-20) ────────────
+  // A2S used to do everything before replying and the staff member watched a
+  // spinner for 10-20 seconds. The image comes first because it is the
+  // IRREPLACEABLE part: a Pinterest URL can rot, and once the asset is in S3 it
+  // is ours. The copy is regenerable — the same brain now backs the product
+  // form's AI Analyse button — so a draft with an image and a price is genuinely
+  // usable even if the copy never runs.
   //
-  // On a CACHE HIT the pricing half still comes from the cached DEMO read — that
-  // is what keeps the draft on the exact read the client was quoted from — and
-  // the single call made here supplies only the copy, which a demo read does not
-  // carry. So it is one call on a hit and one on a miss, never two.
+  // WHICH PATH DEFERS, and it is the inverse of what you would guess:
+  //   CACHE MISS — one merged call returns pricing AND copy together, so the
+  //     copy is already in hand and there is nothing to defer. copy: "ready".
+  //   CACHE HIT  — the price comes from the cached read at no AI cost, and the
+  //     copy is then the ONLY remaining model call. That is the call we defer,
+  //     and the hit is the normal path because the panel prices a pin before
+  //     anyone clicks A2S.
+  let copyDeferred = false;
   if (!pricingBrain || !listing) {
-    const b64 = await deps.toAnalysisBase64(stored.buffer);
-    // Category-scoped names when the cached read already told us the category;
-    // otherwise every name, because on a miss the category is decided by the very
-    // call we are about to make. See services/decorListingContext.
-    const listingContext = await deps.buildListingContext(
-      cachedAnalysis ? cachedAnalysis.category : ""
-    );
     if (!pricingBrain) {
+      const b64 = await deps.toAnalysisBase64(stored.buffer);
+      // On a miss the category is decided by the very call we are about to make,
+      // so names cannot be category-scoped here. See services/decorListingContext.
+      const listingContext = await deps.buildListingContext("");
       pricingBrain = await deps.runPricingBrain(b64, listingContext);
       pricingBrain.analysisMode = "full";
       sourceRead = { source: "fresh", cacheId: null, firstReadAt: new Date(), usedAt: new Date() };
       // Same call, so the copy is the same read — no second opinion to reconcile.
       if (!listing) listing = pricingBrain.analysis;
     } else if (!listing) {
-      // Cache hit: pricing is already settled from the cached read. A copy
-      // failure must NOT lose the pricing work, exactly as before.
-      try {
-        listing = await deps.analyseForCopy(b64, listingContext);
-      } catch (e) {
-        listing = { error: e.message, code: e.code || "LISTING_FAILED" };
-      }
+      copyDeferred = true;
     }
   }
 
@@ -466,6 +471,12 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
     sourceRead,
     pricing: { aiSuggested: priceLadder, panelQuote },
     status: "queued",
+    // pending is written BEFORE the copy pass starts, so an interrupted run is
+    // indistinguishable from one that never started — see the note on the model.
+    copy: copyDeferred
+      ? { status: "pending", attempts: 0 }
+      : { status: "ready", completedAt: new Date(), categoryDisagreement },
+    copyAnalysis: copyDeferred ? null : listing || null,
     addedBy: actorId || null,
     addedAt: new Date(),
     supersedesDraftId: rejected ? rejected._id : null,
@@ -479,7 +490,126 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
     ],
   });
 
+  // Hand back immediately; the copy runs after the response is on its way.
+  // deps.scheduleCopyPass is a seam so tests can drive it deterministically.
+  if (copyDeferred) deps.scheduleCopyPass(doc._id, stored.buffer);
   return doc.toObject();
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE COPY PASS — runs AFTER the reply, on the server.
+//
+// MECHANISM: an in-process deferred call (setImmediate), not a client callback.
+// The staff member will navigate to the next pin, reload, or close the tab the
+// moment they get their draft id, so returning early from the extension is not
+// enough — the work has to already be off the request. It is.
+//
+// WHAT A pm2 RESTART DOES (a deploy mid-copy): nothing that needs recovering.
+// copy.status is written "pending" as part of the draft's own create, before any
+// work begins, and only a SUCCESSFUL pass moves it to "ready". So an interrupted
+// draft is left exactly "pending" — the same state as one whose pass has not
+// started — which is the "needs writing" bucket Rohaan already filters on. The
+// patch is a single atomic updateOne, so there is no half-written middle state
+// either. Recovery is therefore a re-run, not a repair: POST
+// /decor/drafts/:id/copy, or a sweep over { "copy.status": "pending" } if this
+// ever wants to be automatic.
+//
+// The image buffer is passed in on the immediate path (it is already in hand)
+// and RE-FETCHED FROM S3 on a retry, which is why retry works after a restart.
+const runCopyPass = async (draftId, buffer) => {
+  const draft = await DecorDraft.findById(draftId).lean();
+  if (!draft) return { skipped: "gone" };
+  if (draft.copy && draft.copy.status === "ready") return { skipped: "already written" };
+
+  await DecorDraft.updateOne(
+    { _id: draftId },
+    { $set: { "copy.status": "pending", "copy.startedAt": new Date() }, $inc: { "copy.attempts": 1 } }
+  );
+
+  try {
+    const buf = buffer || (await deps.fetchRemoteImage(draft.storedImage)).buffer;
+    const b64 = await deps.toAnalysisBase64(buf);
+    const visionCategory =
+      (draft.aiAnalysis && draft.aiAnalysis.pricing && draft.aiAnalysis.pricing.analysis
+        && draft.aiAnalysis.pricing.analysis.category) || "";
+    const listingContext = await deps.buildListingContext(visionCategory);
+    const copy = await deps.analyseForCopy(b64, listingContext);
+
+    const listingCategory = (copy && copy.category) || "";
+    const disagreement =
+      visionCategory && listingCategory && visionCategory.toLowerCase() !== listingCategory.toLowerCase()
+        ? { vision: visionCategory, listing: listingCategory }
+        : null;
+
+    const name = (copy && (copy.suggestedName || copy.name)) || "";
+    const description = (copy && copy.description) || "";
+    const tags = Array.isArray(copy && copy.tags) ? copy.tags : [];
+    const included = Array.isArray(copy && copy.included) ? copy.included : [];
+    const attributes = {
+      style: copy && copy.style ? (Array.isArray(copy.style) ? copy.style : [copy.style]) : [],
+      colors: (copy && copy.colors) || [],
+      flowers: (copy && copy.flowers) || [],
+      fabric: (copy && copy.fabric) || [],
+    };
+
+    // `suggested` is WHAT THE AI SAID and is always overwritten. `draft` is the
+    // approver's working copy, so each field is filled ONLY if still empty — a
+    // human who started typing while the pass was in flight does not get
+    // overwritten by it.
+    const fresh = await DecorDraft.findById(draftId).lean();
+    if (!fresh || fresh.status !== "queued") return { skipped: "no longer queued" };
+    const fillIfEmpty = {};
+    if (!fresh.draft.name) fillIfEmpty["draft.name"] = name;
+    if (!fresh.draft.description) fillIfEmpty["draft.description"] = description;
+    if (!(fresh.draft.tags || []).length) fillIfEmpty["draft.tags"] = tags;
+    if (!(fresh.draft.included || []).length) fillIfEmpty["draft.included"] = included;
+    if (!fresh.draft.attributes || !Object.keys(fresh.draft.attributes).length) {
+      fillIfEmpty["draft.attributes"] = attributes;
+    }
+
+    // ONE atomic write — the reason a draft is never half-written.
+    await DecorDraft.updateOne(
+      { _id: draftId },
+      {
+        $set: {
+          copyAnalysis: copy,
+          "suggested.name": name,
+          "suggested.description": description,
+          "suggested.tags": tags,
+          "suggested.included": included,
+          "suggested.attributes": attributes,
+          ...fillIfEmpty,
+          "copy.status": "ready",
+          "copy.lastError": "",
+          "copy.completedAt": new Date(),
+          "copy.categoryDisagreement": disagreement,
+        },
+      }
+    );
+    return { status: "ready" };
+  } catch (e) {
+    await DecorDraft.updateOne(
+      { _id: draftId },
+      { $set: { "copy.status": "failed", "copy.lastError": String((e && e.message) || e).slice(0, 500) } }
+    );
+    console.warn("[A2S] copy pass failed", draftId, e && e.message);
+    return { status: "failed", error: (e && e.message) || String(e) };
+  }
+};
+
+// POST /decor/drafts/:id/copy — re-run from the approvals queue. Re-fetches the
+// stored S3 image, so it works long after the original request's buffer is gone
+// and after any number of restarts.
+const retryCopy = async (draftId) => {
+  if (!isId(draftId)) throw err(400, "Invalid draft id");
+  const draft = await DecorDraft.findById(draftId).lean();
+  if (!draft) throw err(404, "Draft not found");
+  if (draft.status !== "queued") throw err(409, `This draft is ${draft.status} — the copy can only be re-run while it is queued`);
+  if (!draft.storedImage) throw err(422, "This draft has no stored image — re-add the pin so the server can fetch it again");
+  // Deliberately allowed on a "ready" draft too: re-running the copy is how an
+  // approver asks for a better name, not only how they recover a failure.
+  const result = await runCopyPass(draftId, null);
+  return { draft: (await DecorDraft.findById(draftId).lean()), ...result };
 };
 
 // ── C) list + detail ────────────────────────────────────────────────────────
@@ -527,7 +657,14 @@ const approveDraft = async (id, body = {}, actorId) => {
   const category = String(body.category || draft.draft.category || "").trim();
   if (!category) throw err(400, "category is required");
   const name = String(body.name || draft.draft.name || "").trim();
-  if (!name) throw err(400, "name is required");
+  if (!name) {
+    // A pending/failed copy does NOT block approval — the approver just has to
+    // supply the name themselves, which is the whole point of the third state.
+    const pendingCopy = draft.copy && draft.copy.status !== "ready";
+    throw err(400, pendingCopy
+      ? "name is required — the AI copy for this draft hasn't been written yet, so type a name or re-run the copy pass"
+      : "name is required");
+  }
 
   const productCode = String(body.productCode || draft.draft.productCode || "").trim();
   // Re-check uniqueness AT APPROVE TIME — the approver may have changed it, and
@@ -853,6 +990,8 @@ module.exports = {
   getDraft,
   approveDraft,
   rejectDraft,
+  runCopyPass,
+  retryCopy,
   analysisForDecor,
   normalizeImageUrl,
   toCatalogueMeasurements,

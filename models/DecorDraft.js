@@ -172,6 +172,46 @@ const DecorDraftSchema = new mongoose.Schema(
       index: true,
     },
 
+    // ── THE COPY PASS (2026-08-20) ───────────────────────────────────────────
+    // A THIRD STATE, deliberately BESIDE `status` rather than inside it: a draft
+    // whose copy has not been written is still queued, still approvable, and
+    // must not need a new status value that every existing consumer has to learn.
+    //
+    //   ready   — the copy is written. Default, so every draft that predates this
+    //             reads correctly with no backfill.
+    //   pending — the draft exists with its image and price; the copy has not run
+    //             yet, or a restart interrupted it.
+    //   failed  — the copy ran and errored. lastError says how.
+    //
+    // pending is the RESTING state, written BEFORE the work starts. That is what
+    // makes a pm2 restart safe: a draft interrupted mid-copy is still `pending`,
+    // which is indistinguishable from "not started yet" — the correct answer —
+    // and needs no crash detection. The patch itself is a single atomic update,
+    // so a draft is never half-written.
+    copy: {
+      status: { type: String, enum: ["pending", "ready", "failed"], default: "ready", index: true },
+      attempts: { type: Number, default: 0 },
+      lastError: { type: String, default: "" },
+      startedAt: { type: Date, default: null },
+      completedAt: { type: Date, default: null },
+      // Computed by the copy pass, so it cannot live in the immutable
+      // aiAnalysis.categoryDisagreement — see the note on copyAnalysis.
+      categoryDisagreement: { type: Mixed, default: null },
+    },
+
+    // ── The raw copy record — MUTABLE, and it has to be ──────────────────────
+    // This would naturally belong in aiAnalysis.listing beside the pricing half.
+    // It CANNOT: aiAnalysis is immutable by the hooks below, and they fire on
+    // every write path — verified, all three throw ($set of aiAnalysis.listing,
+    // $set of the whole object, and doc.save() after markModified). A draft
+    // created before its copy exists can therefore never have the copy patched in.
+    //
+    // So the late-arriving copy lives here instead. It is NOT part of the price
+    // training pair — aiSuggested, panelQuote and aiAnalysis.pricing are all
+    // still written once at create and still immutable — and it is regenerable
+    // by design, which is exactly why it was safe to defer in the first place.
+    copyAnalysis: { type: Mixed, default: null },
+
     addedBy: { type: ObjectId, ref: "Admin", default: null },
     addedAt: { type: Date, default: Date.now },
 

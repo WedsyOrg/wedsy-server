@@ -38,6 +38,9 @@ router.post("/demo-price", largeJson, CheckAdminLogin, decor.DemoPrice);
 router.post("/drafts", largeJson, CheckAdminLogin, decorDraft.Create);
 router.get("/drafts", CheckAdminLogin, decorDraft.List);
 router.get("/drafts/:id", CheckAdminLogin, decorDraft.Get);
+// Re-run the copy pass on a draft whose copy is pending or failed. Admin-only,
+// NOT canPublish — asking the AI to write a name is not publishing a product.
+router.post("/drafts/:id/copy", CheckAdminLogin, decorDraft.RetryCopy);
 router.post("/drafts/:id/approve", CheckAdminLogin, canPublish, decorDraft.Approve);
 router.post("/drafts/:id/reject", CheckAdminLogin, canPublish, decorDraft.Reject);
 
