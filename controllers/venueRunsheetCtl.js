@@ -8,6 +8,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueRunsheetItem = require("../models/VenueRunsheetItem");
 const { reqStr, optStr, optDate } = require("../utils/venueInput");
 const { dayKey } = require("../utils/venueRunsheet");
+const { resolveScopedBooking } = require("../utils/venueBookingScope");
 
 const CATEGORIES = ["setup", "ceremony", "catering", "vendor", "teardown", "other"];
 const STATUSES = ["pending", "in_progress", "done"];
@@ -61,8 +62,9 @@ function validateItemInput(body, { partial = false } = {}) {
 // GET /venues/:slug/bookings/:bookingId/runsheet?day=YYYY-MM-DD — open read.
 const listRunsheet = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const query = { venue: venue._id, booking: req.params.bookingId };
     if (req.query.day) {
       const v = optDate(req.query.day, "day");
@@ -77,8 +79,9 @@ const listRunsheet = async (req, res) => {
 // POST /venues/:slug/bookings/:bookingId/runsheet — leads capability.
 const createItem = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id }).select("_id").lean();
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const dayV = optDate((req.body || {}).day, "day");
@@ -128,8 +131,9 @@ const deleteItem = async (req, res) => {
 // Body: { day: "YYYY-MM-DD", ids: [itemId, ...] } — order = array index.
 const reorderRunsheet = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const { ids } = req.body || {};
     const dayV = optDate((req.body || {}).day, "day");
     if (!dayV.ok || !dayV.value) return res.status(400).json({ message: dayV.message || "day is required" });

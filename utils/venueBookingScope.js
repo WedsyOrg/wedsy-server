@@ -1,0 +1,74 @@
+/**
+ * utils/venueBookingScope.js — a booking-keyed read is still a LEAD read.
+ *
+ * ── THE GAP THIS CLOSES ─────────────────────────────────────────────────────
+ * Room allotments and the runsheet are keyed by booking id, and both
+ * controllers resolved nothing but the VENUE: `resolveOwnedVenue` followed by
+ * `{ venue: venue._id, booking: req.params.bookingId }`. Twelve handlers, none
+ * of them touching venueLeadScope.
+ *
+ * That meant a member who cannot see a lead could still read and write its room
+ * plan and its per-day runsheet — the guest names, the room numbers, the whole
+ * event schedule — by knowing a booking id. Every other lead-attached surface
+ * (payments, invoices, documents) goes through resolveScopedEnquiry; these two
+ * never did.
+ *
+ * It mattered less while they lived on a separate /dashboard page that a
+ * restricted member had little reason to visit. Moving Event Ops onto the lead
+ * makes it a lead surface in the product as well as in the data, and the
+ * invariant is that every lead read is scoped.
+ *
+ * ── WHY NOT LEAD-SCOPED ALIASES ─────────────────────────────────────────────
+ * The alternative was a second set of routes under /enquiries/:id/... that the
+ * new tab would call. That is two URLs for one resource — the duplication this
+ * whole merge exists to remove — and, worse, it would leave the booking-keyed
+ * originals exactly as unscoped as they are now. Fixing the routes that already
+ * exist closes the hole for every caller, including the ones written before
+ * this change.
+ *
+ * ── BOOKINGS WITH NO LEAD ───────────────────────────────────────────────────
+ * A booking created directly (controllers/venueBooking.createBooking) can have
+ * no `enquiry`. There is no lead to scope by, so those stay venue-scoped —
+ * refusing them would break a path that works today, and there is no lead whose
+ * visibility could be consulted.
+ */
+const mongoose = require("mongoose");
+const Venue = require("../models/Venue");
+const VenueBooking = require("../models/VenueBooking");
+const { resolveScopedEnquiry } = require("./venueLeadScope");
+
+/**
+ * Venue + booking, with the booking's lead checked against the caller's scope.
+ *
+ * Responds and returns null on every failure, so callers keep the shape they
+ * already use: `const owned = await resolveScopedBooking(req, res); if (!owned) return;`
+ *
+ * A miss is 404, never 403 — the same rule as every other lead read. Telling a
+ * member "forbidden" would confirm the booking exists.
+ */
+async function resolveScopedBooking(req, res, select = "_id") {
+  const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
+  if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
+  if (String(venue._id) !== String(req.venueOwner.venueId)) {
+    res.status(404).json({ message: "Venue not found" });
+    return null;
+  }
+  if (!mongoose.isValidObjectId(req.params.bookingId)) {
+    res.status(404).json({ message: "Booking not found" });
+    return null;
+  }
+  const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
+    .select("_id enquiry status days checkIn checkOut coupleName roomsRequired")
+    .lean();
+  if (!booking) { res.status(404).json({ message: "Booking not found" }); return null; }
+
+  if (booking.enquiry) {
+    const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, booking.enquiry);
+    if (!lead) { res.status(404).json({ message: "Booking not found" }); return null; }
+    return { venue, booking, lead };
+  }
+  // Unlinked booking: nothing to scope by. Venue ownership is the whole check.
+  return { venue, booking, lead: null };
+}
+
+module.exports = { resolveScopedBooking };
