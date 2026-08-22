@@ -7,6 +7,7 @@
  */
 const Venue = require("../models/Venue");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
+const { bookingInScope } = require("../utils/venueBookingScope");
 const VenueRoomNight = require("../models/VenueRoomNight");
 const VenueBooking = require("../models/VenueBooking");
 const VenueTeamMember = require("../models/VenueTeamMember");
@@ -43,6 +44,9 @@ const checkInAllotment = async (req, res) => {
     if (!venue) return;
     const allotment = await VenueRoomAllotment.findOne({ _id: req.params.allotmentId, venue: venue._id });
     if (!allotment) return res.status(404).json({ message: "Allotment not found" });
+    if (!(await bookingInScope(req, venue._id, allotment.booking))) {
+      return res.status(404).json({ message: "Allotment not found" });
+    }
     if (allotment.status !== "allotted") return res.status(409).json({ message: `Cannot check in from status "${allotment.status}"` });
 
     const body = req.body || {};
@@ -102,6 +106,9 @@ const checkOutAllotment = async (req, res) => {
     if (!venue) return;
     const allotment = await VenueRoomAllotment.findOne({ _id: req.params.allotmentId, venue: venue._id });
     if (!allotment) return res.status(404).json({ message: "Allotment not found" });
+    if (!(await bookingInScope(req, venue._id, allotment.booking))) {
+      return res.status(404).json({ message: "Allotment not found" });
+    }
     if (allotment.status !== "checked_in") return res.status(409).json({ message: `Cannot check out from status "${allotment.status}"` });
 
     const body = req.body || {};
@@ -201,6 +208,9 @@ const settlementSlip = async (req, res) => {
     if (!venue) return;
     const allotment = await VenueRoomAllotment.findOne({ _id: req.params.allotmentId, venue: venue._id }).lean();
     if (!allotment) return res.status(404).json({ message: "Allotment not found" });
+    if (!(await bookingInScope(req, venue._id, allotment.booking))) {
+      return res.status(404).json({ message: "Allotment not found" });
+    }
     if (allotment.status !== "checked_out") return res.status(409).json({ message: "Settlement slip is available after check-out" });
     const room = (venue.rooms || []).find((r) => String(r._id) === String(allotment.room));
     const booking = await VenueBooking.findById(allotment.booking).select("coupleName").lean();
@@ -216,6 +226,9 @@ const archiveAllotment = async (req, res) => {
     if (!venue) return;
     const allotment = await VenueRoomAllotment.findOne({ _id: req.params.allotmentId, venue: venue._id });
     if (!allotment) return res.status(404).json({ message: "Allotment not found" });
+    if (!(await bookingInScope(req, venue._id, allotment.booking))) {
+      return res.status(404).json({ message: "Allotment not found" });
+    }
     if (allotment.status !== "checked_out") return res.status(409).json({ message: "Only completed stays can be archived" });
     if (allotment.archived) return res.status(409).json({ message: "Already archived" });
 

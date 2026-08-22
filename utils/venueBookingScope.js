@@ -71,4 +71,27 @@ async function resolveScopedBooking(req, res, select = "_id") {
   return { venue, booking, lead: null };
 }
 
-module.exports = { resolveScopedBooking };
+/**
+ * Is this booking inside the caller's lead scope?
+ *
+ * For the ITEM-keyed routes — /allotments/:allotmentId, /runsheet/:itemId —
+ * which resolve their row by { _id, venue } and only then learn which booking
+ * it belongs to. They are not a different KIND of surface from the
+ * booking-keyed ones: the row carries `booking`, the booking carries `enquiry`,
+ * so the same lead is one hop away and the same member could reach the same
+ * guest names by holding an item id instead of a booking id. Leaving them out
+ * would have been a documented hole rather than a real distinction.
+ *
+ * @returns true when the caller may see it (including when there is no linked
+ *          lead to scope by — see the note at the top of this file).
+ */
+async function bookingInScope(req, venueId, bookingId) {
+  if (!bookingId) return true; // item not attached to a booking: venue scope is all there is
+  const booking = await VenueBooking.findOne({ _id: bookingId, venue: venueId }).select("enquiry").lean();
+  if (!booking) return false;
+  if (!booking.enquiry) return true; // unlinked booking, as above
+  const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venueId, booking.enquiry);
+  return Boolean(lead);
+}
+
+module.exports = { resolveScopedBooking, bookingInScope };

@@ -10,7 +10,7 @@
  * simultaneous identical requests wins.
  */
 const Venue = require("../models/Venue");
-const { resolveScopedBooking } = require("../utils/venueBookingScope");
+const { resolveScopedBooking, bookingInScope } = require("../utils/venueBookingScope");
 const VenueBooking = require("../models/VenueBooking");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRoomNight = require("../models/VenueRoomNight");
@@ -235,7 +235,7 @@ const listAllotments = async (req, res) => {
 // double-booking.
 const planAllotments = async (req, res) => {
   try {
-    const owned = await resolveScopedBooking(req, res, "_id");
+    const owned = await resolveScopedBooking(req, res, "_id rooms");
     if (!owned) return;
     const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
@@ -294,6 +294,9 @@ const updateAllotment = async (req, res) => {
     if (!venue) return;
     const allotment = await VenueRoomAllotment.findOne({ _id: req.params.allotmentId, venue: venue._id });
     if (!allotment) return res.status(404).json({ message: "Allotment not found" });
+    if (!(await bookingInScope(req, venue._id, allotment.booking))) {
+      return res.status(404).json({ message: "Allotment not found" });
+    }
 
     const { action } = req.body || {};
     if (req.body && req.body.notes !== undefined) {
