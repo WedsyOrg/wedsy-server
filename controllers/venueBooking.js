@@ -76,8 +76,12 @@ const listBookings = async (req, res) => {
 
 const getBooking = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    // Scoped like the rest of the family. This is what the retired booking
+    // page's redirector reads to find the lead, so an out-of-scope booking must
+    // 404 here rather than hand back a couple's name on the way past.
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id }).lean();
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     return res.status(200).json({ booking });
