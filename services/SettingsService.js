@@ -23,6 +23,21 @@ const DEFAULTS = {
   "golden.workEndHour": 19,
   "cadence.attemptOffsetsDays": [0, 1, 3, 5],
   "cadence.maxAttempts": 4,
+  // ── HR / attendance policy (2026-08-21) ───────────────────────────────────
+  // Company-wide defaults. A person may override the START TIME only, at
+  // Admin.meta.workStartTime — a shift is an employment term, not a permission
+  // bundle, so this is deliberately NOT per-role.
+  //
+  // ⚠️ THESE ARE READ AT CHECK-IN AND SNAPSHOTTED ONTO THE ATTENDANCE ROW.
+  // A fine is money and this store has no history: editing hr.lateBands must
+  // change tomorrow's fines, never last month's sheet. See AttendanceService.
+  "hr.workStartTime": "11:00",
+  "hr.graceMinutes": 20,
+  // Ordered bands, minutes LATE past the grace cutoff. toMinutes null = open
+  // ended (the last band). Policy: 11:21-12:00 → ₹300, after 12:00 → ₹500.
+  "hr.lateBands": [{ toMinutes: 60, fine: 300 }, { toMinutes: null, fine: 500 }],
+  // ISO weekdays worked. 1 = Monday … 7 = Sunday. Policy: Mon-Sat, Sunday off.
+  "hr.workingDays": [1, 2, 3, 4, 5, 6],
   "lost.reasons": ["budget", "competitor", "not_responsive", "not_a_fit", "other"],
   "lost.approvalRequired": true,
   "recycle.reasons": ["wedding_next_year", "budget_mismatch_now", "venue_not_booked", "other"],
@@ -183,6 +198,10 @@ const KEY_CATEGORY = {
   "golden.workEndHour": "settings_sla",
   "atRisk.newHours": "settings_sla",
   "atRisk.contactedHours": "settings_sla",
+  "hr.workStartTime": "settings_hr",
+  "hr.graceMinutes": "settings_hr",
+  "hr.lateBands": "settings_hr",
+  "hr.workingDays": "settings_hr",
   "cadence.attemptOffsetsDays": "settings_cadence",
   "cadence.maxAttempts": "settings_cadence",
   "lost.reasons": "settings_reasons",
@@ -248,8 +267,57 @@ const isStringArray = (v) =>
 const isIntInRange = (v, min, max) => Number.isInteger(v) && v >= min && v <= max;
 
 // Strict per-key validation. Throws 400 on anything off.
+const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
 const validateValue = (key, value) => {
   switch (key) {
+    // ── HR policy ───────────────────────────────────────────────────────────
+    case "hr.workStartTime":
+      if (typeof value !== "string" || !HHMM_RE.test(value)) {
+        throw err(400, "hr.workStartTime must be a 24-hour HH:MM time, e.g. \"11:00\"");
+      }
+      return value;
+    case "hr.graceMinutes":
+      if (!isIntInRange(value, 0, 240)) throw err(400, "hr.graceMinutes must be an integer between 0 and 240");
+      return value;
+    case "hr.lateBands": {
+      if (!Array.isArray(value) || !value.length) {
+        throw err(400, "hr.lateBands must be a non-empty array of { toMinutes, fine }");
+      }
+      const bands = value.map((b, i) => {
+        if (!b || typeof b !== "object") throw err(400, `hr.lateBands[${i}] must be an object`);
+        const to = b.toMinutes;
+        if (to !== null && !isIntInRange(to, 1, 1440)) {
+          throw err(400, `hr.lateBands[${i}].toMinutes must be null (open-ended) or 1-1440`);
+        }
+        if (!Number.isFinite(Number(b.fine)) || Number(b.fine) < 0) {
+          throw err(400, `hr.lateBands[${i}].fine must be a number >= 0`);
+        }
+        return { toMinutes: to === null ? null : Number(to), fine: Number(b.fine) };
+      });
+      // Exactly one open-ended band, and it must be last — otherwise later bands
+      // are unreachable and a fine silently stops applying.
+      const openEnded = bands.filter((b) => b.toMinutes === null);
+      if (openEnded.length !== 1 || bands[bands.length - 1].toMinutes !== null) {
+        throw err(400, "hr.lateBands must end with exactly one open-ended band (toMinutes: null)");
+      }
+      for (let i = 1; i < bands.length - 1; i++) {
+        if (bands[i].toMinutes <= bands[i - 1].toMinutes) {
+          throw err(400, "hr.lateBands toMinutes must strictly increase");
+        }
+      }
+      return bands;
+    }
+    case "hr.workingDays": {
+      if (!Array.isArray(value) || !value.length) {
+        throw err(400, "hr.workingDays must be a non-empty array of ISO weekdays (1=Mon … 7=Sun)");
+      }
+      const days = [...new Set(value.map((d) => Number(d)))].sort((a, b) => a - b);
+      if (!days.every((d) => isIntInRange(d, 1, 7))) {
+        throw err(400, "hr.workingDays must contain integers 1-7 (1=Mon … 7=Sun)");
+      }
+      return days;
+    }
     case "assignment.excludedAdminIds": {
       if (!Array.isArray(value)) throw err(400, "assignment.excludedAdminIds must be an array of admin ids");
       const mongooseLib = require("mongoose");

@@ -11,13 +11,18 @@ router.post("/check-out", CheckAdminLogin, controller.CheckOut);
 router.post("/heartbeat", CheckAdminLogin, controller.Heartbeat);
 router.get("/me", CheckAdminLogin, controller.Me);
 
-// Team visibility follows the EXISTING lead-scope semantics (own/team/all),
-// keyed on the attendance row's adminId: own → self, team → subordinates,
-// all (Revenue Head / founder) → the whole daily list.
+// Team visibility. RE-GATED 2026-08-21 from leads:view:own to attendance:view:own
+// — attendance visibility was coupled to LEAD visibility, so an HR or payroll
+// viewer with no lead permissions could not see the roster at all. Same scope
+// machinery: ownerField "adminId" lets buildScopeFilter resolve own → self,
+// team → subordinates, department → members, all → everyone.
+//
+// /me above stays login-only on purpose: a person must always be able to see
+// their own late marks and fines without anyone granting it.
 router.get(
   "/team",
   CheckAdminLogin,
-  requirePermission("leads:view:own", { ownerField: "adminId" }),
+  requirePermission("attendance:view:own", { ownerField: "adminId" }),
   controller.Team
 );
 

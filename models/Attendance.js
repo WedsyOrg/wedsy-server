@@ -26,12 +26,64 @@ const AttendanceSchema = new mongoose.Schema(
     },
     // Denormalized sum of idleSegments (ms) — cheap reads for lists/payroll.
     idleMs: { type: Number, default: 0 },
+
+    // ── LATENESS, FROZEN AT CHECK-IN (2026-08-21) ────────────────────────────
+    // A fine is MONEY and the Setting store has no history: editing hr.lateBands
+    // must change tomorrow's fines and never last month's sheet. So lateness is
+    // computed once, at check-in, against the policy in force at that moment —
+    // and the policy itself is copied onto the row. Every past payable sheet is
+    // therefore reproducible from the rows alone, with no dependency on what the
+    // settings happen to say today.
+    lateMinutes: { type: Number, default: 0 }, // past the grace cutoff; 0 = on time
+    fineAmount: { type: Number, default: 0 },  // rupees, from the band that matched
+    // The exact policy this row was judged against. Never read for a decision —
+    // it exists so a disputed fine can be explained months later.
+    policySnapshot: {
+      workStartTime: { type: String, default: "" },   // effective (person override or company)
+      graceMinutes: { type: Number, default: null },
+      lateBands: { type: mongoose.Schema.Types.Mixed, default: null },
+      source: { type: String, default: "" },          // "person" | "company"
+    },
+
+    // ── HOW THE DAY WAS CLOSED ───────────────────────────────────────────────
+    // "self"   — the person checked out.
+    // "system" — the 04:00 sweep closed a forgotten check-out at the last
+    //            EVIDENCE of presence. It is NOT a full day worked and must
+    //            reach the sheet as "needs manager confirmation".
+    closure: {
+      by: { type: String, enum: ["self", "system", null], default: null },
+      at: { type: Date, default: null },
+      reason: { type: String, default: "" },
+    },
+
+    // ── THE DAY, AS PAYROLL SEES IT ──────────────────────────────────────────
+    // dayType is calendar truth; dayStatus is what the day RESOLVED to.
+    // Rows exist for WORKING days only — Sundays and holidays are derivable and
+    // materialising them would be noise.
+    dayType: { type: String, enum: ["working", "weekly_off", "holiday"], default: "working" },
+    // absent_unexplained ≠ lop. The sweep records "no attendance was recorded";
+    // LOP is a DECISION taken at sheet time, never a fact written by a cron.
+    dayStatus: {
+      type: String,
+      enum: ["present", "half_day", "incomplete", "leave_paid", "comp_off", "absent_unexplained", "lop"],
+      default: "present",
+    },
+    // 1 = full day, 0.5 = half day, 0 = not worked. Denormalised FROM an
+    // approved LeaveRequest by the one chokepoint that may write it — see
+    // services/AttendanceDayService. A finalised sheet run should RECOMPUTE from
+    // the leave records rather than trust this cache.
+    dayFraction: { type: Number, default: 1 },
+    leaveRequestId: { type: ObjectId, ref: "LeaveRequest", default: null },
   },
   { timestamps: true }
 );
 
 AttendanceSchema.index({ adminId: 1, date: 1 }, { unique: true });
 AttendanceSchema.index({ date: 1 });
+// The 04:00 sweep's working set: open rows in a bounded window.
+AttendanceSchema.index({ date: 1, checkOutAt: 1 });
+// Sheet reads: everything that resolved to something needing attention.
+AttendanceSchema.index({ date: 1, dayStatus: 1 });
 
 module.exports =
   mongoose.models.Attendance || mongoose.model("Attendance", AttendanceSchema);

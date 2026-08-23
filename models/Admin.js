@@ -52,6 +52,20 @@ const AdminSchema = new mongoose.Schema(
       designation: { type: String, default: "" },
       employeeId: { type: String, default: "" },
       profilePhoto: { type: String, default: "" },
+      // ── HR (2026-08-21) ────────────────────────────────────────────────────
+      // Per-person shift start, "HH:MM". NULL means the company default
+      // (Setting "hr.workStartTime"). Deliberately per-PERSON, not per-role: a
+      // shift is an employment term, and Role here is a permission bundle — so
+      // changing someone's hours must not change what they can see.
+      workStartTime: { type: String, default: null },
+      // A login that is not a person: integrations, shared service accounts,
+      // seed/test users. Excluded from every HR roll-up. Set explicitly by a
+      // human — nothing here guesses from a name.
+      isServiceAccount: { type: Boolean, default: false },
+      // Employment end. Together with joinedAt this is the "employed on this
+      // date" window; both null means UNKNOWN, and the predicate says so rather
+      // than assuming.
+      exitedAt: { type: Date, default: null },
     },
   },
   { timestamps: true }

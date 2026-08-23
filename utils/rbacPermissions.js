@@ -17,6 +17,17 @@ const RESOURCES = [
   // founder role's *:*:all wildcard; never seeded to other roles).
   "settings_kiara",
   "settings_moods",
+  // HR / attendance policy (start time, grace, late bands, working days).
+  "settings_hr",
+  // Leave, comp-off and the approval chain (2026-08-22). Separate from
+  // `attendance`: seeing when someone checked in and approving their holiday are
+  // different jobs, and the approver is usually not the HR viewer.
+  "leave",
+  // ── Payroll (2026-08-21) ──────────────────────────────────────────────────
+  // Deliberately SEPARATE from `attendance`. Seeing someone's check-in time and
+  // seeing their net pay are different privileges, and collapsing them would
+  // give every manager who can see a team roster access to salaries.
+  "payroll",
   "settings_planner",
   // ── MB-OSV — the OS Venue department ──────────────────────────────────────
   // One resource per venue-team job, so the work can be split by assignment

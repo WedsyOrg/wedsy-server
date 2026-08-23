@@ -191,6 +191,28 @@ httpServer.listen(port, function () {
   // No-op when Google creds aren't configured (runScheduledSheetSync guards internally).
   cron.schedule("*/15 * * * *", () => { runScheduledSheetSync(); }, IST);
 
+  // ── HR daily sweep — 04:00 IST (2026-08-21) ────────────────────────────
+  // Two passes over YESTERDAY and a bounded backlog: close forgotten
+  // check-outs at the last evidence of presence, then record working days on
+  // which no attendance was recorded. Pure DB mutation + logs, no external
+  // sends — same shape as the hold-expiry sweep above.
+  //
+  // 04:00 because nobody is working then: hourly would truncate someone
+  // mid-shift and midnight would cut off anyone working late.
+  //
+  // Every write is a guarded updateOne/create whose precondition travels with
+  // it, so it is safe if pm2 runs more than one instance (each registers this
+  // cron independently) and safe to re-run after a restart.
+  // Off-switch: HR_SWEEP_DISABLED=true.
+  if (process.env.HR_SWEEP_DISABLED !== "true") {
+    cron.schedule("0 4 * * *", () => {
+      require("./services/AttendanceDayService")
+        .runDailySweep()
+        .then((r) => console.log("[HRSweep]", JSON.stringify(r)))
+        .catch((e) => console.error("[HRSweep] failed:", e.message));
+    }, IST);
+  }
+
   // Slice B4 — the daily escalation sweep (lane silence ladder + deal clock +
   // lane wake pass) — 8am IST, env-gated so staging/dev don't double-notify.
   if (process.env.ESCALATION_SWEEP === "1") {

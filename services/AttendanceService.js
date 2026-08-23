@@ -1,6 +1,7 @@
 const Attendance = require("../models/Attendance");
 const Admin = require("../models/Admin");
 const { assignableFilter } = require("../utils/assignable");
+const { effectivePolicyFor, judgeCheckIn, snapshotOf } = require("./hrPolicy");
 
 // Idle = no heartbeat for > 5 minutes while checked in. The frontend pings
 // every 60s from an active tab, so a 5-min gap means the OS genuinely wasn't
@@ -27,8 +28,21 @@ const checkIn = async (adminId, now = new Date()) => {
   const date = dayKey(now);
   let row = await Attendance.findOne({ adminId, date });
   if (!row) {
+    // ── LATENESS IS FROZEN HERE (2026-08-21) ────────────────────────────────
+    // A fine is money and the Setting store has no history, so the judgement is
+    // made ONCE — now — against the policy in force now, and the policy is
+    // copied onto the row. Editing hr.lateBands tomorrow must not change what
+    // this day cost. Every past payable sheet stays reproducible from the rows
+    // alone.
+    const admin = await Admin.findById(adminId, { meta: 1 }).lean();
+    const policy = await effectivePolicyFor(admin);
+    const { lateMinutes, fineAmount } = judgeCheckIn(now, policy);
     try {
-      row = await Attendance.create({ adminId, date, checkInAt: now, lastHeartbeatAt: now });
+      row = await Attendance.create({
+        adminId, date, checkInAt: now, lastHeartbeatAt: now,
+        lateMinutes, fineAmount, policySnapshot: snapshotOf(policy),
+        dayType: "working", dayStatus: "present", dayFraction: 1,
+      });
     } catch (e) {
       // double-click race on the unique index
       row = await Attendance.findOne({ adminId, date });
@@ -41,6 +55,14 @@ const checkIn = async (adminId, now = new Date()) => {
     row.idleMs += now.getTime() - new Date(row.checkOutAt).getTime();
     row.checkOutAt = null;
     row.lastHeartbeatAt = now;
+    // Re-opening a day clears its closure — it is open again, by definition.
+    // If the 04:00 sweep had marked it "incomplete", coming back to work makes
+    // it a working day again; a manager can still resolve it later.
+    row.closure = { by: null, at: null, reason: "" };
+    if (row.dayStatus === "incomplete" || row.dayStatus === "absent_unexplained") {
+      row.dayStatus = "present";
+      if (row.dayFraction === 0) row.dayFraction = 1;
+    }
     await row.save();
   }
   return row;
@@ -57,6 +79,9 @@ const checkOut = async (adminId, now = new Date()) => {
     row.idleMs += now.getTime() - last.getTime();
   }
   row.checkOutAt = now;
+  // The person closed their own day — distinguishable, forever, from the 04:00
+  // sweep closing a forgotten one.
+  row.closure = { by: "self", at: now, reason: "" };
   await row.save();
   return row;
 };
@@ -90,6 +115,13 @@ const me = async (adminId, liveMeetingIds = new Set()) => {
     checkOutAt: row ? row.checkOutAt : null,
     idleMs: row ? row.idleMs : 0,
     lastHeartbeatAt: row ? row.lastHeartbeatAt : null,
+    // The transparency rule: a person always sees their own late mark and fine,
+    // on a login-only endpoint. Never gated behind a permission.
+    lateMinutes: row ? row.lateMinutes : 0,
+    fineAmount: row ? row.fineAmount : 0,
+    dayStatus: row ? row.dayStatus : null,
+    dayFraction: row ? row.dayFraction : null,
+    closedBy: row && row.closure ? row.closure.by : null,
   };
 };
 
@@ -131,6 +163,13 @@ const team = async ({ date } = {}, scopeFilter = {}, liveMeetingIds = new Set())
           checkInAt: row ? row.checkInAt : null,
           checkOutAt: row ? row.checkOutAt : null,
           idleMs: row ? row.idleMs : 0,
+          lateMinutes: row ? row.lateMinutes : 0,
+          fineAmount: row ? row.fineAmount : 0,
+          dayStatus: row ? row.dayStatus : null,
+          dayFraction: row ? row.dayFraction : null,
+          // "system" here is the flag a manager acts on: the day was closed by
+          // the sweep, so its hours are unconfirmed.
+          closedBy: row && row.closure ? row.closure.by : null,
         };
       })
       .sort((x, y) => x.name.localeCompare(y.name)),
