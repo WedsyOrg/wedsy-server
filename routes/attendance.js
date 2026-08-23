@@ -26,4 +26,22 @@ router.get(
   controller.Team
 );
 
+// The employee's own note on one of their own days — including the fine on it.
+// Login-only for the same reason /me is: explaining your own late mark is not a
+// privilege someone grants you. Literal "me" segment, so it can never be read
+// as an :adminId.
+router.post("/me/:date/note", CheckAdminLogin, controller.Note);
+
+// A MANAGER resolving a system-closed day for someone in their scope.
+// attendance:edit (not payroll:approve) — resolving a day is a line-management
+// act that happens on the day; converting one to LOP on a payroll sheet is a
+// founder act that happens at month end. Same ownerField as /team, so own →
+// self, team → subordinates, department → members, all → everyone.
+router.post(
+  "/:adminId/:date/resolve",
+  CheckAdminLogin,
+  requirePermission("attendance:edit:own", { ownerField: "adminId" }),
+  controller.Resolve
+);
+
 module.exports = router;

@@ -42,19 +42,63 @@ const applyLeaveDecision = async ({ adminId, date, dayFraction, dayStatus, leave
 };
 
 // A manager resolving a system-closed ("incomplete") day. The evidence stays as
-// the sweep found it — only the RESOLUTION changes, and who changed it is the
-// LeaveRequest/audit layer's job, not a silent overwrite here.
-const resolveIncompleteDay = async ({ adminId, date, dayStatus, dayFraction = 1 }) => {
+// the sweep found it — only the RESOLUTION changes.
+//
+// `outcome`, `reason` and `actorId` are recorded on the row when supplied, so a
+// deduction has an author. Callers that only need the status change (the sheet's
+// own convert path) may omit them and behave exactly as before.
+const resolveIncompleteDay = async ({ adminId, date, dayStatus, dayFraction = 1, outcome = null, reason = "", actorId = null }) => {
   const allowed = ["present", "half_day", "absent_unexplained", "lop", "leave_paid", "comp_off"];
   if (!allowed.includes(dayStatus)) throw err(400, `dayStatus must be one of ${allowed.join(", ")}`);
   const row = await Attendance.findOne({ adminId, date });
   if (!row) throw err(404, "No attendance row for that day");
   if (row.dayStatus !== "incomplete") throw err(409, `That day is "${row.dayStatus}", not incomplete`);
-  await Attendance.updateOne(
-    { _id: row._id, dayStatus: "incomplete" },
-    { $set: { dayStatus, dayFraction: Number(dayFraction) } }
-  );
+
+  const set = { dayStatus, dayFraction: Number(dayFraction) };
+  if (outcome) {
+    set.resolution = {
+      outcome,
+      reason: String(reason || "").trim(),
+      by: actorId || null,
+      at: new Date(),
+    };
+  }
+  // The precondition stays in the FILTER: two managers resolving the same day
+  // at once means the second write matches nothing rather than overwriting the
+  // first decision.
+  const res = await Attendance.updateOne({ _id: row._id, dayStatus: "incomplete" }, { $set: set });
+  if (res.matchedCount === 0) throw err(409, "That day was resolved by someone else a moment ago");
   return Attendance.findOne({ _id: row._id }).lean();
+};
+
+// ── THE THREE OUTCOMES A MANAGER CAN PICK ───────────────────────────────────
+// Named here rather than in the controller so the mapping from a UI word to a
+// payroll status has one home. LOP is the only one that moves money, which is
+// why it is the only one that demands a reason.
+const RESOLUTION_OUTCOMES = {
+  full: { dayStatus: "present", dayFraction: 1, reasonRequired: false },
+  half: { dayStatus: "half_day", dayFraction: 0.5, reasonRequired: false },
+  lop: { dayStatus: "lop", dayFraction: 0, reasonRequired: true },
+};
+
+// The manager-facing door. Validates the outcome, enforces the reason rule, and
+// delegates the write to resolveIncompleteDay — nothing here touches Attendance.
+const resolveDayByOutcome = async ({ adminId, date, outcome, reason }, actorId) => {
+  const spec = RESOLUTION_OUTCOMES[String(outcome || "")];
+  if (!spec) throw err(400, `outcome must be one of ${Object.keys(RESOLUTION_OUTCOMES).join(", ")}`);
+  const clean = String(reason || "").trim();
+  if (spec.reasonRequired && !clean) {
+    throw err(400, "A reason is required to mark a day loss of pay — it is the only outcome that moves money");
+  }
+  return resolveIncompleteDay({
+    adminId,
+    date,
+    dayStatus: spec.dayStatus,
+    dayFraction: spec.dayFraction,
+    outcome: String(outcome),
+    reason: clean,
+    actorId,
+  });
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -166,6 +210,8 @@ const runDailySweep = async (now = new Date()) => {
 };
 
 module.exports = {
+  RESOLUTION_OUTCOMES,
+  resolveDayByOutcome,
   SWEEP_WINDOW_DAYS,
   shiftDayKey,
   applyLeaveDecision,

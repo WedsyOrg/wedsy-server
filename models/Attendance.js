@@ -74,6 +74,34 @@ const AttendanceSchema = new mongoose.Schema(
     // the leave records rather than trust this cache.
     dayFraction: { type: Number, default: 1 },
     leaveRequestId: { type: ObjectId, ref: "LeaveRequest", default: null },
+
+    // ── HOW AN INCOMPLETE DAY WAS RESOLVED ───────────────────────────────────
+    // A manager's decision on a system-closed day, with its author. Separate
+    // from `closure`, which records how the day was CLOSED (self or the 04:00
+    // sweep) — closure is evidence, this is judgement, and conflating them
+    // would let a resolution look like something the cron did.
+    //
+    // `reason` is MANDATORY for outcome "lop" and optional otherwise: LOP is
+    // the only one of the three that moves money, and an unexplained deduction
+    // is the thing nobody can defend a month later.
+    resolution: {
+      outcome: { type: String, enum: ["full", "half", "lop", null], default: null },
+      reason: { type: String, default: "" },
+      by: { type: ObjectId, ref: "Admin", default: null },
+      at: { type: Date, default: null },
+    },
+
+    // ── THE EMPLOYEE'S OWN EXPLANATION ───────────────────────────────────────
+    // ONE field, not two. "Explain the day" and "explain the fine" are the same
+    // act from the employee's side, and the fine already lives on this row —
+    // splitting them would force the writer to classify their own sentence and
+    // the founder to read two places before deciding. It carries CONTEXT to the
+    // run; it never waives anything. Owner-written only.
+    employeeNote: {
+      text: { type: String, default: "", trim: true },
+      at: { type: Date, default: null },
+      by: { type: ObjectId, ref: "Admin", default: null },
+    },
   },
   { timestamps: true }
 );

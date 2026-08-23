@@ -105,10 +105,49 @@ const heartbeat = async (adminId, now = new Date()) => {
 
 // Own status — the transparency view: the employee sees exactly what the
 // system recorded about them (status + today's idle total).
-const me = async (adminId, liveMeetingIds = new Set()) => {
+// ── ONE MONTH OF ONE'S OWN ATTENDANCE ───────────────────────────────────────
+// LOGIN-GATED ONLY, exactly like today's payload. The transparency rule is not
+// about a single day: a person must be able to see every late mark and every
+// rupee proposed against them without anyone granting it. Gating the month
+// behind attendance:view would mean an employee could see today's fine but not
+// last week's, which is the same information a week later.
+const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+// The calendar's row shape. `closedBy` is flattened out of `closure` because
+// "the 04:00 job closed this" is the single fact the day cell renders on.
+const monthRow = (r) => ({
+  date: r.date,
+  dayType: r.dayType,
+  dayStatus: r.dayStatus,
+  dayFraction: r.dayFraction,
+  checkInAt: r.checkInAt || null,
+  checkOutAt: r.checkOutAt || null,
+  closedBy: r.closure ? r.closure.by : null,
+  lateMinutes: r.lateMinutes || 0,
+  fineAmount: r.fineAmount || 0,
+  leaveRequestId: r.leaveRequestId || null,
+  resolution: r.resolution && r.resolution.outcome ? r.resolution : null,
+  employeeNote: r.employeeNote && r.employeeNote.text ? r.employeeNote : null,
+});
+
+const monthOf = async (adminId, month) => {
+  if (!MONTH_RE.test(String(month || ""))) throw httpError(400, "month must be YYYY-MM");
+  // String range on the "YYYY-MM-DD" key: lexicographic order IS date order for
+  // a zero-padded ISO day, so this uses the { adminId, date } index directly.
+  const rows = await Attendance.find({ adminId, date: { $gte: `${month}-01`, $lte: `${month}-31` } })
+    .sort({ date: 1 })
+    .lean();
+  return rows.map(monthRow);
+};
+
+const me = async (adminId, liveMeetingIds = new Set(), { month } = {}) => {
   const now = new Date();
   const row = await Attendance.findOne({ adminId, date: dayKey(now) }).lean();
+  // Additive: without ?month the payload is byte-identical to what it has
+  // always been, so no existing caller changes behaviour.
+  const days = month ? await monthOf(adminId, month) : undefined;
   return {
+    ...(days ? { month, days } : {}),
     date: dayKey(now),
     status: statusOf(row, now, liveMeetingIds),
     checkInAt: row ? row.checkInAt : null,
@@ -139,6 +178,27 @@ const visibleAdminIds = async (scopeFilter = {}) => {
 
 // Daily team list: one row per visible admin with status + day numbers.
 // liveMeetingIds injected by the controller (calendar layer, Slice 3).
+// ── THE EMPLOYEE'S OWN NOTE ON A DAY ────────────────────────────────────────
+// ONE field for both "explain the day" and "explain the fine" — the fine lives
+// on this row, so they are the same act from the writer's side.
+//
+// It carries CONTEXT and waives NOTHING. Whether a fine is charged stays a
+// founder decision on the run; this note is what they read while deciding.
+// adminId always comes from the token — a note is unforgeable by design, so
+// there is no path here that accepts a target admin.
+const setEmployeeNote = async (adminId, date, text) => {
+  const clean = String(text || "").trim();
+  if (!clean) throw httpError(400, "A note cannot be empty");
+  if (clean.length > 2000) throw httpError(400, "A note is capped at 2000 characters");
+  const row = await Attendance.findOne({ adminId, date });
+  if (!row) throw httpError(404, "You have no attendance row for that day");
+  await Attendance.updateOne(
+    { _id: row._id },
+    { $set: { employeeNote: { text: clean, at: new Date(), by: adminId } } }
+  );
+  return monthRow(await Attendance.findOne({ _id: row._id }).lean());
+};
+
 const team = async ({ date } = {}, scopeFilter = {}, liveMeetingIds = new Set()) => {
   const day = date || dayKey();
   const ids = await visibleAdminIds(scopeFilter);
@@ -177,6 +237,8 @@ const team = async ({ date } = {}, scopeFilter = {}, liveMeetingIds = new Set())
 };
 
 module.exports = {
+  monthOf,
+  setEmployeeNote,
   IDLE_GAP_MS,
   dayKey,
   statusOf,
