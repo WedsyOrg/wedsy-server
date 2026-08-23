@@ -5,6 +5,7 @@ const VenueLeadImport = require("../models/VenueLeadImport");
 const VenueLeadInteraction = require("../models/VenueLeadInteraction");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
+const VenueLeadDocument = require("../models/VenueLeadDocument");
 const VenueConversation = require("../models/VenueConversation");
 const VenueBooking = require("../models/VenueBooking");
 const { createOrGetConversation } = require("./venueConversation");
@@ -697,6 +698,12 @@ const getEnquiryById = async (req, res) => {
     // "confirmed", or a cancelled booking reads as confirmed until someone
     // clicks something.
     json.bookingStatus = booking ? booking.status || null : null;
+
+    // The lead page hides the Documents tab until there is something for it to
+    // hold — a booking to generate against, or a document already on file. A
+    // count is the only signal that covers the second case: a T&C sent during
+    // negotiation exists long before any booking does.
+    json.documentCount = await VenueLeadDocument.countDocuments({ enquiry: enquiry._id });
 
     // S1a: bidirectional dedup banner — the most recent other lead sharing any
     // contact phone, scoped to what THIS requester may see.
