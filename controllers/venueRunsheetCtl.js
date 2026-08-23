@@ -8,6 +8,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueRunsheetItem = require("../models/VenueRunsheetItem");
 const { reqStr, optStr, optDate } = require("../utils/venueInput");
 const { dayKey } = require("../utils/venueRunsheet");
+const { resolveScopedBooking, bookingInScope } = require("../utils/venueBookingScope");
 
 const CATEGORIES = ["setup", "ceremony", "catering", "vendor", "teardown", "other"];
 const STATUSES = ["pending", "in_progress", "done"];
@@ -61,8 +62,9 @@ function validateItemInput(body, { partial = false } = {}) {
 // GET /venues/:slug/bookings/:bookingId/runsheet?day=YYYY-MM-DD — open read.
 const listRunsheet = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const query = { venue: venue._id, booking: req.params.bookingId };
     if (req.query.day) {
       const v = optDate(req.query.day, "day");
@@ -77,8 +79,9 @@ const listRunsheet = async (req, res) => {
 // POST /venues/:slug/bookings/:bookingId/runsheet — leads capability.
 const createItem = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id }).select("_id").lean();
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const dayV = optDate((req.body || {}).day, "day");
@@ -105,6 +108,9 @@ const updateItem = async (req, res) => {
     if (!venue) return;
     const item = await VenueRunsheetItem.findOne({ _id: req.params.itemId, venue: venue._id });
     if (!item) return res.status(404).json({ message: "Runsheet item not found" });
+    if (!(await bookingInScope(req, venue._id, item.booking))) {
+      return res.status(404).json({ message: "Item not found" });
+    }
     const v = validateItemInput(req.body || {}, { partial: true });
     if (v.error) return res.status(400).json({ message: v.error });
     Object.assign(item, v.value);
@@ -118,8 +124,14 @@ const deleteItem = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
-    const out = await VenueRunsheetItem.deleteOne({ _id: req.params.itemId, venue: venue._id });
-    if (!out.deletedCount) return res.status(404).json({ message: "Runsheet item not found" });
+    // Read BEFORE deleting: a deleteOne cannot be scope-checked after the fact,
+    // and "delete, then decide whether you were allowed to" is not a check.
+    const item = await VenueRunsheetItem.findOne({ _id: req.params.itemId, venue: venue._id }).select("booking").lean();
+    if (!item) return res.status(404).json({ message: "Runsheet item not found" });
+    if (!(await bookingInScope(req, venue._id, item.booking))) {
+      return res.status(404).json({ message: "Runsheet item not found" });
+    }
+    await VenueRunsheetItem.deleteOne({ _id: item._id });
     return res.status(200).json({ deleted: true });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
@@ -128,8 +140,9 @@ const deleteItem = async (req, res) => {
 // Body: { day: "YYYY-MM-DD", ids: [itemId, ...] } — order = array index.
 const reorderRunsheet = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const { ids } = req.body || {};
     const dayV = optDate((req.body || {}).day, "day");
     if (!dayV.ok || !dayV.value) return res.status(400).json({ message: dayV.message || "day is required" });

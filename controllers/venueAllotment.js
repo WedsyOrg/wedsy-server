@@ -10,6 +10,7 @@
  * simultaneous identical requests wins.
  */
 const Venue = require("../models/Venue");
+const { resolveScopedBooking, bookingInScope } = require("../utils/venueBookingScope");
 const VenueBooking = require("../models/VenueBooking");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRoomNight = require("../models/VenueRoomNight");
@@ -115,8 +116,9 @@ async function createOneAllotment(venue, bookingId, input, ownerId) {
 // Body: a single allotment object, or { allotments: [...] } for bulk.
 const createAllotments = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res, "_id rooms");
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id }).select("_id").lean();
     if (!booking) return res.status(404).json({ message: "Booking not found" });
 
@@ -206,8 +208,9 @@ async function roomsRequirementFor(venue, booking) {
 // longer an island the lead's requirement never reaches.
 const listAllotments = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res, "_id rooms");
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
       .select("_id enquiry days roomsRequired coupleName")
       .lean();
@@ -232,8 +235,9 @@ const listAllotments = async (req, res) => {
 // double-booking.
 const planAllotments = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    const owned = await resolveScopedBooking(req, res, "_id rooms");
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
       .select("_id enquiry days roomsRequired coupleName couplePhone")
       .lean();
@@ -290,6 +294,9 @@ const updateAllotment = async (req, res) => {
     if (!venue) return;
     const allotment = await VenueRoomAllotment.findOne({ _id: req.params.allotmentId, venue: venue._id });
     if (!allotment) return res.status(404).json({ message: "Allotment not found" });
+    if (!(await bookingInScope(req, venue._id, allotment.booking))) {
+      return res.status(404).json({ message: "Allotment not found" });
+    }
 
     const { action } = req.body || {};
     if (req.body && req.body.notes !== undefined) {

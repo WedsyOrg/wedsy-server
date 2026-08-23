@@ -10,6 +10,7 @@ const VenueCounter = require("../models/VenueCounter");
 const { computeTotals, GST_MODES } = require("../utils/venueMoney");
 const { streamInvoicePdf } = require("../utils/venuePdf");
 const { isOwnerActor } = require("../utils/venueRbac");
+const { invoiceInScope } = require("../utils/venueBookingScope");
 const VenueTeamMember = require("../models/VenueTeamMember");
 
 async function resolveOwnedVenue(req, res, select = "_id") {
@@ -187,6 +188,9 @@ const addPayment = async (req, res) => {
     if (!venue) return;
     const invoice = await VenueInvoice.findOne({ _id: req.params.invoiceId, venue: venue._id });
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+    if (!(await invoiceInScope(req, venue._id, invoice))) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
     const { amount, mode, note, date, collectedBy, proofUrl } = req.body || {};
     const amt = Number(amount);
     if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ message: "amount must be a positive number" });
@@ -247,6 +251,9 @@ const approvePayment = async (req, res) => {
     }
     const invoice = await VenueInvoice.findOne({ _id: req.params.invoiceId, venue: venue._id });
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+    if (!(await invoiceInScope(req, venue._id, invoice))) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
     const entry = invoice.payments.id(req.params.paymentId);
     if (!entry) return res.status(404).json({ message: "Payment entry not found" });
     if ((entry.status || "approved") !== "pending_approval") {
@@ -272,6 +279,9 @@ const rejectPayment = async (req, res) => {
     }
     const invoice = await VenueInvoice.findOne({ _id: req.params.invoiceId, venue: venue._id });
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+    if (!(await invoiceInScope(req, venue._id, invoice))) {
+      return res.status(404).json({ message: "Invoice not found" });
+    }
     const entry = invoice.payments.id(req.params.paymentId);
     if (!entry) return res.status(404).json({ message: "Payment entry not found" });
     if ((entry.status || "approved") !== "pending_approval") {

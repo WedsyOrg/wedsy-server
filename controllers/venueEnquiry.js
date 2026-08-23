@@ -691,6 +691,12 @@ const getEnquiryById = async (req, res) => {
     // S2: booking↔lead link, lead side — "✓ Booked · open the booking ›".
     const booking = await VenueBooking.findOne({ enquiry: enquiry._id }).select("_id status").lean();
     json.bookingId = booking ? booking._id : null;
+    // The status was already being selected and thrown away. The lead now owns
+    // the booking-status control — the one thing the retired booking page
+    // genuinely had — and it must render the CURRENT state rather than assume
+    // "confirmed", or a cancelled booking reads as confirmed until someone
+    // clicks something.
+    json.bookingStatus = booking ? booking.status || null : null;
 
     // S1a: bidirectional dedup banner — the most recent other lead sharing any
     // contact phone, scoped to what THIS requester may see.
