@@ -19,6 +19,7 @@ const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
 const { windowDays, applyWindowChange } = require("../utils/venueEventWindow");
+const { resolveScopedBooking } = require("../utils/venueBookingScope");
 const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
 const { mergeClientIntoContacts } = require("../utils/venueClientContact");
 const { sanitizeContacts } = require("../utils/venueContacts");
@@ -111,8 +112,12 @@ const createBooking = async (req, res) => {
 const UPDATABLE = ["coupleName", "couplePhone", "days", "totalValue", "paymentSchedule", "specialRequirements", "status"];
 const updateBooking = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
+    // Scoped, not merely venue-owned: this is what the lead's booking-status
+    // control calls, and a member who cannot see the lead must not be able to
+    // flip its booking to cancelled by knowing an id.
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     for (const k of UPDATABLE) {

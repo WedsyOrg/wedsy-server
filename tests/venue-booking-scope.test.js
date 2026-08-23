@@ -25,10 +25,13 @@ const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueBooking = require("../models/VenueBooking");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRunsheetItem = require("../models/VenueRunsheetItem");
+const VenueInvoice = require("../models/VenueInvoice");
 
 const allot = require("../controllers/venueAllotment");
 const runsheet = require("../controllers/venueRunsheetCtl");
 const checkin = require("../controllers/venueCheckin");
+const invoices = require("../controllers/venueInvoice");
+const bookings = require("../controllers/venueBooking");
 
 const TAG = `bscope-${Date.now()}`;
 let pass = 0, fail = 0;
@@ -116,6 +119,38 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
       ok(r.code === 404, `${name.padEnd(22)} → 404 (got ${r.code})`);
     }
 
+    console.log("\n[2b. invoice-keyed payments, and the booking's own status]");
+    // addPayment WAS a live hole: any member with bookings_money could add a
+    // payment entry to an invoice on a lead they cannot see. approve/reject
+    // were not — their 403 is isOwnerActor, a ROLE gate — but they are scoped
+    // too, because leaving one resolver family half-scoped is how the next
+    // person assumes the whole family is safe.
+    const invoice = await VenueInvoice.create({
+      venue: venue._id, booking: booking._id, enquiry: theirs._id,
+      invoiceNumber: `${TAG}-0001`, seq: 1,
+      lineItems: [{ label: "Venue hire", qty: 1, unitPrice: 500000 }],
+      gstPercent: 18, gstMode: "exclusive",
+      totals: { subtotal: 500000, taxable: 500000, gst: 90000, grandTotal: 590000 },
+      payments: [{ amount: 1000, mode: "cash", status: "pending_approval", ownerEntry: false }],
+    });
+    const invId = String(invoice._id);
+    const payId = String(invoice.payments[0]._id);
+    const invReq = (extra = {}) => ({
+      params: { slug: venue.slug, invoiceId: invId, ...(extra.params || {}) },
+      query: {}, body: extra.body || {},
+      venueOwner: { type: "venue_owner", venueId: venue._id, venueOwnerId: owner._id, memberId: member._id },
+      venueMember: member,
+    });
+    const addP = await call(invoices.addPayment, invReq({ body: { amount: 5000, mode: "cash" } }));
+    ok(addP.code === 404, `POST invoice payment on another lead's invoice → 404 (got ${addP.code})`);
+    const apr = await call(invoices.approvePayment, invReq({ params: { paymentId: payId } }));
+    ok(apr.code === 404 || apr.code === 403, `approve → ${apr.code} (403 role gate or 404 scope — never 200)`);
+    const rej = await call(invoices.rejectPayment, invReq({ params: { paymentId: payId } }));
+    ok(rej.code === 404 || rej.code === 403, `reject → ${rej.code} (never 200)`);
+
+    const statusFlip = await call(bookings.updateBooking, asMember({ body: { status: "cancelled" } }));
+    ok(statusFlip.code === 404, `PATCH the booking's status → 404 (got ${statusFlip.code})`);
+
     console.log("\n[3. THE WRITE DIDN'T HAPPEN]");
     const allotmentsNow = await VenueRoomAllotment.countDocuments({ booking: booking._id });
     ok(allotmentsNow === 1, `still exactly the ONE allotment that existed before (got ${allotmentsNow})`);
@@ -127,6 +162,11 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     ok(itemsNow === 1, `still exactly the ONE runsheet item (got ${itemsNow})`);
     const freshItem = await VenueRunsheetItem.findById(item._id).lean();
     ok(freshItem && freshItem.title === "Mandap setup", "…with its title unchanged, and NOT deleted");
+    const freshInv = await VenueInvoice.findById(invoice._id).lean();
+    ok(freshInv.payments.length === 1, `no payment entry was added (still ${freshInv.payments.length})`);
+    ok(freshInv.payments[0].status === "pending_approval", "…and the pending entry was neither approved nor rejected");
+    const freshBooking = await VenueBooking.findById(booking._id).lean();
+    ok(freshBooking.status !== "cancelled", `…and the booking was not cancelled (status "${freshBooking.status}")`);
 
     console.log("\n[4. the same member CAN reach a lead that is theirs]");
     const mine = await VenueEnquiry.create({
@@ -159,6 +199,7 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     fail++;
   } finally {
     for (const v of created.venues) {
+      await VenueInvoice.deleteMany({ venue: v });
       await VenueRunsheetItem.deleteMany({ venue: v });
       await VenueRoomAllotment.deleteMany({ venue: v });
       await VenueBooking.deleteMany({ venue: v });

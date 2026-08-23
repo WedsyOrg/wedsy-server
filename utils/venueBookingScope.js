@@ -94,4 +94,30 @@ async function bookingInScope(req, venueId, bookingId) {
   return Boolean(lead);
 }
 
-module.exports = { resolveScopedBooking, bookingInScope };
+/**
+ * Is this invoice inside the caller's lead scope?
+ *
+ * Invoices are keyed by their own id on /invoices/:invoiceId/payments…, and
+ * those handlers resolved by venue alone. addPayment was a live hole: any
+ * member with bookings_money could add a payment entry to an invoice on a lead
+ * they cannot see, by knowing an id.
+ *
+ * approve/reject were NOT a live hole — their 403 is isOwnerActor, a ROLE gate,
+ * and an owner sees every lead anyway. They are scoped here regardless, because
+ * leaving one resolver family half-scoped is how the next person assumes the
+ * whole family is safe.
+ *
+ * `booking` is required on every invoice, so the hop always exists; `enquiry`
+ * is set only by the lead-raised path, and is preferred when present because it
+ * is the direct answer.
+ */
+async function invoiceInScope(req, venueId, invoice) {
+  if (!invoice) return false;
+  if (invoice.enquiry) {
+    const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venueId, invoice.enquiry);
+    return Boolean(lead);
+  }
+  return bookingInScope(req, venueId, invoice.booking);
+}
+
+module.exports = { resolveScopedBooking, bookingInScope, invoiceInScope };
