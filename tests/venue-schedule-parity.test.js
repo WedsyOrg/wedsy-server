@@ -437,6 +437,134 @@ const row = (label, percent, amount = "", dueDate = "") => ({ key: nextKey(), la
     ok(clientSplitBase(100000, 250000).advance === 100000, "an advance larger than the booking is clamped, not negative");
   }
 
+  // ══ S4: MIXED ROWS AND GST — the CLIENT transcribed, run against the REAL server ══
+  // The other direction lives in the venue repo's scripts/schedule-parity.mjs,
+  // which runs the REAL client against a transcription of the server. Between
+  // the two, each side is pinned by real code exactly once.
+  console.log("\n[S4 mixed rows — transcribed client vs REAL server]");
+
+  const clientIsFixed = (r) => String(r.amount ?? "").trim() !== "" && String(r.percent ?? "").trim() === "";
+
+  /** Transcribed from payment-schedule.ts checkMixed. */
+  const clientCheckMixed = (rows, balance) => {
+    const bal = Math.max(0, Math.round(balance || 0));
+    const both = rows.findIndex((r) => String(r.amount ?? "").trim() !== "" && String(r.percent ?? "").trim() !== "");
+    if (both >= 0) return { ok: false, code: "row_is_both", fixedTotal: 0, percentBase: bal };
+    const neither = rows.findIndex((r) => String(r.amount ?? "").trim() === "" && String(r.percent ?? "").trim() === "");
+    if (neither >= 0) return { ok: false, code: "incomplete", fixedTotal: 0, percentBase: bal };
+    const fixed = rows.filter(clientIsFixed);
+    const percentRows = rows.filter((r) => !clientIsFixed(r));
+    let fixedTotal = 0;
+    for (const r of fixed) {
+      const n = Number(String(r.amount).replace(/[,\s]/g, "").replace("₹", ""));
+      if (!Number.isFinite(n)) return { ok: false, code: "incomplete", fixedTotal: 0, percentBase: bal };
+      if (n < 0) return { ok: false, code: "negative_fixed", fixedTotal: 0, percentBase: bal };
+      fixedTotal += Math.round(n);
+    }
+    const percentBase = bal - fixedTotal;
+    if (fixedTotal > bal) return { ok: false, code: "fixed_exceeds_balance", fixedTotal, percentBase };
+    if (!percentRows.length) {
+      return fixedTotal === bal
+        ? { ok: true, code: "ok", fixedTotal, percentBase }
+        : { ok: false, code: "fixed_short", fixedTotal, percentBase };
+    }
+    if (fixedTotal > 0 && percentBase <= 0) return { ok: false, code: "no_base_for_percentages", fixedTotal, percentBase };
+    const hs = percentRows.map((r) => clientToHundredths(r.percent));
+    if (hs.some((h) => h === null)) return { ok: false, code: "incomplete", fixedTotal, percentBase };
+    const total = hs.reduce((sum, h) => sum + h, 0);
+    return total === FULL
+      ? { ok: true, code: "ok", fixedTotal, percentBase }
+      : { ok: false, code: "percent_mismatch", fixedTotal, percentBase };
+  };
+
+  /** Transcribed from payment-schedule.ts gstOnRow. */
+  const clientGstOnRow = (amount, { gstMode = "none", gstPercent = 0, rowApplicable = false } = {}) => {
+    const amt = Math.round(Number(amount) || 0);
+    const pct = Math.max(0, Math.min(100, Number(gstPercent) || 0));
+    const bears = gstMode === "whole" || (gstMode === "per_instalment" && rowApplicable);
+    if (!bears || pct === 0 || amt <= 0) return { gst: 0, collectable: amt, bears: false };
+    const gst = Math.round((amt * pct) / 100);
+    return { gst, collectable: amt + gst, bears: true };
+  };
+
+  const MIXED = [
+    ["percentages only", [row("a", "50"), row("b", "50")], 950000],
+    ["one fixed then 50/50", [row("a", "", "100000"), row("b", "50"), row("c", "50")], 950000],
+    ["several fixed then percentages", [row("a", "", "50000"), row("b", "", "50000"), row("c", "100")], 950000],
+    ["all fixed exact", [row("a", "", "500000"), row("b", "", "450000")], 950000],
+    ["all fixed short", [row("a", "", "500000"), row("b", "", "400000")], 950000],
+    ["all fixed over", [row("a", "", "500000"), row("b", "", "500000")], 950000],
+    ["fixed exceeds the balance", [row("a", "", "1000000")], 950000],
+    ["fixed covers everything, percentages left", [row("a", "", "950000"), row("b", "100")], 950000],
+    ["percentages short of the remainder", [row("a", "", "100000"), row("b", "50"), row("c", "40")], 950000],
+    ["percentages over the remainder", [row("a", "", "100000"), row("b", "60"), row("c", "50")], 950000],
+    ["a row with both", [row("a", "50", "100")], 950000],
+    ["a negative fixed amount", [row("a", "", "-5000"), row("b", "100")], 950000],
+  ];
+  let mixBad = 0;
+  for (const [name, rows, bal] of MIXED) {
+    const cl = clientCheckMixed(rows, bal);
+    const sv = sched.checkMixedTotal(
+      // Pass BOTH fields through untouched. Mapping a row to one field here
+      // would hide the very conflict the "row has both" rule exists to catch —
+      // the harness must not pre-clean what the rule is being tested on.
+      rows.map((r) => {
+        const out = {};
+        if (String(r.amount ?? "").trim() !== "") out.amount = Number(String(r.amount).replace(/[,\s]/g, ""));
+        if (String(r.percent ?? "").trim() !== "") out.percent = r.percent;
+        return out;
+      }),
+      bal
+    );
+    // `incomplete` is a client-only concept (mid-typing); the server simply has
+    // no valid schedule there, so those cases are compared on ok alone.
+    const same = cl.code === "incomplete" ? sv.ok === false : cl.ok === sv.ok && cl.code === sv.code && cl.fixedTotal === sv.fixedTotal && cl.percentBase === sv.percentBase;
+    if (!same) {
+      mixBad++;
+      console.error(`     ✗ ${name}: client ${JSON.stringify(cl)} vs REAL server ${JSON.stringify({ ok: sv.ok, code: sv.code, fixedTotal: sv.fixedTotal, percentBase: sv.percentBase })}`);
+    }
+  }
+  ok(mixBad === 0, `all ${MIXED.length} mixed rules agree with the real server module`);
+
+  console.log("\n[S4 GST — transcribed client vs REAL server]");
+  let gBad = 0;
+  let gCases = 0;
+  for (const amount of [0, 1, 999, 100000, 425000, 33333]) {
+    for (const gstMode of ["none", "whole", "per_instalment"]) {
+      for (const gstPercent of [0, 5, 12, 18, 28]) {
+        for (const rowApplicable of [true, false]) {
+          gCases++;
+          const cl = clientGstOnRow(amount, { gstMode, gstPercent, rowApplicable });
+          const sv = sched.gstOnRow(amount, { gstMode, gstPercent, rowApplicable });
+          if (cl.gst !== sv.gst || cl.collectable !== sv.collectable || cl.bears !== sv.bears) {
+            gBad++;
+            console.error(`     ✗ ${amount}/${gstMode}/${gstPercent}%/${rowApplicable}: ${JSON.stringify(cl)} vs ${JSON.stringify(sv)}`);
+          }
+        }
+      }
+    }
+  }
+  ok(gBad === 0, `GST agrees with the real server across ${gCases} combinations`);
+
+  console.log("\n[S4 the generated schedule matches what the client would have shown]");
+  {
+    const gen = sched.generateSchedule({
+      rows: [{ label: "On booking", amount: 100000 }, { label: "Second", percent: 50 }, { label: "Balance", percent: 50 }],
+      totalValue: 950000,
+      gstMode: "whole",
+      gstPercent: 18,
+    });
+    ok(gen.rows[0].amount === 100000 && gen.rows[0].isFixed, "the fixed row keeps exactly the amount that was typed");
+    ok(gen.rows[1].amount === 425000 && gen.rows[2].amount === 425000, "the percentages split the REMAINING 8,50,000");
+    ok(gen.totals.amount === 950000, "the agreed total is still the balance");
+    ok(gen.totals.gst === 171000 && gen.totals.collectable === 1121000, "GST sits outside it: collectable is 11,21,000");
+    ok(gen.rows[0].percent === null, "a fixed row reports no percentage — it never agreed to one");
+    ok(
+      sched.rowArithmeticSentence(gen.rows[0], { gstPercent: 18 }) === "On booking — Rs. 1,00,000 + 18% GST = Rs. 1,18,000",
+      "and states its own arithmetic"
+    );
+  }
+
   console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);
 })();
