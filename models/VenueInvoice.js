@@ -108,6 +108,15 @@ VenueInvoiceSchema.add({
   // booking, then one per recorded payment"). The subdocument id of the
   // VenueBooking.paymentSchedule row, or null for the at-booking invoice.
   forMilestoneId: { type: mongoose.Schema.Types.ObjectId, default: null },
+  // ── S6: AN INVOICE KEYS ON THE PAYMENT ──────────────────────────────────────
+  // A Rs. 1,00,000 payment that finishes one instalment and starts the next
+  // belongs to NEITHER of them. Keying on the milestone forced that payment to
+  // be filed against whichever one somebody picked, which made the invoice
+  // disagree with the bank statement it is supposed to evidence.
+  //
+  // forMilestoneId is kept, not replaced: invoices raised before S6 are keyed
+  // that way and are immutable tax records. Both live in one index below.
+  forPaymentId: { type: mongoose.Schema.Types.ObjectId, default: null },
 });
 
 /**
@@ -264,8 +273,27 @@ VenueInvoiceSchema.index({ venue: 1, invoiceNumber: 1 }, { unique: true });
 //
 // Within that filter, {enquiry, null} is also unique, which is the same rule
 // the controller's check applies: one booking-level invoice per lead.
+//
+// ── S6: THE SAME GUARANTEE, EXTENDED TO PAYMENTS ────────────────────────────
+// The key gains forPaymentId. THREE rules now hold, all on this one index and
+// all enforced by the database rather than by a read-then-write:
+//
+//   { enquiry, null,        null      }  one booking-level invoice per lead
+//   { enquiry, milestoneId, null      }  legacy: one per milestone (pre-S6)
+//   { enquiry, null,        paymentId }  one per payment (S6)
+//
+// Adding a third key CANNOT introduce a collision among existing documents:
+// none of them has forPaymentId, Mongo indexes a missing field as null, and
+// {e, m} pairs that were already unique stay unique as {e, m, null}.
+//
+// It does REMOVE one: a payment-keyed invoice {e, null, p} and the booking-level
+// invoice {e, null, null} collided under the old two-key index because both
+// read as {e, null}. That is precisely the pair S6 needs to coexist, which is
+// why the old index must be DROPPED rather than left alongside — see
+// scripts/migrate-invoice-payment-index.js. Until it is dropped, raising a
+// payment invoice on a lead that already has a booking-level one will 409.
 VenueInvoiceSchema.index(
-  { enquiry: 1, forMilestoneId: 1 },
+  { enquiry: 1, forMilestoneId: 1, forPaymentId: 1 },
   { unique: true, partialFilterExpression: { enquiry: { $type: "objectId" } } }
 );
 

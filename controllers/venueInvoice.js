@@ -37,12 +37,22 @@ function isNumberCollision(err) {
   return /invoiceNumber/.test(String((err && err.message) || ""));
 }
 
-/** True when the write lost to the one-invoice-per-milestone guarantee. */
+/**
+ * True when the write lost to the one-invoice-per-lead-key guarantee.
+ *
+ * Since S6 that key is {enquiry, forMilestoneId, forPaymentId}, so a loss can
+ * be reported against either component. Matching on EITHER name keeps the
+ * legacy milestone path and the new payment path both landing on the friendly
+ * 409 rather than a 500.
+ */
 function isMilestoneCollision(err) {
   if (!err || err.code !== 11000) return false;
   const kp = err.keyPattern;
-  if (kp && typeof kp === "object") return Object.prototype.hasOwnProperty.call(kp, "forMilestoneId");
-  return /forMilestoneId/.test(String(err.message || ""));
+  if (kp && typeof kp === "object") {
+    return Object.prototype.hasOwnProperty.call(kp, "forMilestoneId")
+      || Object.prototype.hasOwnProperty.call(kp, "forPaymentId");
+  }
+  return /forMilestoneId|forPaymentId/.test(String(err.message || ""));
 }
 
 // Allocate the per-venue invoice number and create the invoice doc — the ONE

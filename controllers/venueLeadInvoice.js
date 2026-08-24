@@ -93,6 +93,8 @@ const present = (inv) => ({
   gstPercent: inv.gstPercent,
   totals: inv.totals,
   forMilestoneId: inv.forMilestoneId || null,
+  /** Set when this invoice was raised against a PAYMENT rather than a plan row. */
+  forPaymentId: inv.forPaymentId || null,
   leadDocument: inv.leadDocument || null,
   createdAt: inv.createdAt,
 });
@@ -139,9 +141,47 @@ const createLeadInvoice = async (req, res) => {
       });
     }
 
-    // Which invoice is this: the one at booking, or the one for a payment?
+    // ── WHICH INVOICE IS THIS ────────────────────────────────────────────────
+    // Three shapes, and the key differs for each:
+    //   · a PAYMENT      → { enquiry, null, paymentId }   (S6, the normal case)
+    //   · a MILESTONE    → { enquiry, milestoneId, null } (legacy callers)
+    //   · the whole booking → { enquiry, null, null }
+    //
+    // A payment that spanned two instalments belongs to neither of them, which
+    // is the whole reason the key moved. Its entries are gathered across every
+    // row they landed on.
     let milestone = null;
-    if (body.milestoneId) {
+    let paymentPieces = [];
+    let forPaymentId = null;
+
+    if (body.paymentId) {
+      if (!mongoose.isValidObjectId(body.paymentId)) {
+        return res.status(400).json({ message: "paymentId is not valid" });
+      }
+      for (const row of booking.paymentSchedule || []) {
+        for (const e of row.entries || []) {
+          if (e.paymentId && String(e.paymentId) === String(body.paymentId)) paymentPieces.push({ row, entry: e });
+        }
+      }
+      if (!paymentPieces.length) {
+        return res.status(404).json({ message: "That payment is not on this booking" });
+      }
+      // Only APPROVED money is invoiceable. A tax invoice for a payment that is
+      // still awaiting approval — or was rejected — is a document asserting
+      // money arrived when the venue has not accepted that it did.
+      const live = paymentPieces.filter((x) => (x.entry.status || "approved") === "approved");
+      if (!live.length) {
+        const st = paymentPieces[0].entry.status;
+        return res.status(409).json({
+          message: st === "pending"
+            ? "That payment is still awaiting approval — approve it before invoicing it."
+            : "That payment was rejected, so there is nothing to invoice.",
+          code: st === "pending" ? "payment_pending" : "payment_rejected",
+        });
+      }
+      paymentPieces = live;
+      forPaymentId = new mongoose.Types.ObjectId(String(body.paymentId));
+    } else if (body.milestoneId) {
       if (!mongoose.isValidObjectId(body.milestoneId)) {
         return res.status(400).json({ message: "milestoneId is not valid" });
       }
@@ -153,57 +193,134 @@ const createLeadInvoice = async (req, res) => {
     const forMilestoneId = milestone ? milestone._id : null;
 
     // No accidental duplicate — an invoice is immutable and consumes a number.
-    const existing = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId }).select("invoiceNumber _id").lean();
+    // The friendly path only; the unique index is the guarantee (see below).
+    const existing = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId, forPaymentId }).select("invoiceNumber _id").lean();
     if (existing) {
       return res.status(409).json({
-        message: milestone
-          ? `${existing.invoiceNumber} already covers that instalment.`
-          : `${existing.invoiceNumber} is already this booking's invoice.`,
+        message: forPaymentId
+          ? `${existing.invoiceNumber} already covers that payment.`
+          : milestone
+            ? `${existing.invoiceNumber} already covers that instalment.`
+            : `${existing.invoiceNumber} is already this booking's invoice.`,
         code: "invoice_exists",
         invoiceNumber: existing.invoiceNumber,
         invoiceId: existing._id,
       });
     }
 
-    // ── GST is the owner's choice, per invoice ─────────────────────────────
     const brand = resolveBranding(venue);
-    const wantsGst = body.gst === true || body.gst === "true";
+
+    // ── line items come off the booking, never re-entered ──────────────────
+    //
+    // For a PAYMENT, one line per instalment the money landed on, each at the
+    // amount that actually landed there — not the instalment's face value. A
+    // Rs. 1,00,000 payment that finished a Rs. 1,50,000 instalment invoices the
+    // Rs. 1,00,000 received, because an invoice evidences money, not a plan.
+    //
+    // The row's KIND is read from its own flags — `isAdditional` — and never
+    // inferred from which of amount/percent happens to be populated. Both are
+    // populated on a normal percentage row, and reading that pair as a signal
+    // is precisely the mistake that broke the wizard in S4.
+    const lineItems = paymentPieces.length
+      ? paymentPieces.map((x) => ({
+          label:
+            `${x.row.label || "Instalment"}${x.row.isAdditional ? " (additional)" : ""}` +
+            ` — ${booking.coupleName || "booking"}`,
+          category: x.row.isAdditional ? "extra" : "instalment",
+          qty: 1,
+          unitPrice: Math.round(Number(x.entry.amount) || 0),
+        }))
+      : milestone
+        ? [{
+            label:
+              `${milestone.label || "Instalment"}${milestone.isAdditional ? " (additional)" : ""}` +
+              ` — ${booking.coupleName || "booking"}`,
+            category: milestone.isAdditional ? "extra" : "instalment",
+            qty: 1,
+            unitPrice: Math.round(Number(milestone.amount) || 0),
+          }]
+        : [{
+            label: `Venue booking — ${booking.coupleName || "booking"}`,
+            category: "venue",
+            qty: 1,
+            unitPrice: Math.round(Number(booking.totalValue) || 0),
+          }];
+    if (!lineItems.reduce((sum, li) => sum + li.unitPrice, 0)) {
+      return res.status(400).json({
+        message: forPaymentId
+          ? "That payment has no amount to invoice."
+          : milestone
+            ? "That instalment has no amount yet — set the schedule before invoicing it."
+            : "This booking has no value yet — set it before raising an invoice.",
+        code: "nothing_to_invoice",
+      });
+    }
+
+    // ── GST: THE INSTALMENT DECIDES, NOT THE OWNER, ON A PAYMENT INVOICE ────
+    // S4 put the GST treatment on the booking (mode + rate) and, under
+    // per-instalment mode, on the row. A tax invoice must reflect what was
+    // agreed, not what somebody ticked when raising it — so for a payment
+    // invoice the GST is DERIVED from the rows the money landed on, using the
+    // same gstOnRow the schedule and the wizard use.
+    //
+    // A payment spanning a GST-bearing instalment AND a plain one is taxed per
+    // line: computeTotals applies one rate to the whole subtotal, which would
+    // over-tax the plain half. So the payment case computes its own totals from
+    // the same arithmetic rather than approximating with a blended rate.
+    let derivedGst = null;
+    if (paymentPieces.length) {
+      const { gstOnRow } = require("../utils/venuePaymentSchedule");
+      const bookingGstMode = booking.gstMode || "none";
+      const bookingGstPercent = Number(booking.gstPercent) || 0;
+      let taxable = 0;
+      let gstTotal = 0;
+      paymentPieces.forEach((x, i) => {
+        const g = gstOnRow(lineItems[i].unitPrice, {
+          gstMode: bookingGstMode,
+          gstPercent: bookingGstPercent,
+          // Read explicitly off the row, never inferred.
+          rowApplicable: Boolean(x.row.gstApplicable),
+        });
+        if (g.bears) {
+          taxable += lineItems[i].unitPrice;
+          gstTotal += g.gst;
+        }
+      });
+      const subtotal = lineItems.reduce((sum, li) => sum + li.unitPrice, 0);
+      derivedGst = {
+        bears: gstTotal > 0,
+        gstPercent: bookingGstPercent,
+        totals: { subtotal, discount: 0, taxable, gst: gstTotal, grandTotal: subtotal + gstTotal },
+      };
+      if (derivedGst.bears && !brand.hasGstin) {
+        return res.status(400).json({
+          message: "This payment covers a GST-bearing instalment, but no GSTIN is set. Add it in Settings → Billing & tax.",
+          code: "no_gstin",
+        });
+      }
+    }
+
+    const wantsGst = derivedGst ? derivedGst.bears : (body.gst === true || body.gst === "true");
     if (wantsGst && !brand.hasGstin) {
       return res.status(400).json({
         message: "Add your GSTIN in Settings → Billing & tax before raising a GST invoice.",
         code: "no_gstin",
       });
     }
-    const gstMode = wantsGst ? (body.gstMode === "inclusive" ? "inclusive" : "exclusive") : "none";
-    const gstPercent = wantsGst
-      ? Number.isFinite(Number(body.gstPercent)) ? Number(body.gstPercent) : DEFAULT_GST_PERCENT
-      : 0;
+    const gstMode = derivedGst
+      // Always exclusive on a payment invoice: S4's GST sits OUTSIDE the agreed
+      // value, so it is added on top, never carved out of it.
+      ? (derivedGst.bears ? "exclusive" : "none")
+      : wantsGst ? (body.gstMode === "inclusive" ? "inclusive" : "exclusive") : "none";
+    const gstPercent = derivedGst
+      ? (derivedGst.bears ? derivedGst.gstPercent : 0)
+      : wantsGst
+        ? Number.isFinite(Number(body.gstPercent)) ? Number(body.gstPercent) : DEFAULT_GST_PERCENT
+        : 0;
 
-    // ── line items come off the booking, never re-entered ──────────────────
-    const lineItems = milestone
-      ? [{
-          label: `${milestone.label || "Instalment"} — ${booking.coupleName || "booking"}`,
-          category: "instalment",
-          qty: 1,
-          unitPrice: Math.round(Number(milestone.amount) || 0),
-        }]
-      : [{
-          label: `Venue booking — ${booking.coupleName || "booking"}`,
-          category: "venue",
-          qty: 1,
-          unitPrice: Math.round(Number(booking.totalValue) || 0),
-        }];
-    if (!lineItems[0].unitPrice) {
-      return res.status(400).json({
-        message: milestone
-          ? "That instalment has no amount yet — set the schedule before invoicing it."
-          : "This booking has no value yet — set it before raising an invoice.",
-        code: "nothing_to_invoice",
-      });
-    }
-
-    // Existing arithmetic, including gstMode "none".
-    const totals = computeTotals(lineItems, gstPercent, 0, gstMode);
+    // Existing arithmetic, including gstMode "none" — except on a payment
+    // invoice, where GST was already worked out per line above.
+    const totals = derivedGst ? derivedGst.totals : computeTotals(lineItems, gstPercent, 0, gstMode);
 
     // ── the number, via the ONE existing allocator ─────────────────────────
     // The check above is the friendly path; the {enquiry, forMilestoneId} unique
@@ -215,7 +332,8 @@ const createLeadInvoice = async (req, res) => {
         booking: booking._id,
         enquiry: lead._id,
         forMilestoneId,
-        kind: milestone ? "final" : "advance",
+        forPaymentId,
+        kind: forPaymentId || milestone ? "final" : "advance",
         lineItems,
         gstPercent,
         gstMode,
@@ -230,7 +348,7 @@ const createLeadInvoice = async (req, res) => {
       if (!isMilestoneCollision(e)) throw e;
       // The winner's row is already committed — name it, so the loser sees the
       // same 409 the friendly path would have given rather than a 500.
-      const winner = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId })
+      const winner = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId, forPaymentId })
         .select("invoiceNumber _id")
         .lean();
       return res.status(409).json({
@@ -248,7 +366,14 @@ const createLeadInvoice = async (req, res) => {
     // ── render, store, and file it in the Documents tab ────────────────────
     let rendered;
     try {
-      rendered = await buildInvoicePdf({ venue, booking, invoice, payment: milestone });
+      // For a payment invoice the "payment" the PDF describes is the first row
+      // the money landed on — the document itself lists every line.
+      rendered = await buildInvoicePdf({
+        venue,
+        booking,
+        invoice,
+        payment: milestone || (paymentPieces.length ? paymentPieces[0].row : null),
+      });
     } catch (e) {
       // The invoice row exists and has consumed its number; that is correct —
       // the tax record is the thing that matters and the PDF can be re-rendered.
