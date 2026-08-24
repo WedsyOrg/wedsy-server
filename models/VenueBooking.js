@@ -140,6 +140,19 @@ const VenueBookingSchema = new mongoose.Schema(
         recordedByName: { type: String, default: "" },
         /** Only read under per-instalment GST — see gstMode below. */
         gstApplicable: { type: Boolean, default: false },
+        // ── ADDITIONAL BILLING (S5) ────────────────────────────────────────
+        // Extras the venue adds after the fact — a bar tab on the night, an
+        // extra hour. A row, not a separate list, ON PURPOSE: it then flows
+        // through the waterfall, carries payment entries, can be invoiced and
+        // shows in the schedule with no second money path. Keeping extras
+        // somewhere else is how a booking ends up with two balances.
+        //
+        // What it changes is the TOTAL, not the agreed value: totalValue stays
+        // what was negotiated, and utils/venuePaymentStatus adds these on top.
+        isAdditional: { type: Boolean, default: false },
+        /** Why this was added — the thing a couple queries three weeks later. */
+        addedNote: { type: String, default: "" },
+        addedByName: { type: String, default: "" },
       },
     ],
     // ── GST, OUTSIDE THE AGREED VALUE ────────────────────────────────────────

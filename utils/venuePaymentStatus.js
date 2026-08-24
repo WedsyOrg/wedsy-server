@@ -149,6 +149,10 @@ function describeMilestone(row, now = new Date()) {
   return {
     _id: row._id,
     label: row.label || "Instalment",
+    /** An extra added after the booking, not part of the agreed value. */
+    isAdditional: Boolean(row.isAdditional),
+    addedNote: row.addedNote || "",
+    addedByName: row.addedByName || "",
     percent: row.percent === null || row.percent === undefined ? null : Number(row.percent),
     amount,
     paidAmount: paid,
@@ -184,6 +188,13 @@ function summarizeSchedule(booking, now = new Date()) {
   const scheduled = rows.reduce((s, r) => s + r.amount, 0);
   const received = rows.reduce((s, r) => s + r.paidAmount, 0);
   const bookingValue = round(booking && booking.totalValue);
+  // ── WHAT WAS AGREED vs WHAT IS OWED (S5) ──────────────────────────────────
+  // Additional billing is the ONE legitimate route to collecting more than the
+  // agreed value. The agreed value does not move — it is what was negotiated,
+  // and rewriting it would destroy the record that settles a dispute — so the
+  // extras are added on top and both numbers are reported.
+  const additional = rows.filter((r) => r.isAdditional).reduce((s2, r) => s2 + r.amount, 0);
+  const owed = bookingValue + additional;
   const overdue = rows.filter((r) => r.isOverdue && r.outstanding > 0);
   const next = rows
     .filter((r) => r.outstanding > 0 && r.dueDate)
@@ -194,14 +205,19 @@ function summarizeSchedule(booking, now = new Date()) {
   return {
     rows,
     totals: {
+      /** What was NEGOTIATED. Never moves because an extra was added. */
       bookingValue,
+      /** Extras added after the fact. */
+      additional,
+      /** Agreed + additional — everything the couple owes. */
+      total: owed,
       scheduled,
       received,
-      balance: Math.max(0, bookingValue - received),
+      balance: Math.max(0, owed - received),
       // Surfaced rather than hidden: a schedule that does not add up to the
       // booking value is a real condition an owner should see, not one to paper
       // over by quietly using whichever number is larger.
-      scheduleMatchesValue: bookingValue === 0 || scheduled === bookingValue,
+      scheduleMatchesValue: owed === 0 || scheduled === owed,
       outstanding: rows.reduce((s, r) => s + r.outstanding, 0),
       // Surfaced beside the balance, never inside it. An owner chasing a late
       // instalment has to know money has been offered — silence there is how

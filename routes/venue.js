@@ -228,6 +228,10 @@ router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapab
 // bookings_money, so a member cannot even see the queue they cannot act on.
 router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/approve", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.approveLeadPayment);
 router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.rejectLeadPayment);
+// Additional billing is money owed, so it sits behind the same capability as
+// the rest of the schedule and the same lead scope (404, never 403).
+router.post("/:slug/enquiries/:enquiryId/additional-billing", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.addAdditionalBilling);
+router.delete("/:slug/enquiries/:enquiryId/additional-billing/:rowId", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.removeAdditionalBilling);
 
 // ── BOOKING ENGINE S3: the booking confirmation document ────────────────────
 // `documents`, matching every other document generator — it produces a

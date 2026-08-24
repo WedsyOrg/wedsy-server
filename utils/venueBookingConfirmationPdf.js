@@ -187,7 +187,17 @@ async function buildBookingConfirmationPdf({
     doc.font("Helvetica");
     doc.moveDown(0.28);
   };
-  right("Booking value", money(s.totals.bookingValue));
+  // ── AGREED AND ADDITIONAL, ALWAYS SEPARATE ────────────────────────────────
+  // "Agreed Rs. 5,00,000 + additional billing Rs. 40,000" is the line a couple
+  // has to be able to check against what they signed. Folding an extra into the
+  // booking value would make the document disagree with the agreement it is
+  // confirming — and the agreed value is precisely the number a dispute turns
+  // on. With no extras the document reads exactly as it always has.
+  right(s.totals.additional > 0 ? "Agreed value" : "Booking value", money(s.totals.bookingValue));
+  if (s.totals.additional > 0) {
+    right("Additional billing", `+ ${money(s.totals.additional)}`);
+    right("Total", money(s.totals.total));
+  }
   if (s.totals.received > 0) right("Received", `− ${money(s.totals.received)}`);
   right("Balance due", money(s.totals.balance), true);
 

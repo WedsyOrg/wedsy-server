@@ -439,4 +439,122 @@ const rejectLeadPayment = async (req, res) => {
   }
 };
 
-module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, MODES };
+// ── POST /venues/:slug/enquiries/:enquiryId/additional-billing ───────────────
+/**
+ * An extra the venue adds after the booking — a bar tab on the night, an extra
+ * hour, a last-minute upgrade.
+ *
+ * ── IT IS A SCHEDULE ROW, NOT A SEPARATE LIST ───────────────────────────────
+ * So it flows through the waterfall, carries payment entries, can be invoiced
+ * and appears in the schedule with no second money path. A parallel list of
+ * extras is how a booking ends up with two balances that disagree.
+ *
+ * ── AND IT DOES NOT TOUCH THE AGREED VALUE ──────────────────────────────────
+ * totalValue stays what was negotiated. Rewriting it to absorb an extra would
+ * destroy the record that settles a dispute — "we agreed Rs. 5,00,000" has to
+ * remain answerable months later. The extras are added on top, and every
+ * surface reports both numbers.
+ *
+ * Due TODAY, because an extra added after the event is money owed now rather
+ * than on some future instalment date.
+ */
+const addAdditionalBilling = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const body = req.body || {};
+
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+
+    const amount = Math.round(Number(body.amount));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ message: "An amount is required" });
+    }
+    const label = cleanStr(body.label).slice(0, 80);
+    if (!label) {
+      // Required: "Additional billing Rs. 40,000" is exactly as useless in a
+      // dispute as no record. The couple will ask what it was for.
+      return res.status(400).json({ message: "Say what this charge is for.", code: "label_required" });
+    }
+    const note = cleanStr(body.note).slice(0, 2000);
+
+    booking.paymentSchedule.push({
+      label,
+      amount,
+      percent: null,
+      dueDate: new Date(),
+      isAdditional: true,
+      addedNote: note,
+      addedByName: await actorName(req),
+      recordedBy: actorId(req),
+    });
+    await booking.save();
+
+    const s = summarizeSchedule(booking);
+    lead.activities.push({
+      type: "additional_billing_added",
+      description:
+        `Additional billing: ${label} — Rs. ${amount.toLocaleString("en-IN")}` +
+        `${note ? ` (${note})` : ""}. Agreed Rs. ${s.totals.bookingValue.toLocaleString("en-IN")}` +
+        ` + additional Rs. ${s.totals.additional.toLocaleString("en-IN")}.`,
+      actor: actorId(req),
+      timestamp: new Date(),
+    });
+    await lead.save();
+
+    return res.status(201).json({ success: true, rows: s.rows, totals: s.totals, overdue: s.overdue, overdueTotal: s.overdueTotal, next: s.next });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// ── DELETE /venues/:slug/enquiries/:enquiryId/additional-billing/:rowId ──────
+/**
+ * Remove an extra that was added in error.
+ *
+ * ONLY while nothing has been paid against it. Once money has landed on a row,
+ * removing it would delete a payment record — the thing S3 spent a whole slice
+ * refusing to do. A charge that has been part-paid is corrected by rejecting
+ * the payment and then removing it, in that order, so the trail survives.
+ */
+const removeAdditionalBilling = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+
+    const row = booking.paymentSchedule.id(req.params.rowId);
+    if (!row || !row.isAdditional) {
+      return res.status(404).json({ message: "That additional charge is not on this booking" });
+    }
+    const anyMoney = (row.entries || []).some((e) => e.status !== "rejected") || Math.round(Number(row.paidAmount) || 0) > 0;
+    if (anyMoney) {
+      return res.status(409).json({
+        message: "Money has been recorded against this charge. Reject the payment first, so the record survives.",
+        code: "has_payments",
+      });
+    }
+    const label = row.label;
+    const amount = Math.round(Number(row.amount) || 0);
+    row.deleteOne();
+    await booking.save();
+
+    const s = summarizeSchedule(booking);
+    lead.activities.push({
+      type: "additional_billing_removed",
+      description: `Additional billing removed: ${label} — Rs. ${amount.toLocaleString("en-IN")}`,
+      actor: actorId(req),
+      timestamp: new Date(),
+    });
+    await lead.save();
+    return res.status(200).json({ success: true, rows: s.rows, totals: s.totals, overdue: s.overdue, overdueTotal: s.overdueTotal, next: s.next });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, addAdditionalBilling, removeAdditionalBilling, MODES };

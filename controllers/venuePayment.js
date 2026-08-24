@@ -69,15 +69,20 @@ const summary = async (req, res) => {
       // ONE derivation, computed once and used for both the per-booking figures
       // and the overdue list below, so the two cannot disagree with each other.
       const s = summarizeSchedule(b, now);
+      // The AGREED value and what is actually owed are different numbers once
+      // extras exist (S5). Reporting the agreed value beside an extras-inclusive
+      // balance would make the row fail to add up on screen, so both are sent.
       const totalValue = s.totals.bookingValue;
       const recv = s.totals.received;
       const balance = s.totals.balance;
-      confirmedValue += totalValue;
+      confirmedValue += s.totals.total;
       received += recv;
       perBooking.push({
         bookingId: b._id,
         coupleName: b.coupleName,
         totalValue,
+        additional: s.totals.additional,
+        total: s.totals.total,
         received: recv,
         balance,
         // Claimed but unapproved, shown beside the balance rather than inside
