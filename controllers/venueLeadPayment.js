@@ -223,7 +223,18 @@ const recordPayment = async (req, res) => {
     const touched = [];
     for (const line of plan.lines) {
       const target = booking.paymentSchedule.id(line.milestoneId);
-      if (!target) continue;
+      // ── NEVER WRITE A PAYMENT SHORT ─────────────────────────────────────────
+      // The plan came from THIS booking's own schedule a few lines above, so a
+      // missing row is not reachable today. It was written as `continue`, which
+      // would have written part of a payment and reported success — the couple's
+      // money silently landing as less than they sent, with nothing to notice.
+      // In money code the unreachable branch still has to be the loud one.
+      if (!target) {
+        return res.status(500).json({
+          message: "That payment could not be recorded in full. Nothing was saved — please try again.",
+          code: "allocation_row_missing",
+        });
+      }
       addEntry(target, {
         paymentId,
         amount: line.amount,
@@ -238,6 +249,15 @@ const recordPayment = async (req, res) => {
         recordedByName,
       });
       touched.push(target);
+    }
+    // Belt and braces: the plan and what was written must be the same length.
+    // Nothing is persisted unless they are — booking.save() has not run yet, so
+    // returning here leaves the document untouched.
+    if (touched.length !== plan.lines.length) {
+      return res.status(500).json({
+        message: "That payment could not be recorded in full. Nothing was saved — please try again.",
+        code: "allocation_incomplete",
+      });
     }
     await booking.save();
 
