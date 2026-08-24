@@ -8,6 +8,7 @@ const Admin = require("../models/Admin");
 const SettingsService = require("./SettingsService");
 const CompanyHolidayService = require("./CompanyHolidayService");
 const LeaveService = require("./LeaveService");
+const ReimbursementService = require("./ReimbursementService");
 const { employeeFilter, employedOn } = require("../utils/employment");
 const P = require("./payrollPolicy");
 
@@ -199,6 +200,22 @@ const computeSheet = async (month, decisions = [], { adminIds = null } = {}) => 
       flags.push(`${incompleteDays.length} incomplete day(s) needing confirmation — paid unless converted`);
     }
 
+    // ── REIMBURSEMENTS ARE AN ADDITION, NEVER A NETTED DEDUCTION ─────────
+    // Money owed TO the person, not a reversal of money owed BY them. Netting
+    // them against LOP would make a docked month look clean and hide both
+    // facts; they stay a separate column all the way to the export.
+    const claims = await ReimbursementService.unpaidApprovedFor(admin._id);
+    const reimbursements = P.round2(claims.reduce((s, c) => s + (Number(c.amountApproved) || 0), 0));
+    const reimbursementItems = claims.map((c) => ({
+      claimId: c._id,
+      spentOn: c.spentOn,
+      category: c.category,
+      amountClaimed: c.amountClaimed,
+      amountApproved: c.amountApproved,
+      status: c.status,
+      receipts: (c.attachments || []).length,
+    }));
+
     const totalDeductions = P.round2(lopDeduction + fineDeduction);
     const closingBalances = await LeaveService.balancesFor(admin._id, Number(month.slice(0, 4)));
 
@@ -225,7 +242,9 @@ const computeSheet = async (month, decisions = [], { adminIds = null } = {}) => 
       fineDeduction,
       waivedCount,
       totalDeductions,
-      netBeforeStatutory: P.round2(payableGross - totalDeductions),
+      reimbursements,
+      reimbursementItems,
+      netBeforeStatutory: P.round2(payableGross - totalDeductions + reimbursements),
       closingBalances,
       flags,
       blocking,
@@ -240,6 +259,7 @@ const computeSheet = async (month, decisions = [], { adminIds = null } = {}) => 
     lopDeduction: P.round2(lines.reduce((s, l) => s + l.lopDeduction, 0)),
     fineDeduction: P.round2(lines.reduce((s, l) => s + l.fineDeduction, 0)),
     totalDeductions: P.round2(lines.reduce((s, l) => s + l.totalDeductions, 0)),
+    reimbursements: P.round2(lines.reduce((s, l) => s + l.reimbursements, 0)),
     netBeforeStatutory: P.round2(lines.reduce((s, l) => s + l.netBeforeStatutory, 0)),
     pendingItems: lines.reduce((s, l) => s + l.items.filter((i) => i.status === "pending").length, 0),
     blockingLines: lines.filter((l) => l.blocking.length).length,
@@ -337,6 +357,14 @@ const finalise = async (month, actorId, opts = {}) => {
     { $set: { status: "finalised", snapshot: sheet, totals: sheet.totals, dayDivisor: P.DAY_DIVISOR, finalisedBy: actorId || null, finalisedAt: new Date() } }
   );
   if (!claimed.modifiedCount) throw err(409, "This run was finalised by someone else");
+
+  // Stamp the reimbursements this run paid, AFTER the run is safely finalised —
+  // so a claim is never marked paid by a run that then failed to finalise. The
+  // stamp is guarded on paidWithRun still being null, so a claim can never be
+  // paid by two runs.
+  const paidIds = sheet.lines.flatMap((l) => (l.reimbursementItems || []).map((r) => r.claimId));
+  await ReimbursementService.markPaid(paidIds, month);
+
   return { run: (await PayrollRun.findById(run._id)).toObject(), sheet };
 };
 

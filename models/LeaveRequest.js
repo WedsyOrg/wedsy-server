@@ -55,6 +55,31 @@ const LeaveRequestSchema = new mongoose.Schema(
     // included when the chain is empty, so a request is never unactionable.
     approvers: { type: [{ type: ObjectId, ref: "Admin" }], default: [] },
 
+    // ── WHY IT WAS AUTO-REJECTED (2026-08-24) ───────────────────────────────
+    // A POLICY BREACH IS RECORDED, NEVER REFUSED. Same-day already worked this
+    // way; the three enforceable rules now do too, because someone repeatedly
+    // trying to take four consecutive casual days is exactly the same kind of
+    // signal as someone repeatedly applying on the morning — and a 400 leaves no
+    // trace of either the pattern or, for the applicant, what they tried.
+    //
+    // Machine code for the rejected-by-rule strip; decisionNote carries the full
+    // sentence and autoRejectLabel the short one the strip shows.
+    autoRejectCode: {
+      type: String,
+      enum: [
+        "same_day", "cl_consecutive", "cl_el_clubbing", "wfh_monthly_cap",
+        "wfh_whole_day_only", "non_working_day",
+        // Deliberately its OWN code, not lumped in with the rule breaches:
+        // "you'd run out" and "you broke a rule" read very differently to
+        // whoever reviews the strip, and conflating them makes a balance problem
+        // look like misconduct.
+        "insufficient_balance",
+        null,
+      ],
+      default: null,
+    },
+    autoRejectLabel: { type: String, default: "" },
+
     decidedBy: { type: ObjectId, ref: "Admin", default: null },
     decidedAt: { type: Date, default: null },
     decisionNote: { type: String, default: "", trim: true },

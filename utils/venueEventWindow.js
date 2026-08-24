@@ -58,6 +58,7 @@ const mongoose = require("mongoose");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const VenueHold = require("../models/VenueHold");
 const { venueDateKey, addVenueDays } = require("./venueTime");
+const { rederiveRoomNights } = require("./venueRoomNights");
 
 /** Every venue-calendar day the window covers, inclusive of both ends. */
 function windowDays(checkIn, checkOut) {
@@ -310,6 +311,39 @@ async function applyWindowChange({ venue, enquiry, booking, checkIn, checkOut, a
     };
   }
 
+  // 3b. ROOM NIGHTS, by the same rule as the calendar: claim every new night
+  //     before releasing a single old one, so a refusal leaves the reservation
+  //     exactly as it was. A window that moves must carry the rooms with it —
+  //     otherwise a booking keeps holding nights it no longer needs while the
+  //     nights it DOES need sit unreserved, which is the original gap wearing
+  //     a different hat.
+  const roomsNeeded =
+    (enquiry.requirements && enquiry.requirements.roomsNeeded) || booking.roomsRequired || 0;
+  let rooms = null;
+  if (roomsNeeded > 0) {
+    rooms = await rederiveRoomNights({ venue, booking, checkIn, checkOut, needed: roomsNeeded });
+    if (!rooms.ok) {
+      // The calendar above already committed. Put it back before refusing, so
+      // "nothing was changed" is true of the whole edit and not just this half.
+      await rederiveCalendar({
+        venueId: venue._id,
+        booking,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+      });
+      return {
+        ok: false,
+        status: 409,
+        code: "rooms_conflict",
+        body: {
+          message:
+            "Those dates need rooms that another booking already holds. Nothing was changed.",
+          code: "rooms_conflict",
+        },
+      };
+    }
+  }
+
   // 4. Both copies, back to back, only once everything above has passed.
   //    The enquiry's pre-validate derives eventDate from checkIn, so the
   //    platform's single-day readers follow automatically.
@@ -322,7 +356,7 @@ async function applyWindowChange({ venue, enquiry, booking, checkIn, checkOut, a
   booking.checkOut = checkOut;
   await booking.save();
 
-  return { ok: true, calendar };
+  return { ok: true, calendar, rooms };
 }
 
 /** "29 Sep 2026 · Lawn" — one line per clash, for a message an owner can act on. */

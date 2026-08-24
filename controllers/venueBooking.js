@@ -17,11 +17,13 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueHold = require("../models/VenueHold");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
+const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const { wholeVenueSpaceIds, isWholeVenueSpace } = require("../utils/venueWholeVenue");
 const { windowDays, applyWindowChange } = require("../utils/venueEventWindow");
 const { resolveScopedBooking } = require("../utils/venueBookingScope");
 const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
 const { mergeClientIntoContacts } = require("../utils/venueClientContact");
+const { reserveRoomNights, rederiveRoomNights, releaseRoomNights } = require("../utils/venueRoomNights");
 const { sanitizeContacts } = require("../utils/venueContacts");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
@@ -124,13 +126,38 @@ const updateBooking = async (req, res) => {
     const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const wasCancelled = booking.status === "cancelled";
     for (const k of UPDATABLE) {
       if (req.body[k] !== undefined) booking[k] = req.body[k];
     }
     await booking.save();
+
+    // ── CANCELLING GIVES THE ROOMS BACK ────────────────────────────────────
+    // It did not, before this. `status` has always been settable straight
+    // through UPDATABLE, and nothing downstream listened: a cancelled booking
+    // kept every allotted night forever, with no screen showing them and no
+    // action that would release them. The rooms were simply gone from the
+    // venue's inventory until somebody found the allotments and cancelled each
+    // one by hand.
+    //
+    // Reserving a COUNT at confirmation makes that strictly worse — held rows
+    // have no allotment to find — so the cascade is part of this build rather
+    // than a follow-up.
+    let roomsReleased = 0;
+    if (!wasCancelled && booking.status === "cancelled") {
+      const released = await releaseRoomNights(booking._id);
+      roomsReleased = released.released;
+      // The allotment records stay, marked cancelled: the stay is off, but the
+      // fact that it was arranged is history and this model does not rewrite
+      // history. Only the inventory claim is given up.
+      await VenueRoomAllotment.updateMany(
+        { booking: booking._id, status: { $in: ["allotted", "checked_in"] } },
+        { $set: { status: "cancelled" } }
+      );
+    }
     // Newly added days get the default runsheet skeleton (no-op for existing).
     if (req.body.days !== undefined) await seedRunsheetForBooking(booking);
-    return res.status(200).json({ booking });
+    return res.status(200).json({ booking, roomsReleased });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -146,7 +173,7 @@ const updateBooking = async (req, res) => {
 // Body: { checkIn, checkOut, acknowledgeStaleHolds? }
 const updateBookingWindow = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces settings blockedDates");
+    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces rooms settings blockedDates");
     if (!venue) return;
 
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id });
@@ -236,7 +263,7 @@ const confirmBookingFromLead = async (req, res) => {
   let clientSync = null;
   let clientWarnings = [];
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces settings blockedDates");
+    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces rooms settings blockedDates");
     if (!venue) return;
 
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, req.params.enquiryId);
@@ -436,7 +463,27 @@ const confirmBookingFromLead = async (req, res) => {
     }
 
     // ── the booking (single creation path — invariant #4) ──
+    // Whether a booking existed BEFORE this request. It decides whether a
+    // refusal below may discard the draft: re-confirming an existing booking
+    // must never delete it, but a draft this request created and then refused
+    // must not survive.
+    const draftPreExisted = Boolean(await VenueBooking.exists({ enquiry: enquiry._id }));
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
+
+    /**
+     * Undo the draft when a refusal means the booking should not exist.
+     *
+     * FIXES A PRE-EXISTING LEAK, not only the rooms path. A space-collision 409
+     * already left a booking behind with status "confirmed" and no calendar
+     * rows — a booking that claimed nothing, which the lead then showed as
+     * booked. Proven against main before this build touched it. Every refusal
+     * after the draft is created now goes through here, so "nothing was
+     * changed" is true of all of them rather than of some.
+     */
+    const discardDraftIfNew = async () => {
+      if (draftPreExisted) return;
+      await VenueBooking.deleteOne({ _id: booking._id });
+    };
 
     // ── calendar blocking: the WINDOW is what is sold ──────────────────────
     // Every venue-day in [checkIn, checkOut] is blocked, not merely the days
@@ -501,6 +548,7 @@ const confirmBookingFromLead = async (req, res) => {
           await VenueSpaceDate.updateMany({ _id: { $in: convertedRowIds } }, { $set: { state: "held" }, $unset: { bookingRef: 1 } });
         }
         if (e.code === 11000) {
+          await discardDraftIfNew();
           return res.status(409).json({ message: "One or more date-spaces are already held, booked, or blocked" });
         }
         throw e;
@@ -633,6 +681,80 @@ const confirmBookingFromLead = async (req, res) => {
         clientSync = { matchedBy: merged.matchedBy, created: merged.created };
         if (cV.warnings && cV.warnings.length) clientWarnings = cV.warnings;
       }
+    }
+
+    /**
+     * Undo everything this request did to the calendar. Identical to the
+     * rollback in the insert path above — kept as one function so a rooms
+     * refusal cannot restore less than a space collision does, which is how a
+     * booking ends up half-applied.
+     */
+    const rollbackCalendar = async () => {
+      await VenueSpaceDate.deleteMany({ batchRef });
+      if (convertedRowIds.length) {
+        await VenueSpaceDate.updateMany(
+          { _id: { $in: convertedRowIds } },
+          { $set: { state: "held" }, $unset: { bookingRef: 1 } }
+        );
+      }
+    };
+
+    // ── ROOMS: RESERVE THE COUNT, NOT A TO-DO ──────────────────────────────
+    // The lead's accommodation requirement becomes real inventory here. Before
+    // this, roomsNeeded produced a `shortfall` number and nothing else, so a
+    // venue could confirm two overlapping weddings each needing 20 of its 25
+    // rooms and neither would object — VenueRoomNight had nothing to collide
+    // on until somebody allotted named rooms by hand.
+    //
+    // The window is the booking's own, assigned above from the lead. Not
+    // re-derived: ONE DATE made that the single source and re-deriving it here
+    // would be a second opinion about the same fact.
+    const roomsNeeded = (enquiry.requirements && enquiry.requirements.roomsNeeded) || 0;
+    let roomsReservation = null;
+    if (roomsNeeded > 0 && booking.checkIn && booking.checkOut) {
+      const reservation = await reserveRoomNights({
+        venue,
+        booking,
+        needed: roomsNeeded,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        // REFUSE FIRST, ALLOW ON PURPOSE. Short inventory returns 409 naming
+        // the numbers; the owner may then confirm anyway with an explicit
+        // acknowledgement. Same shape as the stale-holds path on a window
+        // change — the venue is never blocked from selling, only from doing it
+        // by accident.
+        allowPartial: body.acknowledgeRoomShortfall === true,
+      });
+      if (!reservation.ok) {
+        // Nothing about the booking has been saved yet at this point except
+        // the calendar rows, which the catch below rolls back.
+        if (reservation.code === "rooms_short") {
+          await releaseRoomNights(booking._id);
+          await rollbackCalendar();
+          await discardDraftIfNew();
+          const t = reservation.tightest;
+          return res.status(409).json({
+            message:
+              `${t.alreadyHeld} of your ${reservation.total} rooms are already held on ${t.day}, ` +
+              `so only ${reservation.available} of the ${reservation.needed} this booking needs are free. ` +
+              `Confirm anyway to take the booking and sort the rooms out.`,
+            code: "rooms_short",
+            needed: reservation.needed,
+            available: reservation.available,
+            total: reservation.total,
+            tightest: t,
+            acknowledgeWith: "acknowledgeRoomShortfall",
+          });
+        }
+        await releaseRoomNights(booking._id);
+        await rollbackCalendar();
+        await discardDraftIfNew();
+        return res.status(409).json({
+          message: "Those rooms were taken while this booking was being confirmed. Nothing was changed — try again.",
+          code: "rooms_conflict",
+        });
+      }
+      roomsReservation = reservation;
     }
 
     booking.status = "confirmed";

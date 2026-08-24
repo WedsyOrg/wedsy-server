@@ -42,6 +42,9 @@ const SHEET_COLUMNS = [
   { header: "Waived Items", key: "waivedCount", width: 13 },
   { header: "Incomplete Days", key: "incompleteCount", width: 16 },
   { header: "Total Deductions", key: "totalDeductions", width: 17 },
+  // A separate column, deliberately. Reimbursements are money owed TO the
+  // person; netting them into deductions would hide both facts.
+  { header: "Reimbursements", key: "reimbursements", width: 15 },
   { header: "Net (before statutory)", key: "netBeforeStatutory", width: 21 },
   { header: "Notes", key: "notes", width: 40 },
 ];
@@ -71,11 +74,12 @@ const buildWorkbook = async (sheet, { month }) => {
       lopDays: l.lopDays, lopDeduction: l.lopDeduction,
       lateInstances: l.lateInstances, fineDeduction: l.fineDeduction,
       waivedCount: l.waivedCount, incompleteCount: l.incompleteDays.length,
-      totalDeductions: l.totalDeductions, netBeforeStatutory: l.netBeforeStatutory,
+      totalDeductions: l.totalDeductions, reimbursements: l.reimbursements || 0,
+      netBeforeStatutory: l.netBeforeStatutory,
       notes: [...l.flags].join(" · "),
     });
   }
-  for (const key of ["annualCtc", "monthlyGross", "payableGross", "dayRate", "lopDeduction", "fineDeduction", "totalDeductions", "netBeforeStatutory"]) {
+  for (const key of ["annualCtc", "monthlyGross", "payableGross", "dayRate", "lopDeduction", "fineDeduction", "totalDeductions", "reimbursements", "netBeforeStatutory"]) {
     ws.getColumn(key).numFmt = money;
   }
   const totalRow = ws.addRow({
@@ -84,6 +88,7 @@ const buildWorkbook = async (sheet, { month }) => {
     lopDeduction: sheet.totals.lopDeduction,
     fineDeduction: sheet.totals.fineDeduction,
     totalDeductions: sheet.totals.totalDeductions,
+    reimbursements: sheet.totals.reimbursements,
     netBeforeStatutory: sheet.totals.netBeforeStatutory,
   });
   totalRow.font = { bold: true };
@@ -112,6 +117,14 @@ const buildWorkbook = async (sheet, { month }) => {
         amount: i.amount, status: i.status, reason: i.reason,
       });
     }
+    for (const r of l.reimbursementItems || []) {
+      ev.addRow({
+        name: l.name, date: r.spentOn, kind: "reimb",
+        source: `${r.category} · ${r.receipts} receipt(s)`,
+        amount: r.amountApproved, status: r.status,
+        reason: r.status === "partial" ? `claimed ${r.amountClaimed}` : "",
+      });
+    }
     for (const d of l.incompleteDays) {
       ev.addRow({ name: l.name, date: d, kind: "incomplete", source: "no check-out recorded", amount: 0, status: "paid", reason: "Not deducted — needs manager confirmation" });
     }
@@ -129,7 +142,8 @@ const buildWorkbook = async (sheet, { month }) => {
     ["Working days (Mon-Sat − holidays)", `${sheet.workingDaysInMonth} — context only, NOT the pay divisor`],
     ["Late fines", "read from the policy snapshot on each attendance row, never recomputed"],
     ["Statutory", "NOT computed here — PF / ESI / PT / TDS are Razorpay's"],
-    ["Net column", "gross − LOP − fines, BEFORE any statutory deduction"],
+    ["Net column", "gross − LOP − fines + reimbursements, BEFORE any statutory deduction"],
+    ["Reimbursements", "approved claims not yet paid by an earlier run; an ADDITION, never netted"],
   ].forEach(([k, v]) => meta.addRow({ k, v }));
 
   return wb;
