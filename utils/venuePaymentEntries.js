@@ -72,6 +72,7 @@ function convertLegacyRow(row, { now = new Date() } = {}) {
 function addEntry(row, entry) {
   convertLegacyRow(row);
   const next = {
+    paymentId: entry.paymentId || null,
     amount: Math.round(Number(entry.amount) || 0),
     date: entry.date || new Date(),
     method: entry.method || "",

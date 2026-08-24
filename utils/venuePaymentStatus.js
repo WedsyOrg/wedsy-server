@@ -46,6 +46,7 @@ function entriesOf(row) {
   const list = (row && row.entries) || [];
   return Array.from(list).map((e) => ({
     _id: e._id,
+    paymentId: e.paymentId || null,
     amount: round(e.amount),
     date: e.date || null,
     method: e.method || "",

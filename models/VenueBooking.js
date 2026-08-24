@@ -74,6 +74,17 @@ const VenueBookingSchema = new mongoose.Schema(
         // legacy field below.
         entries: [
           {
+            /**
+             * ── WHICH PAYMENT THIS PIECE BELONGS TO ────────────────────────
+             * One payment can span two milestones — ₹1,00,000 that finishes
+             * Instalment 1 and starts Instalment 2 is TWO entries but ONE
+             * thing the couple did, and one thing the bank statement shows.
+             * Every entry written by a single recording action shares this id,
+             * so the payment can be shown, invoiced (S6) and reversed as the
+             * unit it actually is rather than as fragments that happen to
+             * share a date.
+             */
+            paymentId: { type: mongoose.Schema.Types.ObjectId },
             amount: { type: Number, required: true, min: 1 },
             /** When the money actually arrived — not when it was typed in. */
             date: { type: Date, default: Date.now },

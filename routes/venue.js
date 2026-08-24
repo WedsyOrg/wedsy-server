@@ -218,6 +218,9 @@ router.post("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapab
 
 // ── BOOKING ENGINE S4: recording payments against the schedule ──────────────
 router.get("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.getLeadPayments);
+// The preview writes nothing but reads the schedule, so it sits behind the
+// SAME capability as recording — "where would this money go" is a money read.
+router.post("/:slug/enquiries/:enquiryId/payments/preview", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.previewPayment);
 router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.recordPayment);
 
 // ── BOOKING ENGINE S3: the booking confirmation document ────────────────────

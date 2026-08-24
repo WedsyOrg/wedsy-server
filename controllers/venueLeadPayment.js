@@ -19,6 +19,7 @@ const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
 const { summarizeSchedule, describeMilestone, receivedOn } = require("../utils/venuePaymentStatus");
 const { addEntry } = require("../utils/venuePaymentEntries");
+const { allocate, allocationSentence } = require("../utils/venuePaymentWaterfall");
 const { normaliseMode, PAYMENT_MODES } = require("../utils/venuePaymentMode");
 
 // The ONE vocabulary, re-exported rather than restated. This list used to be
@@ -80,6 +81,81 @@ const getLeadPayments = async (req, res) => {
   }
 };
 
+/**
+ * The owner's own allocation, if they gave one.
+ *
+ * THREE shapes reach this, and all three must keep working:
+ *   · { allocations: [{ milestoneId, amount }] } — the S2 split
+ *   · { milestoneId }                            — "all of it, to this one"
+ *   · nothing                                    — the waterfall
+ *
+ * The bare `milestoneId` form is what every caller sent before S2, including
+ * the confirm wizard and the existing payments UI. Translating it here rather
+ * than branching downstream means those callers keep their exact behaviour —
+ * one instalment, refused if it overpays that instalment — without a second
+ * code path that could drift from the planner.
+ *
+ * `null` means "no override", which is the waterfall.
+ */
+function readOverride(body) {
+  if (Array.isArray(body.allocations) && body.allocations.length) {
+    return body.allocations
+      .map((a) => ({ milestoneId: a && a.milestoneId, amount: Math.round(Number(a && a.amount) || 0) }))
+      .filter((a) => a.milestoneId && a.amount > 0);
+  }
+  if (body.milestoneId) {
+    return [{ milestoneId: body.milestoneId, amount: Math.round(Number(body.amount) || 0) }];
+  }
+  return null;
+}
+
+// ── POST /venues/:slug/enquiries/:enquiryId/payments/preview ────────────────
+/**
+ * WHERE WOULD THIS MONEY GO — answered before anything is saved.
+ *
+ * Nobody should discover where their money went after the fact. The owner
+ * types an amount, sees "Rs. 1,00,000 → Rs. 50,000 completes Instalment 1,
+ * Rs. 50,000 to Instalment 2", and only then agrees to it.
+ *
+ * It is a POST rather than a GET because the body can carry an override, and
+ * it writes NOTHING — it plans with the same function the write uses, so the
+ * preview cannot become a decoration that disagrees with what happens.
+ *
+ * A refusal is a 200 with the reason, not a 4xx: at preview time "that is more
+ * than the booking has outstanding" is INFORMATION the owner is asking for,
+ * not a failed request. The write still refuses it with a 400.
+ */
+const previewPayment = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const body = req.body || {};
+
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) {
+      return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+    }
+    const amount = Math.round(Number(body.amount));
+    const s = summarizeSchedule(booking);
+    const plan = allocate(s.rows, amount, readOverride(body));
+
+    return res.status(200).json({
+      ok: !plan.error,
+      amount: Number.isFinite(amount) ? amount : 0,
+      lines: plan.lines,
+      sentence: plan.error ? "" : allocationSentence(plan, amount),
+      totalOutstanding: plan.totalOutstanding,
+      // What the balance WOULD become, so the preview answers the second
+      // question an owner has after "where does it go".
+      balanceAfter: plan.error ? s.totals.balance : Math.max(0, s.totals.balance - plan.allocated),
+      problem: plan.error || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 // ── POST /venues/:slug/enquiries/:enquiryId/payments ────────────────────────
 // Body: { milestoneId, amount, paidAt?, mode?, reference? }
 const recordPayment = async (req, res) => {
@@ -93,28 +169,17 @@ const recordPayment = async (req, res) => {
     if (!booking) {
       return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
     }
-    if (!mongoose.isValidObjectId(body.milestoneId)) {
-      return res.status(400).json({ message: "milestoneId is required" });
-    }
-    const row = booking.paymentSchedule.id(body.milestoneId);
-    if (!row) return res.status(404).json({ message: "That instalment is not on this booking" });
-
     const amount = Math.round(Number(body.amount));
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ message: "A payment amount is required" });
     }
-    const already = receivedOn(row);
-    const due = Math.round(Number(row.amount) || 0);
-    // Refuse MORE than the instalment is worth. Overpaying a milestone is
-    // almost always a typo, and silently accepting it would make the booking
-    // balance smaller than the couple actually owes — the one error direction
-    // nobody notices until it is too late.
-    if (due > 0 && already + amount > due) {
-      return res.status(400).json({
-        message: `That is more than this instalment needs. Rs. ${(due - already).toLocaleString("en-IN")} is outstanding on it.`,
-        code: "overpays_milestone",
-        outstanding: due - already,
-      });
+
+    // ── WHERE THE MONEY GOES ─────────────────────────────────────────────────
+    // The SAME planner the preview endpoint runs, so what the owner agreed to
+    // on screen is what happens here. Nothing below re-derives an allocation.
+    const plan = allocate(summarizeSchedule(booking).rows, amount, readOverride(body));
+    if (plan.error) {
+      return res.status(plan.error.code === "unknown_milestone" ? 404 : 400).json(plan.error);
     }
 
     // normaliseMode RETURNS NULL for a method we do not know, and that is a
@@ -136,33 +201,44 @@ const recordPayment = async (req, res) => {
       paidAt = d;
     }
 
-    // ONE ENTRY, never a scalar. addEntry converts a still-legacy row first,
-    // because the derivation stops reading `paidAmount` the instant a row has
-    // its first entry — recording ₹10,000 against a row holding ₹50,000 would
-    // otherwise take that row to ₹10,000 received.
-    addEntry(row, {
-      amount,
-      date: paidAt,
-      method: mode,
-      methodOther: modeOther,
-      reference,
-      note,
-      proofUrl,
-      status: "approved",
-      recordedBy: actorId(req),
-      recordedByName: await actorName(req),
-    });
+    // ONE payment, possibly SEVERAL entries. They share a paymentId so the
+    // thing the couple actually did stays one thing — for display, for the
+    // invoice that keys off it, and for anyone later asking "what was this
+    // ₹1,00,000?". addEntry converts a still-legacy row before appending.
+    const paymentId = new mongoose.Types.ObjectId();
+    const recordedByName = await actorName(req);
+    const touched = [];
+    for (const line of plan.lines) {
+      const target = booking.paymentSchedule.id(line.milestoneId);
+      if (!target) continue;
+      addEntry(target, {
+        paymentId,
+        amount: line.amount,
+        date: paidAt,
+        method: mode,
+        methodOther: modeOther,
+        reference,
+        note,
+        proofUrl,
+        status: "approved",
+        recordedBy: actorId(req),
+        recordedByName,
+      });
+      touched.push(target);
+    }
     await booking.save();
 
-    const described = describeMilestone(row);
+    const described = describeMilestone(touched[0]);
     const s = summarizeSchedule(booking);
 
     lead.activities.push({
       type: "payment_recorded",
+      // The allocation sentence IS the description. A payment that spanned two
+      // instalments used to be logged against whichever one the caller named,
+      // which made the timeline disagree with the schedule it was describing.
       description:
-        `Payment received: Rs. ${amount.toLocaleString("en-IN")} against ${row.label || "an instalment"}` +
-        `${mode ? ` by ${mode.replace(/_/g, " ")}` : ""}${reference ? ` (${reference})` : ""}` +
-        `${described.status === "paid" ? "" : ` — Rs. ${described.outstanding.toLocaleString("en-IN")} still outstanding on it`}`,
+        `Payment received: ${allocationSentence(plan, amount)}`.replace(/\.$/, "") +
+        `${mode ? ` — by ${mode.replace(/_/g, " ")}` : ""}${reference ? ` (${reference})` : ""}`,
       actor: actorId(req),
       timestamp: new Date(),
     });
@@ -184,4 +260,4 @@ const recordPayment = async (req, res) => {
   }
 };
 
-module.exports = { getLeadPayments, recordPayment, MODES };
+module.exports = { getLeadPayments, recordPayment, previewPayment, MODES };
