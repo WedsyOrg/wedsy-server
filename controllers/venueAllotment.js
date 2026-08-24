@@ -84,19 +84,57 @@ async function createOneAllotment(venue, bookingId, input, ownerId) {
     createdBy: ownerId,
   });
 
-  const nights = nightKeys(input.checkInAt, input.checkOutAt).map((night) => ({
-    venue: venue._id,
-    room: room._id,
-    night,
-    allotment: allotment._id,
-  }));
+  const nightList = nightKeys(input.checkInAt, input.checkOutAt);
+
+  // ── TAKE OVER THIS BOOKING'S OWN HELD NIGHTS FIRST ───────────────────────
+  // The booking already reserved a count at confirmation, so most of these
+  // nights are sitting here HELD (allotment: null) against this very room.
+  // Claiming fresh rows for them would collide with the booking's own
+  // reservation, and deleting the held row first would open a gap another
+  // booking could win.
+  //
+  // So the row is UPDATED in place. It never stops existing, which is what
+  // keeps a booking that reserved 20 and allots 20 at 20 nights rather than 40.
+  const takenOver = [];
+  for (const night of nightList) {
+    const swapped = await VenueRoomNight.findOneAndUpdate(
+      { venue: venue._id, room: room._id, night, booking: bookingId, allotment: null },
+      { $set: { allotment: allotment._id } },
+      { new: true }
+    ).lean();
+    if (swapped) takenOver.push(night);
+  }
+  const takenOverKeys = new Set(takenOver.map((n) => Number(n)));
+
+  // Anything not already held — a stay outside the reserved window, or a
+  // booking that never reserved — is claimed the original way.
+  const nights = nightList
+    .filter((night) => !takenOverKeys.has(Number(night)))
+    .map((night) => ({
+      venue: venue._id,
+      room: room._id,
+      night,
+      booking: bookingId,
+      allotment: allotment._id,
+    }));
+
+  /** Put every swapped row back to HELD. The reservation must survive a failure. */
+  const unswap = async () => {
+    if (takenOver.length) {
+      await VenueRoomNight.updateMany(
+        { allotment: allotment._id, night: { $in: takenOver } },
+        { $set: { allotment: null } }
+      );
+    }
+  };
 
   try {
     // ordered:true → stops at the first duplicate; successfully inserted docs
     // before it are rolled back below.
     await VenueRoomNight.insertMany(nights, { ordered: true });
   } catch (e) {
-    await VenueRoomNight.deleteMany({ allotment: allotment._id });
+    await VenueRoomNight.deleteMany({ allotment: allotment._id, night: { $nin: takenOver } });
+    await unswap();
     if (e.code === 11000) {
       return { conflict: `Room "${room.name}" is already allotted for (part of) ${input.checkInAt.toISOString().slice(0, 10)} → ${input.checkOutAt.toISOString().slice(0, 10)}` };
     }
@@ -106,10 +144,32 @@ async function createOneAllotment(venue, bookingId, input, ownerId) {
   try {
     await allotment.save();
   } catch (e) {
-    await VenueRoomNight.deleteMany({ allotment: allotment._id });
+    // Fresh rows go; taken-over rows go BACK TO HELD. Deleting them would
+    // silently cancel part of the booking's reservation because a guest name
+    // failed to save.
+    await VenueRoomNight.deleteMany({ allotment: allotment._id, night: { $nin: takenOver } });
+    await unswap();
     throw e;
   }
-  return { allotment };
+  return { allotment, takenOver };
+}
+
+/**
+ * Undo one allotment WITHOUT touching the booking's reservation.
+ *
+ * Rows this allotment took over from the reservation revert to held; rows it
+ * claimed itself are deleted. A plain deleteMany({allotment}) would do the
+ * first job wrong and hand the nights to whoever asked next.
+ */
+async function undoAllotment(allotmentId, takenOver = []) {
+  await VenueRoomNight.deleteMany({ allotment: allotmentId, night: { $nin: takenOver } });
+  if (takenOver.length) {
+    await VenueRoomNight.updateMany(
+      { allotment: allotmentId, night: { $in: takenOver } },
+      { $set: { allotment: null } }
+    );
+  }
+  await VenueRoomAllotment.deleteOne({ _id: allotmentId });
 }
 
 // POST /venues/:slug/bookings/:bookingId/allotments — leads capability.
@@ -134,22 +194,21 @@ const createAllotments = async (req, res) => {
       const v = validateAllotmentInput(item || {});
       if (v.error) {
         // Validation failure fails the whole request — nothing partial saved.
-        for (const a of created) {
-          await VenueRoomNight.deleteMany({ allotment: a._id });
-          await VenueRoomAllotment.deleteOne({ _id: a._id });
-        }
+        for (const a of created) await undoAllotment(a._id, a.takenOver);
         return res.status(400).json({ message: v.error });
       }
       const result = await createOneAllotment(venue, booking._id, v.value, req.venueOwner.venueOwnerId);
       if (result.error) {
-        for (const a of created) {
-          await VenueRoomNight.deleteMany({ allotment: a._id });
-          await VenueRoomAllotment.deleteOne({ _id: a._id });
-        }
+        for (const a of created) await undoAllotment(a._id, a.takenOver);
         return res.status(400).json({ message: result.error });
       }
       if (result.conflict) conflicts.push(result.conflict);
-      else created.push(result.allotment);
+      else {
+        // The taken-over nights ride along, because rolling this allotment back
+        // later must revert them to HELD rather than delete them — see
+        // undoAllotment.
+        created.push(Object.assign(result.allotment, { takenOver: result.takenOver || [] }));
+      }
     }
 
     if (created.length === 0 && conflicts.length > 0) {
