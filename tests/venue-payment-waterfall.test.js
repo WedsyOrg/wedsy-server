@@ -150,6 +150,15 @@ const daysAhead = (n) => new Date(Date.now() + n * 86400000);
     ok(String(e1.paymentId) === String(e2.paymentId), "…sharing one paymentId");
     ok(!!e1.paymentId, "…which is actually set");
 
+    console.log("\n[the row's headline payment is the most recently RECORDED one]");
+    // Pinned because the record form sends a DATE-ONLY paidAt (midnight), so a
+    // payment entered today sorts BEFORE an entry created earlier the same day
+    // that carries a real timestamp. Ordering the headline by date made the row
+    // report the older payment's method — found by driving it in a browser.
+    const i1 = summarizeSchedule(after).rows[0];
+    ok(i1.paidMode === "bank_transfer", `instalment 1 reports the bank transfer, not the earlier UPI (got "${i1.paidMode}")`);
+    ok(i1.paidReference === "NEFT-77", `…and its reference (got "${i1.paidReference}")`);
+
     console.log("\n[the timeline describes the whole allocation, not one milestone]");
     const freshLead = await VenueEnquiry.findById(lead._id);
     const act = (freshLead.activities || []).filter((a) => a.type === "payment_recorded").pop();

@@ -133,8 +133,16 @@ function describeMilestone(row, now = new Date()) {
   // "Latest approved" is the right one to surface: it is the most recent thing
   // that actually happened to this milestone. The full history is in `entries`
   // for anything that wants more than a headline.
-  const approved = entries.filter((e) => e.status === "approved");
-  const latest = approved.length ? approved[approved.length - 1] : null;
+  //
+  // "Latest" means most recently RECORDED, which is insertion order — NOT the
+  // largest date. The record form sends a date-only `paidAt`, so a payment
+  // entered today lands at midnight while an entry created earlier the same
+  // day carries a real timestamp: sorting by date put the newer payment first
+  // and made the row report the OLDER payment's method. A date is also
+  // legitimately backdated ("it actually arrived on the 12th"), so it cannot
+  // be what decides which payment is the headline.
+  const rawApproved = Array.from((row && row.entries) || []).filter((e) => (e.status || "approved") === "approved");
+  const latest = rawApproved.length ? entriesOf({ entries: [rawApproved[rawApproved.length - 1]] })[0] : null;
   const status = milestoneStatus(row, now);
   // Whole venue-local days late — the number an owner would say out loud.
   const daysLate = row.dueDate && status === "overdue" ? Math.max(0, venueDayDiff(now, new Date(row.dueDate))) : 0;

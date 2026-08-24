@@ -79,25 +79,6 @@ function allocate(rows, amount, override) {
     return { lines: [], allocated: 0, unallocated: 0, totalOutstanding, error: { code: "amount_required", message: "A payment amount is required" } };
   }
 
-  // ── OVERPAYMENT BEYOND THE WHOLE SCHEDULE ────────────────────────────────
-  // Refused, and named. Collecting more than the couple owes is legitimate
-  // only through additional billing (S5) — silently accepting it here would
-  // make the balance smaller than what is actually owed, the one error
-  // direction nobody notices until it is too late.
-  if (want > totalOutstanding) {
-    return {
-      lines: [], allocated: 0, unallocated: want, totalOutstanding,
-      error: {
-        code: "overpays_schedule",
-        message:
-          totalOutstanding === 0
-            ? "This booking is fully paid. To collect more, add it as additional billing."
-            : `That is more than this booking has outstanding. Rs. ${totalOutstanding.toLocaleString("en-IN")} is left to collect.`,
-        outstanding: totalOutstanding,
-      },
-    };
-  }
-
   // ── THE OWNER'S OWN ALLOCATION ───────────────────────────────────────────
   if (Array.isArray(override) && override.length) {
     const lines = [];
@@ -144,6 +125,33 @@ function allocate(rows, amount, override) {
       };
     }
     return { lines, allocated: sum, unallocated: 0, totalOutstanding, error: null };
+  }
+
+  // ── OVERPAYMENT BEYOND THE WHOLE SCHEDULE ────────────────────────────────
+  // Refused, and named. Collecting more than the couple owes is legitimate
+  // only through additional billing (S5) — silently accepting it would make
+  // the balance smaller than what is actually owed, the one error direction
+  // nobody notices until it is too late.
+  //
+  // This is checked AFTER the override branch on purpose. When the owner has
+  // named an instalment, "that is more than Instalment 1 needs, Rs. 50,000 is
+  // outstanding on it" is the more precise and more actionable refusal than
+  // "that is more than the booking has outstanding" — and it is the error that
+  // path returned before the waterfall existed. The per-line check there is
+  // also strictly tighter: every line is capped at its own row's outstanding,
+  // so their sum can never exceed the schedule's.
+  if (want > totalOutstanding) {
+    return {
+      lines: [], allocated: 0, unallocated: want, totalOutstanding,
+      error: {
+        code: "overpays_schedule",
+        message:
+          totalOutstanding === 0
+            ? "This booking is fully paid. To collect more, add it as additional billing."
+            : `That is more than this booking has outstanding. Rs. ${totalOutstanding.toLocaleString("en-IN")} is left to collect.`,
+        outstanding: totalOutstanding,
+      },
+    };
   }
 
   // ── THE WATERFALL ────────────────────────────────────────────────────────
