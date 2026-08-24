@@ -45,6 +45,13 @@ const employedOn = (admin, dateStr) => {
   if (exited && day > exited) {
     return { employed: false, certain: true, reason: `exited ${exited}` };
   }
+  // Marked as having left but with no date recorded. Same shape as the disabled
+  // case: excluded going forward, flagged uncertain, and NEVER retroactive —
+  // with no date there is nothing to compare a past month against, so a month
+  // they worked would silently vanish if this returned a confident false.
+  if (admin.status === "exited" && !exited) {
+    return { employed: false, certain: false, reason: "marked exited, no exit date recorded" };
+  }
   // Disabled with no recorded exit date: access is revoked, so they cannot check
   // in and cannot be "absent" from a job they cannot log into. Their existing
   // rows are untouched — days already worked are already recorded.
@@ -65,6 +72,14 @@ const employedOnDate = async (dateStr, extra = {}) => {
   return admins
     .map((a) => ({ admin: a, ...employedOn(a, dateStr) }))
     .filter((r) => r.employed);
+};
+
+// Has this person left, as of today? A convenience over employedOn for the
+// places that only care about "now" — leave routing, approver resolution — and
+// deliberately NOT used by payroll, which always asks about a specific date.
+const hasExited = (admin, todayKey) => {
+  const r = employedOn(admin, todayKey || new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }));
+  return !r.employed && /exited|marked exited/.test(r.reason);
 };
 
 // ── SUGGESTING service accounts, never assuming one ─────────────────────────
@@ -94,5 +109,6 @@ module.exports = {
   employeeFilter,
   employedOn,
   employedOnDate,
+  hasExited,
   listLikelyServiceAccounts,
 };

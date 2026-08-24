@@ -33,7 +33,22 @@ const AdminSchema = new mongoose.Schema(
       ],
       default: [],
     },
-    status: { type: String, enum: ["active", "inactive", "on_leave"], default: "active" },
+    // ── "exited" ADDED 2026-08-25 ───────────────────────────────────────────
+    // WHY IT BELONGS HERE AND ALSO NEEDS A DATE. Adding the value to this enum
+    // is what makes an exit take effect everywhere at once: dozens of selectors
+    // already filter status:"active" (assignableFilter chief among them), so a
+    // leaver drops out of assignment, pools and notification targets the moment
+    // this flips — without hunting down and patching every one of them.
+    //
+    // But a STATUS CANNOT ANSWER PAYROLL'S QUESTION. "Were they employed on
+    // 2026-07-15?" needs a date, and a flag has none. So the authoritative fact
+    // is meta.exitedAt below and this enum is the fast index into it. They are
+    // written together, never one without the other.
+    //
+    // NOT "inactive": that value is ambiguous — suspended, sabbatical, never
+    // started — and an exit is a specific, irreversible thing that deserves to
+    // say so.
+    status: { type: String, enum: ["active", "inactive", "on_leave", "exited"], default: "active" },
     joinedAt: { type: Date, default: null },
     // Lifecycle (additive): round-robin auto-assignment cursor (least-recently-assigned wins).
     lastAssignedAt: { type: Date, default: null },
@@ -62,10 +77,22 @@ const AdminSchema = new mongoose.Schema(
       // seed/test users. Excluded from every HR roll-up. Set explicitly by a
       // human — nothing here guesses from a name.
       isServiceAccount: { type: Boolean, default: false },
-      // Employment end. Together with joinedAt this is the "employed on this
-      // date" window; both null means UNKNOWN, and the predicate says so rather
-      // than assuming.
+      // Employment end — the LAST WORKING DAY, inclusive. Together with joinedAt
+      // this is the "employed on this date" window; both null means UNKNOWN, and
+      // the predicate says so rather than assuming.
+      //
+      // ⚠️ THIS IS THE AUTHORITATIVE DATE and utils/employment.employedOn reads
+      // it directly. The exit record below sits beside it deliberately rather
+      // than nesting the date inside a new object: moving it would mean two
+      // places holding the same fact, which is how they drift apart.
       exitedAt: { type: Date, default: null },
+      // ── THE EXIT RECORD (2026-08-25) ──────────────────────────────────────
+      // Who recorded the exit and why. Kept because an exit removes someone from
+      // payroll and revokes their access — decisions that get queried later, and
+      // "the system says they left" is not an answer without a name against it.
+      exitReason: { type: String, default: "" },
+      exitRecordedBy: { type: ObjectId, ref: "Admin", default: null },
+      exitRecordedAt: { type: Date, default: null },
     },
   },
   { timestamps: true }

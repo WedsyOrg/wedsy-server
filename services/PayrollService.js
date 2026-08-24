@@ -83,6 +83,19 @@ const computeSheet = async (month, decisions = [], { adminIds = null } = {}) => 
       blocking.push("No salary record — set one before finalising");
     } else {
       gross = P.monthlyGross(governing.annualCtc);
+      // ── ZERO IS A DECISION; BLANK IS A GAP (2026-08-25) ──────────────────
+      // The founders draw no salary through this system. With a missing record
+      // treated as blocking, they would block every run forever — so an
+      // explicit ₹0 record is how someone SAYS "no salary here", and it must
+      // not be mistaken for the gap it looks like.
+      //
+      // The difference is already load-bearing above: `governing` is truthy for
+      // a ₹0 record, so no blocking flag is raised. This flag makes the
+      // distinction VISIBLE on the sheet, so a ₹0 line reads as a recorded
+      // decision rather than something nobody got round to.
+      if (Number(governing.annualCtc) === 0) {
+        flags.push(`no salary drawn through this system — recorded as ₹0 effective ${governing.effectiveFrom}`);
+      }
     }
 
     // ── pro-ration, only on KNOWN dates ─────────────────────────────────

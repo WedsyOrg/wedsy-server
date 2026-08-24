@@ -9,7 +9,7 @@ const CompanyHolidayService = require("./CompanyHolidayService");
 const AttendanceDayService = require("./AttendanceDayService");
 const AdminNotificationService = require("./AdminNotificationService");
 const { permissionSatisfies } = require("../middlewares/requirePermission");
-const { isServiceAccount } = require("../utils/employment");
+const { isServiceAccount, employedOn } = require("../utils/employment");
 const { dayKey } = require("./hrPolicy");
 const P = require("./leavePolicy");
 
@@ -97,6 +97,16 @@ const managerChain = async (adminId, levels = 2) => {
     const mgr = who && who.reportingManagerId;
     if (!mgr) break;
     if (chain.some((c) => String(c) === String(mgr))) break; // cycle guard
+    // Walk THROUGH a manager who has left rather than stopping at them: their
+    // own manager is the right next approver, and stopping would silently
+    // shorten the chain to nothing. The exit path refuses to leave orphans in
+    // the first place, but a chart edited by hand can still produce this.
+    const mgrDoc = await Admin.findById(mgr, { status: 1 }).lean();
+    if (mgrDoc && mgrDoc.status === "exited") {
+      cursor = mgr;
+      levels += 1; // the departed link does not consume one of the two levels
+      continue;
+    }
     chain.push(mgr);
     cursor = mgr;
   }
@@ -110,7 +120,13 @@ const holdersOfApproveAll = async () => {
     .map((r) => String(r._id));
   if (!okRoleIds.length) return [];
   const admins = await Admin.find(
-    { $or: [{ roleIds: { $in: okRoleIds } }, { roleId: { $in: okRoleIds } }], isDisabled: { $ne: true } },
+    {
+      $or: [{ roleIds: { $in: okRoleIds } }, { roleId: { $in: okRoleIds } }],
+      isDisabled: { $ne: true },
+      // A leaver keeps their role rows — nothing is deleted — so the permission
+      // check alone would still route requests to someone who has gone.
+      status: { $ne: "exited" },
+    },
     { _id: 1 }
   ).lean();
   return admins.map((a) => a._id);
@@ -311,6 +327,15 @@ const apply = async ({ type, days, reason, medicalCertificate }, actorId, now = 
   if (!admin) throw err(404, "Applicant not found");
   // A service account is a login, not a person. It has no leave to take.
   if (isServiceAccount(admin)) throw err(403, "Service accounts cannot apply for leave");
+  // Someone who has left cannot book time off from a job they no longer hold.
+  // Checked against the FIRST REQUESTED DAY, not today, so this is not
+  // retroactive: a leaver's already-approved leave and their worked months are
+  // untouched — this only stops NEW leave dated after their exit.
+  const firstDay = [...days.map((d) => d && d.date).filter(Boolean)].sort()[0];
+  const standing = employedOn(admin, firstDay || dayKey(now));
+  if (!standing.employed && /exited/.test(standing.reason)) {
+    throw err(403, `${admin.name} has left the company (${standing.reason}) — leave cannot be applied for after that date`);
+  }
 
   const clean = days.map((d) => {
     if (!DAY_RE.test(String(d && d.date))) throw err(400, 'each day needs a date of the form "YYYY-MM-DD"');
