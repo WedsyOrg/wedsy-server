@@ -14,6 +14,9 @@ const { dayKey } = require("./hrPolicy");
 const P = require("./leavePolicy");
 
 const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
+
+// Human names for the strip and for messages an applicant reads.
+const TYPE_NAME = { CL: "casual leave", SL: "sick leave", EL: "earned leave", WFH: "WFH", COMP_OFF: "comp-off" };
 const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -143,20 +146,51 @@ const validate = async ({ admin, type, days, medicalCertificate, todayKey }) => 
     P.shiftDay(first, -7), P.shiftDay(last, 7)
   );
 
-  // Every requested day must be a working day — you cannot take leave on a
-  // Sunday or a company holiday; you were not due in.
-  for (const d of dayKeys) {
-    if (!P.isWorkingDay(d, workingDays, holidayKeys)) {
-      throw err(400, `${d} is not a working day — no leave is needed for it`);
-    }
-  }
-
   const total = days.reduce((s, d) => s + Number(d.fraction), 0);
+  const notice = {
+    noticeDays: P.noticeFor(todayKey, dayKeys),
+    requiredNoticeDays: P.NOTICE_DAYS[type] ?? 0,
+  };
 
-  // WFH is whole days only.
-  if (type === "WFH" && days.some((d) => Number(d.fraction) !== 1)) {
-    throw err(400, "WFH is whole-day only — half-days are not available on it");
+  // Not a working day — you were not due in, so no leave is needed. RECORDED
+  // rather than refused: mistaking which days are off is a genuine calendar
+  // misunderstanding, not a malformed request.
+  //
+  // Returns EARLY. The rules below reason about runs of consecutive working days
+  // and adjacency, and feeding them days that are not working days at all would
+  // produce a second, confusing breach on top of the real one.
+  const breaches = [];
+
+  const offDays = dayKeys.filter((d) => !P.isWorkingDay(d, workingDays, holidayKeys));
+  if (offDays.length) {
+    return {
+      total, shortNotice: false, ...notice, warnings: [],
+      breaches: [{
+        code: "non_working_day",
+        label: "Not a working day",
+        message: `${offDays.join(", ")} ${offDays.length > 1 ? "are not working days" : "is not a working day"} — no leave is needed for ${offDays.length > 1 ? "them" : "it"}.`,
+      }],
+    };
   }
+
+  // WFH is whole days only. RECORDED — thinking a half-day WFH is available is
+  // an ordinary good-faith misunderstanding of the policy.
+  if (type === "WFH" && days.some((d) => Number(d.fraction) !== 1)) {
+    breaches.push({
+      code: "wfh_whole_day_only",
+      label: "WFH is whole days only",
+      message: "WFH is whole-day only — half-days are not available on it.",
+    });
+  }
+
+  // ── POLICY BREACHES: COLLECTED, NOT THROWN (2026-08-24) ─────────────────
+  // These three are things a reasonable person could apply for in good faith and
+  // be wrong about. They are recorded and auto-rejected with the specific
+  // reason, exactly like a same-day request — so the attempt is visible to the
+  // approver AND to the applicant's own history. A 400 left no trace of either.
+  //
+  // Malformed input is NOT in here and still throws: see the line drawn in
+  // apply() below.
 
   // WFH max 1 per calendar month, counted across all pending/approved requests.
   if (type === "WFH") {
@@ -166,7 +200,14 @@ const validate = async ({ admin, type, days, medicalCertificate, todayKey }) => 
       byMonth.set(P.monthKey(d), (byMonth.get(P.monthKey(d)) || 0) + 1);
     }
     for (const [month, n] of byMonth) {
-      if (n > P.WFH_PER_MONTH) throw err(400, `WFH is limited to ${P.WFH_PER_MONTH} day per month — ${month} would have ${n}`);
+      if (n > P.WFH_PER_MONTH) {
+        breaches.push({
+          code: "wfh_monthly_cap",
+          label: `WFH is ${P.WFH_PER_MONTH} day a month`,
+          message: `WFH is limited to ${P.WFH_PER_MONTH} day per month — ${month} would have ${n}.`,
+        });
+        break;
+      }
     }
   }
 
@@ -175,19 +216,35 @@ const validate = async ({ admin, type, days, medicalCertificate, todayKey }) => 
     const existing = await otherLeaveDays(admin._id, "CL");
     const run = P.consecutiveRunLength([...existing, ...dayKeys], workingDays, holidayKeys);
     if (run > P.MAX_CONSECUTIVE.CL) {
-      throw err(400, `Casual leave allows at most ${P.MAX_CONSECUTIVE.CL} consecutive working days — this would make ${run}`);
+      breaches.push({
+        code: "cl_consecutive",
+        label: `Casual leave caps at ${P.MAX_CONSECUTIVE.CL} consecutive days`,
+        message: `Casual leave allows at most ${P.MAX_CONSECUTIVE.CL} consecutive working days — this would make ${run}.`,
+      });
     }
     // …and cannot be clubbed with EL.
     const elDays = await otherLeaveDays(admin._id, "EL");
     const clash = P.clubsWithEl(dayKeys, elDays, workingDays, holidayKeys);
-    if (clash) throw err(400, `Casual leave cannot be clubbed with earned leave — ${clash} is adjacent to an EL day`);
+    if (clash) {
+      breaches.push({
+        code: "cl_el_clubbing",
+        label: "Casual leave can't sit next to earned leave",
+        message: `Casual leave cannot be clubbed with earned leave — ${clash} is adjacent to an EL day.`,
+      });
+    }
   }
 
   // EL: cannot be clubbed with CL either — the rule is symmetric.
   if (type === "EL") {
     const clDays = await otherLeaveDays(admin._id, "CL");
     const clash = P.clubsWithEl(clDays, dayKeys, workingDays, holidayKeys);
-    if (clash) throw err(400, `Earned leave cannot be clubbed with casual leave — ${clash} is adjacent to a CL day`);
+    if (clash) {
+      breaches.push({
+        code: "cl_el_clubbing",
+        label: "Earned leave can't sit next to casual leave",
+        message: `Earned leave cannot be clubbed with casual leave — ${clash} is adjacent to a CL day.`,
+      });
+    }
   }
 
   // SL: medical certificate required over 2 total days.
@@ -203,12 +260,49 @@ const validate = async ({ admin, type, days, medicalCertificate, todayKey }) => 
     warnings.push(`Applied ${given} day(s) ahead; ${type} asks for ${required}. Submitted and flagged short-notice.`);
   }
 
-  return { total, shortNotice, noticeDays: given, requiredNoticeDays: required, warnings };
+  return { total, shortNotice, noticeDays: given, requiredNoticeDays: required, warnings, breaches };
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // APPLY
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// THE LINE between a recorded auto-rejection and a genuine 400:
+//
+//   RECORDED  — could a reasonable person have submitted this in good faith,
+//               believing it was allowed? Then it is a POLICY breach: the
+//               attempt is information, for the approver and for the applicant's
+//               own history. Recorded, auto-rejected, reserves nothing.
+//               (same-day · CL 2-consecutive · CL/EL clubbing · WFH 1-a-month)
+//
+//   400       — the request is malformed, or names something that does not
+//               exist. There is no attempt to record because there was no
+//               coherent request: an unknown type, a bad date, a fraction that
+//               is not 1 or 0.5, a duplicated date, an empty days[], a request
+//               spanning two calendar years. Nothing is written.
+//
+//   403 / 404 — authorisation and identity. A service account applying is not a
+//               policy breach; it is a caller that may not apply at all.
+//
+// The test suite asserts BOTH halves, so the line cannot quietly move.
+const recordAutoRejection = async ({ adminId, type, days, total, reason, code, label, message, todayKey, dayKeys, now }) => {
+  const doc = await LeaveRequest.create({
+    adminId, type, days, totalDays: total, reason: String(reason || ""),
+    status: "auto_rejected",
+    decidedAt: now,
+    decisionNote: message,
+    autoRejectCode: code,
+    autoRejectLabel: label,
+    noticeDays: P.noticeFor(todayKey, dayKeys), requiredNoticeDays: P.NOTICE_DAYS[type] ?? 0,
+  });
+  return {
+    request: doc.toObject(),
+    autoRejected: true,
+    breach: { code, label, message },
+    warnings: [`${message} The application has been recorded.`],
+  };
+};
+
 const apply = async ({ type, days, reason, medicalCertificate }, actorId, now = new Date()) => {
   if (!P.TYPES.includes(type) && type !== "COMP_OFF") throw err(400, `type must be one of ${[...P.TYPES, "COMP_OFF"].join(", ")}`);
   if (!Array.isArray(days) || !days.length) throw err(400, "days must be a non-empty array of { date, fraction }");
@@ -234,19 +328,32 @@ const apply = async ({ type, days, reason, medicalCertificate }, actorId, now = 
   // A blocked submission leaves no trace of the attempt, and the pattern of
   // attempts is itself information. No balance is reserved for it.
   if (P.isSameDayOrPast(todayKey, dayKeys)) {
-    const doc = await LeaveRequest.create({
-      adminId: actorId, type, days: clean, totalDays: total, reason: String(reason || ""),
-      status: "auto_rejected",
-      decidedAt: now,
-      decisionNote: "Same-day (or past-dated) leave is auto-rejected by policy.",
-      noticeDays: P.noticeFor(todayKey, dayKeys), requiredNoticeDays: P.NOTICE_DAYS[type] ?? 0,
+    return recordAutoRejection({
+      adminId: actorId, type, days: clean, total, reason,
+      code: "same_day",
+      label: "Same-day request",
+      message: "Same-day (or past-dated) leave is auto-rejected by policy.",
+      todayKey, dayKeys, now,
     });
-    return { request: doc.toObject(), autoRejected: true, warnings: ["Same-day leave is auto-rejected by policy. The application has been recorded."] };
   }
 
   if (type === "COMP_OFF") return applyCompOff({ clean, total, reason, admin, todayKey, now });
 
   const v = await validate({ admin, type, days: clean, medicalCertificate, todayKey });
+
+  // ── A POLICY BREACH IS RECORDED AND AUTO-REJECTED ───────────────────────
+  // ⚠️ THIS RETURNS BEFORE THE RESERVATION BELOW, deliberately. An auto-rejected
+  // request must never hold balance even momentarily: a brief hold that is then
+  // released is exactly the window in which a concurrent request sees less than
+  // it should and is refused for a reason that never really existed.
+  if (v.breaches.length) {
+    const b = v.breaches[0];
+    return recordAutoRejection({
+      adminId: actorId, type, days: clean, total: v.total, reason,
+      code: b.code, label: b.label, message: b.message,
+      todayKey, dayKeys, now,
+    });
+  }
 
   // ── RESERVE ON SUBMISSION ───────────────────────────────────────────────
   // Without this, two pending requests each pass the sufficiency check
@@ -254,20 +361,77 @@ const apply = async ({ type, days, reason, medicalCertificate }, actorId, now = 
   const year = P.yearOf(dayKeys[0]);
   if (new Set(dayKeys.map(P.yearOf)).size > 1) throw err(400, "a request cannot span two calendar years — split it");
   const bal = await ensureBalance(actorId, year, type);
-  if (availableOf(bal) < v.total) {
-    throw err(400, `Insufficient ${type} balance: ${availableOf(bal)} day(s) available, ${v.total} requested`);
+
+  // ── RESERVE FIRST, ATOMICALLY, THEN WRITE THE REQUEST ────────────────────
+  //
+  // ⚠️ DO NOT "SIMPLIFY" THIS $expr BACK TO A READ-THEN-WRITE. It replaces a
+  // race that was LIVE in production (found 2026-08-24):
+  //
+  //     const bal = await ensureBalance(...)        // read
+  //     if (availableOf(bal) < total) throw ...     // decide
+  //     await LeaveBalance.updateOne(..., { $inc: { reserved: total } })  // write
+  //
+  // Two applications submitted at the same moment BOTH complete the read before
+  // either writes, both see the full balance, and both reserve — over-drawing the
+  // entitlement by exactly the amount reserving was introduced to prevent. The
+  // window is small but it is widest on the day everyone applies at once, which
+  // is precisely when it matters.
+  //
+  // Putting the sufficiency test INSIDE the update filter makes claiming the
+  // balance a single atomic operation: the second writer's filter no longer
+  // matches and modifiedCount comes back 0. The readable version is the broken
+  // one.
+  const claimed = await LeaveBalance.updateOne(
+    {
+      _id: bal._id,
+      $expr: {
+        $gte: [
+          { $subtract: [{ $add: ["$entitled", "$carriedIn"] }, { $add: ["$reserved", "$consumed"] }] },
+          v.total,
+        ],
+      },
+    },
+    { $inc: { reserved: v.total } }
+  );
+  if (!claimed.modifiedCount) {
+    // ── RUNNING OUT IS NOT A RULE BREACH ──────────────────────────────────
+    // Recorded like one — the attempt is the same kind of signal — but under
+    // its OWN code. "You'd run out" and "you broke a rule" read very
+    // differently to whoever reviews the strip, and filing them together makes
+    // a balance problem look like misconduct.
+    //
+    // Nothing was reserved: the guarded update above did not match, so this
+    // path holds no balance to release.
+    const fresh = await LeaveBalance.findById(bal._id).lean();
+    const left = availableOf(fresh);
+    return recordAutoRejection({
+      adminId: actorId, type, days: clean, total: v.total, reason,
+      code: "insufficient_balance",
+      label: `Not enough ${TYPE_NAME[type] || type} left`,
+      message: `Not enough ${TYPE_NAME[type] || type} left: ${left} day(s) available, ${v.total} requested.`,
+      todayKey, dayKeys, now,
+    });
   }
 
-  const { approvers, atTop } = await resolveApprovers(actorId);
-
-  const doc = await LeaveRequest.create({
-    adminId: actorId, type, days: clean, totalDays: v.total, reason: String(reason || ""),
-    status: "pending",
-    shortNotice: v.shortNotice, noticeDays: v.noticeDays, requiredNoticeDays: v.requiredNoticeDays,
-    medicalCertificate: String(medicalCertificate || ""),
-    approvers,
-  });
-  await LeaveBalance.updateOne({ _id: bal._id }, { $inc: { reserved: v.total } });
+  let doc;
+  try {
+    const { approvers, atTop: top } = await resolveApprovers(actorId);
+    doc = await LeaveRequest.create({
+      adminId: actorId, type, days: clean, totalDays: v.total, reason: String(reason || ""),
+      status: "pending",
+      shortNotice: v.shortNotice, noticeDays: v.noticeDays, requiredNoticeDays: v.requiredNoticeDays,
+      medicalCertificate: String(medicalCertificate || ""),
+      approvers,
+    });
+    doc.__atTop = top;
+    doc.__approvers = approvers;
+  } catch (e) {
+    // Never strand a reservation against a request that was never written.
+    await LeaveBalance.updateOne({ _id: bal._id }, { $inc: { reserved: -v.total } });
+    throw e;
+  }
+  const approvers = doc.__approvers;
+  const atTop = doc.__atTop;
 
   // Nobody above them at all — there is no one to escalate to by definition.
   if (atTop) {

@@ -106,8 +106,12 @@ const admins = [], roles = [], depts = [];
     const r2 = await LeaveService.apply({ type: "CL", days: [day(W(8)), day(W(9))], reason: "x" }, emp._id, NOW);
     const r3 = await LeaveService.apply({ type: "CL", days: [day(W(12)), day(W(13))], reason: "y" }, emp._id, NOW);
     ok(r2.request.status === "pending" && r3.request.status === "pending", "two more CL requests reserve 4 more");
-    const over = await threw(() => LeaveService.apply({ type: "CL", days: [day(W(16)), day(W(17))], reason: "z" }, emp._id, NOW));
-    ok(over && /Insufficient CL balance/.test(over.message), `a sixth day is refused (${over && over.message})`);
+    // ⚠️ CHANGED 2026-08-24: running out is RECORDED too, under its own code —
+    // a balance problem must not read as misconduct on the strip.
+    const over = await LeaveService.apply({ type: "CL", days: [day(W(16)), day(W(17))], reason: "z" }, emp._id, NOW);
+    eq(over.request.status, "auto_rejected", "a sixth day is recorded and auto-rejected");
+    eq(over.request.autoRejectCode, "insufficient_balance", "…under its OWN code, not a rule breach");
+    ok(/Not enough casual leave left/.test(over.request.decisionNote), `…phrased as a balance problem (${over.request.decisionNote})`);
 
     // release on cancel
     await LeaveService.cancel(r3.request._id, emp._id);
@@ -117,26 +121,33 @@ const admins = [], roles = [], depts = [];
     // ── 4. CL RULES ─────────────────────────────────────────────────────────
     console.log("\n4. CL: max 2 consecutive working days, never clubbed with EL");
     const emp2 = await mk("Emp2", { reportingManagerId: mgr._id });
-    const three = await threw(() => LeaveService.apply({ type: "CL", days: [day(W(5)), day(W(6)), day(W(7))], reason: "x" }, emp2._id, NOW));
-    ok(three && /at most 2 consecutive/.test(three.message), `3 consecutive CL is refused (${three && three.message})`);
+    // ⚠️ CHANGED 2026-08-24: a policy breach is RECORDED and auto-rejected, not
+    // refused with a 400. The attempt is information — see recordAutoRejection.
+    const three = await LeaveService.apply({ type: "CL", days: [day(W(5)), day(W(6)), day(W(7))], reason: "x" }, emp2._id, NOW);
+    eq(three.request.status, "auto_rejected", "3 consecutive CL is RECORDED and auto-rejected");
+    eq(three.request.autoRejectCode, "cl_consecutive", "…with the rule that stopped it");
+    ok(/at most 2 consecutive/.test(three.request.decisionNote), `…and the specific reason (${three.request.decisionNote})`);
+    ok(!!(await LeaveRequest.findById(three.request._id)), "…and the record persists");
     // Fri + Mon across a Sunday is still 2 CONSECUTIVE WORKING days — allowed…
     const friMon = await LeaveService.apply({ type: "CL", days: [day("2026-08-29"), day("2026-08-31")], reason: "x" }, emp2._id, NOW);
     eq(friMon.request.status, "pending", "Sat + Mon across a Sunday is 2 working days — allowed");
     // …but adding the Friday makes a run of 3, even though Sunday sits inside it.
-    const spanning = await threw(() => LeaveService.apply({ type: "CL", days: [day("2026-08-28")], reason: "x" }, emp2._id, NOW));
-    ok(spanning && /consecutive/.test(spanning.message), "…and a third working day in that run is refused — a Sunday does NOT break the chain");
-    ok(spanning && /3/.test(spanning.message), "…counted across SEPARATE requests, so two requests cannot defeat the cap");
+    const spanning = await LeaveService.apply({ type: "CL", days: [day("2026-08-28")], reason: "x" }, emp2._id, NOW);
+    eq(spanning.request.status, "auto_rejected", "…and a third working day in that run is auto-rejected — a Sunday does NOT break the chain");
+    ok(/3/.test(spanning.request.decisionNote), "…counted across SEPARATE requests, so two requests cannot defeat the cap");
 
     const emp3 = await mk("Emp3", { reportingManagerId: mgr._id });
     await LeaveService.apply({ type: "EL", days: [day(W(20))], reason: "trip" }, emp3._id, NOW);
-    const clubbed = await threw(() => LeaveService.apply({ type: "CL", days: [day(W(21))], reason: "x" }, emp3._id, NOW));
-    ok(clubbed && /cannot be clubbed/.test(clubbed.message), `CL adjacent to EL is refused (${clubbed && clubbed.message})`);
+    const clubbed = await LeaveService.apply({ type: "CL", days: [day(W(21))], reason: "x" }, emp3._id, NOW);
+    eq(clubbed.request.status, "auto_rejected", "CL adjacent to EL is RECORDED and auto-rejected");
+    eq(clubbed.request.autoRejectCode, "cl_el_clubbing", "…with the clubbing code");
     // The mirror: a person with an accepted CL day cannot then put EL beside it.
     const emp3b = await mk("Emp3b", { reportingManagerId: mgr._id });
     const okCl = await LeaveService.apply({ type: "CL", days: [day(W(20))], reason: "x" }, emp3b._id, NOW);
     eq(okCl.request.status, "pending", "a standalone CL day is accepted");
-    const elClub = await threw(() => LeaveService.apply({ type: "EL", days: [day(W(21))], reason: "x" }, emp3b._id, NOW));
-    ok(elClub && /cannot be clubbed/.test(elClub.message), "…and the rule is symmetric from the EL side");
+    const elClub = await LeaveService.apply({ type: "EL", days: [day(W(21))], reason: "x" }, emp3b._id, NOW);
+    eq(elClub.request.status, "auto_rejected", "…and the rule is symmetric from the EL side");
+    eq(elClub.request.autoRejectCode, "cl_el_clubbing", "…same code, phrased from the EL side");
     const farAway = await LeaveService.apply({ type: "CL", days: [day(W(25))], reason: "x" }, emp3._id, NOW);
     eq(farAway.request.status, "pending", "CL two working days away from EL is fine");
 
@@ -154,11 +165,13 @@ const admins = [], roles = [], depts = [];
     ok(halfOver && /medical certificate/.test(halfOver.message), "…2.5 days counts as more than 2");
 
     const emp6 = await mk("Emp6", { reportingManagerId: mgr._id });
-    const wfhHalf = await threw(() => LeaveService.apply({ type: "WFH", days: [day(W(5), 0.5)], reason: "x" }, emp6._id, NOW));
-    ok(wfhHalf && /whole-day only/.test(wfhHalf.message), "WFH rejects a half-day");
+    const wfhHalf = await LeaveService.apply({ type: "WFH", days: [day(W(5), 0.5)], reason: "x" }, emp6._id, NOW);
+    eq(wfhHalf.request.status, "auto_rejected", "WFH half-day is recorded and auto-rejected");
+    eq(wfhHalf.request.autoRejectCode, "wfh_whole_day_only", "…with its own code");
     await LeaveService.apply({ type: "WFH", days: [day(W(5))], reason: "x" }, emp6._id, NOW);
-    const wfhTwice = await threw(() => LeaveService.apply({ type: "WFH", days: [day(W(6))], reason: "x" }, emp6._id, NOW));
-    ok(wfhTwice && /1 day per month/.test(wfhTwice.message), `a second WFH in the same month is refused (${wfhTwice && wfhTwice.message})`);
+    const wfhTwice = await LeaveService.apply({ type: "WFH", days: [day(W(6))], reason: "x" }, emp6._id, NOW);
+    eq(wfhTwice.request.status, "auto_rejected", "a second WFH in the same month is RECORDED and auto-rejected");
+    eq(wfhTwice.request.autoRejectCode, "wfh_monthly_cap", "…with the monthly-cap code");
     const nextMonth = await LeaveService.apply({ type: "WFH", days: [day("2026-09-07")], reason: "x" }, emp6._id, NOW);
     eq(nextMonth.request.status, "pending", "…but one in September is fine");
 
