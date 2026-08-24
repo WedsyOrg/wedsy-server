@@ -22,20 +22,25 @@ const summary = async (req, res) => {
     const bookings = await VenueBooking.find({ venue: venue._id, status: { $ne: "cancelled" } }).lean();
     const invoices = await VenueInvoice.find({ venue: venue._id }).lean();
 
-    // Received per booking = sum of APPROVED payments across that booking's
-    // invoices (D7: pending entries never count as received revenue; entries
-    // without a status predate D7 and read as approved). Pending entries are
-    // surfaced separately as the owner's approval queue.
-    const receivedByBooking = {};
+    // ── THE INVOICE LEDGER IS NOT THE MONEY ─────────────────────────────────
+    // This used to compute `received` per booking by summing approved payments
+    // across that booking's INVOICES. That is a second derivation of the same
+    // fact, and it disagreed with the lead the moment a payment was recorded
+    // against the schedule without an invoice being raised — which is the
+    // normal case. The result was a Payments page reporting "Rs. 0 received"
+    // beside an overdue line, IN THE SAME RESPONSE, that named Rs. 2,51,000 as
+    // already received against the very same instalment.
+    //
+    // Received and balance now come from summarizeSchedule, like every other
+    // surface. The invoice scan below survives only to build the owner's
+    // approval queue, which is a property of the invoice ledger and not a
+    // statement about how much money has arrived.
     let pendingApproval = 0;
     const pendingEntries = [];
     for (const inv of invoices) {
-      const key = String(inv.booking);
-      let paid = 0;
       for (const p of inv.payments || []) {
         const st = p.status || "approved";
-        if (st === "approved") paid += Number(p.amount) || 0;
-        else if (st === "pending_approval") {
+        if (st === "pending_approval") {
           pendingApproval += Number(p.amount) || 0;
           pendingEntries.push({
             invoiceId: inv._id,
@@ -51,7 +56,7 @@ const summary = async (req, res) => {
           });
         }
       }
-      receivedByBooking[key] = (receivedByBooking[key] || 0) + paid;
+      // (no receivedByBooking: the schedule is the source of received money)
     }
 
     const now = new Date();
@@ -61,12 +66,24 @@ const summary = async (req, res) => {
     let received = 0;
 
     for (const b of bookings) {
-      const totalValue = Number(b.totalValue) || 0;
-      const recv = receivedByBooking[String(b._id)] || 0;
-      const balance = totalValue - recv;
+      // ONE derivation, computed once and used for both the per-booking figures
+      // and the overdue list below, so the two cannot disagree with each other.
+      const s = summarizeSchedule(b, now);
+      const totalValue = s.totals.bookingValue;
+      const recv = s.totals.received;
+      const balance = s.totals.balance;
       confirmedValue += totalValue;
       received += recv;
-      perBooking.push({ bookingId: b._id, coupleName: b.coupleName, totalValue, received: recv, balance });
+      perBooking.push({
+        bookingId: b._id,
+        coupleName: b.coupleName,
+        totalValue,
+        received: recv,
+        balance,
+        // Claimed but unapproved, shown beside the balance rather than inside
+        // it — an owner chasing a late instalment has to know money was offered.
+        pending: s.totals.pending,
+      });
 
       // S4: overdue is derived per INSTALMENT, not from the booking's balance.
       //
@@ -80,7 +97,7 @@ const summary = async (req, res) => {
       // instalment, its due date, what is still outstanding on it, and how many
       // days late it is — the same sentence the lead and Today show, from the
       // same derivation.
-      for (const m of summarizeSchedule(b, now).overdue) {
+      for (const m of s.overdue) {
         overdue.push({
           bookingId: b._id,
           coupleName: b.coupleName,

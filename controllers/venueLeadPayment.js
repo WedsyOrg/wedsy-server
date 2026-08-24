@@ -17,9 +17,14 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
-const { summarizeSchedule, describeMilestone } = require("../utils/venuePaymentStatus");
+const { summarizeSchedule, describeMilestone, receivedOn } = require("../utils/venuePaymentStatus");
+const { addEntry } = require("../utils/venuePaymentEntries");
+const { normaliseMode, PAYMENT_MODES } = require("../utils/venuePaymentMode");
 
-const MODES = ["bank_transfer", "cash", "cheque", "upi", "card"];
+// The ONE vocabulary, re-exported rather than restated. This list used to be
+// spelled out here and was already missing "other", so a method the schema
+// accepts was rejected by the controller that writes it.
+const MODES = PAYMENT_MODES;
 const MAX_REF = 120;
 
 async function resolveOwnedLead(req, res) {
@@ -98,7 +103,7 @@ const recordPayment = async (req, res) => {
     if (!Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ message: "A payment amount is required" });
     }
-    const already = Math.round(Number(row.paidAmount) || 0);
+    const already = receivedOn(row);
     const due = Math.round(Number(row.amount) || 0);
     // Refuse MORE than the instalment is worth. Overpaying a milestone is
     // almost always a typo, and silently accepting it would make the booking
@@ -112,8 +117,18 @@ const recordPayment = async (req, res) => {
       });
     }
 
-    const mode = MODES.includes(String(body.mode || "").trim()) ? String(body.mode).trim() : "";
+    // normaliseMode RETURNS NULL for a method we do not know, and that is a
+    // refusal rather than a default: the old `includes() ? : ""` quietly threw
+    // away whatever the owner actually chose, which is the exact bug
+    // utils/venuePaymentMode was written to end.
+    const mode = normaliseMode(body.mode);
+    if (mode === null) {
+      return res.status(400).json({ message: "That payment method is not one we recognise.", code: "unknown_method" });
+    }
+    const modeOther = mode === "other" ? cleanStr(body.modeOther || body.methodOther).slice(0, MAX_REF) : "";
     const reference = cleanStr(body.reference).slice(0, MAX_REF);
+    const note = cleanStr(body.note).slice(0, 2000);
+    const proofUrl = cleanStr(body.proofUrl).slice(0, 2000);
     let paidAt = new Date();
     if (body.paidAt) {
       const d = new Date(body.paidAt);
@@ -121,12 +136,22 @@ const recordPayment = async (req, res) => {
       paidAt = d;
     }
 
-    row.paidAmount = already + amount;
-    row.paidAt = paidAt;
-    if (mode) row.paidMode = mode;
-    if (reference) row.paidReference = reference;
-    row.recordedBy = actorId(req);
-    row.recordedByName = await actorName(req);
+    // ONE ENTRY, never a scalar. addEntry converts a still-legacy row first,
+    // because the derivation stops reading `paidAmount` the instant a row has
+    // its first entry — recording ₹10,000 against a row holding ₹50,000 would
+    // otherwise take that row to ₹10,000 received.
+    addEntry(row, {
+      amount,
+      date: paidAt,
+      method: mode,
+      methodOther: modeOther,
+      reference,
+      note,
+      proofUrl,
+      status: "approved",
+      recordedBy: actorId(req),
+      recordedByName: await actorName(req),
+    });
     await booking.save();
 
     const described = describeMilestone(row);

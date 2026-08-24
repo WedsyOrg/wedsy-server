@@ -29,6 +29,7 @@
 // Hence: every case below sends PERCENT rows.
 require("dotenv").config();
 const mongoose = require("mongoose");
+const { receivedOn } = require("../utils/venuePaymentStatus");
 
 const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
@@ -83,12 +84,17 @@ const fn = (date) => [{ date, name: "Wedding", space: String(venue.spaces[0]._id
     // ── [B] the money is right ──
     console.log("\n[B. ₹25k advance on ₹1L splits the ₹75k BALANCE, not the ₹1L]");
     const bk = await VenueBooking.findById(balanced.res.body.booking._id).lean();
-    const paid = bk.paymentSchedule.filter((r) => r.paidAmount > 0);
-    const due = bk.paymentSchedule.filter((r) => !(r.paidAmount > 0));
-    ok(paid.length === 1 && paid[0].paidAmount === 25000, "the token is one PAID row of ₹25,000");
+    // Money model S1 moved a row's payment into `entries`, so "how much has
+    // been paid on this row" is asked of the derivation rather than read off a
+    // scalar. The PIN IS UNCHANGED — the token is still one paid row of ₹25,000
+    // and the whole must still come to ₹1,00,000 — only where the number lives.
+    const paidOn = (r) => receivedOn(r);
+    const paid = bk.paymentSchedule.filter((r) => paidOn(r) > 0);
+    const due = bk.paymentSchedule.filter((r) => !(paidOn(r) > 0));
+    ok(paid.length === 1 && paidOn(paid[0]) === 25000, "the token is one PAID row of ₹25,000");
     ok(due.reduce((s, r) => s + r.amount, 0) === 75000,
       "the instalments come to ₹75,000 — the balance after the advance");
-    ok(paid[0].paidAmount + due.reduce((s, r) => s + r.amount, 0) === 100000,
+    ok(paidOn(paid[0]) + due.reduce((s, r) => s + r.amount, 0) === 100000,
       "THE WHOLE POINT: everything owed sums to the ₹1,00,000 booking, never ₹1,25,000");
     ok(bk.totalValue === 100000, "…and the booking value is the ₹1,00,000 that was agreed");
 

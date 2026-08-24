@@ -574,12 +574,23 @@ const confirmBookingFromLead = async (req, res) => {
         dueDate: new Date(),
         amount: token,
         percent: null,
-        paidAmount: token,
-        paidAt: new Date(),
-        paidMode: tokenMode,
-        paidModeOther: tokenMode === "other" ? modeOtherV.value || "" : "",
-        paidReference: refV.value || "",
-        paidNote: noteV.value || "",
+        // Written as an ENTRY, not a scalar: the token is the booking's first
+        // payment and belongs in the same list every later payment lands in. A
+        // row created with a scalar here would be a brand-new legacy row — the
+        // migration would have to convert something written after it ran.
+        entries: [
+          {
+            amount: token,
+            date: new Date(),
+            method: tokenMode,
+            methodOther: tokenMode === "other" ? modeOtherV.value || "" : "",
+            reference: refV.value || "",
+            note: noteV.value || "",
+            status: "approved",
+            recordedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+            approvedAt: new Date(),
+          },
+        ],
         recordedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
       });
     }
