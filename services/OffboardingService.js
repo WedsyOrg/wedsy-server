@@ -115,6 +115,77 @@ const recordExit = async ({ adminId, exitedAt, reason, reassignTo }, actorId) =>
   };
 };
 
+// ── EXITING SEVERAL PEOPLE AT ONCE ──────────────────────────────────────────
+//
+// A leaver whose direct reports are ALSO leaving on the same date orphans
+// nobody — but checking each person in isolation cannot see that, and refuses.
+// (Live example: Aafiya managed Lekiwao and Mahin; all three were on the same
+// exit list, and the run aborted on a problem that did not exist.)
+//
+// So the set is planned as a whole, and ordered LEAVES-FIRST: someone with no
+// remaining reports exits before their manager does. That matters beyond
+// tidiness — it means the chart is never momentarily broken part-way through a
+// run, and each individual recordExit() still passes its own orphan guard
+// unchanged, because by the time a manager is processed their reports are
+// already marked exited.
+//
+// Refusal is unchanged in the case that actually matters: a report OUTSIDE the
+// set is a real orphan, and is named.
+//
+// members            : admin docs being exited together
+// reportsByAdminId   : Map/object of adminId -> [{ _id, name }] direct reports
+//                      that are not already exited
+const planExitOrder = (members, reportsByAdminId) => {
+  const inSet = new Set(members.map((m) => String(m._id)));
+  const reportsOf = (id) => {
+    const r = reportsByAdminId instanceof Map ? reportsByAdminId.get(String(id)) : reportsByAdminId[String(id)];
+    return r || [];
+  };
+
+  // A report outside the exit set is a genuine orphan — abort, and name them.
+  const orphans = members
+    .map((m) => ({
+      admin: m,
+      staying: reportsOf(m._id).filter((r) => !inSet.has(String(r._id))),
+    }))
+    .filter((x) => x.staying.length);
+  if (orphans.length) return { order: [], orphans, cycle: [] };
+
+  // Leaves-first: repeatedly take whoever has no reports left to process.
+  const remaining = new Map(members.map((m) => [String(m._id), m]));
+  const order = [];
+  while (remaining.size) {
+    const ready = [...remaining.values()].filter((m) =>
+      reportsOf(m._id).every((r) => !remaining.has(String(r._id)))
+    );
+    if (!ready.length) {
+      // Nobody is ready and the set is non-empty: the chart has a loop (A
+      // reports to B, B reports to A). Refuse rather than spin — a cycle is bad
+      // data that a human has to look at.
+      return { order: [], orphans: [], cycle: [...remaining.values()] };
+    }
+    for (const m of ready) {
+      order.push(m);
+      remaining.delete(String(m._id));
+    }
+  }
+  return { order, orphans: [], cycle: [] };
+};
+
+// Direct reports for a whole set, in one query.
+const reportsForMany = async (adminIds) => {
+  const rows = await Admin.find(
+    { reportingManagerId: { $in: adminIds }, status: { $ne: "exited" } },
+    { name: 1, reportingManagerId: 1 }
+  ).lean();
+  const map = new Map(adminIds.map((id) => [String(id), []]));
+  for (const r of rows) {
+    const k = String(r.reportingManagerId);
+    if (map.has(k)) map.get(k).push({ _id: r._id, name: r.name });
+  }
+  return map;
+};
+
 // Mark a login as a service account rather than a person. Nothing infers this
 // from a name; a human says so.
 const markServiceAccount = async (adminId, actorId) => {
@@ -133,4 +204,7 @@ const listExited = async () =>
     .sort({ "meta.exitedAt": -1 })
     .lean();
 
-module.exports = { directReportsOf, exitImpact, recordExit, markServiceAccount, listExited };
+module.exports = {
+  directReportsOf, exitImpact, recordExit, markServiceAccount, listExited,
+  planExitOrder, reportsForMany,
+};

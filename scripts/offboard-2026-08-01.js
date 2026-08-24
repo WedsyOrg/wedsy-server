@@ -18,9 +18,15 @@
  * SAFETY
  *   - DRY RUN BY DEFAULT. --confirm is required to write anything.
  *   - ABORTS before writing if ANY name is missing, ambiguous, already exited,
- *     or still has direct reports. The org chart is checked ON PROD, here, not
+ *     or leaves a REAL orphan. The org chart is checked ON PROD, here, not
  *     assumed - it could not be verified from a dev database, where 13 of these
  *     15 people do not exist.
+ *   - DEPENDENCY ORDER. A leaver whose reports are ALSO on this list orphans
+ *     nobody; checking each person in isolation could not see that and refused
+ *     wrongly (Aafiya manages Lekiwao and Mahin, and all three are leaving).
+ *     The set is planned as a whole and processed LEAVES-FIRST, so the chart is
+ *     never momentarily broken part-way through the run. Only a report OUTSIDE
+ *     the set is an orphan, and it is still named and still aborts.
  *   - Idempotent: a second run finds nothing to do and says so.
  *
  * RUN IT ON THE EC2 BOX, against prod:
@@ -76,18 +82,41 @@ const line = (s = "") => console.log(s);
       line(`  already exited, skipping: ${a.name}`);
       continue;
     }
-    // THE ORG-CHART CHECK, on the real data.
-    const reports = all.filter(
-      (r) => String(r.reportingManagerId || "") === String(a._id) && r.status !== "exited"
-    );
-    if (reports.length) {
+    plan.push({ admin: a });
+  }
+
+  // ── THE ORG-CHART CHECK, on the real data, ACROSS THE WHOLE SET ──────────
+  // Reports are resolved for everyone first, then judged against the exit set:
+  // a report who is also leaving is not an orphan.
+  let exitOrder = [];
+  if (plan.length) {
+    const members = plan.map((p) => p.admin);
+    const reportsByAdmin = await Offboarding.reportsForMany(members.map((m) => m._id));
+    const planned = Offboarding.planExitOrder(members, reportsByAdmin);
+
+    for (const o of planned.orphans) {
       problems.push(
-        `${a.name}: still has ${reports.length} direct report(s) - ${reports.map((r) => r.name).join(", ")}. ` +
-          "Reassign them first; an exit must not orphan the chart."
+        `${o.admin.name}: has ${o.staying.length} direct report(s) who are NOT on this list - ` +
+          `${o.staying.map((r) => r.name).join(", ")}. Reassign them first; an exit must not orphan the chart.`
       );
-      continue;
     }
-    plan.push({ admin: a, reports: 0 });
+    if (planned.cycle.length) {
+      problems.push(
+        `Reporting cycle among ${planned.cycle.map((c) => c.name).join(", ")} - the chart loops back on itself. ` +
+          "A human needs to look at that before anyone is exited."
+      );
+    }
+    exitOrder = planned.order;
+
+    // Show what the set looks like, so the reviewer can see nothing is orphaned.
+    line("");
+    line("Reporting lines within the exit set:");
+    for (const m of members) {
+      const rs = reportsByAdmin.get(String(m._id)) || [];
+      const inSet = new Set(members.map((x) => String(x._id)));
+      const shown = rs.map((r) => `${r.name}${inSet.has(String(r._id)) ? " (also leaving)" : " (STAYING)"}`);
+      line(`  ${String(m.name).padEnd(22)} reports: ${shown.length ? shown.join(", ") : "none"}`);
+    }
   }
 
   const svcPlan = [];
@@ -108,12 +137,13 @@ const line = (s = "") => console.log(s);
   }
 
   line("");
-  line(`Plan: ${plan.length} exit(s), ${svcPlan.length} service-account flag(s)`);
-  for (const p of plan) {
-    const before = employedOn(p.admin, EXIT_DAY);
-    line(`  EXIT  ${String(p.admin.name).padEnd(22)} <${p.admin.email}>  status ${p.admin.status} -> exited, isDisabled -> true`);
-    line(`        employed on ${EXIT_DAY} today: ${before.employed} (must stay TRUE after - August still computes)`);
-  }
+  line(`Plan: ${exitOrder.length} exit(s), ${svcPlan.length} service-account flag(s)`);
+  line("Processed LEAVES-FIRST, so nobody is a manager of an unexited report at any point:");
+  exitOrder.forEach((admin, i) => {
+    const before = employedOn(admin, EXIT_DAY);
+    line(`  ${String(i + 1).padStart(2)}. EXIT  ${String(admin.name).padEnd(22)} <${admin.email}>  status ${admin.status} -> exited, isDisabled -> true`);
+    line(`          employed on ${EXIT_DAY} today: ${before.employed} (must stay TRUE after - August still computes)`);
+  });
   for (const a of svcPlan) line(`  FLAG  ${String(a.name).padEnd(22)} <${a.email}>  meta.isServiceAccount -> true`);
 
   if (!CONFIRM) {
@@ -126,12 +156,15 @@ const line = (s = "") => console.log(s);
 
   line("");
   line("Applying...");
-  for (const p of plan) {
+  // In this order, each recordExit passes its OWN orphan guard unchanged: by the
+  // time a manager is reached, their reports are already marked exited and no
+  // longer count. The per-person guard is not weakened anywhere.
+  for (const admin of exitOrder) {
     const out = await Offboarding.recordExit(
-      { adminId: p.admin._id, exitedAt: EXIT_DAY, reason: "Left Wedsy" },
+      { adminId: admin._id, exitedAt: EXIT_DAY, reason: "Left Wedsy" },
       null
     );
-    line(`  ${p.admin.name}: exited ${EXIT_DAY} - employed on the last day: ${out.employedOnLastDay}, day after: ${out.employedDayAfter}`);
+    line(`  ${admin.name}: exited ${EXIT_DAY} - employed on the last day: ${out.employedOnLastDay}, day after: ${out.employedDayAfter}`);
   }
   for (const a of svcPlan) {
     await Offboarding.markServiceAccount(a._id, null);

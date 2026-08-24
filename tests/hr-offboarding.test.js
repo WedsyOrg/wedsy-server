@@ -76,6 +76,59 @@ const admins = [], roles = [], depts = [];
     eq(done.reassigned, 1, "with reassignTo the exit proceeds");
     eq(String((await Admin.findById(report._id).lean()).reportingManagerId), String(founder._id), "…and the report now reports to the new manager");
 
+    // -- 1b. EXITING A SET: DEPENDENCY ORDER -------------------------------
+    // A leaver whose reports are ALSO leaving orphans nobody. Checked per-person
+    // this looks like an orphan and refuses - which is exactly what happened on
+    // prod: Aafiya manages Lekiwao and Mahin, and all three were on the list.
+    console.log("\n1b. a set is planned as a whole, leaves-first");
+    const aafiya = await mk("Aafiya", { reportingManagerId: founder._id });
+    const lekiwao = await mk("Lekiwao", { reportingManagerId: aafiya._id });
+    const mahin = await mk("Mahin", { reportingManagerId: aafiya._id });
+
+    // the isolation check, which is what used to refuse
+    const solo = await Offboarding.exitImpact(aafiya._id);
+    eq(solo.blocked, true, "checked ALONE, the manager still looks blocked");
+
+    const set = [aafiya, lekiwao, mahin];
+    const reportsMap = await Offboarding.reportsForMany(set.map((m) => m._id));
+    const planned = Offboarding.planExitOrder(set, reportsMap);
+    eq(planned.orphans.length, 0, "…but planned as a SET, nothing is orphaned");
+    eq(planned.order.length, 3, "…and all three are ordered");
+    const names = planned.order.map((m) => String(m.name).replace(`${TAG} `, ""));
+    ok(names.indexOf("Aafiya") === 2, `…manager LAST, reports first (${names.join(" -> ")})`);
+    ok(names.indexOf("Lekiwao") < names.indexOf("Aafiya") && names.indexOf("Mahin") < names.indexOf("Aafiya"),
+      "…so the chart is never momentarily broken mid-run");
+
+    // and in that order every per-person guard passes UNCHANGED
+    for (const m of planned.order) {
+      const r = await Offboarding.recordExit({ adminId: m._id, exitedAt: EXIT, reason: "Left Wedsy" }, founder._id);
+      ok(!!r.admin, `${String(m.name).replace(`${TAG} `, "")} exits without tripping the orphan guard`);
+    }
+    eq((await Admin.findById(aafiya._id).lean()).status, "exited", "the manager is exited too");
+
+    // a report OUTSIDE the set is a REAL orphan and must still abort, named
+    const boss = await mk("Boss", { reportingManagerId: founder._id });
+    const goes = await mk("Goes", { reportingManagerId: boss._id });
+    const stays = await mk("Stays", { reportingManagerId: boss._id });
+    const set2 = [boss, goes];
+    const map2 = await Offboarding.reportsForMany(set2.map((m) => m._id));
+    const planned2 = Offboarding.planExitOrder(set2, map2);
+    eq(planned2.orphans.length, 1, "a report NOT on the list is still an orphan");
+    eq(planned2.order.length, 0, "…and the whole plan is refused");
+    const named = planned2.orphans[0].staying.map((r) => String(r.name).replace(`${TAG} `, ""));
+    eq(JSON.stringify(named), JSON.stringify(["Stays"]), "…naming exactly who would be orphaned");
+    ok(!named.includes("Goes"), "…and NOT naming the report who is also leaving");
+    eq((await Admin.findById(boss._id).lean()).status, "active", "…nothing was written");
+
+    // a reporting loop is refused rather than spun on
+    const loopA = await mk("LoopA");
+    const loopB = await mk("LoopB", { reportingManagerId: loopA._id });
+    await Admin.updateOne({ _id: loopA._id }, { $set: { reportingManagerId: loopB._id } });
+    const loopSet = [await Admin.findById(loopA._id).lean(), await Admin.findById(loopB._id).lean()];
+    const plannedLoop = Offboarding.planExitOrder(loopSet, await Offboarding.reportsForMany(loopSet.map((m) => m._id)));
+    eq(plannedLoop.cycle.length, 2, "a reporting cycle is detected");
+    eq(plannedLoop.order.length, 0, "…and refused rather than looping forever");
+
     // -- 2. THE EXIT RECORD ------------------------------------------------
     console.log("\n2. what an exit writes");
     const out = await Offboarding.recordExit({ adminId: leaver._id, exitedAt: EXIT, reason: "Left Wedsy" }, founder._id);
