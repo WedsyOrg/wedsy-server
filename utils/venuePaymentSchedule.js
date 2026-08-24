@@ -273,22 +273,18 @@ function checkMixedTotal(rows, balance) {
   list.forEach((r, i) => {
     const hasAmount = r && r.amount !== null && r.amount !== undefined && r.amount !== "";
     const hasPercent = r && r.percent !== null && r.percent !== undefined && r.percent !== "";
-    // Both is not "helpfully redundant", it is ambiguous: which one wins when
-    // the booking value moves? Refused rather than silently preferring one.
-    if (hasAmount && hasPercent) {
-      return percentRows.push({ index: i, invalid: `Row ${i + 1} has both a fixed amount and a percentage — it must be one or the other.` });
-    }
+    // ── A PERCENTAGE WINS WHEN BOTH ARE PRESENT ────────────────────────────
+    // Not ambiguity — the editor has ALWAYS carried a derived amount beside a
+    // percentage row, because that is what it displays. Treating that pair as a
+    // conflict made picking any built-in shape ("50 / 50" populates both) read
+    // as "Row 1 has both a fixed amount and a percentage" and blocked the
+    // wizard outright. Found by driving it.
+    //
+    // FIXED therefore means exactly one thing: a percentage was NOT given.
+    if (hasPercent) return percentRows.push({ index: i, percentHundredths: toHundredths(r.percent, `rows[${i}]`) });
     if (hasAmount) return fixedRows.push({ index: i, amount: Math.round(Number(r.amount) || 0) });
-    return percentRows.push({ index: i, percentHundredths: toHundredths(hasPercent ? r.percent : 0, `rows[${i}]`) });
+    return percentRows.push({ index: i, percentHundredths: toHundredths(0, `rows[${i}]`) });
   });
-
-  const conflict = percentRows.find((r) => r.invalid);
-  if (conflict) {
-    // Same convention as the negative-amount branch: with an ambiguous row in
-    // the set, neither total is a number worth rendering, so both sides report
-    // "as if nothing were entered" rather than a half-computed figure.
-    return { ok: false, code: "row_is_both", message: conflict.invalid, fixedTotal: 0, percentBase: bal, percentRows: [], fixedRows: [] };
-  }
 
   const fixedTotal = fixedRows.reduce((sum, r) => sum + r.amount, 0);
   const negative = fixedRows.find((r) => r.amount < 0);
@@ -439,14 +435,19 @@ function generateSchedule({ rows, totalValue, advanceAmount = 0, eventDate, gstM
 
   const prepared = rows.map((r, i) => {
     const hasAmount = r.amount !== null && r.amount !== undefined && r.amount !== "";
+    const hasPercent = r.percent !== null && r.percent !== undefined && r.percent !== "";
+    // A PERCENTAGE WINS when both are present — the caller's amount is then the
+    // derived display of that percentage, which is exactly what the wizard
+    // sends for every shape-generated row. Classifying by amount-first made
+    // those rows "fixed" and the percentages split nothing.
+    const fixed = !hasPercent && hasAmount;
     return {
       label: String(r.label || "").trim().slice(0, MAX_LABEL) || `Instalment ${i + 1}`,
-      // A FIXED row keeps its amount and has no percentage; a percentage row is
-      // costed below. `fixed` is the discriminator every branch reads, so the
-      // two shapes cannot be confused by looking at whichever field is falsy.
-      fixed: Boolean(hasAmount),
-      fixedAmount: hasAmount ? Math.round(Number(r.amount) || 0) : 0,
-      percentHundredths: hasAmount ? null : toHundredths(r.percent, `rows[${i}]`),
+      // `fixed` is the discriminator every branch reads, so the two shapes
+      // cannot be confused by looking at whichever field is falsy.
+      fixed,
+      fixedAmount: fixed ? Math.round(Number(r.amount) || 0) : 0,
+      percentHundredths: fixed ? null : toHundredths(hasPercent ? r.percent : 0, `rows[${i}]`),
       gstApplicable: Boolean(r.gstApplicable),
       offsetDays:
         r.offsetDays === null || r.offsetDays === undefined || r.offsetDays === "" ? null : Math.trunc(Number(r.offsetDays)),

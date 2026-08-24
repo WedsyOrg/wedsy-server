@@ -443,13 +443,11 @@ const row = (label, percent, amount = "", dueDate = "") => ({ key: nextKey(), la
   // the two, each side is pinned by real code exactly once.
   console.log("\n[S4 mixed rows — transcribed client vs REAL server]");
 
-  const clientIsFixed = (r) => String(r.amount ?? "").trim() !== "" && String(r.percent ?? "").trim() === "";
+  const clientIsFixed = (r) => String(r.percent ?? "").trim() === "" && String(r.amount ?? "").trim() !== "";
 
   /** Transcribed from payment-schedule.ts checkMixed. */
   const clientCheckMixed = (rows, balance) => {
     const bal = Math.max(0, Math.round(balance || 0));
-    const both = rows.findIndex((r) => String(r.amount ?? "").trim() !== "" && String(r.percent ?? "").trim() !== "");
-    if (both >= 0) return { ok: false, code: "row_is_both", fixedTotal: 0, percentBase: bal };
     const neither = rows.findIndex((r) => String(r.amount ?? "").trim() === "" && String(r.percent ?? "").trim() === "");
     if (neither >= 0) return { ok: false, code: "incomplete", fixedTotal: 0, percentBase: bal };
     const fixed = rows.filter(clientIsFixed);

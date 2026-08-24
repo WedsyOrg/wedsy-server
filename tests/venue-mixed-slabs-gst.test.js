@@ -56,6 +56,19 @@ const iso = (d) => new Date(d).toISOString().slice(0, 10);
     try { sched.generateSchedule({ rows: [{ amount: 950000 }, { percent: 100 }], totalValue: 950000 }); } catch (e) { threw = e; }
     ok(threw && /nothing to split/.test(threw.message), "fixed covering everything with percentage rows left over is refused");
 
+    console.log("\n[a percentage WINS when a row carries a derived amount too]");
+    // The editor has always shown a derived amount beside a percentage row, so
+    // every shape-generated row carries both. Reading that as a conflict blocked
+    // the wizard the moment any built-in shape was picked — found by driving it,
+    // not by a unit test, which is why this case is pinned here now.
+    const derived = sched.generateSchedule({
+      rows: [{ label: "Advance", percent: 50, amount: 500000 }, { label: "Balance", percent: 50, amount: 500000 }],
+      totalValue: 1000000,
+    });
+    ok(derived.rows.length === 2, "a shape-generated pair still generates");
+    ok(derived.rows.every((r) => !r.isFixed), "…both are PERCENTAGE rows, not fixed ones");
+    ok(derived.totals.amount === 1000000 && derived.totals.percentBase === 1000000, "…and the percentages split the whole balance");
+
     console.log("\n[a zero-value booking with percentages still generates — it is just undecided]");
     const g0 = sched.generateSchedule({ rows: [{ percent: 50 }, { percent: 50 }], totalValue: 0 });
     ok(g0.rows.length === 2 && g0.totals.amount === 0, "percentages of nothing produce rows of nothing, as they always did");
