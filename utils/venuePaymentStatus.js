@@ -223,7 +223,12 @@ function overdueSentence(m) {
   const amount = `Rs. ${m.outstanding.toLocaleString("en-IN")}`;
   const late = m.daysLate === 0 ? "due today" : m.daysLate === 1 ? "1 day late" : `${m.daysLate} days late`;
   const partial = m.paidAmount > 0 ? ` (${`Rs. ${m.paidAmount.toLocaleString("en-IN")}`} of ${`Rs. ${m.amount.toLocaleString("en-IN")}`} received)` : "";
-  return `${m.label} — ${amount} outstanding, ${late}${partial}`;
+  // Money that has been CLAIMED but not approved is named here even though it
+  // is not counted. Chasing a couple who has already paid, because the payment
+  // was sitting in an approval queue nobody mentioned, is the single worst
+  // thing this sentence can cause — and silence is what causes it.
+  const awaiting = m.pendingAmount > 0 ? `, Rs. ${m.pendingAmount.toLocaleString("en-IN")} awaiting approval` : "";
+  return `${m.label} — ${amount} outstanding, ${late}${partial}${awaiting}`;
 }
 
 module.exports = { milestoneStatus, describeMilestone, summarizeSchedule, overdueSentence, receivedOn, pendingOn, entriesOf };

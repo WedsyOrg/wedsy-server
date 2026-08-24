@@ -222,6 +222,12 @@ router.get("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapabi
 // SAME capability as recording — "where would this money go" is a money read.
 router.post("/:slug/enquiries/:enquiryId/payments/preview", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.previewPayment);
 router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.recordPayment);
+// Approve/reject are OWNER-ONLY, enforced inside the handler with isOwnerActor
+// rather than by a capability: a `payments_approve` nobody holds is a migration
+// and a permissions row for no live benefit. The capability here is still
+// bookings_money, so a member cannot even see the queue they cannot act on.
+router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/approve", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.approveLeadPayment);
+router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.rejectLeadPayment);
 
 // ── BOOKING ENGINE S3: the booking confirmation document ────────────────────
 // `documents`, matching every other document generator — it produces a

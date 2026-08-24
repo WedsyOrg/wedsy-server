@@ -20,6 +20,7 @@ const { cleanStr } = require("../utils/venueInput");
 const { summarizeSchedule, describeMilestone, receivedOn } = require("../utils/venuePaymentStatus");
 const { addEntry } = require("../utils/venuePaymentEntries");
 const { allocate, allocationSentence } = require("../utils/venuePaymentWaterfall");
+const { isOwnerActor } = require("../utils/venueRbac");
 const { normaliseMode, PAYMENT_MODES } = require("../utils/venuePaymentMode");
 
 // The ONE vocabulary, re-exported rather than restated. This list used to be
@@ -207,6 +208,18 @@ const recordPayment = async (req, res) => {
     // ₹1,00,000?". addEntry converts a still-legacy row before appending.
     const paymentId = new mongoose.Types.ObjectId();
     const recordedByName = await actorName(req);
+    // ── WHO RECORDED IT DECIDES WHETHER IT COUNTS YET ────────────────────────
+    // An owner's own entry is approved on the spot: there is nobody above them
+    // to approve it, and making an owner approve their own payment would be
+    // ceremony rather than control. A member's entry lands PENDING — visible on
+    // the row, but not in the books until an owner says so.
+    //
+    // Gated on isOwnerActor, deliberately NOT on a new `payments_approve`
+    // capability: a capability nobody holds is a migration and a permissions
+    // row for no live benefit, and this matches how invoice approval already
+    // works. Add one the first time a venue asks to delegate it.
+    const ownerActor = await isOwnerActor(req.venueOwner, req.venueMember);
+    const entryStatus = ownerActor ? "approved" : "pending";
     const touched = [];
     for (const line of plan.lines) {
       const target = booking.paymentSchedule.id(line.milestoneId);
@@ -220,7 +233,7 @@ const recordPayment = async (req, res) => {
         reference,
         note,
         proofUrl,
-        status: "approved",
+        status: entryStatus,
         recordedBy: actorId(req),
         recordedByName,
       });
@@ -237,7 +250,8 @@ const recordPayment = async (req, res) => {
       // instalments used to be logged against whichever one the caller named,
       // which made the timeline disagree with the schedule it was describing.
       description:
-        `Payment received: ${allocationSentence(plan, amount)}`.replace(/\.$/, "") +
+        `${entryStatus === "pending" ? "Payment recorded, awaiting approval" : "Payment received"}: ` +
+        `${allocationSentence(plan, amount)}`.replace(/\.$/, "") +
         `${mode ? ` — by ${mode.replace(/_/g, " ")}` : ""}${reference ? ` (${reference})` : ""}`,
       actor: actorId(req),
       timestamp: new Date(),
@@ -260,4 +274,169 @@ const recordPayment = async (req, res) => {
   }
 };
 
-module.exports = { getLeadPayments, recordPayment, previewPayment, MODES };
+/**
+ * Find every entry belonging to one payment.
+ *
+ * ── KEYED ON THE PAYMENT, NOT THE FRAGMENT ─────────────────────────────────
+ * A payment that spanned two instalments is TWO entries and ONE thing the
+ * couple did. Approving half of it is not a state anybody wants to be able to
+ * reach, so approve and reject act on the whole `paymentId` group.
+ *
+ * Entries converted from the pre-S1 scalar have no paymentId — they predate
+ * the concept. Those are matched by their own entry id instead, so a
+ * historical payment can still be corrected.
+ */
+function findPaymentEntries(booking, key) {
+  const hits = [];
+  for (const row of booking.paymentSchedule || []) {
+    for (const e of row.entries || []) {
+      if ((e.paymentId && String(e.paymentId) === String(key)) || String(e._id) === String(key)) {
+        hits.push({ row, entry: e });
+      }
+    }
+  }
+  return hits;
+}
+
+/**
+ * Approving must RE-CHECK the arithmetic, not trust what was true when the
+ * entry was recorded.
+ *
+ * A pending entry does not reduce `outstanding`, so two members can each record
+ * Rs. 50,000 against the same Rs. 50,000 remainder and both sit in the queue
+ * legitimately. Approving the first is fine; approving the second would take
+ * the instalment past its own amount. The check has to happen HERE, against the
+ * state at approval time — which is the whole reason approval is a separate act.
+ */
+function wouldOverpay(row, entry) {
+  const amount = Math.round(Number(row.amount) || 0);
+  if (amount <= 0) return null;
+  const approved = receivedOn(row);
+  const add = Math.round(Number(entry.amount) || 0);
+  if (approved + add <= amount) return null;
+  return {
+    message:
+      `Approving this would put ${row.label || "that instalment"} at Rs. ${(approved + add).toLocaleString("en-IN")} ` +
+      `against Rs. ${amount.toLocaleString("en-IN")}. Only Rs. ${Math.max(0, amount - approved).toLocaleString("en-IN")} is outstanding on it — ` +
+      `another payment was approved after this one was recorded.`,
+    code: "approval_overpays_milestone",
+    outstanding: Math.max(0, amount - approved),
+  };
+}
+
+// ── POST /venues/:slug/enquiries/:enquiryId/payments/:paymentId/approve ──────
+const approveLeadPayment = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    if (!(await isOwnerActor(req.venueOwner, req.venueMember))) {
+      return res.status(403).json({ message: "Only an owner can approve a payment." });
+    }
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+
+    const hits = findPaymentEntries(booking, req.params.paymentId);
+    if (!hits.length) return res.status(404).json({ message: "That payment is not on this booking" });
+    const pending = hits.filter((h) => h.entry.status === "pending");
+    if (!pending.length) {
+      return res.status(400).json({ message: "That payment is not awaiting approval.", code: "not_pending" });
+    }
+    // Every piece is checked BEFORE any piece is approved, so a payment across
+    // two instalments cannot be left half-approved by a failure on the second.
+    for (const h of pending) {
+      const problem = wouldOverpay(h.row, h.entry);
+      if (problem) return res.status(409).json(problem);
+    }
+    const name = await actorName(req);
+    for (const h of pending) {
+      h.entry.status = "approved";
+      h.entry.approvedBy = actorId(req);
+      h.entry.approvedByName = name;
+      h.entry.approvedAt = new Date();
+    }
+    await booking.save();
+
+    const total = pending.reduce((sum, h) => sum + Math.round(Number(h.entry.amount) || 0), 0);
+    lead.activities.push({
+      type: "payment_approved",
+      description:
+        `Payment approved: Rs. ${total.toLocaleString("en-IN")}` +
+        `${pending[0].entry.recordedByName ? ` — recorded by ${pending[0].entry.recordedByName}` : ""}`,
+      actor: actorId(req),
+      timestamp: new Date(),
+    });
+    await lead.save();
+
+    const s = summarizeSchedule(booking);
+    return res.status(200).json({ success: true, rows: s.rows, totals: s.totals, overdue: s.overdue, overdueTotal: s.overdueTotal, next: s.next });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// ── POST /venues/:slug/enquiries/:enquiryId/payments/:paymentId/reject ───────
+/**
+ * A rejected payment STAYS on the row, marked rejected, with who rejected it
+ * and why. It is never deleted: a deleted payment record is how a dispute
+ * becomes unresolvable, and "there is no record of that transfer" is the worst
+ * thing a venue can say to a couple holding a bank statement.
+ *
+ * An ALREADY-APPROVED entry can be rejected too. That is the only way to undo a
+ * payment recorded in error — an owner's own entries auto-approve, so without
+ * it a mistyped amount would be permanent. It reduces `received`, which is the
+ * point, and leaves the reversal visible rather than making money quietly
+ * disappear.
+ */
+const rejectLeadPayment = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    if (!(await isOwnerActor(req.venueOwner, req.venueMember))) {
+      return res.status(403).json({ message: "Only an owner can reject a payment." });
+    }
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+
+    const reason = cleanStr((req.body || {}).reason).slice(0, 500);
+    if (!reason) {
+      // Required, because "rejected" with no reason is exactly as unhelpful in a
+      // dispute as no record at all.
+      return res.status(400).json({ message: "Say why this payment is being rejected.", code: "reason_required" });
+    }
+
+    const hits = findPaymentEntries(booking, req.params.paymentId);
+    if (!hits.length) return res.status(404).json({ message: "That payment is not on this booking" });
+    const live = hits.filter((h) => h.entry.status !== "rejected");
+    if (!live.length) return res.status(400).json({ message: "That payment is already rejected.", code: "already_rejected" });
+
+    const name = await actorName(req);
+    const wasApproved = live.some((h) => h.entry.status === "approved");
+    for (const h of live) {
+      h.entry.status = "rejected";
+      h.entry.rejectionReason = reason;
+      h.entry.approvedBy = actorId(req);
+      h.entry.approvedByName = name;
+      h.entry.approvedAt = new Date();
+    }
+    await booking.save();
+
+    const total = live.reduce((sum, h) => sum + Math.round(Number(h.entry.amount) || 0), 0);
+    lead.activities.push({
+      type: "payment_rejected",
+      description:
+        `Payment ${wasApproved ? "reversed" : "rejected"}: Rs. ${total.toLocaleString("en-IN")} — ${reason}`,
+      actor: actorId(req),
+      timestamp: new Date(),
+    });
+    await lead.save();
+
+    const s = summarizeSchedule(booking);
+    return res.status(200).json({ success: true, rows: s.rows, totals: s.totals, overdue: s.overdue, overdueTotal: s.overdueTotal, next: s.next });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, MODES };
