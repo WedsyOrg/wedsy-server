@@ -357,7 +357,12 @@ function checkMixedTotal(rows, balance) {
       ? fixedTotal > 0
         ? `${money(fixedTotal)} fixed, then 100% of the remaining ${money(percentBase)}`
         : "Totals 100%"
-      : `${pct.message}${fixedTotal > 0 ? ` of the remaining ${money(percentBase)}` : ""}`,
+      // Names the delta AND the rule. The delta alone ("0.01% short of 100%")
+      // says what is wrong; the clause says what "right" is, which is what an
+      // owner staring at 33.33 × 3 actually needs to be told.
+      : fixedTotal > 0
+        ? `${pct.message} of the remaining ${money(percentBase)} — the percentages must total exactly 100% of it`
+        : `${pct.message} — a schedule must total exactly 100%`,
   };
 }
 
