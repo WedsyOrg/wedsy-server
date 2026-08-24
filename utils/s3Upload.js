@@ -8,8 +8,22 @@ const uploadBufferToS3 = async ({ buffer, key, contentType }) => {
   if (!buffer || !buffer.length) throw new Error('uploadBufferToS3: empty buffer');
   if (!key) throw new Error('uploadBufferToS3: missing key');
 
+  // ── AN ENDPOINT OVERRIDE, FOR EVERYWHERE THAT IS NOT PRODUCTION ───────────
+  // Unset — which is production — this behaves exactly as it always has: real
+  // AWS, real bucket, the same public URL shape.
+  //
+  // Set, it points the client at an S3-compatible endpoint instead. Without it
+  // the only way to exercise an upload locally is to blank the credentials and
+  // watch it fail, which means the last step of every document flow — the file
+  // actually arriving where the owner looks for it — could never be seen
+  // working without writing test objects into the production bucket.
+  //
+  // forcePathStyle because local stubs and MinIO serve bucket/key as a path
+  // rather than as a subdomain.
+  const endpoint = process.env.AWS_S3_ENDPOINT || '';
   const s3Client = new AWS.S3({
     region: process.env.AWS_S3_REGION,
+    ...(endpoint ? { endpoint, forcePathStyle: true } : {}),
     credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -23,7 +37,11 @@ const uploadBufferToS3 = async ({ buffer, key, contentType }) => {
     ContentType: contentType || 'application/octet-stream',
   });
 
-  return `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${key}`;
+  // The URL has to match where the object actually went, or the document row
+  // would point at a file that is not there.
+  return endpoint
+    ? `${endpoint.replace(/\/$/, '')}/${process.env.AWS_BUCKET_NAME}/${key}`
+    : `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${key}`;
 };
 
 const MIME_EXT = {

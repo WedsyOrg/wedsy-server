@@ -124,7 +124,13 @@ async function run() {
       noTokenRow += 1;
       continue;
     }
-    const needing = tokenRows.filter((r) => !(Number(r.paidAmount) > 0) && Number(r.amount) > 0);
+    // S1 (money model) moved a row's money into `entries`. A row that has any is
+    // already converted: writing the legacy scalar onto it would be invisible to
+    // the derivation (which ignores the scalar once entries exist) while leaving
+    // a contradictory number in the document for the next reader to trip over.
+    const needing = tokenRows.filter(
+      (r) => !(Number(r.paidAmount) > 0) && !((r.entries || []).length > 0) && Number(r.amount) > 0
+    );
     if (!needing.length) {
       alreadyPaid += 1;
       continue;
@@ -227,7 +233,23 @@ async function run() {
         // that a human had just paid was overwritten whenever any other row in
         // the schedule was unpaid — which is nearly always. Found in review.
         const res = await VenueBooking.updateOne(
-          { _id: p.bookingId, paymentSchedule: { $elemMatch: { _id: r._id, $or: [{ paidAmount: 0 }, { paidAmount: { $exists: false } }] } } },
+          {
+              _id: p.bookingId,
+              // `entries: {$size: 0}` alone does NOT match a document where the
+              // field is absent, which is every row written before S1 — i.e.
+              // precisely the rows this script exists to fix. Both branches are
+              // required, and `$and` because the row also needs the paidAmount
+              // condition and two bare `$or` keys would collide.
+              paymentSchedule: {
+                $elemMatch: {
+                  _id: r._id,
+                  $and: [
+                    { $or: [{ entries: { $exists: false } }, { entries: { $size: 0 } }] },
+                    { $or: [{ paidAmount: 0 }, { paidAmount: { $exists: false } }] },
+                  ],
+                },
+              },
+            },
           {
             $set: {
               "paymentSchedule.$.paidAmount": r.amount,

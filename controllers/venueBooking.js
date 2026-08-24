@@ -386,26 +386,32 @@ const confirmBookingFromLead = async (req, res) => {
     // works and was never wrong.
     const withPercent = schedule.filter((r) => r.percent !== null && r.percent !== undefined);
     if (withPercent.length) {
-      if (withPercent.length !== schedule.length) {
-        return res.status(400).json({
-          message: "Give every instalment a percentage, or none of them — a half-percentage schedule cannot be checked.",
-          code: "mixed_percent_schedule",
-        });
-      }
-      const { checkTotal, toHundredths, ScheduleError } = require("../utils/venuePaymentSchedule");
-      let total;
+      // S4: a HALF-PERCENTAGE schedule is now the normal shape, not an error.
+      // "Rs. 1,00,000 on booking, then 50/50 on the rest" mixes a fixed row with
+      // percentage rows, and the rule that replaces the old all-or-none check is
+      // checkMixedTotal: fixed comes off the top, percentages split what remains.
+      const { checkMixedTotal, ScheduleError } = require("../utils/venuePaymentSchedule");
+      const balanceForRows = totalV.value !== undefined ? totalV.value - (tokenV.value || 0) : schedule.reduce((sum, r) => sum + (r.amount || 0), 0);
+      let mixed;
       try {
-        total = checkTotal(withPercent.map((r, i) => ({ percentHundredths: toHundredths(r.percent, `paymentSchedule[${i}].percent`) })));
+        mixed = checkMixedTotal(
+          schedule.map((r) => (r.percent === null || r.percent === undefined ? { amount: r.amount } : { percent: r.percent })),
+          balanceForRows
+        );
       } catch (e) {
         if (e instanceof ScheduleError) return res.status(400).json({ message: e.message, code: e.code });
         throw e;
       }
-      if (!total.ok) {
+      if (!mixed.ok) {
         return res.status(400).json({
-          message: `The schedule ${total.message.toLowerCase()} — it must total exactly 100% before it can be saved.`,
-          code: "schedule_not_100",
-          totalPercent: total.totalPercent,
-          deltaPercent: total.deltaPercent,
+          // The message already names the numbers — which is the point of it
+          // living in the shared module rather than being composed here.
+          message: mixed.message,
+          code: mixed.code === "percent_mismatch" ? "schedule_not_100" : mixed.code,
+          totalPercent: mixed.totalPercent,
+          deltaPercent: mixed.deltaPercent,
+          fixedTotal: mixed.fixedTotal,
+          percentBase: mixed.percentBase,
         });
       }
 
@@ -622,17 +628,38 @@ const confirmBookingFromLead = async (req, res) => {
         dueDate: new Date(),
         amount: token,
         percent: null,
-        paidAmount: token,
-        paidAt: new Date(),
-        paidMode: tokenMode,
-        paidModeOther: tokenMode === "other" ? modeOtherV.value || "" : "",
-        paidReference: refV.value || "",
-        paidNote: noteV.value || "",
+        // Written as an ENTRY, not a scalar: the token is the booking's first
+        // payment and belongs in the same list every later payment lands in. A
+        // row created with a scalar here would be a brand-new legacy row — the
+        // migration would have to convert something written after it ran.
+        entries: [
+          {
+            amount: token,
+            date: new Date(),
+            method: tokenMode,
+            methodOther: tokenMode === "other" ? modeOtherV.value || "" : "",
+            reference: refV.value || "",
+            note: noteV.value || "",
+            status: "approved",
+            recordedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+            approvedAt: new Date(),
+          },
+        ],
         recordedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
       });
     }
     rows.push(...schedule);
     if (rows.length) booking.paymentSchedule = rows;
+    // GST lives on the BOOKING, not on the venue: two bookings at the same venue
+    // can legitimately differ (a corporate client who needs a tax invoice, a
+    // family function that does not), and reading it off venue settings would
+    // silently re-tax an old booking the day the setting changed.
+    {
+      const { normaliseGst } = require("../utils/venuePaymentSchedule");
+      const g = normaliseGst({ gstMode: req.body.gstMode, gstPercent: req.body.gstPercent });
+      booking.gstMode = g.gstMode;
+      booking.gstPercent = g.gstPercent;
+    }
     const computedTotal = token + schedule.reduce((s, r) => s + (r.amount || 0), 0);
     if (totalV.value !== undefined) booking.totalValue = totalV.value;
     else if (computedTotal > 0) booking.totalValue = computedTotal;
