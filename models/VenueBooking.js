@@ -138,8 +138,19 @@ const VenueBookingSchema = new mongoose.Schema(
         paidNote: { type: String, default: "" },
         recordedBy: { type: mongoose.Schema.Types.ObjectId },
         recordedByName: { type: String, default: "" },
+        /** Only read under per-instalment GST — see gstMode below. */
+        gstApplicable: { type: Boolean, default: false },
       },
     ],
+    // ── GST, OUTSIDE THE AGREED VALUE ────────────────────────────────────────
+    // totalValue stays what was NEGOTIATED. What the couple transfers is that
+    // plus GST, derived per row rather than stored, so the two can never drift.
+    //
+    // An enum rather than a pair of booleans on purpose: "whole" and
+    // "per_instalment" cannot both be in force, so double-taxing is not a state
+    // this document can hold.
+    gstMode: { type: String, enum: ["none", "whole", "per_instalment"], default: "none" },
+    gstPercent: { type: Number, default: 0, min: 0, max: 100 },
     specialRequirements: { type: String, default: "" },
     // Booking→Rooms handoff (product-map dead-end #6, "the Rooms island"): the
     // lead says "we need 20 rooms" and Rooms/PMS never hears about it. Carried
