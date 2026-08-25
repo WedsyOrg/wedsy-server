@@ -106,6 +106,22 @@ function validateTypeInput(venue, body, { partial = false } = {}) {
     if (!v.ok) return { error: v.message };
     out.view = v.value;
   }
+  // ── ROOMS 6: two tri-state fields ────────────────────────────────────────
+  // "" and null both CLEAR back to not-stated, which an owner needs — they may
+  // have answered by mistake, and a field that can only be set is a field that
+  // makes the listing lie the first time somebody mis-clicks.
+  if (body.smokingPolicy !== undefined) {
+    const v = body.smokingPolicy;
+    if (v === "" || v === null) out.smokingPolicy = undefined;
+    else if (v === "smoking" || v === "non_smoking") out.smokingPolicy = v;
+    else return { error: "smokingPolicy must be smoking or non_smoking" };
+  }
+  if (body.accessible !== undefined) {
+    const v = body.accessible;
+    if (v === "" || v === null) out.accessible = undefined;
+    else if (typeof v === "boolean") out.accessible = v;
+    else return { error: "accessible must be true or false" };
+  }
   if (body.photos !== undefined) {
     if (!Array.isArray(body.photos)) return { error: "photos must be a list" };
     out.photos = body.photos.map((p) => String(p)).filter(Boolean).slice(0, 20);
@@ -619,6 +635,9 @@ async function updateRoomsPolicy(req, res) {
     if (!count.ok) return res.status(400).json({ message: count.message });
     const rate = optNumber(b.extraRoomRate, "extraRoomRate");
     if (!rate.ok) return res.status(400).json({ message: rate.message });
+    const bedRate = optNumber(b.extraBedRate, "extraBedRate");
+    if (!bedRate.ok) return res.status(400).json({ message: bedRate.message });
+    if (bedRate.value !== undefined && bedRate.value < 0) return res.status(400).json({ message: "extraBedRate cannot be negative" });
     if (count.value !== undefined && count.value < 0) return res.status(400).json({ message: "includedCount cannot be negative" });
     if (rate.value !== undefined && rate.value < 0) return res.status(400).json({ message: "extraRoomRate cannot be negative" });
 
@@ -631,6 +650,7 @@ async function updateRoomsPolicy(req, res) {
       includedWithVenue: b.includedWithVenue !== undefined ? b.includedWithVenue : current.includedWithVenue,
       includedCount: count.value !== undefined ? Math.round(count.value) : current.includedCount,
       extraRoomRate: rate.value !== undefined ? Math.round(rate.value) : current.extraRoomRate,
+      extraBedRate: bedRate.value !== undefined ? Math.round(bedRate.value) : current.extraBedRate,
     };
     venue.roomsPolicy = next;
     await venue.save();

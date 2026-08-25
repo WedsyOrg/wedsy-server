@@ -106,6 +106,20 @@ const VenueSchema = new mongoose.Schema({
       sizeSqFt: { type: Number },
       bedConfiguration: { type: String },
       view: { type: String },
+      /**
+       * ROOMS 6. An ENUM, not a boolean, because both answers are positive
+       * claims a couple looks for — "non-smoking" is something a venue
+       * advertises, not merely the absence of "smoking". A boolean would make
+       * `false` carry that claim, and absent and false would then be one step
+       * apart in the data and worlds apart in meaning.
+       *
+       * No defaults, for the reason sizeSqFt has none: a default writes an
+       * answer nobody gave, and a venue that has stated nothing must render
+       * exactly as it does today.
+       */
+      smokingPolicy: { type: String, enum: ["smoking", "non_smoking"] },
+      /** Genuinely binary: step-free and usable, or not. Absent = not stated. */
+      accessible: { type: Boolean },
     }],
   },
   // ══ THE ROOM-AMENITIES LIBRARY ═══════════════════════════════════════════
@@ -169,6 +183,16 @@ const VenueSchema = new mongoose.Schema({
      */
     /** Floor area in square feet. 0 means not stated, not a room of no size. */
     sizeSqFt: { type: Number, default: 0, min: 0 },
+    /**
+     * ROOMS 6 — two things couples actually ask about.
+     *
+     * Both UNSET by default and both tri-state: not stated / yes / no. A venue
+     * that has never answered must not be made to claim either, which is why
+     * neither has a default and why smoking is an enum rather than a boolean —
+     * "non-smoking" is a claim, not the absence of one.
+     */
+    smokingPolicy: { type: String, enum: ["smoking", "non_smoking"] },
+    accessible: { type: Boolean },
     /**
      * FREE TEXT, NOT A FIXED LIST — "1 king", "2 twins, can be joined",
      * "1 king + 1 sofa bed". Audited before choosing: nothing on the couple
@@ -263,6 +287,17 @@ const VenueSchema = new mongoose.Schema({
      * line says which one it used, so a number never appears without a source.
      */
     extraRoomRate: { type: Number, min: 0 },
+    /**
+     * What ONE extra bed costs, per bed per night. Set here beside the
+     * extra-room rate because it answers the same commercial question — what
+     * the venue charges on top of a booking — and an owner setting one will
+     * look for the other in the same place.
+     *
+     * Unset means extra beds are free, which is what they are today. It does
+     * NOT fall back to the room rate: a rollaway is not a room, and inferring
+     * one price from the other would invent a number nobody agreed.
+     */
+    extraBedRate: { type: Number, min: 0 },
   },
 
   // ══ FIRST-RUN SETUP — ONLY WHAT CANNOT BE DERIVED ════════════════════════

@@ -14,10 +14,16 @@ const VenueTeamMember = require("../models/VenueTeamMember");
 const { allocateInvoice } = require("./venueInvoice");
 const { isOwnerActor } = require("../utils/venueRbac");
 const { ON_CHECK_OUT } = require("../utils/venueHousekeeping");
+const { resolvePolicy, nightsBetween } = require("../utils/venueRoomsPolicy");
 const { streamSettlementPdf } = require("../utils/venuePdf");
 const { optStr } = require("../utils/venueInput");
 
-async function resolveOwnedVenue(req, res, select = "_id rooms invoicePrefix") {
+// `roomsPolicy` is in here because billExtraBeds reads the extra-bed rate off
+// it. Omitting it does NOT fail loudly: resolvePolicy returns an unconfigured
+// venue, the rate is 0, and every check-in silently records "no rate set" while
+// the venue has one. Fourth time a missing select field has produced a correct
+// guard operating on wrong arguments in this build.
+async function resolveOwnedVenue(req, res, select = "_id rooms invoicePrefix roomsPolicy") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) { res.status(403).json({ message: "Forbidden" }); return null; }
@@ -91,9 +97,81 @@ const checkInAllotment = async (req, res) => {
     };
     allotment.deposit = { amount: depositAmt };
     await allotment.save();
-    return res.status(200).json({ allotment });
+
+    // ── EXTRA BEDS BECOME ADDITIONAL BILLING ────────────────────────────────
+    // They happen at CHECK-IN, after the booking was confirmed and its value
+    // agreed — which is exactly what additional billing is for. So this uses
+    // the path that already exists rather than building a second one, and it
+    // reaches the money through summarizeSchedule like every other charge.
+    //
+    // The agreed value does not move. This goes ON TOP, itemised.
+    let bedCharge = null;
+    if (extraBeds > 0) {
+      bedCharge = await billExtraBeds({ venue, allotment, extraBeds, byName: allotment.checkIn.byName });
+    }
+    return res.status(200).json({ allotment, ...(bedCharge ? { extraBedCharge: bedCharge } : {}) });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
+
+/**
+ * Bill the extra beds taken at check-in, as ADDITIONAL BILLING.
+ *
+ * ── WHY IT CAN RETURN "nothing charged" WITHOUT THAT BEING A FAILURE ────────
+ * No rate set means extra beds are free, which is what they are today. The
+ * count is still recorded on the allotment either way — an owner who has not
+ * priced beds still wants to know how many went into the room. Reported rather
+ * than silent, so the front desk can see WHY no charge appeared.
+ *
+ * Never throws into the check-in. A billing problem must not be the reason a
+ * guest cannot be checked in; they are standing at the desk.
+ */
+async function billExtraBeds({ venue, allotment, extraBeds, byName }) {
+  try {
+    const policy = resolvePolicy(venue);
+    const rate = Number(policy.extraBedRate) || 0;
+    const nights = nightsBetween(allotment.checkInAt, allotment.checkOutAt);
+    if (rate <= 0) return { charged: false, reason: "no_rate", extraBeds };
+    if (nights <= 0) return { charged: false, reason: "no_nights", extraBeds };
+
+    const booking = await VenueBooking.findById(allotment.booking);
+    if (!booking) return { charged: false, reason: "no_booking", extraBeds };
+
+    // IDEMPOTENT on the allotment, not on the label — an owner may rename the
+    // row, and matching on text would bill the beds twice the moment they did.
+    const already = (booking.paymentSchedule || []).find(
+      (r) => r.isAdditional && String(r.sourceAllotment || "") === String(allotment._id)
+    );
+    if (already) return { charged: false, reason: "already_billed", extraBeds, amount: already.amount };
+
+    const amount = Math.round(extraBeds * rate * nights);
+    booking.paymentSchedule.push({
+      // The room number is in the label because a couple reading a statement
+      // six weeks later needs to know WHICH room it was.
+      label: `Extra beds — room ${roomNameFor(venue, allotment.room)}`,
+      amount,
+      percent: null,
+      dueDate: new Date(),
+      isAdditional: true,
+      extraBeds,
+      extraBedNights: nights,
+      sourceAllotment: allotment._id,
+      addedNote: `Taken at check-in${byName ? ` by ${byName}` : ""}`,
+      addedByName: byName || "",
+    });
+    await booking.save();
+    return { charged: true, amount, extraBeds, nights, ratePerBedPerNight: rate };
+  } catch (e) {
+    // The guest is at the desk. The check-in stands; the charge is reported as
+    // not made, which an owner can add by hand from the Money tab.
+    return { charged: false, reason: "error", message: e.message, extraBeds };
+  }
+}
+
+/** The room's name, for a label somebody reads weeks later. */
+function roomNameFor(venue, roomId) {
+  const r = (venue.rooms || []).find((x) => String(x._id) === String(roomId));
+  return (r && r.name) || "—";
+}
 
 // POST /venues/:slug/allotments/:allotmentId/check-out — rooms_checkin.
 // One round-trip: checklist + damages + notes. Frees nights after today

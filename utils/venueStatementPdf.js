@@ -50,7 +50,7 @@ const {
   BURGUNDY,
   GREY,
 } = require("./venuePdf");
-const { describeRoomsWorking, describeAdditionalRooms } = require("./venueRoomsPolicy");
+const { describeRoomsWorking, describeAdditionalDetail } = require("./venueRoomsPolicy");
 const { resolveBranding } = require("./venueBranding");
 const { docDayWithWeekday, docInstantDay, docDay } = require("./documentDate");
 const { renderTable } = require("./venueDocTable");
@@ -203,7 +203,7 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
       // on, and the only reason it was caught is that a test asserted the
       // POSITIVE — that the words appear — rather than that nothing broke.
       const rawRow = rawById.get(String(r._id)) || r;
-      const rooms = describeAdditionalRooms(rawRow);
+      const rooms = describeAdditionalDetail(rawRow);
       const why = [r.addedNote, r.addedByName ? `added by ${r.addedByName}` : ""].filter(Boolean).join(" · ");
       owedTable.push([
         ascii(`Additional — ${r.label}${rooms ? ` (${rooms})` : ""}${why ? `  (${why})` : ""}`),
