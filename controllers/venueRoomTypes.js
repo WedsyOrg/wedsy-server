@@ -16,8 +16,10 @@ const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const {
   DEFAULT_ROOM_AMENITIES,
   INHERITABLE_FIELDS,
+  AMENITY_GROUPS,
   amenityKeyFor,
   amenityUsage,
+  resolveGroup,
   applyTypeToRooms,
   projectAccommodation,
   resolveRooms,
@@ -115,12 +117,41 @@ function checkOccupancyPair(type) {
  * endpoint cannot forget.
  */
 function presentAmenities(venue) {
-  return (venue.roomAmenities || []).map((a) => ({
-    key: a.key,
-    label: a.label,
-    isActive: a.isActive !== false,
-    usage: amenityUsage(venue, a.key),
-  }));
+  const rows = (venue.roomAmenities || []).map((a) => {
+    const usage = amenityUsage(venue, a.key);
+    return {
+      key: a.key,
+      label: a.label,
+      isActive: a.isActive !== false,
+      group: resolveGroup(a),
+      usage,
+      /**
+       * ── FLOAT WHAT THE OWNER HAS ALREADY REACHED FOR ────────────────────
+       * An amenity already on some type is one this venue genuinely has, and
+       * is far more likely to be wanted on the next type than the twelfth item
+       * of a starter list. Surfaced as a FLAG rather than by pre-sorting the
+       * array, so a screen can float them WITHIN their group and keep the
+       * grouping intact — sorting them all to the top instead would put
+       * "Attached bathroom" above the Comfort heading.
+       */
+      usedBefore: usage.types.length > 0,
+    };
+  });
+
+  // Stable order: group first (in AMENITY_GROUPS order), used-before next,
+  // then the order the owner created them. Nothing is sorted alphabetically —
+  // a list an owner has arranged should stay arranged.
+  const groupRank = new Map(AMENITY_GROUPS.map((g, i) => [g, i]));
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ga = groupRank.has(a.r.group) ? groupRank.get(a.r.group) : AMENITY_GROUPS.length;
+      const gb = groupRank.has(b.r.group) ? groupRank.get(b.r.group) : AMENITY_GROUPS.length;
+      if (ga !== gb) return ga - gb;
+      if (a.r.usedBefore !== b.r.usedBefore) return a.r.usedBefore ? -1 : 1;
+      return a.i - b.i;
+    })
+    .map((x) => x.r);
 }
 
 /** The payload every write returns, so the client never re-fetches to redraw. */
@@ -274,7 +305,7 @@ const addRoomAmenity = async (req, res) => {
       const added = [];
       for (const d of DEFAULT_ROOM_AMENITIES) {
         if (existing.has(d.key)) continue;
-        venue.roomAmenities.push({ key: d.key, label: d.label, isActive: true });
+        venue.roomAmenities.push({ key: d.key, label: d.label, group: d.group, isActive: true });
         added.push(d.key);
       }
       await venue.save();
@@ -311,7 +342,11 @@ const addRoomAmenity = async (req, res) => {
       });
     }
 
-    venue.roomAmenities.push({ key, label: v.value, isActive: true });
+    // The group the owner picked, or extras. Never guessed from the label —
+    // "Jacuzzi" is a bathroom to one venue and an extra to another, and being
+    // wrong about it silently is worse than putting it in the obvious bucket.
+    const group = AMENITY_GROUPS.includes(String(body.group || "")) ? String(body.group) : "extras";
+    venue.roomAmenities.push({ key, label: v.value, group, isActive: true });
     await venue.save();
     return res.status(201).json({
       amenity: venue.roomAmenities[venue.roomAmenities.length - 1],

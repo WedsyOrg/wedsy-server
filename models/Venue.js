@@ -90,6 +90,19 @@ const VenueSchema = new mongoose.Schema({
     /** Stable machine key. Types and rooms reference this, never the label. */
     key: { type: String, required: true },
     label: { type: String, required: true },
+    /**
+     * Which cluster this sits in when an owner is deciding what a Deluxe is:
+     * comfort / bathroom / entertainment / extras. Free text rather than an
+     * enum for the same reason the list itself is not an enum — a venue will
+     * have a grouping nobody anticipated — but the UI only offers the four.
+     *
+     * DEFAULTS TO EMPTY, NOT TO "extras". Amenities created before this field
+     * existed have no group, and writing one in would be a migration. The
+     * presenter resolves an empty group from the seed catalogue by key — which
+     * is not inference about the OWNER'S text, it is recovering the group WE
+     * assigned when WE seeded it — and falls to "extras" for anything else.
+     */
+    group: { type: String, default: "", maxlength: 40 },
     /** False once removed; kept so rooms that still reference it resolve. */
     isActive: { type: Boolean, default: true },
   }],

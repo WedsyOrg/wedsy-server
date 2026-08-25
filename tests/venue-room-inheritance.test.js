@@ -193,6 +193,55 @@ const roomNamed = async (name) => (await call(rooms.listRooms, asOwner())).body.
     ok(assignRetired.code === 400, `assigning a switched-off amenity → 400 (got ${assignRetired.code})`);
     ok(/has been removed from the amenity list/.test((assignRetired.body || {}).message || ""), "…in the owner's words, not a key");
 
+    // ══ GROUPS, AND WHAT FLOATS ═════════════════════════════════════════════
+    console.log("\n[amenities are grouped for the moment a type is being defined]");
+    const listed = (await call(rt.listRoomAmenities, asOwner())).body.roomAmenities;
+    const groupOf = Object.fromEntries(listed.map((a) => [a.key, a.group]));
+    ok(groupOf.ac === "comfort", `AC is comfort (got ${groupOf.ac})`);
+    ok(groupOf.hot_water === "bathroom" && groupOf.attached_bath === "bathroom", "hot water and the bathroom are bathroom");
+    ok(groupOf.wifi === "entertainment" && groupOf.tv === "entertainment", "Wi-Fi and TV are entertainment");
+    ok(groupOf.room_service === "extras", "room service is extras");
+
+    console.log("\n[the groups come back in a fixed order, extras last]");
+    const seq = [];
+    for (const a of listed) if (!seq.includes(a.group)) seq.push(a.group);
+    ok(JSON.stringify(seq) === JSON.stringify(["comfort", "bathroom", "entertainment", "extras"]),
+      `order: ${seq.join(" → ")} — extras last, because it is the bucket for what did not fit`);
+
+    console.log("\n[an amenity already on a type floats WITHIN its group]");
+    // hot_water is on Deluxe from earlier in this suite; attached_bath is not.
+    const bathroom = listed.filter((a) => a.group === "bathroom");
+    ok(bathroom.length === 2, `two bathroom amenities (${bathroom.map((a) => a.label).join(", ")})`);
+    ok(bathroom[0].key === "hot_water" && bathroom[0].usedBefore === true,
+      "the one already in use comes first inside its group");
+    ok(bathroom[1].usedBefore === false, "…and the unused one after it");
+    ok(listed[0].group === "comfort",
+      "…and it did NOT jump above the Comfort group — floating is within a group, not across the list");
+
+    console.log("\n[a custom amenity lands where the owner puts it, never guessed from its label]");
+    const jac = await call(rt.addRoomAmenity, asOwner({ body: { label: "Jacuzzi", group: "bathroom" } }));
+    ok(jac.code === 201, "created with an explicit group");
+    ok((jac.body.roomAmenities.find((a) => a.key === "jacuzzi") || {}).group === "bathroom", "…stored as bathroom");
+    const noGroup = await call(rt.addRoomAmenity, asOwner({ body: { label: "Yoga mat" } }));
+    ok((noGroup.body.roomAmenities.find((a) => a.key === "yoga_mat") || {}).group === "extras",
+      "…and one with no group given goes to extras rather than being inferred from the word");
+    const badGroup = await call(rt.addRoomAmenity, asOwner({ body: { label: "Hammock", group: "outdoors" } }));
+    ok((badGroup.body.roomAmenities.find((a) => a.key === "hammock") || {}).group === "extras",
+      "…a group that is not one of the four also falls to extras rather than creating a fifth");
+
+    console.log("\n[an amenity stored BEFORE groups existed still resolves]");
+    // Exactly the shape a pre-ROOMS-3 venue holds: no `group` at all.
+    await Venue.updateOne(
+      { _id: venueId, "roomAmenities.key": "ac" },
+      { $unset: { "roomAmenities.$.group": "" } }
+    );
+    const afterUnset = (await call(rt.listRoomAmenities, asOwner())).body.roomAmenities;
+    ok((afterUnset.find((a) => a.key === "ac") || {}).group === "comfort",
+      "…recovered from the seed catalogue by key — no migration, and not a guess about the owner's text");
+    const stored = await Venue.findById(venueId).select("roomAmenities");
+    ok(!stored.roomAmenities.find((a) => a.key === "ac").group,
+      "…and nothing was written back to the document to make that true");
+
     console.log("\n[relabelling is safe; the key never moves]");
     const relabel = await call(rt.updateRoomAmenity, asOwner({ params: { key: "hot_water" }, body: { label: "24h hot water" } }));
     ok(relabel.code === 200 && relabel.body.amenity.key === "hot_water", "the key is unchanged");

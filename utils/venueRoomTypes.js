@@ -50,19 +50,40 @@ const INHERITABLE_FIELDS = INHERITABLE.map((i) => i.field);
 /** The amenity key that means air conditioning, for the listing's `isAC`. */
 const AC_KEY = "ac";
 
+/**
+ * The four clusters an owner thinks in while deciding what a Deluxe is. Order
+ * matters — it is the order they are offered in, and "extras" is deliberately
+ * last because it is the bucket for everything that did not fit.
+ */
+const AMENITY_GROUPS = ["comfort", "bathroom", "entertainment", "extras"];
+const AMENITY_GROUP_LABEL = {
+  comfort: "Comfort",
+  bathroom: "Bathroom",
+  entertainment: "Entertainment",
+  extras: "Extras",
+};
+
 /** The starting library. Owners extend it; it is not an enum. */
 const DEFAULT_ROOM_AMENITIES = [
-  { key: "ac", label: "Air conditioning" },
-  { key: "attached_bath", label: "Attached bathroom" },
-  { key: "hot_water", label: "Hot water" },
-  { key: "wifi", label: "Wi-Fi" },
-  { key: "tv", label: "Television" },
-  { key: "wardrobe", label: "Wardrobe" },
-  { key: "balcony", label: "Balcony" },
-  { key: "extra_bed", label: "Extra bed available" },
-  { key: "room_service", label: "Room service" },
-  { key: "mini_fridge", label: "Mini fridge" },
+  { key: "ac", label: "Air conditioning", group: "comfort" },
+  { key: "attached_bath", label: "Attached bathroom", group: "bathroom" },
+  { key: "hot_water", label: "Hot water", group: "bathroom" },
+  { key: "wifi", label: "Wi-Fi", group: "entertainment" },
+  { key: "tv", label: "Television", group: "entertainment" },
+  { key: "wardrobe", label: "Wardrobe", group: "comfort" },
+  { key: "balcony", label: "Balcony", group: "comfort" },
+  { key: "extra_bed", label: "Extra bed available", group: "comfort" },
+  { key: "room_service", label: "Room service", group: "extras" },
+  { key: "mini_fridge", label: "Mini fridge", group: "extras" },
 ];
+
+/** Group for an amenity that has none stored. See the model for why. */
+const SEED_GROUP_BY_KEY = new Map(DEFAULT_ROOM_AMENITIES.map((a) => [a.key, a.group]));
+function resolveGroup(amenity) {
+  const stored = String((amenity && amenity.group) || "").trim();
+  if (stored) return stored;
+  return SEED_GROUP_BY_KEY.get(String(amenity && amenity.key)) || "extras";
+}
 
 /**
  * ── WHY roomAmenities IS A NEW LIST AND NOT Venue.amenities ─────────────────
@@ -301,6 +322,9 @@ function projectAccommodation(venue) {
 
 module.exports = {
   INHERITABLE_FIELDS,
+  AMENITY_GROUPS,
+  AMENITY_GROUP_LABEL,
+  resolveGroup,
   amenityKeyFor,
   amenityUsage,
   describeAmenities,
