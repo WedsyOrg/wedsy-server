@@ -137,10 +137,23 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}, actor = null)
   }
 
   if (updates.accommodation && typeof updates.accommodation === "object") {
+    // ── ROOMS 2: ONCE TYPES EXIST, THIS BLOCK IS DERIVED ────────────────────
+    // utils/venueRoomTypes.projectAccommodation writes accommodation from the
+    // venue's roomTypes and its real rooms. If My Listing could still write it
+    // directly, an owner's edit would look saved and then silently vanish the
+    // next time any room changed — the exact drift ROOMS 2 removes.
+    //
+    // The listing editor makes this section read-only when types exist; this is
+    // the server-side half, so an older client or a direct call cannot bypass
+    // it. Venues that have not adopted types are untouched.
+    // `available` stays writable either way — see projectAccommodation: it is
+    // the owner's advertise-or-not toggle, not a derived fact.
+    const hasRoomTypes = Array.isArray(venue.roomTypes) && venue.roomTypes.length > 0;
     for (const k of ACCOMMODATION_SCALARS) {
+      if (k === "totalCapacity" && hasRoomTypes) continue;
       if (updates.accommodation[k] !== undefined) $set[`accommodation.${k}`] = updates.accommodation[k];
     }
-    if (Array.isArray(updates.accommodation.roomTypes)) {
+    if (Array.isArray(updates.accommodation.roomTypes) && !hasRoomTypes) {
       $set["accommodation.roomTypes"] = updates.accommodation.roomTypes;
     }
   }

@@ -76,15 +76,85 @@ const VenueSchema = new mongoose.Schema({
       photos: [String],
     }],
   },
+  // ══ THE ROOM-AMENITIES LIBRARY ═══════════════════════════════════════════
+  // Venue-level, defined ONCE, referenced by types and rooms by KEY. Seeded
+  // from a starting set the owner extends rather than a fixed enum: every venue
+  // has something the list did not anticipate, and an enum makes that a schema
+  // change.
+  //
+  // NOT the same thing as `amenities` above. That block describes the PROPERTY
+  // — parking, power backup, a lawn — and is what the listing advertises. This
+  // describes what is inside a ROOM. Widening the existing block would have put
+  // "parking" in a room's amenity picker, so this is a new list, not a reuse.
+  roomAmenities: [{
+    /** Stable machine key. Types and rooms reference this, never the label. */
+    key: { type: String, required: true },
+    label: { type: String, required: true },
+    /** False once removed; kept so rooms that still reference it resolve. */
+    isActive: { type: Boolean, default: true },
+  }],
+
+  // ══ THE ROOM TYPE — A REAL ENTITY ════════════════════════════════════════
+  // What a Deluxe IS: how many it sleeps, what is in it, what it costs, what it
+  // looks like. Rooms belong to a type and inherit from it.
+  //
+  // ── WHY A NEW ARRAY RATHER THAN PROMOTING accommodation.roomTypes ─────────
+  // That block carries `count` — a NUMBER of rooms, not the rooms themselves.
+  // Promoting it would mean either dropping `count` (breaking the couple-facing
+  // listing, which reads it) or keeping it beside real rooms as a second,
+  // divergent tally of the same thing. The listing block is now DERIVED from
+  // this array plus the real room count, so there is one editable source and
+  // the listing's numbers get MORE accurate rather than less.
+  // See utils/venueRoomTypes.projectAccommodation.
+  roomTypes: [{
+    name: { type: String, required: true },
+    /** How many it sleeps — the listing's occupancyPerRoom. */
+    sleeps: { type: Number, default: 2, min: 1 },
+    /** Ceiling with extra beds; falls back to `sleeps` when 0. */
+    maxOccupancy: { type: Number, default: 0 },
+    /** Keys into roomAmenities. Rooms inherit this set. */
+    amenities: [{ type: String }],
+    /**
+     * The nightly rate a room of this type defaults to. NOT wired into any
+     * booking total — that is the next build, and it needs this entity to exist
+     * first. Stored here so there is one place it will come from.
+     */
+    defaultRate: { type: Number, default: 0, min: 0 },
+    description: { type: String, default: "" },
+    photos: [String],
+    isActive: { type: Boolean, default: true },
+  }],
+
   // Phase 5 (PMS) — the operational rooms inventory used for guest allotment
-  // and check-in/out. Distinct from accommodation.roomTypes (marketing copy);
-  // both render side by side on the listing surface.
+  // and check-in/out.
   rooms: [{
     name: { type: String, required: true }, // name or number, e.g. "Suite 2"
+    /**
+     * The type this room belongs to. Rooms created before types existed have
+     * none and read as one-offs — `type` below still describes those.
+     */
+    typeRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+    // The legacy free-standing classification. Kept because allotment and
+    // check-in read it today, and pre-typeRef rooms have nothing else.
     type: { type: String, enum: ["standard", "deluxe", "suite", "dorm", "other"], default: "standard" },
     capacity: { type: Number, default: 2 },
     notes: { type: String, default: "" },
     isActive: { type: Boolean, default: true },
+    /**
+     * ── WHAT THIS ROOM HAS DIVERGED ON ─────────────────────────────────────
+     * Editing a type updates every room of that type EXCEPT the fields the room
+     * has overridden. This records WHICH fields those are, by name, so the rule
+     * is data rather than a guess at whether a value "looks custom".
+     *
+     * Without it, inheritance has to infer intent from whether a room's value
+     * differs from its type — which cannot tell "deliberately 3" from "was 3
+     * when the type said 3, and the type has since changed".
+     */
+    overrides: [{ type: String }],
+    /** Set only when overridden; otherwise the type's amenities apply. */
+    amenities: [{ type: String }],
+    /** Set only when overridden; otherwise the type's rate applies. */
+    rate: { type: Number, default: null },
   }],
   pricing: {
     currency: { type: String, default: "INR" },

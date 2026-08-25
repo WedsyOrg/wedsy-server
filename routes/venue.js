@@ -42,6 +42,7 @@ const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
+const roomTypes = require("../controllers/venueRoomTypes");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
 const { createAllotments, listAllotments, planAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
 const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
@@ -301,6 +302,12 @@ router.get("/:slug/rooms", venueOwnerAuth, listRooms);
 router.post("/:slug/rooms", venueOwnerAuth, requireCapability("listing"), addRoom);
 router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), updateRoom);
 router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
+// ROOMS 2 — the room TYPE as a real entity. Reads open to any venue identity,
+// writes on the same `listing` capability the rooms inventory uses.
+router.get("/:slug/room-types", venueOwnerAuth, roomTypes.listRoomTypes);
+router.post("/:slug/room-types", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomType);
+router.patch("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomType);
+router.delete("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.deleteRoomType);
 
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
