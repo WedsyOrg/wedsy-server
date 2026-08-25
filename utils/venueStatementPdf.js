@@ -50,6 +50,7 @@ const {
   BURGUNDY,
   GREY,
 } = require("./venuePdf");
+const { describeRoomsWorking, describeAdditionalRooms } = require("./venueRoomsPolicy");
 const { resolveBranding } = require("./venueBranding");
 const { docDayWithWeekday, docInstantDay, docDay } = require("./documentDate");
 const { renderTable } = require("./venueDocTable");
@@ -162,15 +163,52 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
 
   // ══ 1. WHAT IS OWED ══════════════════════════════════════════════════════
   const additionalRows = rows.filter((r) => r.isAdditional);
+  /** The booking's own schedule rows, for the fields the projection drops. */
+  const rawById = new Map(((bk && bk.paymentSchedule) || []).map((r) => [String(r._id), r]));
   sectionTitle(doc, "What is owed");
 
-  const owedTable = [["Agreed booking value", money(totals.bookingValue)]];
+  // ── THE AGREED VALUE, BROKEN INTO WHAT MADE IT ───────────────────────────
+  // The rooms charge is a COMPONENT of the agreed value, not an extra on top,
+  // so it is itemised ABOVE that line rather than beside the additional
+  // billing. The three rows add up on the page, which is the only way a client
+  // can check them. Same reason the extras are itemised rather than summed:
+  // this document exists so somebody can see what they are paying for.
+  const rc = bk && bk.roomsCharge;
+  const owedTable = [];
+  if (rc && Number(rc.amount) > 0) {
+    const working = describeRoomsWorking(rc);
+    owedTable.push(["Venue", money(Math.max(0, totals.bookingValue - Number(rc.amount)))]);
+    owedTable.push([ascii(working ? `Rooms — ${working}` : "Rooms"), money(rc.amount)]);
+  }
+  owedTable.push(["Agreed booking value", money(totals.bookingValue)]);
   if (additionalRows.length) {
     // ITEMISED, not a single "additional" figure. The whole reason an owner
     // sends this document is so the client can see what the extras were.
     for (const r of additionalRows) {
+      // The rooms detail sits with the LABEL, not in the parenthetical: it is
+      // what the charge WAS, whereas the note and the author are how it came
+      // to be added. A reader scanning the left column for "what am I paying
+      // for" should find it there.
+      // ── JOINED BACK TO THE BOOKING'S OWN ROW ───────────────────────────
+      // `rows` here are summarizeSchedule's PROJECTION, and it does not carry
+      // roomsCount/roomsNights — deliberately: that function knows nothing
+      // about rooms and must not start to, or it becomes a second place rooms
+      // money can be reasoned about. So the detail is read from the booking's
+      // own schedule row, matched on _id.
+      //
+      // The first version read it straight off `r` and silently rendered
+      // nothing: the field was absent, describeAdditionalRooms returned "",
+      // and the line looked exactly like an ordinary charge. Fourth time in
+      // this build that a projection quietly dropped a field a guard depended
+      // on, and the only reason it was caught is that a test asserted the
+      // POSITIVE — that the words appear — rather than that nothing broke.
+      const rawRow = rawById.get(String(r._id)) || r;
+      const rooms = describeAdditionalRooms(rawRow);
       const why = [r.addedNote, r.addedByName ? `added by ${r.addedByName}` : ""].filter(Boolean).join(" · ");
-      owedTable.push([ascii(`Additional — ${r.label}${why ? `  (${why})` : ""}`), money(r.amount)]);
+      owedTable.push([
+        ascii(`Additional — ${r.label}${rooms ? ` (${rooms})` : ""}${why ? `  (${why})` : ""}`),
+        money(r.amount),
+      ]);
     }
   }
   owedTable.push([{ text: "Total payable", backgroundColor: PANEL }, { text: money(totals.total), backgroundColor: PANEL }]);

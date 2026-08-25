@@ -152,6 +152,16 @@ const VenueBookingSchema = new mongoose.Schema(
         isAdditional: { type: Boolean, default: false },
         /** Why this was added — the thing a couple queries three weeks later. */
         addedNote: { type: String, default: "" },
+        /**
+         * ROOMS TAKEN LATE, as numbers rather than as words in the label.
+         * "5 rooms x 1 night" typed into a label is a sentence nobody can
+         * total, filter or correct; stored as counts it can be restated by
+         * whichever document is rendering, and the owner's own label survives
+         * untouched beside it. No defaults — absent means this charge is not
+         * about rooms, which is most of them.
+         */
+        roomsCount: { type: Number, min: 0 },
+        roomsNights: { type: Number, min: 0 },
         addedByName: { type: String, default: "" },
       },
     ],
@@ -173,6 +183,58 @@ const VenueBookingSchema = new mongoose.Schema(
     // the reads cross-check the lead so a later change to the requirement is
     // still reflected.
     roomsRequired: { type: Number, default: 0 },
+
+    // ══ THE ROOMS LINE ON THIS BOOKING ═══════════════════════════════════
+    // ROOMS 5. What the rooms cost on THIS deal, quoted at confirmation from
+    // utils/venueRoomsPolicy.quoteRooms and then FROZEN.
+    //
+    // ── IT IS A COMPONENT OF totalValue, NOT A SECOND TOTAL ───────────────
+    // `amount` is already inside `totalValue`, which the payment schedule is
+    // spread over and which summarizeSchedule reads as the booking value.
+    // Nothing adds this to anything. The venue's own share is
+    // `totalValue - roomsCharge.amount` — DERIVED where it is needed rather
+    // than stored, because a stored copy would go stale the first time
+    // somebody edited the total and would then disagree with it.
+    //
+    // ── AND IT IS STORED, NOT RE-DERIVED ─────────────────────────────────
+    // Nothing recomputes this from the venue's policy on read. That would
+    // silently reprice every confirmed booking the moment a venue edited its
+    // policy, and would make a second money derivation beside
+    // summarizeSchedule. Once agreed, this deal's rooms line is this deal's
+    // own fact — see scripts/verify-rooms-money-invariant.js.
+    //
+    // No defaults. Absent means no rooms line was agreed, which is every
+    // booking confirmed before this shipped.
+    roomsCharge: {
+      /** The quote's inputs, kept so the working can be re-read, not re-run. */
+      roomsNeeded: { type: Number },
+      nights: { type: Number },
+      included: { type: Number },
+      chargeable: { type: Number },
+      ratePerNight: { type: Number },
+      /** booking | policy | type | none — which level supplied the rate. */
+      rateSource: { type: String },
+      /** booking | policy | default — which level supplied the included count. */
+      includedSource: { type: String },
+      /** The money. Already inside totalValue. */
+      amount: { type: Number },
+      /**
+       * The working, as one sentence, exactly as the owner saw it when they
+       * agreed. Stored rather than regenerated so a document reprinted a year
+       * later says what was agreed, not what today's policy would say.
+       */
+      sentence: { type: String },
+      /**
+       * What the owner actually TYPED to override, preserved separately from
+       * the resolved values above. "They overrode the rate to 3,500" and "the
+       * rate happened to be 3,500" are different facts, and only one of them
+       * survives if we keep the resolved number alone.
+       */
+      overrideRate: { type: Number },
+      overrideIncluded: { type: Number },
+      quotedAt: { type: Date },
+      quotedBy: { type: mongoose.Schema.Types.ObjectId },
+    },
     // MB-CRM-2 S2 (additive): the agreement chosen in the Confirm Booking
     // wizard — a document-engine doc id (generated from template or an
     // attached signed scan). Loose ObjectId on purpose: the docs engine has

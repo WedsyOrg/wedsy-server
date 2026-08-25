@@ -500,12 +500,40 @@ const addAdditionalBilling = async (req, res) => {
     }
     const note = cleanStr(body.note).slice(0, 2000);
 
+    // ── ROOMS TAKEN LATE ─────────────────────────────────────────────────────
+    // Rooms at the last minute are ordinary additional billing and need no new
+    // machinery. The only thing worth recording is that the charge WAS rooms,
+    // as counts — so a statement read six weeks later says "5 rooms x 1 night"
+    // instead of an amount somebody has to remember the reason for.
+    //
+    // Optional, and validated rather than coerced: a rooms count that arrives
+    // as nonsense is refused, not quietly rounded to zero, which would produce
+    // a charge that claims to be about rooms and names none.
+    const roomsCountRaw = body.roomsCount;
+    const roomsNightsRaw = body.roomsNights;
+    let roomsCount;
+    let roomsNights;
+    if (roomsCountRaw !== undefined && roomsCountRaw !== null && roomsCountRaw !== "") {
+      roomsCount = Math.round(Number(roomsCountRaw));
+      if (!Number.isFinite(roomsCount) || roomsCount < 0) {
+        return res.status(400).json({ message: "roomsCount must be a whole number of rooms" });
+      }
+    }
+    if (roomsNightsRaw !== undefined && roomsNightsRaw !== null && roomsNightsRaw !== "") {
+      roomsNights = Math.round(Number(roomsNightsRaw));
+      if (!Number.isFinite(roomsNights) || roomsNights < 0) {
+        return res.status(400).json({ message: "roomsNights must be a whole number of nights" });
+      }
+    }
+
     booking.paymentSchedule.push({
       label,
       amount,
       percent: null,
       dueDate: new Date(),
       isAdditional: true,
+      ...(roomsCount !== undefined ? { roomsCount } : {}),
+      ...(roomsNights !== undefined ? { roomsNights } : {}),
       addedNote: note,
       addedByName: await actorName(req),
       recordedBy: actorId(req),

@@ -42,6 +42,10 @@ const { sanitizeContacts } = require("../utils/venueContacts");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { optStr, optNumber, optDate, optCount, MAXLEN, eventWindow } = require("../utils/venueInput");
+const { quoteRoomsForBooking, resolvePolicy } = require("../utils/venueRoomsPolicy");
+
+/** Money in a refusal message, in the same shape the owner reads on screen. */
+const inr = (n) => `Rs. ${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 const { venueDateKey, endOfVenueDay } = require("../utils/venueTime");
 
 async function resolveOwnedVenue(req, res, select = "_id") {
@@ -378,13 +382,91 @@ function parseConfirmDay(s) {
   return d;
 }
 
+/**
+ * GET /:slug/enquiries/:enquiryId/rooms-quote?ratePerNight=&includedRooms=
+ *
+ * What the rooms would cost on this lead, so the wizard can show the working
+ * and put the number into the booking value the schedule is spread over.
+ *
+ * PREVIEW AND CONFIRM ARE ONE COMPUTATION. Both go through
+ * quoteRoomsForBooking with the same venue select and the same window, so a
+ * preview that promises Rs. 96,000 cannot be followed by a confirm that stores
+ * something else. Same rule as the payments preview/apply pair.
+ */
+const previewRoomsQuote = async (req, res) => {
+  try {
+    // Same select as the confirm path — deliberately, and it is why this is
+    // written out rather than defaulted.
+    const venue = await resolveOwnedVenue(req, res, "_id name slug rooms roomsPolicy roomTypes");
+    if (!venue) return;
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, req.params.enquiryId);
+    if (!enquiry) return res.status(404).json({ message: "Enquiry not found" });
+
+    const q = req.query || {};
+    const rateV = optNumber(q.ratePerNight, "ratePerNight");
+    if (!rateV.ok) return res.status(400).json({ message: rateV.message });
+    const inclV = optNumber(q.includedRooms, "includedRooms");
+    if (!inclV.ok) return res.status(400).json({ message: inclV.message });
+
+    // The window is the LEAD'S, which is what confirming will copy onto the
+    // booking. Re-deriving it from anywhere else would be a second opinion
+    // about the same fact — ONE DATE settled that.
+    const roomsNeeded = (enquiry.requirements && enquiry.requirements.roomsNeeded) || 0;
+    const quote = quoteRoomsForBooking({
+      venue,
+      roomsNeeded,
+      checkIn: enquiry.checkIn,
+      checkOut: enquiry.checkOut,
+      override: { ratePerNight: rateV.value, includedRooms: inclV.value },
+    });
+
+    res.status(200).json({
+      quote,
+      roomsNeeded,
+      // Stated so the wizard can say WHY there is nothing to charge, rather
+      // than showing a bare zero the owner has to account for.
+      window: { checkIn: enquiry.checkIn || null, checkOut: enquiry.checkOut || null },
+      hasWindow: Boolean(enquiry.checkIn && enquiry.checkOut),
+      policyConfigured: resolvePolicy(venue).configured,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 const confirmBookingFromLead = async (req, res) => {
   // Reported back so the portal can say "added to People" rather than leaving
   // the owner to go and check whether their new contact actually landed.
   let clientSync = null;
   let clientWarnings = [];
+  /**
+   * ── EVERY EXIT PAST THE CALENDAR WRITE UNDOES IT ────────────────────────
+   * Declared out here, and deliberately: once this request has marked
+   * date-spaces booked, ANY exit that is not a success has to put them back.
+   * A booking refused on its money — or on a typo'd email, or by an unexpected
+   * throw — that keeps its dates is unrecoverable: the lead can never be
+   * confirmed again, because it now collides with itself.
+   *
+   * A no-op until the calendar is actually touched, so calling it early is
+   * always safe. Reassigned below, once batchRef and convertedRowIds exist.
+   */
+  let rollbackCalendar = async () => {};
+  /**
+   * The FULL undo — room nights, calendar, draft — in that order.
+   *
+   * The deliberate refusals were each doing these three by hand, which is how
+   * the catch-all came to do only one of them: there was no single answer to
+   * "what does undoing this request mean", so a new exit copied whichever
+   * neighbour it happened to sit next to. Now there is one.
+   */
+  let undoEverything = async () => {};
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces rooms settings blockedDates");
+    // `roomsPolicy` and `roomTypes` are in here because the rooms line is quoted
+    // below and BOTH feed the rate. Omitting either does not fail loudly: the
+    // venue reads as unconfigured with no type rate, so quoteRooms returns
+    // rateSource "none" and charges nothing — a booking silently confirmed
+    // with free rooms. Third time this select has bitten this build.
+    const venue = await resolveOwnedVenue(req, res, "_id name slug spaces rooms settings blockedDates roomsPolicy roomTypes");
     if (!venue) return;
 
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, req.params.enquiryId);
@@ -676,6 +758,36 @@ const confirmBookingFromLead = async (req, res) => {
       }
     }
 
+    /**
+     * Undo everything this request did to the calendar. Identical to the
+     * rollback in the insert path above — kept as one function so a rooms
+     * refusal cannot restore less than a space collision does, which is how a
+     * booking ends up half-applied.
+     *
+     * ── ASSIGNED HERE, THE MOMENT THE WRITE IS COMPLETE ───────────────────
+     * It used to live two hundred lines further down, beside its first caller.
+     * That is a trap: the `let` above leaves it a NO-OP until this line runs,
+     * so a rollback added anywhere between the write and the old definition
+     * compiled, read correctly, and did nothing. Two of them did exactly that,
+     * caught only because the test re-confirmed the same lead and got 409.
+     *
+     * Its home is the write it undoes, not the refusal that first needed it.
+     */
+    rollbackCalendar = async () => {
+      await VenueSpaceDate.deleteMany({ batchRef });
+      if (convertedRowIds.length) {
+        await VenueSpaceDate.updateMany(
+          { _id: { $in: convertedRowIds } },
+          { $set: { state: "held" }, $unset: { bookingRef: 1 } }
+        );
+      }
+    };
+    undoEverything = async () => {
+      await releaseRoomNights(booking._id);
+      await rollbackCalendar();
+      await discardDraftIfNew();
+    };
+
     // Consumed holds graduate: converted status; any leftover held rows are
     // released EXPLICITLY (logged below + counted in the response — never silent).
     let releasedLeftover = 0;
@@ -735,6 +847,34 @@ const confirmBookingFromLead = async (req, res) => {
       // window would silently claim a day the couple never bought.
       booking.checkOut = endOfVenueDay(new Date(last));
     }
+    // ── THE ROOMS LINE ─────────────────────────────────────────────────────
+    // Quoted HERE: after the window exists (nights come from it) and before
+    // totalValue is written below, so the rooms money is part of the value the
+    // schedule is spread over rather than a figure sitting beside it.
+    //
+    // OPT-IN. Without body.roomsCharge nothing is quoted and nothing is
+    // stored, which is exactly how every caller before this behaved.
+    //
+    // The wizard previewed this through the SAME function with the SAME
+    // inputs (see previewRoomsQuote), so the number it spread across the
+    // schedule and the number stored here agree by construction — not by two
+    // sides being kept in step by hand.
+    let roomsQuote = null;
+    const rcBody = body.roomsCharge && typeof body.roomsCharge === "object" ? body.roomsCharge : null;
+    if (rcBody && rcBody.include === true) {
+      const rateV = optNumber(rcBody.ratePerNight, "roomsCharge.ratePerNight");
+      if (!rateV.ok) { await undoEverything(); return res.status(400).json({ message: rateV.message }); }
+      const inclV = optNumber(rcBody.includedRooms, "roomsCharge.includedRooms");
+      if (!inclV.ok) { await undoEverything(); return res.status(400).json({ message: inclV.message }); }
+      roomsQuote = quoteRoomsForBooking({
+        venue,
+        roomsNeeded: (enquiry.requirements && enquiry.requirements.roomsNeeded) || 0,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut,
+        override: { ratePerNight: rateV.value, includedRooms: inclV.value },
+      });
+    }
+
     const token = tokenV.value || 0;
     const rows = [];
     if (token > 0) {
@@ -784,6 +924,46 @@ const confirmBookingFromLead = async (req, res) => {
     const computedTotal = token + schedule.reduce((s, r) => s + (r.amount || 0), 0);
     if (totalV.value !== undefined) booking.totalValue = totalV.value;
     else if (computedTotal > 0) booking.totalValue = computedTotal;
+
+    if (roomsQuote) {
+      // TWO NUMBERS THAT CANNOT DISAGREE. The rooms amount is a COMPONENT of
+      // totalValue, so a total smaller than the rooms line alone is not a
+      // rounding quibble — it means the schedule was built over a value that
+      // does not contain the rooms, and the booking would collect less than
+      // the document says it charged. Refused, naming both numbers.
+      if (roomsQuote.amount > 0 && (booking.totalValue || 0) < roomsQuote.amount) {
+        // ROLLED BACK, like every other refusal past this point. Found by a
+        // test that retried the SAME lead after a refusal and got 409: the
+        // space calendar had already been written, so a booking refused on its
+        // money had silently consumed its own dates and could never be
+        // confirmed again. The undo was defined below this guard — moving a
+        // guard in without moving it up is what made the refusal half-apply.
+        await undoEverything();
+        return res.status(400).json({
+          message:
+            `The rooms line is ${inr(roomsQuote.amount)} but the booking value is ` +
+            `${inr(booking.totalValue || 0)}. The rooms charge is part of the booking value, ` +
+            `so the total has to cover it.`,
+          code: "ROOMS_EXCEED_TOTAL",
+        });
+      }
+      booking.roomsCharge = {
+        roomsNeeded: roomsQuote.roomsNeeded,
+        nights: roomsQuote.nights,
+        included: roomsQuote.included,
+        chargeable: roomsQuote.chargeable,
+        ratePerNight: roomsQuote.ratePerNight,
+        rateSource: roomsQuote.rateSource,
+        includedSource: roomsQuote.includedSource,
+        amount: roomsQuote.amount,
+        sentence: roomsQuote.sentence,
+        // What was TYPED, kept apart from what was resolved.
+        overrideRate: rcBody && rcBody.ratePerNight !== undefined && rcBody.ratePerNight !== "" ? Number(rcBody.ratePerNight) : undefined,
+        overrideIncluded: rcBody && rcBody.includedRooms !== undefined && rcBody.includedRooms !== "" ? Number(rcBody.includedRooms) : undefined,
+        quotedAt: new Date(),
+        quotedBy: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+      };
+    }
     if (agreementDoc) booking.agreementDoc = agreementDoc;
 
     // ── THE CLIENT STEP, WRITTEN INTO contacts[] AND NOWHERE ELSE ───────────
@@ -797,28 +977,15 @@ const confirmBookingFromLead = async (req, res) => {
       const merged = mergeClientIntoContacts(enquiry.contacts, body.client);
       if (merged.index >= 0) {
         const cV = sanitizeContacts(merged.contacts, enquiry.eventType);
-        if (!cV.ok) return res.status(400).json({ message: `client — ${cV.message}` });
+        // Rolled back like the rest. A booking refused because somebody typed a
+        // bad email must not keep the dates it just claimed.
+        if (!cV.ok) { await undoEverything(); return res.status(400).json({ message: `client — ${cV.message}` }); }
         enquiry.contacts = cV.value;
         clientSync = { matchedBy: merged.matchedBy, created: merged.created };
         if (cV.warnings && cV.warnings.length) clientWarnings = cV.warnings;
       }
     }
 
-    /**
-     * Undo everything this request did to the calendar. Identical to the
-     * rollback in the insert path above — kept as one function so a rooms
-     * refusal cannot restore less than a space collision does, which is how a
-     * booking ends up half-applied.
-     */
-    const rollbackCalendar = async () => {
-      await VenueSpaceDate.deleteMany({ batchRef });
-      if (convertedRowIds.length) {
-        await VenueSpaceDate.updateMany(
-          { _id: { $in: convertedRowIds } },
-          { $set: { state: "held" }, $unset: { bookingRef: 1 } }
-        );
-      }
-    };
 
     // ── ROOMS: RESERVE THE COUNT, NOT A TO-DO ──────────────────────────────
     // The lead's accommodation requirement becomes real inventory here. Before
@@ -847,12 +1014,10 @@ const confirmBookingFromLead = async (req, res) => {
         allowPartial: body.acknowledgeRoomShortfall === true,
       });
       if (!reservation.ok) {
-        // Nothing about the booking has been saved yet at this point except
-        // the calendar rows, which the catch below rolls back.
+        // Nothing about the booking has been saved yet at this point except the
+        // calendar rows and the room nights — undoEverything puts both back.
         if (reservation.code === "rooms_short") {
-          await releaseRoomNights(booking._id);
-          await rollbackCalendar();
-          await discardDraftIfNew();
+          await undoEverything();
           const t = reservation.tightest;
           return res.status(409).json({
             message:
@@ -867,9 +1032,7 @@ const confirmBookingFromLead = async (req, res) => {
             acknowledgeWith: "acknowledgeRoomShortfall",
           });
         }
-        await releaseRoomNights(booking._id);
-        await rollbackCalendar();
-        await discardDraftIfNew();
+        await undoEverything();
         return res.status(409).json({
           message: "Those rooms were taken while this booking was being confirmed. Nothing was changed — try again.",
           code: "rooms_conflict",
@@ -917,12 +1080,19 @@ const confirmBookingFromLead = async (req, res) => {
       clientWarnings,
     });
   } catch (err) {
+    // An UNEXPECTED failure past the calendar write leaves the same
+    // unrecoverable state a deliberate refusal would: a save that trips a
+    // ValidationError consumes the lead's dates and 400s, and the next attempt
+    // collides with the rows this request left behind. Best effort — a
+    // rollback that itself fails must not replace the real error.
+    try { await undoEverything(); } catch (_) { /* keep the original error */ }
     if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
     return res.status(500).json({ message: err.message });
   }
 };
 
 module.exports = {
+  previewRoomsQuote,
   previewCancellation,
   cancelBooking,
   createDraftBookingForEnquiry,

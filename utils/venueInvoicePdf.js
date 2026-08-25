@@ -19,6 +19,7 @@ const {
   BURGUNDY,
   GREY,
 } = require("./venuePdf");
+const { describeRoomsWorking } = require("./venueRoomsPolicy");
 const { resolveBranding } = require("./venueBranding");
 const { docDayWithWeekday, docInstantDay } = require("./documentDate");
 const { renderTable } = require("./venueDocTable");
@@ -144,7 +145,17 @@ async function buildInvoicePdf({ venue, booking, invoice, payment } = {}) {
   // ── balance, from the booking rather than recomputed here ────────────────
   if (Number.isFinite(Number(bk.totalValue)) && Number(bk.totalValue) > 0) {
     doc.moveDown(0.5).fillColor(GREY).fontSize(9);
-    doc.text(`Booking value ${money(bk.totalValue)}.`, 50, doc.y, { width: TEXT_W });
+    // The rooms line named on the invoice too, with its working. An invoice a
+    // client queries is an invoice that does not get paid this week.
+    const rc = bk && bk.roomsCharge;
+    const roomsWorking = rc && Number(rc.amount) > 0 ? describeRoomsWorking(rc) : "";
+    doc.text(
+      `Booking value ${money(bk.totalValue)}.` +
+        (rc && Number(rc.amount) > 0
+          ? ` Includes rooms ${money(rc.amount)}${roomsWorking ? ` (${roomsWorking})` : ""}.`
+          : ""),
+      50, doc.y, { width: TEXT_W }
+    );
   }
 
   poweredByFooter(doc, "", brand.whiteLabel);
