@@ -138,6 +138,31 @@ const VenueSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
   }],
 
+  // ══ FIRST-RUN SETUP — ONLY WHAT CANNOT BE DERIVED ════════════════════════
+  // The wizard is RESUMABLE, and the cheapest way to be resumable is to have
+  // almost no state: which step an owner is on is a function of what they have
+  // actually built. Blocks but no types → they are on types. Types but no rooms
+  // → they are on rooms. Close the browser, come back next week, land on the
+  // same step, with no progress record to go stale or disagree with the data.
+  //
+  // Exactly two things cannot be derived, and both are here:
+  //
+  //   shapeSkipped  "one building, one floor" leaves NO blocks, which is
+  //                 indistinguishable from never having done the step. Without
+  //                 this the wizard would send that owner back to step one
+  //                 forever.
+  //   completedAt   "never appears again once built" survives an owner who
+  //                 later deletes every room. Rooms existing is enough to hide
+  //                 the wizard; this is what stops it RETURNING.
+  //
+  // dismissedAt is not a third state, it is a courtesy: the wizard stops
+  // interrupting, and the empty Rooms page still offers it.
+  roomSetup: {
+    shapeSkipped: { type: Boolean, default: false },
+    completedAt: { type: Date, default: null },
+    dismissedAt: { type: Date, default: null },
+  },
+
   // ══ WHERE A ROOM IS — THE PROPERTY'S SHAPE ═══════════════════════════════
   // A room knew its name and its type but not its LOCATION, so 21 rooms could
   // only ever render as 21 identical rows. Every real PMS lays a property out

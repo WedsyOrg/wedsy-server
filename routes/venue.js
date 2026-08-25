@@ -322,6 +322,12 @@ router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing
 // ROOMS 3 — the property's SHAPE. Blocks and floors are both optional; reads
 // are open to any venue identity, writes on the same `listing` capability the
 // rooms inventory uses.
+// First-run setup. The step is derived from what exists; only "one building,
+// one floor" and "finished" are recorded, because neither can be derived.
+router.get("/:slug/room-setup", venueOwnerAuth, roomBlocks.getSetup);
+router.post("/:slug/room-setup/skip-shape", venueOwnerAuth, requireCapability("listing"), roomBlocks.skipShape);
+router.post("/:slug/room-setup/complete", venueOwnerAuth, requireCapability("listing"), roomBlocks.completeSetup);
+router.post("/:slug/room-setup/dismiss", venueOwnerAuth, requireCapability("listing"), roomBlocks.dismissSetup);
 router.get("/:slug/room-blocks", venueOwnerAuth, roomBlocks.getLayout);
 router.post("/:slug/room-blocks", venueOwnerAuth, requireCapability("listing"), roomBlocks.addBlock);
 router.put("/:slug/room-blocks/order", venueOwnerAuth, requireCapability("listing"), roomBlocks.reorder);

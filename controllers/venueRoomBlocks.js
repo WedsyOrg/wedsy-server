@@ -21,8 +21,14 @@ const { reqStr } = require("../utils/venueInput");
 const { resolveLayout, validatePlacement } = require("../utils/venueRoomLayout");
 const { resolveRooms } = require("../utils/venueRoomTypes");
 const { roomStatusOn, statusTotals } = require("../utils/venueRoomStatus");
+const { setupState } = require("../utils/venueRoomSetup");
 
-const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks";
+// `blocks` AND `roomSetup` are both here for the same reason: mongoose does not
+// complain when you set a field that was not selected — it simply does not
+// persist it. Omitting `blocks` made every placement look invalid; omitting
+// `roomSetup` made "one building, one floor" appear to work and then send the
+// owner back to step one on the next read. Neither failed loudly.
+const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks roomSetup";
 
 async function resolveOwnedVenue(req, res, select = SELECT) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select);
@@ -61,6 +67,73 @@ async function layoutPayload(venue, extra = {}, { withStatus = true, on } = {}) 
     ...extra,
   };
 }
+
+// ── GET /venues/:slug/room-setup ────────────────────────────────────────────
+// Which step, and why. The step is DERIVED from what exists, so this is
+// resumable by construction — see utils/venueRoomSetup.
+const getSetup = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    return res.status(200).json({
+      setup: setupState(venue),
+      blocks: venue.blocks || [],
+      roomTypes: venue.roomTypes || [],
+      roomAmenities: venue.roomAmenities || [],
+    });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── POST /venues/:slug/room-setup/skip-shape ────────────────────────────────
+// "One building, one floor." The ONE thing about the shape step that cannot be
+// derived: skipping leaves no blocks, which is byte-identical to never having
+// done it, and without recording it the wizard sends the owner back forever.
+const skipShape = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    if ((venue.blocks || []).length > 0) {
+      // Not an error — just already answered, and saying so beats silently
+      // setting a flag that now contradicts what is on screen.
+      return res.status(409).json({
+        message: "This property already has blocks, so there is nothing to skip.",
+        code: "shape_exists",
+        setup: setupState(venue),
+      });
+    }
+    venue.roomSetup = { ...(venue.roomSetup || {}), shapeSkipped: true };
+    await venue.save();
+    return res.status(200).json({ setup: setupState(venue) });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── POST /venues/:slug/room-setup/complete ──────────────────────────────────
+// Rooms existing already hides the wizard; this is what stops it RETURNING if
+// an owner later removes every room.
+const completeSetup = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    if (!venue.roomSetup || !venue.roomSetup.completedAt) {
+      venue.roomSetup = { ...(venue.roomSetup || {}), completedAt: new Date() };
+      await venue.save();
+    }
+    return res.status(200).json({ setup: setupState(venue) });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── POST /venues/:slug/room-setup/dismiss ───────────────────────────────────
+// "Not now." Stops it interrupting; the empty Rooms page still offers it, so
+// nothing becomes unreachable.
+const dismissSetup = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    venue.roomSetup = { ...(venue.roomSetup || {}), dismissedAt: new Date() };
+    await venue.save();
+    return res.status(200).json({ setup: setupState(venue) });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
 
 // ── GET /venues/:slug/room-blocks ───────────────────────────────────────────
 const getLayout = async (req, res) => {
@@ -298,6 +371,7 @@ const placeRoom = async (req, res) => {
 };
 
 module.exports = {
+  getSetup, skipShape, completeSetup, dismissSetup,
   getLayout, addBlock, updateBlock, deleteBlock,
   addFloor, updateFloor, deleteFloor,
   reorder, placeRoom, layoutPayload, resolveOwnedVenue,

@@ -25,7 +25,12 @@ const {
   resolveRooms,
 } = require("../utils/venueRoomTypes");
 
-const SELECT = "_id slug rooms roomTypes roomAmenities accommodation";
+// `blocks` is in here because validatePlacement and resolveLayout read it, and
+// a select that omits it does not fail loudly — it makes every block look
+// absent, so a correct guard refuses a placement that was perfectly valid. That
+// is the shape of bug this repo has been bitten by before: the guard is right,
+// the arguments it was given are not.
+const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks";
 
 async function resolveOwnedVenue(req, res, select = SELECT) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select);
