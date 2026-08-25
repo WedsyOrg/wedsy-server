@@ -25,8 +25,16 @@ const CreateNew = async (req, res) => {
       name = name.replace(/\.[^.]+$/, ".jpg");
     }
 
+    // Same env-gated endpoint override utils/s3Upload already carries: set
+    // AWS_S3_ENDPOINT to point a local drive at a scratch bucket or an
+    // S3-compatible stub, and every upload path behaves the same. Inert when
+    // unset, so production is untouched — this path was the only one that could
+    // not be redirected, which made proof-of-payment untestable locally.
+    // forcePathStyle because stubs and MinIO serve bucket/key as a path.
+    const endpoint = process.env.AWS_S3_ENDPOINT || "";
     const s3Client = new AWS.S3({
       region: process.env.AWS_S3_REGION,
+      ...(endpoint ? { endpoint, forcePathStyle: true } : {}),
       credentials: {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -45,7 +53,9 @@ const CreateNew = async (req, res) => {
 
     const result = await s3Client.putObject(params);
 
-    let url = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${s3Key}`;
+    let url = endpoint
+      ? `${endpoint.replace(/\/$/, "")}/${process.env.AWS_BUCKET_NAME}/${s3Key}`
+      : `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${s3Key}`;
 
     res.send({
       message: "File Uploaded Successfully",
@@ -91,8 +101,14 @@ const VenueOwnerUpload = async (req, res) => {
       normalizedName = normalizedName.replace(/\.[^.]+$/, ".jpg");
     }
 
+    // Same env-gated override as CreateNew above. Declared in THIS function's
+    // scope on purpose: the URL built below reads it, and an `endpoint` that
+    // only existed in the other function would have thrown a ReferenceError the
+    // first time an upload actually succeeded.
+    const endpoint = process.env.AWS_S3_ENDPOINT || "";
     const s3Client = new AWS.S3({
       region: process.env.AWS_S3_REGION,
+      ...(endpoint ? { endpoint, forcePathStyle: true } : {}),
       credentials: {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -117,7 +133,12 @@ const VenueOwnerUpload = async (req, res) => {
       ContentType: normalizedMime,
     });
 
-    const url = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${s3Key}`;
+    // The URL has to match where the object actually went: with an endpoint
+    // override the object is at endpoint/bucket/key, and returning the AWS URL
+    // would store a link that 404s for the whole life of the record.
+    const url = endpoint
+      ? `${endpoint.replace(/\/$/, "")}/${process.env.AWS_BUCKET_NAME}/${s3Key}`
+      : `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${s3Key}`;
 
     res.send({ message: "File Uploaded Successfully", url });
   } catch (error) {

@@ -62,6 +62,32 @@ const PANEL = "#f6f4f7";
 /** "Rs. 8,12,500" — Helvetica has no rupee glyph, same call every doc makes. */
 const money = (n) => `Rs. ${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
+/**
+ * ── EVERY GLYPH ON THE PAGE MUST EXIST IN WinAnsi ───────────────────────────
+ * The standard-14 Helvetica PDFKit uses is WinAnsi-encoded. A character outside
+ * that set is not dropped cleanly — it is written as whatever bytes fall out of
+ * the mapping, and U+2212 MINUS SIGN came out as 0x22 0x12: a stray double
+ * quote and an unprintable, on the "Received" line of a money document.
+ *
+ * The same reason `money()` above writes "Rs." rather than the rupee sign. This
+ * is that rule applied to the typographic characters it is easy to reach for by
+ * habit: minus, the dashes, curly quotes, ellipsis. Em dash (0x97), en dash
+ * (0x96) and the middle dot (0xB7) ARE in WinAnsi and are deliberately left
+ * alone — verified in the rendered bytes, not assumed.
+ */
+const WINANSI_SWAPS = [
+  [/\u2212/g, "-"],   // MINUS SIGN → hyphen-minus
+  [/[\u2018\u2019]/g, "'"],
+  [/[\u201c\u201d]/g, '"'],
+  [/\u2026/g, "..."],
+  [/\u00a0/g, " "],
+];
+function ascii(v) {
+  let out = String(v == null ? "" : v);
+  for (const [re, to] of WINANSI_SWAPS) out = out.replace(re, to);
+  return out;
+}
+
 const methodLabel = (m, other) => {
   const s = String(m || "").replace(/_/g, " ").trim();
   if (!s) return "";
@@ -123,7 +149,7 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
     doc.moveDown(0.32);
   };
   row("Statement date", docInstantDay(new Date()));
-  row("Billed to", bk.coupleName || (lead && lead.coupleName));
+  row("Billed to", ascii(bk.coupleName || (lead && lead.coupleName)));
   row("Phone", bk.couplePhone || (lead && lead.couplePhone));
   const days = (bk.days || []).map((d) => d && d.date).filter(Boolean);
   if (days.length === 1) row("Event date", docDayWithWeekday(days[0]));
@@ -132,7 +158,7 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
     days.slice(1).forEach((d) => row("", docDayWithWeekday(d)));
   }
   const spaces = [...new Set((bk.days || []).flatMap((d) => (d && d.spaces) || []))].filter(Boolean);
-  if (spaces.length) row("Spaces", spaces.join(", "));
+  if (spaces.length) row("Spaces", ascii(spaces.join(", ")));
 
   // ══ 1. WHAT IS OWED ══════════════════════════════════════════════════════
   const additionalRows = rows.filter((r) => r.isAdditional);
@@ -144,7 +170,7 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
     // sends this document is so the client can see what the extras were.
     for (const r of additionalRows) {
       const why = [r.addedNote, r.addedByName ? `added by ${r.addedByName}` : ""].filter(Boolean).join(" · ");
-      owedTable.push([`Additional — ${r.label}${why ? `  (${why})` : ""}`, money(r.amount)]);
+      owedTable.push([ascii(`Additional — ${r.label}${why ? `  (${why})` : ""}`), money(r.amount)]);
     }
   }
   owedTable.push([{ text: "Total payable", backgroundColor: PANEL }, { text: money(totals.total), backgroundColor: PANEL }]);
@@ -176,7 +202,7 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
         header,
         rows: rows.map((r) => {
           const cells = [
-            `${r.label}${r.isAdditional ? "  (additional)" : ""}`,
+            ascii(`${r.label}${r.isAdditional ? "  (additional)" : ""}`),
             r.dueDate ? docDay(r.dueDate) : "—",
             money(r.amount),
           ];
@@ -218,9 +244,9 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
         ],
         rows: receipts.map(({ row: r, e }) => [
           e.date ? docDay(e.date) : "—",
-          r.label,
-          methodLabel(e.method, e.methodOther) || "—",
-          e.reference || "—",
+          ascii(r.label),
+          ascii(methodLabel(e.method, e.methodOther)) || "—",
+          ascii(e.reference) || "—",
           money(e.amount),
         ]),
         opts: { columnStyles: [78, "*", 78, 100, 85] },
@@ -272,7 +298,7 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
   right("Agreed booking value", money(totals.bookingValue));
   if (Number(totals.additional) > 0) right("Additional billing", money(totals.additional));
   right("Total payable", money(totals.total));
-  right("Received", `− ${money(totals.received)}`);
+  right("Received", `- ${money(totals.received)}`);
   right("Balance due", money(totals.balance), true);
 
   // Claimed-but-unapproved money, stated BESIDE the balance and never inside

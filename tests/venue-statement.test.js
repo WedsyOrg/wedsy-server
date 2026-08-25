@@ -228,6 +228,53 @@ async function pdfText(buffer) {
     ok(built.tableStats.every((t) => t.truncatedCells === 0), "no cell was silently truncated");
     ok(built.tableStats.every((t) => t.pages === 1 || t.headerRepeats > 0), "any table that broke a page repeated its header");
 
+    console.log("\n[every glyph on the page exists in WinAnsi]");
+    // FOUND BY THE DRIVE, not by a suite: U+2212 MINUS SIGN on the "Received"
+    // line came out of PDFKit's standard-14 Helvetica as bytes 22 12 — a stray
+    // double quote and an unprintable, on a money document. The same reason
+    // money() writes "Rs." rather than the rupee sign.
+    //
+    // Asserted on the RENDERED BYTES rather than on the source strings, because
+    // the failure is in the encoding step, not in what was passed to it.
+    const runs = [];
+    {
+      const raw = built.buffer.toString("latin1");
+      for (const arr of raw.match(/\[(.*?)\]\s*TJ/gs) || []) {
+        for (const hex of arr.match(/<([0-9a-fA-F]+)>/g) || []) {
+          runs.push(Buffer.from(hex.slice(1, -1), "hex"));
+        }
+      }
+    }
+    const text = Buffer.concat(runs);
+    ok(runs.length > 0, `read ${runs.length} text runs back out of the PDF`);
+    // 0x00-0x1f are control codes: nothing legitimate encodes to one, and an
+    // unmapped glyph is exactly how one appears.
+    const control = [...text].filter((c) => c < 0x20);
+    ok(control.length === 0, `no unmapped glyphs in the rendered text (found ${control.length})`);
+    ok(!text.includes(Buffer.from([0x22, 0x12])), "the minus-sign corruption specifically is gone");
+    ok(text.includes(Buffer.from("- Rs.", "latin1")), "…and Received still reads as a subtraction");
+    // Em dash IS WinAnsi (0x97) and is deliberately kept — verified, not assumed.
+    ok(text.includes(Buffer.from([0x97])), "em dash survives as WinAnsi 0x97");
+
+    console.log("\n[a name with a curly apostrophe does not corrupt the page]");
+    const fancy = await VenueBooking.findById(busy.booking._id);
+    fancy.coupleName = "Rohan \u2018Ro\u2019 D\u2019Souza \u2014 & Aanya";
+    await fancy.save();
+    const fancyBuilt = await buildStatementPdf({
+      venue: await Venue.findById(venue._id).lean(),
+      booking: fancy, summary: summarizeSchedule(fancy), invoices: [],
+    });
+    const fancyRuns = [];
+    {
+      const raw = fancyBuilt.buffer.toString("latin1");
+      for (const arr of raw.match(/\[(.*?)\]\s*TJ/gs) || []) {
+        for (const hex of arr.match(/<([0-9a-fA-F]+)>/g) || []) fancyRuns.push(Buffer.from(hex.slice(1, -1), "hex"));
+      }
+    }
+    const fancyText = Buffer.concat(fancyRuns);
+    ok([...fancyText].filter((c) => c < 0x20).length === 0, "curly quotes are folded rather than mangled");
+    ok(fancyText.includes(Buffer.from("Rohan 'Ro' D'Souza", "latin1")), "…and the name is still readable");
+
     console.log("\n[a very long additional-billing note does not truncate silently]");
     const longNote = "x".repeat(4000);
     const b3 = await VenueBooking.findById(busy.booking._id);
