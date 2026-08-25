@@ -25,6 +25,7 @@
  */
 const Venue = require("../models/Venue");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
+const { heldNightsForRoom, releaseHeldNightsForRoom } = require("../utils/venueRoomNights");
 const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const { expand, planBulk } = require("../utils/venueRoomBulk");
 const { validatePlacement } = require("../utils/venueRoomLayout");
@@ -37,6 +38,61 @@ const {
 } = require("../utils/venueRoomTypes");
 
 const ROOM_TYPES = ["standard", "deluxe", "suite", "dorm", "other"];
+
+/**
+ * ── TAKING A ROOM OUT OF SERVICE IS A PROMISE THE VENUE HAS ALREADY MADE ────
+ * One refusal, used by every path that can remove a room from availability, so
+ * a delete cannot warn about less than a deactivation does.
+ *
+ * The guards here USED to read VenueRoomAllotment — a guest assigned. A booking
+ * that reserved a COUNT of rooms at confirmation has no allotment yet, which is
+ * the whole design of ROOMS 1, so those guards saw an unused room and removed
+ * it. The room-nights stayed, pointing at nothing: the booking still counted 20
+ * rooms and the property could supply 19.
+ *
+ * Refuse first, allow on purpose — the same shape as rooms_short at
+ * confirmation and stale holds on a window change. The venue is never blocked
+ * from managing its property, only from doing it by accident.
+ *
+ * @returns the 409 payload, or null when there is nothing to warn about.
+ */
+async function heldNightsRefusal(venue, room, req, { verb }) {
+  // Both spellings accepted: `?force=1` is what deleteBlock and deleteRoomType
+  // already use, and the body flag is what the confirm-booking acknowledgements
+  // use. One mechanism per codebase would be nicer than two, but a caller
+  // guessing wrong and having its warning silently ignored would be worse.
+  const forced =
+    String((req.query && req.query.force) || "") === "1" ||
+    (req.body && req.body.acknowledgeHeldNights === true);
+  if (forced) return null;
+
+  const held = await heldNightsForRoom(venue._id, room._id);
+  if (held.upcoming === 0) return null;
+
+  const who = held.bookings
+    .map((b) => `${b.coupleName || "a booking"} (${b.nights} night${b.nights === 1 ? "" : "s"} from ${venueDateKey(b.firstNight)})`)
+    .join(", ");
+  return {
+    code: "room_has_held_nights",
+    message:
+      `"${room.name}" is promised to ${held.bookings.length} booking${held.bookings.length === 1 ? "" : "s"} — ${who}. ` +
+      `${verb} it anyway and ${held.upcoming === 1 ? "that night" : "those nights"} will no longer have a room behind ${held.upcoming === 1 ? "it" : "them"}.`,
+    upcoming: held.upcoming,
+    past: held.past,
+    bookings: held.bookings.map((b) => ({
+      bookingId: b.bookingId,
+      coupleName: b.coupleName,
+      nights: b.nights,
+      firstNight: b.firstNight,
+      lastNight: b.lastNight,
+    })),
+    acknowledgeWith: "acknowledgeHeldNights",
+  };
+}
+
+/** "30 Sep 2036" — the venue's own day key, not an ISO timestamp. */
+const venueDateKey = (d) =>
+  new Date(d).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 // `blocks` is in here because validatePlacement and resolveLayout read it, and
 // a select that omits it does not fail loudly — it makes every block look
 // absent, so a correct guard refuses a placement that was perfectly valid. That
@@ -227,6 +283,18 @@ const updateRoom = async (req, res) => {
     const v = validateRoomInput(venue, body, { partial: true });
     if (v.error) return res.status(400).json({ message: v.error });
 
+    // Only when this patch is actually taking the room OUT of service.
+    // Re-activating, renaming or re-typing a room changes no promise, and
+    // warning about those would train an owner to force past the warning that
+    // matters. Checked against the room's CURRENT state so re-saving an
+    // already-inactive room does not warn again.
+    let freed = null;
+    if (v.value.isActive === false && room.isActive !== false) {
+      const refusal = await heldNightsRefusal(venue, room, req, { verb: "Take" });
+      if (refusal) return res.status(409).json(refusal);
+      freed = await releaseHeldNightsForRoom(venue._id, room._id);
+    }
+
     if (v.value.name) {
       const clash = (venue.rooms || []).find(
         (r) => String(r._id) !== String(room._id) &&
@@ -241,6 +309,9 @@ const updateRoom = async (req, res) => {
     await venue.save();
     return res.status(200).json(statePayload(venue, {
       room: resolveRoom(room, findType(venue, room.typeRef)),
+      // Reported so "12 nights were released" is something the owner READS,
+      // not something they discover later on the booking.
+      ...(freed ? { releasedNights: freed } : {}),
     }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
@@ -254,17 +325,28 @@ const deleteRoom = async (req, res) => {
     if (!venue) return;
     const room = venue.rooms.id(req.params.roomId);
     if (!room) return res.status(404).json({ message: "Room not found" });
+    // BEFORE either branch. Deactivating and deleting both remove the room
+    // from availability, so both owe the same warning — the deactivate branch
+    // looked safer and was not: an inactive room is excluded from
+    // activeRooms(), so its held nights are just as orphaned as a deleted
+    // room's, only harder to notice.
+    const refusal = await heldNightsRefusal(venue, room, req, { verb: "Remove" });
+    if (refusal) return res.status(409).json(refusal);
+    // Forced past the warning: the holds go, so the booking stops believing it
+    // has a room it does not. Reported, never silent.
+    const freedOnDelete = await releaseHeldNightsForRoom(venue._id, room._id);
+
     const used = await VenueRoomAllotment.exists({ venue: venue._id, room: room._id });
     if (used) {
       room.isActive = false;
       projectAccommodation(venue);
       await venue.save();
-      return res.status(200).json(statePayload(venue, { deactivated: true }));
+      return res.status(200).json(statePayload(venue, { deactivated: true, releasedNights: freedOnDelete }));
     }
     room.deleteOne();
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, { deleted: true }));
+    return res.status(200).json(statePayload(venue, { deleted: true, releasedNights: freedOnDelete }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
