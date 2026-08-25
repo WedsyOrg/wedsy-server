@@ -17,7 +17,7 @@ const { getDay } = require("../controllers/venueCrmDay");
 const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
-const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, updateBookingWindow, previewCancellation, cancelBooking } = require("../controllers/venueBooking");
+const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, previewRoomsQuote, updateBookingWindow, previewCancellation, cancelBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
@@ -117,6 +117,10 @@ router.get("/:slug/enquiries/:enquiryId/interactions", venueOwnerAuth, getIntera
 router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapability("leads"), quickLog);
 // ── MB-CRM-2 S2: Confirm Booking wizard — the lead graduates into a booking
 // through the ONE creation path (money movement ⇒ bookings_money gate).
+// What the rooms would cost on this lead. Same capability as the confirm it
+// feeds — it is a money figure, and gating it differently would let somebody
+// read a price they cannot act on.
+router.get("/:slug/enquiries/:enquiryId/rooms-quote", venueOwnerAuth, requireCapability("bookings_money"), previewRoomsQuote);
 router.post("/:slug/enquiries/:enquiryId/confirm-booking", venueOwnerAuth, requireCapability("bookings_money"), confirmBookingFromLead);
 
 // ── MB-CRM S4: CRM dashboard overview (my-day, real alerts, proof) ──

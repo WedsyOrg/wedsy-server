@@ -150,6 +150,38 @@ function describeQuote({ needed, included, chargeable, rate, nightCount, amount 
   return `${needed} rooms · ${included} included · ${chargeable} × ${money(rate)} × ${nightsPart} = ${money(amount)}`;
 }
 
+/**
+ * A booking's rooms quote, assembled from the venue and the stay window.
+ *
+ * ── WHY THIS EXISTS RATHER THAN TWO CALLERS OF quoteRooms ───────────────────
+ * The wizard previews the number and the confirm endpoint stores it. Calling
+ * the same FUNCTION from both is not enough — this build has twice been bitten
+ * by two callers that agreed on the function and differed in the ARGUMENTS
+ * they built for it (a select missing `blocks`; a select missing `roomSetup`).
+ * Room count, type rate and night count are all derived here, once, so preview
+ * and confirm cannot drift apart while both look correct.
+ *
+ * The fallback type rate is the LOWEST rate across the venue's types. It is the
+ * rate a couple is most likely to have been quoted from ("rooms from Rs.4,500"),
+ * and erring low means an owner who has not set a policy rate under-charges
+ * visibly rather than over-charging invisibly.
+ */
+function quoteRoomsForBooking({ venue, roomsNeeded, checkIn, checkOut, override = null } = {}) {
+  const rooms = (venue && venue.rooms) || [];
+  const totalRoomsAtVenue = rooms.filter((r) => r && r.isActive !== false).length;
+  const rates = ((venue && venue.roomTypes) || [])
+    .map((t) => Number(t && t.defaultRate) || 0)
+    .filter((n) => n > 0);
+  return quoteRooms({
+    policy: resolvePolicy(venue),
+    roomsNeeded,
+    nights: nightsBetween(checkIn, checkOut),
+    totalRoomsAtVenue,
+    typeRate: rates.length ? Math.min(...rates) : 0,
+    override,
+  });
+}
+
 /** Whole nights between two instants; a same-day stay is one night, not zero. */
 function nightsBetween(checkIn, checkOut) {
   if (!checkIn || !checkOut) return 0;
@@ -160,4 +192,4 @@ function nightsBetween(checkIn, checkOut) {
   return Math.max(0, days);
 }
 
-module.exports = { resolvePolicy, includedRooms, quoteRooms, nightsBetween, describeQuote, RATE_SOURCE };
+module.exports = { resolvePolicy, includedRooms, quoteRooms, quoteRoomsForBooking, nightsBetween, describeQuote, RATE_SOURCE };
