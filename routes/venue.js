@@ -41,7 +41,8 @@ const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
 const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner side of planner walk-throughs
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
-const { listRooms, addRoom, updateRoom, deleteRoom } = require("../controllers/venueRooms");
+const { listRooms, addRoom, updateRoom, deleteRoom, bulkCreateRooms } = require("../controllers/venueRooms");
+const roomTypes = require("../controllers/venueRoomTypes");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
 const { createAllotments, listAllotments, planAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
 const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
@@ -299,8 +300,20 @@ router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
 //    occupancy (open read) ──
 router.get("/:slug/rooms", venueOwnerAuth, listRooms);
 router.post("/:slug/rooms", venueOwnerAuth, requireCapability("listing"), addRoom);
+router.post("/:slug/rooms/bulk", venueOwnerAuth, requireCapability("listing"), bulkCreateRooms);
 router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), updateRoom);
 router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
+// ROOMS 2 — the room TYPE as a real entity. Reads open to any venue identity,
+// writes on the same `listing` capability the rooms inventory uses.
+router.get("/:slug/room-types", venueOwnerAuth, roomTypes.listRoomTypes);
+router.post("/:slug/room-types", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomType);
+router.patch("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomType);
+router.delete("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.deleteRoomType);
+// …and the per-room amenity library the types and rooms reference by key.
+router.get("/:slug/room-amenities", venueOwnerAuth, roomTypes.listRoomAmenities);
+router.post("/:slug/room-amenities", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomAmenity);
+router.patch("/:slug/room-amenities/:key", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomAmenity);
+router.delete("/:slug/room-amenities/:key", venueOwnerAuth, requireCapability("listing"), roomTypes.deleteRoomAmenity);
 
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
