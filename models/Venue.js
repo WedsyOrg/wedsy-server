@@ -134,7 +134,30 @@ const VenueSchema = new mongoose.Schema({
      */
     defaultRate: { type: Number, default: 0, min: 0 },
     description: { type: String, default: "" },
-    photos: [String],
+    /**
+     * ── PHOTOS: ORDERED, WITH ONE COVER ──────────────────────────────────
+     * The single biggest driver of a booking decision, and until now nowhere
+     * in the operational model.
+     *
+     * ORDER IS THE ARRAY, as it is for blocks and floors — reordering rewrites
+     * it, and there is no index field to drift out of step with it.
+     *
+     * COVER IS EXPLICIT, and deliberately NOT "whichever is first". Were the
+     * cover position 0, reordering the gallery would silently change the one
+     * photo a couple sees on the card — the higher-stakes of the two facts.
+     * "What order do these go in" and "which one represents this type" are
+     * different questions, so they are different fields, and the one-cover
+     * invariant is enforced by the controller rather than hoped for.
+     *
+     * NOTE the public projection keeps `photos: [String]` — see
+     * utils/venueRoomTypes.projectAccommodation. A flat, cover-first list of
+     * URLs is what a listing wants, and changing that shape would be a change
+     * to the couple-facing contract for no gain.
+     */
+    photos: [{
+      url: { type: String, required: true, maxlength: 2000 },
+      isCover: { type: Boolean, default: false },
+    }],
     isActive: { type: Boolean, default: true },
   }],
 

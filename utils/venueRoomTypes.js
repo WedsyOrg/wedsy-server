@@ -126,6 +126,23 @@ function amenityUsage(venue, key) {
   return { types: types.map((t) => t.name), rooms: rooms.map((r) => r.name) };
 }
 
+/**
+ * A type's photos as plain URLs, cover first, otherwise in the owner's order.
+ *
+ * Tolerates a bare string as well as {url}, because the field was [String]
+ * before this build. Nothing in production holds either — zero venues have
+ * adopted the new room types — but a shape assumption that is true only because
+ * a collection happens to be empty is one that breaks the day it is not.
+ */
+function coverFirstUrls(photos) {
+  const rows = (photos || [])
+    .map((p) => (typeof p === "string" ? { url: p, isCover: false } : p || {}))
+    .filter((p) => p.url);
+  const cover = rows.filter((p) => p.isCover);
+  const rest = rows.filter((p) => !p.isCover);
+  return [...cover, ...rest].map((p) => String(p.url));
+}
+
 function num(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -285,7 +302,12 @@ function projectAccommodation(venue) {
       // fall back to the schema default rather than mislabel every room.
       isAC: acKnown ? amenities.has(AC_KEY) : true,
       description: t.description || "",
-      photos: (t.photos || []).map(String),
+      // ── COVER FIRST, THEN THE OWNER'S ORDER ──────────────────────────────
+      // The public block stays a flat [String]: that is what the listing reads,
+      // and a shape change there would be a change to the couple-facing
+      // contract. The cover leads because the listing shows photos[0] on the
+      // card, so "which photo represents this type" has to survive the flatten.
+      photos: coverFirstUrls(t.photos),
     };
   });
 
@@ -322,6 +344,7 @@ function projectAccommodation(venue) {
 
 module.exports = {
   INHERITABLE_FIELDS,
+  coverFirstUrls,
   AMENITY_GROUPS,
   AMENITY_GROUP_LABEL,
   resolveGroup,
