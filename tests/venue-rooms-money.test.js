@@ -21,6 +21,7 @@ const Venue = require("../models/Venue");
 const VenueOwner = require("../models/VenueOwner");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueBooking = require("../models/VenueBooking");
+const VenueSpaceDate = require("../models/VenueSpaceDate");
 const bookings = require("../controllers/venueBooking");
 const { summarizeSchedule } = require("../utils/venuePaymentStatus");
 
@@ -173,6 +174,65 @@ const quoteFor = (lead, query = {}) =>
     console.log("\n[G. summarizeSchedule was not taught about rooms]");
     const src = require("fs").readFileSync(require.resolve("../utils/venuePaymentStatus"), "utf8");
     ok(!/room/i.test(src), "🔴 utils/venuePaymentStatus contains no reference to rooms — it reads totalValue and nothing else");
+    // ── [H] no refusal past the calendar write may keep the dates ─────────
+    // The rule, swept rather than spot-checked: once this request has marked
+    // date-spaces booked, every exit that is not a success has to put them
+    // back. A lead that loses its dates to a refusal can never be confirmed
+    // again — it collides with itself — and nothing on screen explains why.
+    //
+    // Each case asserts the REFUSAL and then re-confirms the SAME lead and
+    // requires 200. "Nothing was stored" alone would pass on a lead that had
+    // been quietly bricked.
+    console.log("\n[H. 🔴 every refusal past the calendar write releases the dates]");
+    const spaceRows = () => VenueSpaceDate.countDocuments({ venue: venue._id, state: "booked" });
+
+    const cases = [
+      ["a bad rooms rate", { roomsCharge: { include: true, ratePerNight: "not-a-number" } }, 400],
+      ["a bad included count", { roomsCharge: { include: true, includedRooms: "eight" } }, 400],
+      ["a rooms line bigger than the total", { totalValue: 5000, paymentSchedule: [{ label: "Full", amount: 5000 }], roomsCharge: { include: true } }, 400],
+      ["a typo'd client email", { client: { name: "Someone", email: "not an email", phone: "9812345678" } }, 400],
+    ];
+    for (let i = 0; i < cases.length; i++) {
+      const [label, badBody, wantCode] = cases[i];
+      const yr = 2040 + i;
+      const l = await newLead(20, `${yr}-04-10T10:00:00Z`, `${yr}-04-12T10:00:00Z`);
+      const rowsBefore = await spaceRows();
+      const refused = await confirm(l, { totalValue: 400000, paymentSchedule: [{ label: "Full", amount: 400000 }], ...badBody });
+      ok(refused.code >= 400, `${label} → refused (${refused.code})`);
+      if (wantCode) ok(refused.code === wantCode, `  …with ${wantCode} (got ${refused.code})`);
+      ok(await spaceRows() === rowsBefore, `  …and the calendar is back where it was (${await spaceRows()} booked rows)`);
+      // THE POSITIVE CONTROL: the same lead, fixed, must still be confirmable.
+      const retry = await confirm(l, { totalValue: 400000, paymentSchedule: [{ label: "Full", amount: 400000 }] });
+      ok(retry.code === 200, `  🔴 …and the SAME lead still confirms afterwards (got ${retry.code}: ${retry.body && retry.body.message})`);
+    }
+
+    // The catch-all, which no BAD INPUT can reach — every malformed field is
+    // refused before the save. So it is faulted deliberately: a save that
+    // throws is the realistic version (a schema change, an index conflict, a
+    // dropped connection), and until now it would have 500'd with the lead's
+    // dates already consumed.
+    {
+      const l = await newLead(20, "2050-04-10T10:00:00Z", "2050-04-12T10:00:00Z");
+      const rowsBefore = await spaceRows();
+      const realSave = VenueBooking.prototype.save;
+      let thrown = false;
+      VenueBooking.prototype.save = function (...a) {
+        if (!thrown) { thrown = true; const e = new Error("injected: save failed"); e.name = "ValidationError"; throw e; }
+        return realSave.apply(this, a);
+      };
+      let injected;
+      try {
+        injected = await confirm(l, { totalValue: 400000, paymentSchedule: [{ label: "Full", amount: 400000 }] });
+      } finally {
+        VenueBooking.prototype.save = realSave;
+      }
+      ok(thrown, "an unexpected save failure was actually injected — the case is real, not skipped");
+      ok(injected.code >= 400, `an unexpected throw → refused (${injected.code})`);
+      ok(await spaceRows() === rowsBefore, `  …and the calendar is back where it was (${await spaceRows()} booked rows)`);
+      const retry = await confirm(l, { totalValue: 400000, paymentSchedule: [{ label: "Full", amount: 400000 }] });
+      ok(retry.code === 200, `  🔴 …and the SAME lead still confirms afterwards (got ${retry.code}: ${retry.body && retry.body.message})`);
+    }
+
   } catch (err) {
     fail += 1;
     console.error("\nFATAL", err);
@@ -182,7 +242,7 @@ const quoteFor = (lead, query = {}) =>
       await VenueBooking.deleteMany({ venue: venue && venue._id });
       await VenueEnquiry.deleteMany({ _id: { $in: leads.map((l) => l._id) } });
       await require("../models/VenueRoomNight").deleteMany({ venue: venue && venue._id });
-      await require("../models/VenueSpaceDate").deleteMany({ venue: venue && venue._id });
+      await VenueSpaceDate.deleteMany({ venue: venue && venue._id });
       await VenueOwner.deleteMany({ _id: owner && owner._id });
       await Venue.deleteMany({ _id: venue && venue._id });
     } catch (e) { /* best effort */ }

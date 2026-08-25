@@ -439,6 +439,27 @@ const confirmBookingFromLead = async (req, res) => {
   // the owner to go and check whether their new contact actually landed.
   let clientSync = null;
   let clientWarnings = [];
+  /**
+   * ── EVERY EXIT PAST THE CALENDAR WRITE UNDOES IT ────────────────────────
+   * Declared out here, and deliberately: once this request has marked
+   * date-spaces booked, ANY exit that is not a success has to put them back.
+   * A booking refused on its money — or on a typo'd email, or by an unexpected
+   * throw — that keeps its dates is unrecoverable: the lead can never be
+   * confirmed again, because it now collides with itself.
+   *
+   * A no-op until the calendar is actually touched, so calling it early is
+   * always safe. Reassigned below, once batchRef and convertedRowIds exist.
+   */
+  let rollbackCalendar = async () => {};
+  /**
+   * The FULL undo — room nights, calendar, draft — in that order.
+   *
+   * The deliberate refusals were each doing these three by hand, which is how
+   * the catch-all came to do only one of them: there was no single answer to
+   * "what does undoing this request mean", so a new exit copied whichever
+   * neighbour it happened to sit next to. Now there is one.
+   */
+  let undoEverything = async () => {};
   try {
     // `roomsPolicy` and `roomTypes` are in here because the rooms line is quoted
     // below and BOTH feed the rate. Omitting either does not fail loudly: the
@@ -737,6 +758,36 @@ const confirmBookingFromLead = async (req, res) => {
       }
     }
 
+    /**
+     * Undo everything this request did to the calendar. Identical to the
+     * rollback in the insert path above — kept as one function so a rooms
+     * refusal cannot restore less than a space collision does, which is how a
+     * booking ends up half-applied.
+     *
+     * ── ASSIGNED HERE, THE MOMENT THE WRITE IS COMPLETE ───────────────────
+     * It used to live two hundred lines further down, beside its first caller.
+     * That is a trap: the `let` above leaves it a NO-OP until this line runs,
+     * so a rollback added anywhere between the write and the old definition
+     * compiled, read correctly, and did nothing. Two of them did exactly that,
+     * caught only because the test re-confirmed the same lead and got 409.
+     *
+     * Its home is the write it undoes, not the refusal that first needed it.
+     */
+    rollbackCalendar = async () => {
+      await VenueSpaceDate.deleteMany({ batchRef });
+      if (convertedRowIds.length) {
+        await VenueSpaceDate.updateMany(
+          { _id: { $in: convertedRowIds } },
+          { $set: { state: "held" }, $unset: { bookingRef: 1 } }
+        );
+      }
+    };
+    undoEverything = async () => {
+      await releaseRoomNights(booking._id);
+      await rollbackCalendar();
+      await discardDraftIfNew();
+    };
+
     // Consumed holds graduate: converted status; any leftover held rows are
     // released EXPLICITLY (logged below + counted in the response — never silent).
     let releasedLeftover = 0;
@@ -812,9 +863,9 @@ const confirmBookingFromLead = async (req, res) => {
     const rcBody = body.roomsCharge && typeof body.roomsCharge === "object" ? body.roomsCharge : null;
     if (rcBody && rcBody.include === true) {
       const rateV = optNumber(rcBody.ratePerNight, "roomsCharge.ratePerNight");
-      if (!rateV.ok) return res.status(400).json({ message: rateV.message });
+      if (!rateV.ok) { await undoEverything(); return res.status(400).json({ message: rateV.message }); }
       const inclV = optNumber(rcBody.includedRooms, "roomsCharge.includedRooms");
-      if (!inclV.ok) return res.status(400).json({ message: inclV.message });
+      if (!inclV.ok) { await undoEverything(); return res.status(400).json({ message: inclV.message }); }
       roomsQuote = quoteRoomsForBooking({
         venue,
         roomsNeeded: (enquiry.requirements && enquiry.requirements.roomsNeeded) || 0,
@@ -874,22 +925,6 @@ const confirmBookingFromLead = async (req, res) => {
     if (totalV.value !== undefined) booking.totalValue = totalV.value;
     else if (computedTotal > 0) booking.totalValue = computedTotal;
 
-    /**
-     * Undo everything this request did to the calendar. Identical to the
-     * rollback in the insert path above — kept as one function so a rooms
-     * refusal cannot restore less than a space collision does, which is how a
-     * booking ends up half-applied.
-     */
-    const rollbackCalendar = async () => {
-      await VenueSpaceDate.deleteMany({ batchRef });
-      if (convertedRowIds.length) {
-        await VenueSpaceDate.updateMany(
-          { _id: { $in: convertedRowIds } },
-          { $set: { state: "held" }, $unset: { bookingRef: 1 } }
-        );
-      }
-    };
-
     if (roomsQuote) {
       // TWO NUMBERS THAT CANNOT DISAGREE. The rooms amount is a COMPONENT of
       // totalValue, so a total smaller than the rooms line alone is not a
@@ -901,10 +936,9 @@ const confirmBookingFromLead = async (req, res) => {
         // test that retried the SAME lead after a refusal and got 409: the
         // space calendar had already been written, so a booking refused on its
         // money had silently consumed its own dates and could never be
-        // confirmed again. `rollbackCalendar` was defined below this guard —
-        // moving the guard in without moving it up is what made the refusal
-        // half-apply.
-        await rollbackCalendar();
+        // confirmed again. The undo was defined below this guard — moving a
+        // guard in without moving it up is what made the refusal half-apply.
+        await undoEverything();
         return res.status(400).json({
           message:
             `The rooms line is ${inr(roomsQuote.amount)} but the booking value is ` +
@@ -943,7 +977,9 @@ const confirmBookingFromLead = async (req, res) => {
       const merged = mergeClientIntoContacts(enquiry.contacts, body.client);
       if (merged.index >= 0) {
         const cV = sanitizeContacts(merged.contacts, enquiry.eventType);
-        if (!cV.ok) return res.status(400).json({ message: `client — ${cV.message}` });
+        // Rolled back like the rest. A booking refused because somebody typed a
+        // bad email must not keep the dates it just claimed.
+        if (!cV.ok) { await undoEverything(); return res.status(400).json({ message: `client — ${cV.message}` }); }
         enquiry.contacts = cV.value;
         clientSync = { matchedBy: merged.matchedBy, created: merged.created };
         if (cV.warnings && cV.warnings.length) clientWarnings = cV.warnings;
@@ -978,12 +1014,10 @@ const confirmBookingFromLead = async (req, res) => {
         allowPartial: body.acknowledgeRoomShortfall === true,
       });
       if (!reservation.ok) {
-        // Nothing about the booking has been saved yet at this point except
-        // the calendar rows, which the catch below rolls back.
+        // Nothing about the booking has been saved yet at this point except the
+        // calendar rows and the room nights — undoEverything puts both back.
         if (reservation.code === "rooms_short") {
-          await releaseRoomNights(booking._id);
-          await rollbackCalendar();
-          await discardDraftIfNew();
+          await undoEverything();
           const t = reservation.tightest;
           return res.status(409).json({
             message:
@@ -998,9 +1032,7 @@ const confirmBookingFromLead = async (req, res) => {
             acknowledgeWith: "acknowledgeRoomShortfall",
           });
         }
-        await releaseRoomNights(booking._id);
-        await rollbackCalendar();
-        await discardDraftIfNew();
+        await undoEverything();
         return res.status(409).json({
           message: "Those rooms were taken while this booking was being confirmed. Nothing was changed — try again.",
           code: "rooms_conflict",
@@ -1048,6 +1080,12 @@ const confirmBookingFromLead = async (req, res) => {
       clientWarnings,
     });
   } catch (err) {
+    // An UNEXPECTED failure past the calendar write leaves the same
+    // unrecoverable state a deliberate refusal would: a save that trips a
+    // ValidationError consumes the lead's dates and 400s, and the next attempt
+    // collides with the rows this request left behind. Best effort — a
+    // rollback that itself fails must not replace the real error.
+    try { await undoEverything(); } catch (_) { /* keep the original error */ }
     if (err.name === "ValidationError") return res.status(400).json({ message: err.message });
     return res.status(500).json({ message: err.message });
   }
