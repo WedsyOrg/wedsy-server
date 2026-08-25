@@ -180,8 +180,41 @@ const VenueBookingSchema = new mongoose.Schema(
     agreementDoc: { type: mongoose.Schema.Types.ObjectId },
     status: {
       type: String,
+      // ── WHAT THIS ACTUALLY MEANS, AFTER THE AUDIT ────────────────────────
+      // Every consumer in the server tests only `cancelled` —
+      // venuePayment, venueDashboard, venueOwner, venueAnalytics and
+      // venuePricingIntel all query `status: { $ne: "cancelled" }`. NOTHING
+      // reads `in_progress` or `completed`: not one query, not one branch.
+      // They were write-only values an owner could click, with no behaviour
+      // anywhere following.
+      //
+      // Both are facts about the calendar — the event is happening now, or it
+      // has passed — and `days[].date` already holds the answer. So the
+      // PRODUCT now derives and states them (utils/venueBookingPhase) rather
+      // than offering them as decisions, which stops an owner marking an event
+      // "Completed" 35 days early in one click.
+      //
+      // The enum keeps them, deliberately. PATCH /bookings/:id has always
+      // accepted `status` and this repo cannot prove no other client sends
+      // them; removing the values would be a breaking change to an API surface
+      // for no gain. What changed is what the UI offers, not what the API
+      // tolerates.
       enum: ["confirmed", "in_progress", "completed", "cancelled"],
       default: "confirmed",
+    },
+    /**
+     * WHY IT WAS CANCELLED, and when. Cancelling releases every room night and
+     * calendar block, which is not something to be able to do without saying
+     * why — the reason is the only record of a decision whose effects are
+     * otherwise invisible six months later.
+     */
+    cancellation: {
+      reason: { type: String, default: "", maxlength: 2000 },
+      at: { type: Date, default: null },
+      byName: { type: String, default: "" },
+      /** What the cascade actually gave back, recorded at the moment it ran. */
+      roomNightsReleased: { type: Number, default: 0 },
+      allotmentsCancelled: { type: Number, default: 0 },
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "VenueOwner" },
     // D6 (additive): archived per-wedding room blocks — the immutable summary

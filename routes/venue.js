@@ -17,7 +17,7 @@ const { getDay } = require("../controllers/venueCrmDay");
 const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
-const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, updateBookingWindow } = require("../controllers/venueBooking");
+const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, updateBookingWindow, previewCancellation, cancelBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
@@ -167,6 +167,12 @@ router.get("/:slug/bookings", venueOwnerAuth, listBookings);
 router.post("/:slug/bookings", venueOwnerAuth, requireCapability("leads"), createBooking);
 router.get("/:slug/bookings/:bookingId", venueOwnerAuth, getBooking);
 router.patch("/:slug/bookings/:bookingId", venueOwnerAuth, requireCapability("leads"), updateBooking);
+// Cancelling is its own act, not a value passed to the generic update: it
+// releases every room night and calendar block the booking holds. Preview and
+// cancel share describeCancellation(), so the dates and room count shown in the
+// confirmation are the ones the cascade is about to release.
+router.get("/:slug/bookings/:bookingId/cancellation-preview", venueOwnerAuth, requireCapability("leads"), previewCancellation);
+router.post("/:slug/bookings/:bookingId/cancel", venueOwnerAuth, requireCapability("leads"), cancelBooking);
 // The booking side of the ONE event window — same edit as the lead's PATCH,
 // same writer (utils/venueEventWindow), same calendar re-derivation.
 router.patch("/:slug/bookings/:bookingId/window", venueOwnerAuth, requireCapability("leads"), updateBookingWindow);
