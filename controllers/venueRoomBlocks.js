@@ -20,6 +20,7 @@ const Venue = require("../models/Venue");
 const { reqStr } = require("../utils/venueInput");
 const { resolveLayout, validatePlacement } = require("../utils/venueRoomLayout");
 const { resolveRooms } = require("../utils/venueRoomTypes");
+const { roomStatusOn, statusTotals } = require("../utils/venueRoomStatus");
 
 const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks";
 
@@ -32,14 +33,30 @@ async function resolveOwnedVenue(req, res, select = SELECT) {
 
 const idOf = (v) => (v === null || v === undefined ? "" : String(v._id || v));
 
-/** The whole shape, resolved, plus the rooms already inheritance-resolved. */
-function layoutPayload(venue, extra = {}) {
+/**
+ * The whole shape, resolved: structure, rooms (inheritance already applied),
+ * and — when asked — what each room IS today.
+ *
+ * ── ONE SOURCE FOR EVERY COUNT ON THE SCREEN ────────────────────────────────
+ * The old page showed "20 active rooms", "Rooms · 21" and "20 rooms" at once,
+ * because three components each counted for themselves off differently-filtered
+ * arrays. `counts` is computed once in resolveLayout and is the only thing any
+ * screen is given, so the three cannot disagree again.
+ */
+async function layoutPayload(venue, extra = {}, { withStatus = true, on } = {}) {
   const byId = new Map(resolveRooms(venue).map((r) => [String(r._id), r]));
-  const layout = resolveLayout(venue, { presentRoom: (r) => byId.get(String(r._id)) || r });
+  const status = withStatus ? await roomStatusOn(venue, on || new Date()) : null;
+  const layout = resolveLayout(venue, {
+    presentRoom: (r) => {
+      const resolved = byId.get(String(r._id)) || r;
+      if (!status) return resolved;
+      return { ...resolved, ...(status.get(String(r._id)) || { status: "free" }) };
+    },
+  });
   return {
     blocks: venue.blocks || [],
     layout: layout.blocks,
-    counts: layout.counts,
+    counts: { ...layout.counts, ...(status ? { status: statusTotals(status) } : {}) },
     roomTypes: venue.roomTypes || [],
     ...extra,
   };
@@ -50,7 +67,7 @@ const getLayout = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
-    return res.status(200).json(layoutPayload(venue));
+    return res.status(200).json(await layoutPayload(venue));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -90,7 +107,7 @@ const addBlock = async (req, res) => {
     venue.blocks.push({ name: v.value, floors });
     await venue.save();
     const created = venue.blocks[venue.blocks.length - 1];
-    return res.status(201).json(layoutPayload(venue, { block: created }));
+    return res.status(201).json(await layoutPayload(venue, { block: created }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -110,7 +127,7 @@ const updateBlock = async (req, res) => {
     if (clash) return res.status(409).json({ message: `There is already a block called "${clash.name}".`, code: "block_exists" });
     block.name = v.value;
     await venue.save();
-    return res.status(200).json(layoutPayload(venue, { block }));
+    return res.status(200).json(await layoutPayload(venue, { block }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -136,7 +153,7 @@ const deleteBlock = async (req, res) => {
     for (const r of inside) { r.blockRef = null; r.floorRef = null; }
     block.deleteOne();
     await venue.save();
-    return res.status(200).json(layoutPayload(venue, { deleted: true, unplaced: inside.length }));
+    return res.status(200).json(await layoutPayload(venue, { deleted: true, unplaced: inside.length }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -155,7 +172,7 @@ const addFloor = async (req, res) => {
     }
     block.floors.push({ name: v.value });
     await venue.save();
-    return res.status(201).json(layoutPayload(venue, { floor: block.floors[block.floors.length - 1] }));
+    return res.status(201).json(await layoutPayload(venue, { floor: block.floors[block.floors.length - 1] }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -176,7 +193,7 @@ const updateFloor = async (req, res) => {
     if (clash) return res.status(409).json({ message: `${block.name} already has a floor called "${clash.name}".`, code: "floor_exists" });
     floor.name = v.value;
     await venue.save();
-    return res.status(200).json(layoutPayload(venue, { floor }));
+    return res.status(200).json(await layoutPayload(venue, { floor }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -203,7 +220,7 @@ const deleteFloor = async (req, res) => {
     for (const r of inside) r.floorRef = null;
     floor.deleteOne();
     await venue.save();
-    return res.status(200).json(layoutPayload(venue, { deleted: true, keptInBlock: inside.length }));
+    return res.status(200).json(await layoutPayload(venue, { deleted: true, keptInBlock: inside.length }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -227,7 +244,7 @@ const reorder = async (req, res) => {
       const byId = new Map((venue.blocks || []).map((b) => [idOf(b._id), b]));
       venue.blocks = want.map((id) => byId.get(id));
       await venue.save();
-      return res.status(200).json(layoutPayload(venue));
+      return res.status(200).json(await layoutPayload(venue));
     }
 
     if (body.blockId && Array.isArray(body.floors)) {
@@ -240,7 +257,7 @@ const reorder = async (req, res) => {
       const byId = new Map((block.floors || []).map((f) => [idOf(f._id), f]));
       block.floors = want.map((id) => byId.get(id));
       await venue.save();
-      return res.status(200).json(layoutPayload(venue));
+      return res.status(200).json(await layoutPayload(venue));
     }
 
     return res.status(400).json({ message: "Send either blocks:[…] or blockId with floors:[…]." });
@@ -276,7 +293,7 @@ const placeRoom = async (req, res) => {
     room.blockRef = v.value.blockRef;
     room.floorRef = v.value.floorRef;
     await venue.save();
-    return res.status(200).json(layoutPayload(venue, { roomId: room._id }));
+    return res.status(200).json(await layoutPayload(venue, { roomId: room._id }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

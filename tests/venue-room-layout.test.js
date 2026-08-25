@@ -24,12 +24,16 @@ const Venue = require("../models/Venue");
 const blocks = require("../controllers/venueRoomBlocks");
 const rooms = require("../controllers/venueRooms");
 const rt = require("../controllers/venueRoomTypes");
+const VenueRoomAllotment = require("../models/VenueRoomAllotment");
+const VenueRoomNight = require("../models/VenueRoomNight");
 const { resolveLayout, locationLabel, validatePlacement } = require("../utils/venueRoomLayout");
 
 const TAG = `layout-${Date.now()}`;
 let pass = 0, fail = 0;
 const ok = (c, label) => { if (c) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.error(`  ✗ ${label}`); } };
 const created = [];
+const madeAllotments = [];
+const madeNights = [];
 const mockRes = () => ({ code: 200, body: null, status(c) { this.code = c; return this; }, json(b) { this.body = b; return this; } });
 const call = async (fn, req) => { const res = mockRes(); await fn(req, res); return res; };
 
@@ -216,6 +220,61 @@ const shapeOf = (layout) =>
     ok((await call(blocks.addBlock, intruder)).code === 403, "another venue's owner → 403");
     ok(!(await Venue.findById(venue._id)).blocks.some((b) => b.name === "Theirs"), "…and nothing was written");
 
+    // ══ 5. STATUS, AND THE COUNTS THAT DISAGREED ════════════════════════════
+    console.log("\n[the layout carries what each room IS, so Occupancy is not a separate view]");
+    const withStatus = await call(blocks.getLayout, asOwner());
+    const everyRoom = withStatus.body.layout.flatMap((b) => b.floors.flatMap((f) => f.rooms));
+    ok(everyRoom.every((r) => typeof r.status === "string"), "every room on the layout carries a status");
+    ok(everyRoom.every((r) => ["free", "occupied", "held", "inactive"].includes(r.status)),
+      `…one of the four: ${[...new Set(everyRoom.map((r) => r.status))].join(", ")}`);
+    ok(withStatus.body.counts.status.free === everyRoom.length,
+      `all ${withStatus.body.counts.status.free} are free with nothing allotted`);
+
+    console.log("\n[an occupied room, a held room, and a switched-off one are told apart]");
+    const vs = await Venue.findById(venue._id);
+    const roomA = vs.rooms.id(r101._id);
+    const roomB = vs.rooms.id(r102._id);
+    const roomOff = vs.rooms.id(r201._id);
+    roomOff.isActive = false;
+    await vs.save();
+
+    const today = new Date();
+    const midday = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+    const bookingId = new mongoose.Types.ObjectId();
+    const allot = await VenueRoomAllotment.create({
+      venue: venue._id, booking: bookingId, room: roomA._id, guestName: "Bride's family",
+      checkInAt: midday, checkOutAt: new Date(midday.getTime() + 2 * 86400000), status: "allotted",
+    });
+    madeAllotments.push(allot._id);
+    // A HELD night — reserved at confirmation with no guest picked yet, which is
+    // exactly the case an allotment-only read would show as free.
+    const heldNight = await VenueRoomNight.create({
+      venue: venue._id, room: roomB._id, night: midday, booking: bookingId, allotment: null,
+    });
+    madeNights.push(heldNight._id);
+
+    const live = await call(blocks.getLayout, asOwner());
+    ok(live.code === 200, `getLayout with live status → 200 (got ${live.code}${live.code !== 200 ? ": " + JSON.stringify(live.body) : ""})`);
+    const byName = Object.fromEntries(
+      live.body.layout.flatMap((b) => b.floors.flatMap((f) => f.rooms)).map((r) => [r.name, r])
+    );
+    ok(byName["101"].status === "occupied", `101 is occupied (got "${byName["101"].status}")`);
+    ok(byName["101"].guestName === "Bride's family", `…and says who: ${byName["101"].guestName}`);
+    ok(byName["102"].status === "held",
+      `102 is HELD (got "${byName["102"].status}") — an allotment-only read would have called it free`);
+    ok(byName["201"].status === "inactive",
+      `a switched-off room is "inactive", not "free" — colouring it free is how one gets sold`);
+
+    console.log("\n[ONE source for every count — the three that contradicted each other]");
+    const c = live.body.counts;
+    const roomsOnLayout = live.body.layout.reduce((n, b) => n + b.floors.reduce((m, f) => m + f.rooms.length, 0), 0);
+    ok(c.rooms === roomsOnLayout, `counts.rooms (${c.rooms}) equals what the layout actually renders (${roomsOnLayout})`);
+    ok(c.active + c.inactive === c.rooms, `active ${c.active} + inactive ${c.inactive} = ${c.rooms}`);
+    const st = c.status;
+    ok(st.free + st.occupied + st.held + st.inactive === c.rooms,
+      `the status totals also sum to ${c.rooms} — "20 active rooms / Rooms · 21 / 20 rooms" cannot recur`);
+    ok(st.inactive === c.inactive, `and inactive agrees between the two counts (${st.inactive})`);
+
     console.log("\n[validatePlacement on its own]");
     ok(validatePlacement(after, null, null).ok === true, "null/null is valid — a room may simply have no place");
     ok(validatePlacement(after, null, String(mg._id)).ok === false, "floor without block is not");
@@ -223,7 +282,11 @@ const shapeOf = (layout) =>
     fail += 1;
     console.error("\nFATAL", err);
   } finally {
-    try { await Venue.deleteMany({ _id: { $in: created } }); } catch (e) { /* best effort */ }
+    try {
+      await VenueRoomNight.deleteMany({ _id: { $in: madeNights } });
+      await VenueRoomAllotment.deleteMany({ _id: { $in: madeAllotments } });
+      await Venue.deleteMany({ _id: { $in: created } });
+    } catch (e) { /* best effort */ }
     await mongoose.disconnect();
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;

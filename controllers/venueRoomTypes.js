@@ -103,12 +103,32 @@ function checkOccupancyPair(type) {
   return null;
 }
 
+/**
+ * ── AMENITIES ARE ALWAYS PRESENTED WITH THEIR USAGE ─────────────────────────
+ * Only the LIST endpoint attached `usage`; the five write endpoints returned a
+ * bare array. The Amenities screen merges whatever a write returns into its
+ * state, so the moment an owner added or renamed anything, every row lost its
+ * usage and read "Not used yet" — including amenities the Standard type was
+ * visibly using two inches away.
+ *
+ * One presenter, used by every response that carries amenities, so a sixth
+ * endpoint cannot forget.
+ */
+function presentAmenities(venue) {
+  return (venue.roomAmenities || []).map((a) => ({
+    key: a.key,
+    label: a.label,
+    isActive: a.isActive !== false,
+    usage: amenityUsage(venue, a.key),
+  }));
+}
+
 /** The payload every write returns, so the client never re-fetches to redraw. */
 function statePayload(venue, extra = {}) {
   const projection = projectAccommodation(venue);
   return {
     roomTypes: venue.roomTypes || [],
-    roomAmenities: venue.roomAmenities || [],
+    roomAmenities: presentAmenities(venue),
     rooms: resolveRooms(venue),
     accommodation: venue.accommodation,
     /** Active rooms in no type: real rooms the public listing cannot show. */
@@ -231,10 +251,7 @@ const listRoomAmenities = async (req, res) => {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
     return res.status(200).json({
-      roomAmenities: (venue.roomAmenities || []).map((a) => ({
-        key: a.key, label: a.label, isActive: a.isActive !== false,
-        usage: amenityUsage(venue, a.key),
-      })),
+      roomAmenities: presentAmenities(venue),
       suggestions: DEFAULT_ROOM_AMENITIES.filter(
         (d) => !(venue.roomAmenities || []).some((a) => String(a.key) === d.key)
       ),
@@ -261,7 +278,7 @@ const addRoomAmenity = async (req, res) => {
         added.push(d.key);
       }
       await venue.save();
-      return res.status(200).json({ seeded: added.length, roomAmenities: venue.roomAmenities });
+      return res.status(200).json({ seeded: added.length, roomAmenities: presentAmenities(venue) });
     }
 
     const v = reqStr(body.label, "label", 80);
@@ -298,7 +315,7 @@ const addRoomAmenity = async (req, res) => {
     await venue.save();
     return res.status(201).json({
       amenity: venue.roomAmenities[venue.roomAmenities.length - 1],
-      roomAmenities: venue.roomAmenities,
+      roomAmenities: presentAmenities(venue),
     });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
@@ -319,7 +336,7 @@ const updateRoomAmenity = async (req, res) => {
     }
     if (body.isActive !== undefined) amenity.isActive = Boolean(body.isActive);
     await venue.save();
-    return res.status(200).json({ amenity, roomAmenities: venue.roomAmenities });
+    return res.status(200).json({ amenity, roomAmenities: presentAmenities(venue) });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -344,12 +361,12 @@ const deleteRoomAmenity = async (req, res) => {
         retired: true,
         message: `"${amenity.label}" is in use, so it has been switched off rather than deleted. Rooms that have it keep it.`,
         usage,
-        roomAmenities: venue.roomAmenities,
+        roomAmenities: presentAmenities(venue),
       });
     }
     venue.roomAmenities.splice(idx, 1);
     await venue.save();
-    return res.status(200).json({ deleted: true, roomAmenities: venue.roomAmenities });
+    return res.status(200).json({ deleted: true, roomAmenities: presentAmenities(venue) });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
