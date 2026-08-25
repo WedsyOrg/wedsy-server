@@ -150,11 +150,31 @@ function planVenue(venue) {
       maxOccupancy: n(row.maxPeoplePerRoom, 0) > sleeps ? n(row.maxPeoplePerRoom, 0) : 0,
       defaultRate: n(row.pricePerNight, 0),
       description: String(row.description || ""),
-      photos: (row.photos || []).map(String),
+      // ── ROOMS 4 CHANGED THIS FIELD'S SHAPE ────────────────────────────
+      // The operational type now stores photos as {url, isCover}, not strings.
+      // Writing strings here would have been rejected on save — and this
+      // migration has never been applied, so nothing caught it until ROOMS 4
+      // re-read the script.
+      //
+      // The FIRST photo becomes the cover, which is the same rule the API
+      // follows when photos are added: a type with photos must have exactly
+      // one cover, and first is the only defensible guess when the old block
+      // carried no notion of one. None of the six venues in production has any
+      // photos here, so this maps nothing today — it is correct rather than
+      // exercised.
+      photos: (row.photos || [])
+        .map((u) => String(u))
+        .filter(Boolean)
+        .map((url, i) => ({ url, isCover: i === 0 })),
       // isAC is the only marketing flag with an amenity equivalent. Non-AC
       // becomes an empty set, not a "non-ac" amenity — the library says what a
       // room HAS.
       amenities: row.isAC !== false ? [AC_KEY] : [],
+      // sizeSqFt, bedConfiguration and view are ROOMS 4 fields with no
+      // equivalent in the old marketing block. They are deliberately NOT set:
+      // an unstated field must stay unstated, and inventing "1 king" from
+      // "sleeps 2" would be exactly the guess this build refuses. The owner
+      // fills them in when they have something to say.
       isActive: true,
     });
     const type = venue.roomTypes[venue.roomTypes.length - 1];
@@ -244,8 +264,15 @@ async function run() {
   await mongoose.disconnect();
 }
 
-run().catch(async (err) => {
-  console.error(`[${TAG}] FAILED: ${err.message}`);
-  try { await mongoose.disconnect(); } catch (e) { /* already down */ }
-  process.exitCode = 1;
-});
+// Run only when invoked as a script. Exported so the suite can exercise the
+// REAL planVenue rather than a re-implementation of it — the mapping is the
+// thing worth testing, and a copy in a test proves only that the copy works.
+if (require.main === module) {
+  run().catch(async (err) => {
+    console.error(`[${TAG}] FAILED: ${err.message}`);
+    try { await mongoose.disconnect(); } catch (e) { /* already down */ }
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { planVenue, listingView, diffListing, renderedCapacity };

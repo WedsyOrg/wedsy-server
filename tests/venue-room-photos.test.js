@@ -257,6 +257,50 @@ function renderListing(acc) {
     ok(pRow.maxPeoplePerRoom === 2,
       "a type with NO ceiling reports maxPeoplePerRoom = sleeps, not 0 — 'no extra beds', which is what keeps the capacity sum right");
 
+    // ══ 5. THE ROOMS 2 MIGRATION STILL FITS THE ROOMS 4 SHAPE ═══════════════
+    console.log("\n[the un-applied migration maps into the NEW photo shape]");
+    // ROOMS 4 changed roomTypes[].photos from [String] to [{url,isCover}].
+    // migrate-room-types.js has never been applied, so nothing would have
+    // caught a stale mapping until it was run against production for real.
+    const legacy = await Venue.create({
+      name: `${TAG} Legacy`, slug: `${TAG}-legacy`, city: "Bangalore", state: "Karnataka",
+      accommodation: {
+        available: true,
+        roomTypes: [{
+          name: "Standard", count: 16, occupancyPerRoom: 2, maxPeoplePerRoom: 3,
+          pricePerNight: 3200, isAC: true, description: "16 rooms.",
+          photos: ["https://cdn.example.invalid/legacy-1.jpg", "https://cdn.example.invalid/legacy-2.jpg"],
+        }],
+      },
+    });
+    created.push(legacy._id);
+
+    // The migration's own planVenue, exercised directly — the path the script
+    // takes, not a re-implementation of it.
+    const { planVenue } = require("../scripts/migrate-room-types");
+    planVenue(legacy);
+    const migrated = legacy.roomTypes[0];
+    ok(migrated.name === "Standard", `name maps (${migrated.name})`);
+    ok(migrated.sleeps === 2, `occupancyPerRoom → sleeps (${migrated.sleeps})`);
+    ok(migrated.maxOccupancy === 3, `maxPeoplePerRoom → maxOccupancy (${migrated.maxOccupancy})`);
+    ok(migrated.defaultRate === 3200, `pricePerNight → defaultRate (${migrated.defaultRate})`);
+    ok(migrated.description === "16 rooms.", "description maps");
+
+    console.log("\n[…including photos, into {url, isCover} with the first as cover]");
+    ok(migrated.photos.length === 2, `${migrated.photos.length} photos carried, not lost`);
+    ok(typeof migrated.photos[0] === "object" && migrated.photos[0].url.endsWith("legacy-1.jpg"),
+      "…as objects, not the strings the old block held");
+    ok(migrated.photos[0].isCover === true && migrated.photos[1].isCover === false,
+      "…and the first is the cover, the same rule the API applies when photos are added");
+    // It must actually SAVE — a string in a {url} array is the failure this pins.
+    await legacy.save();
+    ok(true, "…and the document saves, which a [String] mapping would not have");
+
+    console.log("\n[ROOMS 4's own fields are NOT invented from the old block]");
+    ok(migrated.sizeSqFt === undefined || migrated.sizeSqFt === 0, "sizeSqFt stays unset");
+    ok(!migrated.bedConfiguration, "bedConfiguration stays unset — '1 king' is not derivable from 'sleeps 2'");
+    ok(!migrated.view, "view stays unset");
+
     console.log("\n[scope]");
     const other = await Venue.create({ name: `${TAG} Other`, slug: `${TAG}-o`, city: "Mysore", state: "Karnataka" });
     created.push(other._id);
