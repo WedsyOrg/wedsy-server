@@ -38,6 +38,7 @@ const { resolveBranding } = require("./venueBranding");
 const { docDayWithWeekday, docInstantDay } = require("./documentDate");
 const { renderTable } = require("./venueDocTable");
 const { summarizeSchedule } = require("./venuePaymentStatus");
+const { describeRoomsWorking } = require("./venueRoomsPolicy");
 const { renderBlocksToPdf } = require("./venueRichText");
 
 const BODY = "#222222";
@@ -193,6 +194,22 @@ async function buildBookingConfirmationPdf({
   // booking value would make the document disagree with the agreement it is
   // confirming — and the agreed value is precisely the number a dispute turns
   // on. With no extras the document reads exactly as it always has.
+  // ── ROOMS, WITH ITS WORKING ───────────────────────────────────────────────
+  // A couple reading "rooms Rs. 70,000" with no breakdown telephones to ask how
+  // it was arrived at. Broken out ABOVE the agreed value because it is a
+  // COMPONENT of it — not an extra on top — so the two lines above add to the
+  // one below and can be checked by adding them up.
+  const rc = bk && bk.roomsCharge;
+  if (rc && Number(rc.amount) > 0) {
+    right("Venue", money(Math.max(0, s.totals.bookingValue - Number(rc.amount))));
+    right("Rooms", money(rc.amount));
+    const working = describeRoomsWorking(rc);
+    if (working) {
+      doc.fillColor(GREY).fontSize(8).text(working, 300, doc.y, { width: 245, align: "right" });
+      doc.fillColor(BODY).fontSize(10);
+      doc.moveDown(0.28);
+    }
+  }
   right(s.totals.additional > 0 ? "Agreed value" : "Booking value", money(s.totals.bookingValue));
   if (s.totals.additional > 0) {
     right("Additional billing", `+ ${money(s.totals.additional)}`);

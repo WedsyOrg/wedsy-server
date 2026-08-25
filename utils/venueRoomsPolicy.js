@@ -133,6 +133,47 @@ function quoteRooms({
 
 const money = (n) => `Rs. ${Math.round(num(n)).toLocaleString("en-IN")}`;
 
+/**
+ * The WORKING alone — "20 rooms · 10 included · 10 × Rs. 3,500 × 2 nights" —
+ * with no total on the end.
+ *
+ * Documents put the amount in their own money column, so they need the working
+ * without it; the wizard wants the sentence complete. Both come from HERE, so
+ * a couple reading the confirmation and an owner reading the wizard are reading
+ * the same breakdown rather than two wordings that agree until one is edited.
+ *
+ * Note this restates STORED inputs. It does not re-derive the money — the
+ * amount is always the one agreed and frozen on the booking.
+ */
+function describeRoomsWorking({ roomsNeeded, included, chargeable, ratePerNight, nights }) {
+  const needed = num(roomsNeeded), incl = num(included);
+  const chg = num(chargeable), rate = num(ratePerNight), n = num(nights);
+  if (needed === 0) return "";
+  if (chg === 0) {
+    return incl >= needed
+      ? `${needed} room${needed === 1 ? "" : "s"}, all included with the venue`
+      : `${needed} room${needed === 1 ? "" : "s"}, nothing chargeable`;
+  }
+  const nightsPart = n === 1 ? "1 night" : `${n} nights`;
+  return `${needed} rooms · ${incl} included · ${chg} × ${money(rate)} × ${nightsPart}`;
+}
+
+/**
+ * An additional-billing row's rooms detail — "5 rooms x 1 night".
+ *
+ * Rooms taken at the last minute are ordinary additional billing; the ONE thing
+ * worth adding is that the line says what it was for, so a statement read six
+ * weeks later is not a bare amount somebody has to remember the reason for.
+ *
+ * Composed from stored counts, never parsed back out of the label.
+ */
+function describeAdditionalRooms(row) {
+  const n = num(row && row.roomsCount), nights = num(row && row.roomsNights);
+  if (n <= 0) return "";
+  if (nights <= 0) return `${n} room${n === 1 ? "" : "s"}`;
+  return `${n} room${n === 1 ? "" : "s"} × ${nights} night${nights === 1 ? "" : "s"}`;
+}
+
 function describeQuote({ needed, included, chargeable, rate, nightCount, amount }) {
   if (needed === 0) return "No rooms on this booking.";
   if (chargeable === 0) {
@@ -146,8 +187,9 @@ function describeQuote({ needed, included, chargeable, rate, nightCount, amount 
     // how a venue gives away twelve rooms.
     return `${needed} rooms · ${included} included · ${chargeable} extra — no rate set, so nothing is charged.`;
   }
-  const nightsPart = nightCount === 1 ? "1 night" : `${nightCount} nights`;
-  return `${needed} rooms · ${included} included · ${chargeable} × ${money(rate)} × ${nightsPart} = ${money(amount)}`;
+  // The complete sentence IS the working plus its total — one composer, so the
+  // wizard's wording and the documents' cannot diverge.
+  return `${describeRoomsWorking({ roomsNeeded: needed, included, chargeable, ratePerNight: rate, nights: nightCount })} = ${money(amount)}`;
 }
 
 /**
@@ -192,4 +234,4 @@ function nightsBetween(checkIn, checkOut) {
   return Math.max(0, days);
 }
 
-module.exports = { resolvePolicy, includedRooms, quoteRooms, quoteRoomsForBooking, nightsBetween, describeQuote, RATE_SOURCE };
+module.exports = { describeRoomsWorking, describeAdditionalRooms, resolvePolicy, includedRooms, quoteRooms, quoteRoomsForBooking, nightsBetween, describeQuote, RATE_SOURCE };

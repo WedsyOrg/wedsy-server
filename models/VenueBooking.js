@@ -152,6 +152,16 @@ const VenueBookingSchema = new mongoose.Schema(
         isAdditional: { type: Boolean, default: false },
         /** Why this was added — the thing a couple queries three weeks later. */
         addedNote: { type: String, default: "" },
+        /**
+         * ROOMS TAKEN LATE, as numbers rather than as words in the label.
+         * "5 rooms x 1 night" typed into a label is a sentence nobody can
+         * total, filter or correct; stored as counts it can be restated by
+         * whichever document is rendering, and the owner's own label survives
+         * untouched beside it. No defaults — absent means this charge is not
+         * about rooms, which is most of them.
+         */
+        roomsCount: { type: Number, min: 0 },
+        roomsNights: { type: Number, min: 0 },
         addedByName: { type: String, default: "" },
       },
     ],
