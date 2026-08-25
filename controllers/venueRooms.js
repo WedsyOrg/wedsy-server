@@ -27,6 +27,7 @@ const Venue = require("../models/Venue");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const { expand, planBulk } = require("../utils/venueRoomBulk");
+const { validatePlacement } = require("../utils/venueRoomLayout");
 const {
   INHERITABLE_FIELDS,
   findType,
@@ -36,7 +37,12 @@ const {
 } = require("../utils/venueRoomTypes");
 
 const ROOM_TYPES = ["standard", "deluxe", "suite", "dorm", "other"];
-const SELECT = "_id slug rooms roomTypes roomAmenities accommodation";
+// `blocks` is in here because validatePlacement and resolveLayout read it, and
+// a select that omits it does not fail loudly — it makes every block look
+// absent, so a correct guard refuses a placement that was perfectly valid. That
+// is the shape of bug this repo has been bitten by before: the guard is right,
+// the arguments it was given are not.
+const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks";
 
 async function resolveOwnedVenue(req, res, select = SELECT) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select);
@@ -178,7 +184,8 @@ const addRoom = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
-    const v = validateRoomInput(venue, req.body || {});
+    const body = req.body || {};
+    const v = validateRoomInput(venue, body);
     if (v.error) return res.status(400).json({ message: v.error });
 
     const clash = (venue.rooms || []).find(
@@ -191,9 +198,16 @@ const addRoom = async (req, res) => {
       });
     }
 
+    // A single room can be placed at creation too — the same pair, validated
+    // together, so the one-at-a-time path is not worse than the bulk one.
+    const place = validatePlacement(venue, body.blockRef || null, body.floorRef || null);
+    if (!place.ok) return res.status(400).json({ message: place.message });
+
     venue.rooms.push({ name: v.value.name });
     const room = venue.rooms[venue.rooms.length - 1];
     applyRoomPatch(venue, room, v.value, []);
+    room.blockRef = place.value.blockRef;
+    room.floorRef = place.value.floorRef;
     projectAccommodation(venue);
     await venue.save();
     return res.status(201).json(statePayload(venue, {
@@ -276,6 +290,17 @@ const bulkCreateRooms = async (req, res) => {
     if (!venue) return;
     const body = req.body || {};
 
+    // ── WHERE THEY GO, VALIDATED BEFORE ANYTHING IS EXPANDED ──────────────
+    // Block, floor, type and range in ONE action: the wizard's third step is
+    // "add the rooms", and making an owner create a floor's worth of rooms and
+    // then place them one at a time is the same round trip this build removes
+    // everywhere else.
+    //
+    // Validated FIRST, with the type, so a bad placement fails on nothing
+    // rather than on half a floor — the same reason the type is resolved early.
+    const place = validatePlacement(venue, body.blockRef || null, body.floorRef || null);
+    if (!place.ok) return res.status(400).json({ message: place.message });
+
     // The type is resolved BEFORE expanding, so a bad type fails on nothing
     // rather than half a floor.
     let type = null;
@@ -297,6 +322,10 @@ const bulkCreateRooms = async (req, res) => {
       willCreate: plan.create,
       willSkip: plan.skip,
       type: type ? { _id: type._id, name: type.name } : null,
+      // Reported so the preview states WHERE as well as what — preview and
+      // apply are one computation, and a preview silent about placement would
+      // be promising less than the apply does.
+      placement: place.value,
     };
 
     if (preview) {
@@ -330,6 +359,8 @@ const bulkCreateRooms = async (req, res) => {
         typeRef: type ? type._id : null,
         isActive: true,
       }, []);
+      room.blockRef = place.value.blockRef;
+      room.floorRef = place.value.floorRef;
     }
     projectAccommodation(venue);
     await venue.save();

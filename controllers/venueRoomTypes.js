@@ -16,14 +16,21 @@ const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const {
   DEFAULT_ROOM_AMENITIES,
   INHERITABLE_FIELDS,
+  AMENITY_GROUPS,
   amenityKeyFor,
   amenityUsage,
+  resolveGroup,
   applyTypeToRooms,
   projectAccommodation,
   resolveRooms,
 } = require("../utils/venueRoomTypes");
 
-const SELECT = "_id slug rooms roomTypes roomAmenities accommodation";
+// `blocks` is in here because validatePlacement and resolveLayout read it, and
+// a select that omits it does not fail loudly — it makes every block look
+// absent, so a correct guard refuses a placement that was perfectly valid. That
+// is the shape of bug this repo has been bitten by before: the guard is right,
+// the arguments it was given are not.
+const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks";
 
 async function resolveOwnedVenue(req, res, select = SELECT) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select);
@@ -103,12 +110,61 @@ function checkOccupancyPair(type) {
   return null;
 }
 
+/**
+ * ── AMENITIES ARE ALWAYS PRESENTED WITH THEIR USAGE ─────────────────────────
+ * Only the LIST endpoint attached `usage`; the five write endpoints returned a
+ * bare array. The Amenities screen merges whatever a write returns into its
+ * state, so the moment an owner added or renamed anything, every row lost its
+ * usage and read "Not used yet" — including amenities the Standard type was
+ * visibly using two inches away.
+ *
+ * One presenter, used by every response that carries amenities, so a sixth
+ * endpoint cannot forget.
+ */
+function presentAmenities(venue) {
+  const rows = (venue.roomAmenities || []).map((a) => {
+    const usage = amenityUsage(venue, a.key);
+    return {
+      key: a.key,
+      label: a.label,
+      isActive: a.isActive !== false,
+      group: resolveGroup(a),
+      usage,
+      /**
+       * ── FLOAT WHAT THE OWNER HAS ALREADY REACHED FOR ────────────────────
+       * An amenity already on some type is one this venue genuinely has, and
+       * is far more likely to be wanted on the next type than the twelfth item
+       * of a starter list. Surfaced as a FLAG rather than by pre-sorting the
+       * array, so a screen can float them WITHIN their group and keep the
+       * grouping intact — sorting them all to the top instead would put
+       * "Attached bathroom" above the Comfort heading.
+       */
+      usedBefore: usage.types.length > 0,
+    };
+  });
+
+  // Stable order: group first (in AMENITY_GROUPS order), used-before next,
+  // then the order the owner created them. Nothing is sorted alphabetically —
+  // a list an owner has arranged should stay arranged.
+  const groupRank = new Map(AMENITY_GROUPS.map((g, i) => [g, i]));
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ga = groupRank.has(a.r.group) ? groupRank.get(a.r.group) : AMENITY_GROUPS.length;
+      const gb = groupRank.has(b.r.group) ? groupRank.get(b.r.group) : AMENITY_GROUPS.length;
+      if (ga !== gb) return ga - gb;
+      if (a.r.usedBefore !== b.r.usedBefore) return a.r.usedBefore ? -1 : 1;
+      return a.i - b.i;
+    })
+    .map((x) => x.r);
+}
+
 /** The payload every write returns, so the client never re-fetches to redraw. */
 function statePayload(venue, extra = {}) {
   const projection = projectAccommodation(venue);
   return {
     roomTypes: venue.roomTypes || [],
-    roomAmenities: venue.roomAmenities || [],
+    roomAmenities: presentAmenities(venue),
     rooms: resolveRooms(venue),
     accommodation: venue.accommodation,
     /** Active rooms in no type: real rooms the public listing cannot show. */
@@ -231,10 +287,7 @@ const listRoomAmenities = async (req, res) => {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
     return res.status(200).json({
-      roomAmenities: (venue.roomAmenities || []).map((a) => ({
-        key: a.key, label: a.label, isActive: a.isActive !== false,
-        usage: amenityUsage(venue, a.key),
-      })),
+      roomAmenities: presentAmenities(venue),
       suggestions: DEFAULT_ROOM_AMENITIES.filter(
         (d) => !(venue.roomAmenities || []).some((a) => String(a.key) === d.key)
       ),
@@ -257,11 +310,11 @@ const addRoomAmenity = async (req, res) => {
       const added = [];
       for (const d of DEFAULT_ROOM_AMENITIES) {
         if (existing.has(d.key)) continue;
-        venue.roomAmenities.push({ key: d.key, label: d.label, isActive: true });
+        venue.roomAmenities.push({ key: d.key, label: d.label, group: d.group, isActive: true });
         added.push(d.key);
       }
       await venue.save();
-      return res.status(200).json({ seeded: added.length, roomAmenities: venue.roomAmenities });
+      return res.status(200).json({ seeded: added.length, roomAmenities: presentAmenities(venue) });
     }
 
     const v = reqStr(body.label, "label", 80);
@@ -294,11 +347,15 @@ const addRoomAmenity = async (req, res) => {
       });
     }
 
-    venue.roomAmenities.push({ key, label: v.value, isActive: true });
+    // The group the owner picked, or extras. Never guessed from the label —
+    // "Jacuzzi" is a bathroom to one venue and an extra to another, and being
+    // wrong about it silently is worse than putting it in the obvious bucket.
+    const group = AMENITY_GROUPS.includes(String(body.group || "")) ? String(body.group) : "extras";
+    venue.roomAmenities.push({ key, label: v.value, group, isActive: true });
     await venue.save();
     return res.status(201).json({
       amenity: venue.roomAmenities[venue.roomAmenities.length - 1],
-      roomAmenities: venue.roomAmenities,
+      roomAmenities: presentAmenities(venue),
     });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
@@ -319,7 +376,7 @@ const updateRoomAmenity = async (req, res) => {
     }
     if (body.isActive !== undefined) amenity.isActive = Boolean(body.isActive);
     await venue.save();
-    return res.status(200).json({ amenity, roomAmenities: venue.roomAmenities });
+    return res.status(200).json({ amenity, roomAmenities: presentAmenities(venue) });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -344,12 +401,12 @@ const deleteRoomAmenity = async (req, res) => {
         retired: true,
         message: `"${amenity.label}" is in use, so it has been switched off rather than deleted. Rooms that have it keep it.`,
         usage,
-        roomAmenities: venue.roomAmenities,
+        roomAmenities: presentAmenities(venue),
       });
     }
     venue.roomAmenities.splice(idx, 1);
     await venue.save();
-    return res.status(200).json({ deleted: true, roomAmenities: venue.roomAmenities });
+    return res.status(200).json({ deleted: true, roomAmenities: presentAmenities(venue) });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

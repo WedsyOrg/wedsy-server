@@ -44,6 +44,7 @@ const siteVisits = require("../controllers/venueSiteVisits"); // MB-V2 P1 owner 
 const { createOnboardingRequest } = require("../controllers/venueOnboarding");
 const { listRooms, addRoom, updateRoom, deleteRoom, bulkCreateRooms } = require("../controllers/venueRooms");
 const roomTypes = require("../controllers/venueRoomTypes");
+const roomBlocks = require("../controllers/venueRoomBlocks");
 const { generateContract, listContracts, updateContract, sendContract, contractPdf, getAckContract, acknowledgeContract } = require("../controllers/venueContract");
 const { createAllotments, listAllotments, planAllotments, updateAllotment, occupancy } = require("../controllers/venueAllotment");
 const { listRunsheet, createItem: createRunsheetItem, updateItem: updateRunsheetItem, deleteItem: deleteRunsheetItem, reorderRunsheet } = require("../controllers/venueRunsheetCtl");
@@ -318,6 +319,24 @@ router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"
 router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
 // ROOMS 2 — the room TYPE as a real entity. Reads open to any venue identity,
 // writes on the same `listing` capability the rooms inventory uses.
+// ROOMS 3 — the property's SHAPE. Blocks and floors are both optional; reads
+// are open to any venue identity, writes on the same `listing` capability the
+// rooms inventory uses.
+// First-run setup. The step is derived from what exists; only "one building,
+// one floor" and "finished" are recorded, because neither can be derived.
+router.get("/:slug/room-setup", venueOwnerAuth, roomBlocks.getSetup);
+router.post("/:slug/room-setup/skip-shape", venueOwnerAuth, requireCapability("listing"), roomBlocks.skipShape);
+router.post("/:slug/room-setup/complete", venueOwnerAuth, requireCapability("listing"), roomBlocks.completeSetup);
+router.post("/:slug/room-setup/dismiss", venueOwnerAuth, requireCapability("listing"), roomBlocks.dismissSetup);
+router.get("/:slug/room-blocks", venueOwnerAuth, roomBlocks.getLayout);
+router.post("/:slug/room-blocks", venueOwnerAuth, requireCapability("listing"), roomBlocks.addBlock);
+router.put("/:slug/room-blocks/order", venueOwnerAuth, requireCapability("listing"), roomBlocks.reorder);
+router.patch("/:slug/room-blocks/:blockId", venueOwnerAuth, requireCapability("listing"), roomBlocks.updateBlock);
+router.delete("/:slug/room-blocks/:blockId", venueOwnerAuth, requireCapability("listing"), roomBlocks.deleteBlock);
+router.post("/:slug/room-blocks/:blockId/floors", venueOwnerAuth, requireCapability("listing"), roomBlocks.addFloor);
+router.patch("/:slug/room-blocks/:blockId/floors/:floorId", venueOwnerAuth, requireCapability("listing"), roomBlocks.updateFloor);
+router.delete("/:slug/room-blocks/:blockId/floors/:floorId", venueOwnerAuth, requireCapability("listing"), roomBlocks.deleteFloor);
+router.patch("/:slug/rooms/:roomId/place", venueOwnerAuth, requireCapability("listing"), roomBlocks.placeRoom);
 router.get("/:slug/room-types", venueOwnerAuth, roomTypes.listRoomTypes);
 router.post("/:slug/room-types", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomType);
 router.patch("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomType);
