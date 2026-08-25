@@ -58,6 +58,10 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     //   terms                 the T&C cover stitched onto the venue's PDF (#130)
     //   booking_confirmation  generated from the booking (S3)
     //   invoice               generated from the booking + a payment (S5)
+    //   statement             the whole booking's account on one page — agreed
+    //                         value, every additional billing line, everything
+    //                         received, and the balance. NOT an invoice for one
+    //                         payment: the answer to "send me the total bill".
     //
     // ── VENUE DOCS vs CLIENT DOCS ────────────────────────────────────────────
     // The kinds above are things WE generate and send. `address_proof` and
@@ -72,7 +76,7 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     // by declaring itself rather than by someone remembering to update a UI.
     kind: {
       type: String,
-      enum: ["terms", "booking_confirmation", "invoice", "address_proof", "client_document"],
+      enum: ["terms", "booking_confirmation", "invoice", "statement", "address_proof", "client_document"],
       default: "terms",
       required: true,
     },

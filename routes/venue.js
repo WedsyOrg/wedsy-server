@@ -17,7 +17,7 @@ const { getDay } = require("../controllers/venueCrmDay");
 const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
-const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, updateBookingWindow } = require("../controllers/venueBooking");
+const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, updateBookingWindow, previewCancellation, cancelBooking } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
@@ -35,6 +35,7 @@ const termsDoc = require("../controllers/venueTermsDocument");
 const leadDocs = require("../controllers/venueLeadDocument");
 const bookingSettings = require("../controllers/venueBookingSettings");
 const leadInvoice = require("../controllers/venueLeadInvoice");
+const leadStatement = require("../controllers/venueLeadStatement");
 const leadPayment = require("../controllers/venueLeadPayment");
 const bookingConfirm = require("../controllers/venueBookingConfirmation");
 const checkin = require("../controllers/venueCheckin");
@@ -166,6 +167,12 @@ router.get("/:slug/bookings", venueOwnerAuth, listBookings);
 router.post("/:slug/bookings", venueOwnerAuth, requireCapability("leads"), createBooking);
 router.get("/:slug/bookings/:bookingId", venueOwnerAuth, getBooking);
 router.patch("/:slug/bookings/:bookingId", venueOwnerAuth, requireCapability("leads"), updateBooking);
+// Cancelling is its own act, not a value passed to the generic update: it
+// releases every room night and calendar block the booking holds. Preview and
+// cancel share describeCancellation(), so the dates and room count shown in the
+// confirmation are the ones the cascade is about to release.
+router.get("/:slug/bookings/:bookingId/cancellation-preview", venueOwnerAuth, requireCapability("leads"), previewCancellation);
+router.post("/:slug/bookings/:bookingId/cancel", venueOwnerAuth, requireCapability("leads"), cancelBooking);
 // The booking side of the ONE event window — same edit as the lead's PATCH,
 // same writer (utils/venueEventWindow), same calendar re-derivation.
 router.patch("/:slug/bookings/:bookingId/window", venueOwnerAuth, requireCapability("leads"), updateBookingWindow);
@@ -216,6 +223,12 @@ router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOw
 // accident. Scope is enforced INSIDE the controller (venueLeadScope, 404 never 403).
 router.get("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.listLeadInvoices);
 router.post("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.createLeadInvoice);
+// The STATEMENT OF ACCOUNT — the whole booking on one page. Money capability,
+// matching invoices: it states the account, and the account is money.
+// Preview and generate call the same gather+preview, so the numbers an owner
+// reads before pressing the button are the numbers that land in the PDF.
+router.get("/:slug/enquiries/:enquiryId/statement/preview", venueOwnerAuth, requireCapability("bookings_money"), leadStatement.previewStatement);
+router.post("/:slug/enquiries/:enquiryId/statement", venueOwnerAuth, requireCapability("bookings_money"), leadStatement.createStatement);
 
 // ── BOOKING ENGINE S4: recording payments against the schedule ──────────────
 router.get("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.getLeadPayments);

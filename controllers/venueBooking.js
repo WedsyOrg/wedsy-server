@@ -24,6 +24,20 @@ const { resolveScopedBooking } = require("../utils/venueBookingScope");
 const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
 const { mergeClientIntoContacts } = require("../utils/venueClientContact");
 const { reserveRoomNights, rederiveRoomNights, releaseRoomNights } = require("../utils/venueRoomNights");
+const { derivePhase, describeCancellation } = require("../utils/venueBookingPhase");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const { cleanStr } = require("../utils/venueInput");
+
+/** Who is doing this. Name as well as id: the id stops resolving when they leave. */
+async function bookingActorName(req) {
+  if (req.admin) return "Wedsy admin";
+  const o = req.venueOwner || {};
+  if (o.memberId) {
+    const m = await VenueTeamMember.findById(o.memberId).select("name").lean();
+    return (m && m.name) || "team member";
+  }
+  return o.name || "Owner";
+}
 const { sanitizeContacts } = require("../utils/venueContacts");
 const { seedRunsheetForBooking } = require("../utils/venueRunsheet");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
@@ -150,14 +164,121 @@ const updateBooking = async (req, res) => {
       // The allotment records stay, marked cancelled: the stay is off, but the
       // fact that it was arranged is history and this model does not rewrite
       // history. Only the inventory claim is given up.
-      await VenueRoomAllotment.updateMany(
+      const marked = await VenueRoomAllotment.updateMany(
         { booking: booking._id, status: { $in: ["allotted", "checked_in"] } },
         { $set: { status: "cancelled" } }
+      );
+      // Recorded even on this path, so a cancellation that arrives through the
+      // generic PATCH is as auditable as one through /cancel. The reason may be
+      // empty here; the dedicated endpoint is the one that insists on it.
+      await VenueBooking.updateOne(
+        { _id: booking._id },
+        {
+          $set: {
+            "cancellation.at": new Date(),
+            "cancellation.reason": cleanStr((req.body && req.body.cancellationReason) || ""),
+            "cancellation.byName": await bookingActorName(req),
+            "cancellation.roomNightsReleased": roomsReleased,
+            "cancellation.allotmentsCancelled": marked.modifiedCount || 0,
+          },
+        }
       );
     }
     // Newly added days get the default runsheet skeleton (no-op for existing).
     if (req.body.days !== undefined) await seedRunsheetForBooking(booking);
     return res.status(200).json({ booking, roomsReleased });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── GET /venues/:slug/bookings/:bookingId/cancellation-preview ──────────────
+// WHAT CANCELLING WOULD RELEASE, named before it happens.
+//
+// The same describeCancellation() the cancel below calls, so the dates and the
+// room count in the confirmation are counted by the query the cascade is about
+// to run — not by a second estimate that could disagree. A confirmation that
+// promises "3 nights" and then releases 5 is worse than none.
+const previewCancellation = async (req, res) => {
+  try {
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: owned.venue._id });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    if (booking.status === "cancelled") {
+      return res.status(409).json({
+        message: "This booking is already cancelled.",
+        code: "already_cancelled",
+        cancellation: booking.cancellation || null,
+      });
+    }
+    return res.status(200).json({
+      phase: derivePhase(booking),
+      releases: await describeCancellation(booking),
+    });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── POST /venues/:slug/bookings/:bookingId/cancel ───────────────────────────
+// Cancelling is DESTRUCTIVE — it gives back every room night and calendar block
+// this booking holds — so it is its own act with its own endpoint, rather than
+// a value passed to a generic update beside `coupleName`.
+//
+// A REASON IS REQUIRED. It is the only record of a decision whose effects are
+// otherwise invisible: six months on, the rooms are simply free and nothing
+// says why. The refusal names what is missing rather than failing silently.
+const cancelBooking = async (req, res) => {
+  try {
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: owned.venue._id });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+
+    if (booking.status === "cancelled") {
+      // Not an error worth a 500, and not silently "fine" either: an owner who
+      // pressed twice should be told the first one worked.
+      return res.status(409).json({
+        message: "This booking was already cancelled.",
+        code: "already_cancelled",
+        cancellation: booking.cancellation || null,
+      });
+    }
+
+    const reason = cleanStr(req.body && req.body.reason);
+    if (!reason) {
+      return res.status(400).json({
+        message: "Say why this booking is being cancelled — it is the only record of the decision.",
+        code: "reason_required",
+      });
+    }
+
+    // Counted BEFORE the cascade, with the same call the preview used, so what
+    // is reported afterwards is what was actually given back.
+    const releases = await describeCancellation(booking);
+
+    booking.status = "cancelled";
+    const released = await releaseRoomNights(booking._id);
+    const marked = await VenueRoomAllotment.updateMany(
+      { booking: booking._id, status: { $in: ["allotted", "checked_in"] } },
+      { $set: { status: "cancelled" } }
+    );
+    booking.cancellation = {
+      reason: reason.slice(0, 2000),
+      at: new Date(),
+      byName: await bookingActorName(req),
+      roomNightsReleased: released.released || 0,
+      allotmentsCancelled: marked.modifiedCount || 0,
+    };
+    await booking.save();
+
+    return res.status(200).json({
+      success: true,
+      booking,
+      released: {
+        roomNights: released.released || 0,
+        allotments: marked.modifiedCount || 0,
+        dates: releases.dates,
+        rooms: releases.rooms,
+      },
+    });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -802,6 +923,8 @@ const confirmBookingFromLead = async (req, res) => {
 };
 
 module.exports = {
+  previewCancellation,
+  cancelBooking,
   createDraftBookingForEnquiry,
   listBookings,
   getBooking,
