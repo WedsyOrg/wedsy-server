@@ -369,6 +369,25 @@ const VenueSchema = new mongoose.Schema({
      * floorRef without blockRef is meaningless and is refused at the
      * controller: a floor only exists inside a block.
      */
+    /**
+     * ── IS THIS ROOM READY ────────────────────────────────────────────────
+     * A SECOND AXIS, never folded into free/occupied/held: a room can be
+     * occupied and dirty, or free and dirty, and collapsing the two would make
+     * "dirty" erase "held".
+     *
+     * NO DEFAULTS. A room nobody has assessed is untracked — not clean, not
+     * dirty — and shows no badge. That is what makes this a no-op for every
+     * room that already exists, and it is the same reason roomsPolicy writes
+     * nothing until an owner answers.
+     *
+     * Nothing is inferred from the check-out checklist: it is free text, and a
+     * room with every item ticked still needs servicing.
+     */
+    housekeeping: {
+      status: { type: String, enum: ["clean", "dirty", "inspected"] },
+      at: { type: Date },
+      byName: { type: String },
+    },
     blockRef: { type: mongoose.Schema.Types.ObjectId, default: null },
     floorRef: { type: mongoose.Schema.Types.ObjectId, default: null },
   }],

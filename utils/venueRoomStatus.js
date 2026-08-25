@@ -21,6 +21,7 @@
  */
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRoomNight = require("../models/VenueRoomNight");
+const { resolveHousekeeping } = require("./venueHousekeeping");
 // Required for the populate below, not for a symbol. Mongoose resolves `ref`
 // through its model registry, so this only worked because server.js happens to
 // load every model at boot — anything requiring this file on its own got
@@ -47,7 +48,18 @@ async function roomStatusOn(venue, on = new Date()) {
   const out = new Map();
 
   const rooms = (venue && venue.rooms) || [];
+  /**
+   * Housekeeping is a SECOND AXIS and is applied at the END, after occupancy
+   * has settled. The loops below REPLACE map entries rather than merging them —
+   * `out.set(key, { status: "occupied", ... })` drops whatever was there — so
+   * setting housekeeping here would have it silently erased on exactly the
+   * rooms that have a guest or a hold, which is to say the ones that matter.
+   * Kept aside and merged once, rather than fighting the replace.
+   */
+  const housekeepingByRoom = new Map();
   for (const r of rooms) {
+    const hk = resolveHousekeeping(r);
+    if (hk.tracked) housekeepingByRoom.set(String(r._id), hk);
     // An inactive room is not free — it is not in service at all, and colouring
     // it the same as a bookable empty room is how one gets sold.
     out.set(String(r._id), { status: r.isActive === false ? "inactive" : "free" });
@@ -90,17 +102,28 @@ async function roomStatusOn(venue, on = new Date()) {
       checkedIn: a.status === "checked_in",
     });
   }
+  // ── the second axis, merged last so nothing can overwrite it ─────────────
+  for (const [key, hk] of housekeepingByRoom) {
+    const cur = out.get(key);
+    if (!cur) continue;
+    out.set(key, { ...cur, housekeeping: hk.status, housekeepingAt: hk.at, housekeepingBy: hk.byName });
+  }
   return out;
 }
 
 /** Roll a status map into the counts a legend shows. */
 function statusTotals(map) {
   const totals = { free: 0, occupied: 0, held: 0, inactive: 0 };
+  // Counted SEPARATELY, because they are a separate question. A legend reading
+  // "12 free, 3 dirty" is answering two things at once and the numbers do not
+  // add up to the room count — deliberately, since a room can be both.
+  const housekeeping = { clean: 0, dirty: 0, inspected: 0, untracked: 0 };
   for (const v of map.values()) {
-    if (totals[v.status] === undefined) continue;
-    totals[v.status] += 1;
+    if (totals[v.status] !== undefined) totals[v.status] += 1;
+    if (housekeeping[v.housekeeping] !== undefined) housekeeping[v.housekeeping] += 1;
+    else housekeeping.untracked += 1;
   }
-  return totals;
+  return { ...totals, housekeeping };
 }
 
 module.exports = { roomStatusOn, statusTotals, STATUSES, dayStart };

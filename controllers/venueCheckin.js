@@ -13,6 +13,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { allocateInvoice } = require("./venueInvoice");
 const { isOwnerActor } = require("../utils/venueRbac");
+const { ON_CHECK_OUT } = require("../utils/venueHousekeeping");
 const { streamSettlementPdf } = require("../utils/venuePdf");
 const { optStr } = require("../utils/venueInput");
 
@@ -142,6 +143,27 @@ const checkOutAllotment = async (req, res) => {
     await VenueRoomNight.deleteMany({ allotment: allotment._id, night: { $gte: dayAfter } });
 
     allotment.checkOut = { checklist, damages, notes: notesV.value, byName: await actorDisplayName(req), at: now };
+
+    // ── THE ROOM IS NOW DIRTY ───────────────────────────────────────────────
+    // The one automatic housekeeping transition, and the reason the status
+    // exists: a guest has left, so nobody should sell this room until it has
+    // been serviced. NOT derived from the checklist — that is free text, and a
+    // room with every item ticked still needs making up.
+    //
+    // Overwrites "inspected" deliberately: an inspection from before this stay
+    // says nothing about the room now.
+    //
+    // Best effort. A housekeeping flag must never be the reason a check-out
+    // fails — the guest is already leaving, and the deposit settlement below
+    // is the part that matters.
+    try {
+      const stayVenue = await Venue.findById(venue._id).select("rooms");
+      const stayRoom = stayVenue && stayVenue.rooms.id(allotment.room);
+      if (stayRoom) {
+        stayRoom.housekeeping = { status: ON_CHECK_OUT, at: now, byName: allotment.checkOut.byName };
+        await stayVenue.save();
+      }
+    } catch (e) { /* the check-out stands regardless */ }
 
     // ── Deposit settlement ──
     const deposit = (allotment.deposit && allotment.deposit.amount) || 0;

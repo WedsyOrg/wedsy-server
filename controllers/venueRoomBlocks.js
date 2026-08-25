@@ -19,6 +19,16 @@
 const Venue = require("../models/Venue");
 const { reqStr } = require("../utils/venueInput");
 const { resolveLayout, validatePlacement } = require("../utils/venueRoomLayout");
+const { isValidStatus, HOUSEKEEPING_STATUSES } = require("../utils/venueHousekeeping");
+const VenueTeamMember = require("../models/VenueTeamMember");
+const { isOwnerActor } = require("../utils/venueRbac");
+
+/** Who set this status. "Cleared by Meena" is the whole value of the field. */
+async function housekeepingActorName(req) {
+  if (await isOwnerActor(req.venueOwner, req.venueMember)) return "Owner";
+  const m = await VenueTeamMember.findById(req.venueOwner && req.venueOwner.memberId).select("name").lean();
+  return (m && m.name) || "team member";
+}
 const { resolveRooms } = require("../utils/venueRoomTypes");
 const { roomStatusOn, statusTotals } = require("../utils/venueRoomStatus");
 const { setupState } = require("../utils/venueRoomSetup");
@@ -370,7 +380,43 @@ const placeRoom = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+
+// ── PATCH /venues/:slug/rooms/:roomId/housekeeping ──────────────────────────
+// Lives HERE, beside placeRoom, and not in venueRooms — because it must answer
+// with the LAYOUT payload.
+//
+// It was written in venueRooms first and returned that controller's rooms-state
+// shape. The drawer merged it straight into `layoutState`, which then had no
+// `layout` key at all, and the entire floor plan disappeared from the screen.
+// That is the ROOMS 3 defect exactly: a write endpoint returning a shape the
+// read endpoint doesn't, merged into client state — flaky UI that never gets
+// diagnosed. Same surface, same payload, no exceptions.
+const setHousekeeping = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const room = venue.rooms.id(req.params.roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
+
+    const status = (req.body || {}).status;
+    if (!isValidStatus(status)) {
+      return res.status(400).json({ message: `status must be one of ${HOUSEKEEPING_STATUSES.join(", ")}` });
+    }
+
+    // Any status, any time — see utils/venueHousekeeping. These are
+    // observations about a physical room, not a workflow to enforce: a
+    // supervisor who finds an "inspected" room filthy has to be able to say so.
+    // WHO and WHEN is what makes the record worth having.
+    room.housekeeping = { status, at: new Date(), byName: await housekeepingActorName(req) };
+    await venue.save();
+
+    return res.status(200).json(await layoutPayload(venue, { roomId: room._id }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+
 module.exports = {
+  setHousekeeping,
   getSetup, skipShape, completeSetup, dismissSetup,
   getLayout, addBlock, updateBlock, deleteBlock,
   addFloor, updateFloor, deleteFloor,

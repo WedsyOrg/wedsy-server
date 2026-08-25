@@ -456,4 +456,5 @@ const bulkCreateRooms = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+
 module.exports = { listRooms, addRoom, updateRoom, deleteRoom, bulkCreateRooms, validateRoomInput, applyRoomPatch, statePayload };
