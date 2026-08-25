@@ -341,6 +341,13 @@ router.get("/:slug/room-types", venueOwnerAuth, roomTypes.listRoomTypes);
 router.post("/:slug/room-types", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomType);
 router.patch("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomType);
 router.delete("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.deleteRoomType);
+// Photos on a room type — ordered, one cover. Each operation is its own
+// endpoint so adding one never re-sends the rest. /order and /cover are
+// declared before the bare path so neither is captured as a typeId.
+router.post("/:slug/room-types/:typeId/photos", venueOwnerAuth, requireCapability("listing"), roomTypes.addTypePhotos);
+router.put("/:slug/room-types/:typeId/photos/order", venueOwnerAuth, requireCapability("listing"), roomTypes.reorderTypePhotos);
+router.put("/:slug/room-types/:typeId/photos/cover", venueOwnerAuth, requireCapability("listing"), roomTypes.setTypeCover);
+router.delete("/:slug/room-types/:typeId/photos", venueOwnerAuth, requireCapability("listing"), roomTypes.removeTypePhoto);
 // …and the per-room amenity library the types and rooms reference by key.
 router.get("/:slug/room-amenities", venueOwnerAuth, roomTypes.listRoomAmenities);
 router.post("/:slug/room-amenities", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomAmenity);

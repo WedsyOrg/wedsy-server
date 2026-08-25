@@ -126,6 +126,23 @@ function amenityUsage(venue, key) {
   return { types: types.map((t) => t.name), rooms: rooms.map((r) => r.name) };
 }
 
+/**
+ * A type's photos as plain URLs, cover first, otherwise in the owner's order.
+ *
+ * Tolerates a bare string as well as {url}, because the field was [String]
+ * before this build. Nothing in production holds either — zero venues have
+ * adopted the new room types — but a shape assumption that is true only because
+ * a collection happens to be empty is one that breaks the day it is not.
+ */
+function coverFirstUrls(photos) {
+  const rows = (photos || [])
+    .map((p) => (typeof p === "string" ? { url: p, isCover: false } : p || {}))
+    .filter((p) => p.url);
+  const cover = rows.filter((p) => p.isCover);
+  const rest = rows.filter((p) => !p.isCover);
+  return [...cover, ...rest].map((p) => String(p.url));
+}
+
 function num(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -243,6 +260,7 @@ function applyTypeToRooms(venue, type) {
  *
  * Writes ONLY the fields wedsy-user/pages/venues/[slug].js reads:
  *   name, count, occupancyPerRoom, maxPeoplePerRoom, pricePerNight, isAC,
+ *   sizeSqFt, bedConfiguration, view (ROOMS 4 — only when stated),
  *   description, photos — plus accommodation.totalCapacity and .available,
  *   which the same page derives its headline numbers from.
  *
@@ -285,7 +303,24 @@ function projectAccommodation(venue) {
       // fall back to the schema default rather than mislabel every room.
       isAC: acKnown ? amenities.has(AC_KEY) : true,
       description: t.description || "",
-      photos: (t.photos || []).map(String),
+      // ── COVER FIRST, THEN THE OWNER'S ORDER ──────────────────────────────
+      // The public block stays a flat [String]: that is what the listing reads,
+      // and a shape change there would be a change to the couple-facing
+      // contract. The cover leads because the listing shows photos[0] on the
+      // card, so "which photo represents this type" has to survive the flatten.
+      photos: coverFirstUrls(t.photos),
+      // ── ROOMS 4: ONLY WHAT THE OWNER STATED ─────────────────────────────
+      // Spread conditionally rather than written as 0/"" so a venue that fills
+      // none of these produces a row with the SAME KEYS it had before this
+      // build. The listing renders each only when present, so an absent field
+      // and an empty one look identical on screen — but they are not identical
+      // in the document, and the byte-identical assertion in the suite is what
+      // keeps that honest.
+      ...(num(t.sizeSqFt, 0) > 0 ? { sizeSqFt: num(t.sizeSqFt, 0) } : {}),
+      ...(String(t.bedConfiguration || "").trim()
+        ? { bedConfiguration: String(t.bedConfiguration).trim() }
+        : {}),
+      ...(String(t.view || "").trim() ? { view: String(t.view).trim() } : {}),
     };
   });
 
@@ -322,6 +357,7 @@ function projectAccommodation(venue) {
 
 module.exports = {
   INHERITABLE_FIELDS,
+  coverFirstUrls,
   AMENITY_GROUPS,
   AMENITY_GROUP_LABEL,
   resolveGroup,

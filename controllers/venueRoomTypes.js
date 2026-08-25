@@ -86,6 +86,25 @@ function validateTypeInput(venue, body, { partial = false } = {}) {
     if (!v.ok) return { error: v.message };
     out.description = v.value;
   }
+  // ── ROOMS 4: WHAT A COUPLE DECIDES ON ────────────────────────────────────
+  // All optional. Stored exactly as typed apart from trimming, because these
+  // are read by a couple in the owner's own words — see the model for why beds
+  // and view are free text rather than lists we invented.
+  if (body.sizeSqFt !== undefined) {
+    const v = optCount(body.sizeSqFt, "sizeSqFt", { max: 100000 });
+    if (!v.ok) return { error: v.message };
+    if (v.value !== undefined) out.sizeSqFt = v.value;
+  }
+  if (body.bedConfiguration !== undefined) {
+    const v = optStr(body.bedConfiguration, "bed configuration", 200);
+    if (!v.ok) return { error: v.message };
+    out.bedConfiguration = v.value;
+  }
+  if (body.view !== undefined) {
+    const v = optStr(body.view, "view", 120);
+    if (!v.ok) return { error: v.message };
+    out.view = v.value;
+  }
   if (body.photos !== undefined) {
     if (!Array.isArray(body.photos)) return { error: "photos must be a list" };
     out.photos = body.photos.map((p) => String(p)).filter(Boolean).slice(0, 20);
@@ -237,6 +256,140 @@ const updateRoomType = async (req, res) => {
       cascadedTo: cascaded,
       inheritableFields: INHERITABLE_FIELDS,
     }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ══ PHOTOS ON A ROOM TYPE ═══════════════════════════════════════════════════
+// Ordered, with exactly one cover. Each operation is its own endpoint rather
+// than a whole-array PUT, so adding a photo never has to re-send the ones
+// already there — the founder's "reordering and removal without re-uploading
+// the rest".
+//
+// THE ONE-COVER INVARIANT IS ENFORCED HERE, not hoped for: setting a cover
+// clears every other, and removing the cover promotes the first remaining
+// photo. A type with photos and no cover would leave the listing picking one
+// arbitrarily, which is the ambiguity an explicit cover exists to remove.
+
+/** Normalise, enforce one cover, and hand back the subdoc array to store. */
+function normalisePhotos(rows) {
+  const clean = (rows || []).filter((p) => p && p.url);
+  if (!clean.length) return [];
+  const coverIdx = clean.findIndex((p) => p.isCover);
+  return clean.map((p, i) => ({
+    url: String(p.url),
+    isCover: coverIdx === -1 ? i === 0 : i === coverIdx,
+  }));
+}
+
+const MAX_PHOTOS_PER_TYPE = 12;
+
+// ── POST /venues/:slug/room-types/:typeId/photos ────────────────────────────
+// Body: { urls: [...] } — already uploaded via /file/upload, same as every
+// other image path. Appended in the order given.
+const addTypePhotos = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const type = (venue.roomTypes || []).id(req.params.typeId);
+    if (!type) return res.status(404).json({ message: "Room type not found" });
+
+    const raw = (req.body || {}).urls;
+    const urls = (Array.isArray(raw) ? raw : [raw]).map((u) => String(u || "").trim()).filter(Boolean);
+    if (!urls.length) return res.status(400).json({ message: "No photos given." });
+
+    const existing = (type.photos || []).map((p) => String(p.url));
+    const fresh = urls.filter((u) => !existing.includes(u));
+    if (existing.length + fresh.length > MAX_PHOTOS_PER_TYPE) {
+      return res.status(400).json({
+        message: `A room type can hold ${MAX_PHOTOS_PER_TYPE} photos. This one has ${existing.length}.`,
+        code: "photo_limit",
+      });
+    }
+
+    type.photos = normalisePhotos([...(type.photos || []), ...fresh.map((u) => ({ url: u }))]);
+    projectAccommodation(venue);
+    await venue.save();
+    return res.status(201).json(statePayload(venue, { roomType: type, added: fresh.length, skipped: urls.length - fresh.length }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── PUT /venues/:slug/room-types/:typeId/photos/order ───────────────────────
+// Body: { urls: [...] } — the full list, in the new order. Must name every
+// photo exactly once: a partial list would silently drop whatever it omitted,
+// which is the one thing a reorder must never do. Same rule as block ordering.
+const reorderTypePhotos = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const type = (venue.roomTypes || []).id(req.params.typeId);
+    if (!type) return res.status(404).json({ message: "Room type not found" });
+
+    const want = ((req.body || {}).urls || []).map((u) => String(u));
+    const have = (type.photos || []).map((p) => String(p.url));
+    if (want.length !== have.length) {
+      return res.status(400).json({
+        message: `Photos must be listed in full — got ${want.length} of ${have.length}.`,
+        code: "reorder_mismatch",
+      });
+    }
+    const seen = new Set();
+    for (const u of want) {
+      if (!have.includes(u)) return res.status(400).json({ message: "That list contains a photo that is not on this type.", code: "reorder_mismatch" });
+      if (seen.has(u)) return res.status(400).json({ message: "That list repeats a photo.", code: "reorder_mismatch" });
+      seen.add(u);
+    }
+
+    // The COVER FOLLOWS THE PHOTO, not the position — which is the whole point
+    // of storing it explicitly. Reordering must not change what a couple sees
+    // on the card.
+    const coverUrl = (type.photos || []).find((p) => p.isCover);
+    const cover = coverUrl ? String(coverUrl.url) : null;
+    type.photos = normalisePhotos(want.map((u) => ({ url: u, isCover: u === cover })));
+    projectAccommodation(venue);
+    await venue.save();
+    return res.status(200).json(statePayload(venue, { roomType: type }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── PUT /venues/:slug/room-types/:typeId/photos/cover ───────────────────────
+const setTypeCover = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const type = (venue.roomTypes || []).id(req.params.typeId);
+    if (!type) return res.status(404).json({ message: "Room type not found" });
+    const url = String((req.body || {}).url || "").trim();
+    if (!(type.photos || []).some((p) => String(p.url) === url)) {
+      return res.status(404).json({ message: "That photo is not on this room type." });
+    }
+    type.photos = normalisePhotos((type.photos || []).map((p) => ({ url: p.url, isCover: String(p.url) === url })));
+    projectAccommodation(venue);
+    await venue.save();
+    return res.status(200).json(statePayload(venue, { roomType: type }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── DELETE /venues/:slug/room-types/:typeId/photos ──────────────────────────
+// Body/query: { url }. The stored object is deliberately NOT deleted from S3 —
+// the same rule every other document path in this repo follows, because a URL
+// that stops resolving is worse than an orphan nobody pays for.
+const removeTypePhoto = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const type = (venue.roomTypes || []).id(req.params.typeId);
+    if (!type) return res.status(404).json({ message: "Room type not found" });
+    const url = String((req.body && req.body.url) || req.query.url || "").trim();
+    const before = (type.photos || []).length;
+    const kept = (type.photos || []).filter((p) => String(p.url) !== url);
+    if (kept.length === before) return res.status(404).json({ message: "That photo is not on this room type." });
+
+    // normalisePhotos promotes the first remaining photo when the cover goes,
+    // so a type never ends up with photos and no cover.
+    type.photos = normalisePhotos(kept.map((p) => ({ url: p.url, isCover: p.isCover })));
+    projectAccommodation(venue);
+    await venue.save();
+    return res.status(200).json(statePayload(venue, { roomType: type, removed: 1 }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -418,6 +571,11 @@ module.exports = {
   addRoomAmenity,
   updateRoomAmenity,
   deleteRoomAmenity,
+  addTypePhotos,
+  reorderTypePhotos,
+  setTypeCover,
+  removeTypePhoto,
+  normalisePhotos,
   listRoomTypes,
   addRoomType,
   updateRoomType,
