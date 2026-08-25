@@ -125,6 +125,44 @@ const VenueSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
   }],
 
+  // ══ WHERE A ROOM IS — THE PROPERTY'S SHAPE ═══════════════════════════════
+  // A room knew its name and its type but not its LOCATION, so 21 rooms could
+  // only ever render as 21 identical rows. Every real PMS lays a property out
+  // floor-wise; nobody scans a flat list.
+  //
+  // ── BOTH LEVELS ARE OPTIONAL, AND NEITHER IS A SPECIAL CASE ──────────────
+  // A resort of cottages has no blocks. A single building may have blocks with
+  // no floors. The naive representation — null-check both everywhere — puts a
+  // branch in every consumer, and the branch that gets forgotten is the bug.
+  //
+  // So STORAGE is honestly sparse (a venue with no blocks stores no blocks),
+  // and READING always goes through utils/venueRoomLayout.resolveLayout, which
+  // returns the SAME three-level shape every time: blocks → floors → rooms. A
+  // venue with no blocks resolves to one unnamed implicit block holding one
+  // unnamed implicit floor holding every room. Consumers loop; they never ask
+  // "does this venue have blocks".
+  //
+  // ── ORDER IS THE ARRAY, AND THE ARRAY IS THE OWNER'S ─────────────────────
+  // "Ground" sorts after "First" alphabetically, and after "1" numerically, and
+  // a venue whose floors are "G", "M", "1", "2" defeats every clever rule. So
+  // there is no rule: position in this array IS the order, and reordering
+  // rewrites the array. No `order` integer, because two sources for one fact
+  // is one that can drift.
+  //
+  // Names are stored EXACTLY as typed — "Ground", "G", "0", "Garden Block" —
+  // never normalised, never inferred, never title-cased.
+  blocks: [{
+    name: { type: String, required: true, maxlength: 120 },
+    /**
+     * Floors within this block, in the owner's order. An empty array is a
+     * block that holds rooms directly, which resolveLayout renders as one
+     * unnamed floor rather than as an absence.
+     */
+    floors: [{
+      name: { type: String, required: true, maxlength: 120 },
+    }],
+  }],
+
   // Phase 5 (PMS) — the operational rooms inventory used for guest allotment
   // and check-in/out.
   rooms: [{
@@ -155,6 +193,19 @@ const VenueSchema = new mongoose.Schema({
     amenities: [{ type: String }],
     /** Set only when overridden; otherwise the type's rate applies. */
     rate: { type: Number, default: null },
+    /**
+     * ── WHERE THIS ROOM IS ─────────────────────────────────────────────────
+     * Both null on every room that existed before this build, and on every room
+     * at a venue that has no blocks. Null is not an error state: it means "this
+     * venue has no structure to place it in" when there are no blocks, and
+     * "not placed yet" when there are. resolveLayout tells those two apart so
+     * no screen has to.
+     *
+     * floorRef without blockRef is meaningless and is refused at the
+     * controller: a floor only exists inside a block.
+     */
+    blockRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+    floorRef: { type: mongoose.Schema.Types.ObjectId, default: null },
   }],
   pricing: {
     currency: { type: String, default: "INR" },
