@@ -260,6 +260,7 @@ function applyTypeToRooms(venue, type) {
  *
  * Writes ONLY the fields wedsy-user/pages/venues/[slug].js reads:
  *   name, count, occupancyPerRoom, maxPeoplePerRoom, pricePerNight, isAC,
+ *   sizeSqFt, bedConfiguration, view (ROOMS 4 — only when stated),
  *   description, photos — plus accommodation.totalCapacity and .available,
  *   which the same page derives its headline numbers from.
  *
@@ -308,6 +309,18 @@ function projectAccommodation(venue) {
       // contract. The cover leads because the listing shows photos[0] on the
       // card, so "which photo represents this type" has to survive the flatten.
       photos: coverFirstUrls(t.photos),
+      // ── ROOMS 4: ONLY WHAT THE OWNER STATED ─────────────────────────────
+      // Spread conditionally rather than written as 0/"" so a venue that fills
+      // none of these produces a row with the SAME KEYS it had before this
+      // build. The listing renders each only when present, so an absent field
+      // and an empty one look identical on screen — but they are not identical
+      // in the document, and the byte-identical assertion in the suite is what
+      // keeps that honest.
+      ...(num(t.sizeSqFt, 0) > 0 ? { sizeSqFt: num(t.sizeSqFt, 0) } : {}),
+      ...(String(t.bedConfiguration || "").trim()
+        ? { bedConfiguration: String(t.bedConfiguration).trim() }
+        : {}),
+      ...(String(t.view || "").trim() ? { view: String(t.view).trim() } : {}),
     };
   });
 

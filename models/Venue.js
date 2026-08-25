@@ -65,6 +65,22 @@ const VenueSchema = new mongoose.Schema({
   accommodation: {
     available: { type: Boolean, default: false },
     totalCapacity: { type: Number, default: 0 },
+    // ══ THE PUBLIC PROJECTION — NOT THE OPERATIONAL MODEL ══════════════════
+    // ⚠ THERE ARE TWO `roomTypes` ARRAYS IN THIS FILE. This is the one the
+    // COUPLE-FACING LISTING reads (wedsy-user/pages/venues/[slug].js:879-883).
+    // It is DERIVED — written only by utils/venueRoomTypes.projectAccommodation
+    // — and its field names are a public contract: name, count,
+    // occupancyPerRoom, maxPeoplePerRoom, pricePerNight, isAC, description,
+    // photos (a flat [String], cover first).
+    //
+    // `totalCapacity` above also SORTS PUBLIC VENUE SEARCH
+    // (repositories/VenueRepository.js:19), so a number invented here reorders
+    // results for every couple.
+    //
+    // The operational model — the one an owner edits — is `roomTypes` at the
+    // TOP LEVEL of this schema, further down. The two have near-identical
+    // field lists, so a single-occurrence find-and-replace aimed at one will
+    // silently hit the other. Check which you are in before editing.
     roomTypes: [{
       name: String,
       count: { type: Number, default: 0 },
@@ -74,6 +90,22 @@ const VenueSchema = new mongoose.Schema({
       isAC: { type: Boolean, default: true },
       description: { type: String, default: "" },
       photos: [String],
+      // ROOMS 4 (additive), and DELIBERATELY WITHOUT DEFAULTS.
+      //
+      // A default here defeats the whole point: mongoose fills it in on every
+      // row it casts, so a venue that never stated a size would still store
+      // `sizeSqFt: 0` — turning "not stated" into "stated as zero", the exact
+      // distinction derive-nothing-typed-literally exists to protect. Caught by
+      // the suite asserting the stored key set, which is the only place this
+      // shows: the projection's conditional spread was correct and was being
+      // undone one layer down.
+      //
+      // With no default, an omitted field stays omitted in the document, and
+      // the listing's `rt.sizeSqFt && …` guard reads absent and zero the same
+      // way — which is right, because a room of no size is not a thing.
+      sizeSqFt: { type: Number },
+      bedConfiguration: { type: String },
+      view: { type: String },
     }],
   },
   // ══ THE ROOM-AMENITIES LIBRARY ═══════════════════════════════════════════
@@ -119,12 +151,46 @@ const VenueSchema = new mongoose.Schema({
   // this array plus the real room count, so there is one editable source and
   // the listing's numbers get MORE accurate rather than less.
   // See utils/venueRoomTypes.projectAccommodation.
+  // ⚠ THE OPERATIONAL MODEL — NOT the public projection. See the OTHER
+  // `roomTypes` array, inside `accommodation` above: that one is derived from
+  // this one and is what couples read. The two have near-identical field lists
+  // and a single-occurrence replace aimed at one will silently hit the other.
   roomTypes: [{
     name: { type: String, required: true },
     /** How many it sleeps — the listing's occupancyPerRoom. */
     sleeps: { type: Number, default: 2, min: 1 },
     /** Ceiling with extra beds; falls back to `sleeps` when 0. */
     maxOccupancy: { type: Number, default: 0 },
+    /**
+     * ── WHAT A COUPLE ACTUALLY DECIDES ON ─────────────────────────────────
+     * All optional, all empty by default: a venue that fills none of them must
+     * render exactly as it does today, so "" and 0 mean UNSET rather than a
+     * value, and the projection omits them entirely.
+     */
+    /** Floor area in square feet. 0 means not stated, not a room of no size. */
+    sizeSqFt: { type: Number, default: 0, min: 0 },
+    /**
+     * FREE TEXT, NOT A FIXED LIST — "1 king", "2 twins, can be joined",
+     * "1 king + 1 sofa bed". Audited before choosing: nothing on the couple
+     * side consumes this structurally. Venue search filters on venue-level
+     * `amenities.*`, zone, type, name, dietary options, spaces.capacitySeated
+     * and per-plate price — nothing room-type-level — so a fixed list would buy
+     * no facet and no filter.
+     *
+     * Which leaves only the question of whether OUR list reads better to a
+     * couple than the owner's own words, and for "2 twins, can be joined" it
+     * plainly does not. If search ever wants a bed facet, that is the moment to
+     * add structure ALONGSIDE this, not to have pre-emptively flattened what
+     * owners wrote into whichever options we guessed at.
+     */
+    bedConfiguration: { type: String, default: "", maxlength: 200 },
+    /**
+     * Also free text, and for the same reason — "garden", "lake, from the
+     * balcony only", "courtyard". Resorts price on this and the qualifier is
+     * usually the point. The owner-side offers common ones as one-tap fills
+     * that populate the field; what is stored is still what they typed.
+     */
+    view: { type: String, default: "", maxlength: 120 },
     /** Keys into roomAmenities. Rooms inherit this set. */
     amenities: [{ type: String }],
     /**

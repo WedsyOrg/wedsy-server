@@ -190,6 +190,73 @@ function renderListing(acc) {
     ok(coverFirstUrls(["p", "q"]).join(",") === "p,q", "a bare string list passes through");
     ok(coverFirstUrls([{ url: "p" }, { url: "q", isCover: true }]).join(",") === "q,p", "…and objects sort cover-first");
 
+    // ══ 4. THE DECISION FIELDS ══════════════════════════════════════════════
+    console.log("\n[size, beds and view — stored exactly as typed]");
+    const setFields = await call(rt.updateRoomType, asOwner({
+      params: { typeId: String(deluxe._id) },
+      body: {
+        sizeSqFt: 320,
+        bedConfiguration: "  2 twins, can be joined  ",
+        view: "lake, from the balcony only",
+      },
+    }));
+    ok(setFields.code === 200, `PATCH → 200 (got ${setFields.code})`);
+    const t2 = setFields.body.roomTypes.find((t) => String(t._id) === String(deluxe._id));
+    ok(t2.sizeSqFt === 320, `size ${t2.sizeSqFt} sq ft`);
+    ok(t2.bedConfiguration === "2 twins, can be joined",
+      `beds kept verbatim, trimmed only: "${t2.bedConfiguration}" — not parsed into a count`);
+    ok(t2.view === "lake, from the balcony only",
+      `view keeps its qualifier: "${t2.view}" — the qualifier is usually the point`);
+
+    console.log("\n[…and reach the couple-facing block]");
+    const pubRow = (await call(rt.listRoomTypes, asOwner())).body.accommodation.roomTypes[0];
+    ok(pubRow.sizeSqFt === 320 && pubRow.bedConfiguration === "2 twins, can be joined" && pubRow.view === "lake, from the balcony only",
+      "all three are projected for the listing to render");
+
+    console.log("\n[an UNSET field is absent from the block, not zero or empty]");
+    const plain = (await call(rt.addRoomType, asOwner({ body: { name: "Plain", sleeps: 2 } }))).body.roomType;
+    await call(rooms.addRoom, asOwner({ body: { name: "P1", typeRef: String(plain._id) } }));
+    // Read from the COLLECTION, not the mongoose subdocument. A subdoc reports
+    // its internal props from Object.keys and — more importantly — a schema
+    // DEFAULT would fill an unset field in on cast, which is exactly the bug
+    // this assertion caught: the projection omitted sizeSqFt correctly and the
+    // sub-schema's `default: 0` put it back one layer down.
+    const storedDoc = await Venue.collection.findOne(
+      { _id: venue._id }, { projection: { "accommodation.roomTypes": 1 } }
+    );
+    const plainRow = storedDoc.accommodation.roomTypes.find((r) => r.name === "Plain");
+    ok(!("sizeSqFt" in plainRow), "sizeSqFt is absent from the stored document");
+    ok(!("bedConfiguration" in plainRow), "bedConfiguration is absent");
+    ok(!("view" in plainRow), "view is absent");
+    ok(JSON.stringify(Object.keys(plainRow).filter((k) => k !== "_id")) === JSON.stringify(
+      ["name", "count", "occupancyPerRoom", "maxPeoplePerRoom", "pricePerNight", "isAC", "description", "photos"]),
+      `an unfilled type stores EXACTLY the pre-ROOMS-4 key set: ${Object.keys(plainRow).filter((k) => k !== "_id").join(", ")}`);
+
+    console.log("\n[whitespace-only is unset, not a value]");
+    await call(rt.updateRoomType, asOwner({ params: { typeId: String(plain._id) }, body: { view: "   ", bedConfiguration: "" } }));
+    const afterSpaces = await Venue.collection.findOne(
+      { _id: venue._id }, { projection: { "accommodation.roomTypes": 1 } }
+    );
+    const stillPlain = afterSpaces.accommodation.roomTypes.find((r) => r.name === "Plain");
+    ok(!("view" in stillPlain) && !("bedConfiguration" in stillPlain), "a field typed as spaces stays absent");
+
+    console.log("\n[and the totals STILL do not move]");
+    const capNow = renderListing((await call(rt.listRoomTypes, asOwner())).body.accommodation);
+    ok(capNow.accTotalCap === 9 + 2, `total capacity ${capNow.accTotalCap} — 3×3 Deluxe + 1×2 Plain, still Σ count × maxPeoplePerRoom`);
+    const storedNow = await Venue.findById(venue._id).select("accommodation").lean();
+    const recomputedNow = (storedNow.accommodation.roomTypes || [])
+      .reduce((s2, r) => s2 + (Number(r.count) || 0) * ((Number(r.maxPeoplePerRoom) || Number(r.occupancyPerRoom)) || 0), 0);
+    ok(Number(storedNow.accommodation.totalCapacity) === recomputedNow,
+      `the search sort key still equals the page's own fallback (${recomputedNow})`);
+
+    console.log("\n[occupancy was already reconciled in ROOMS 2 — re-proved, not rebuilt]");
+    const dRow = (await call(rt.listRoomTypes, asOwner())).body.accommodation.roomTypes.find((r) => r.name === "Deluxe");
+    ok(dRow.occupancyPerRoom === 2, `sleeps 2 → occupancyPerRoom ${dRow.occupancyPerRoom}`);
+    ok(dRow.maxPeoplePerRoom === 3, `maxOccupancy 3 → maxPeoplePerRoom ${dRow.maxPeoplePerRoom}`);
+    const pRow = (await call(rt.listRoomTypes, asOwner())).body.accommodation.roomTypes.find((r) => r.name === "Plain");
+    ok(pRow.maxPeoplePerRoom === 2,
+      "a type with NO ceiling reports maxPeoplePerRoom = sleeps, not 0 — 'no extra beds', which is what keeps the capacity sum right");
+
     console.log("\n[scope]");
     const other = await Venue.create({ name: `${TAG} Other`, slug: `${TAG}-o`, city: "Mysore", state: "Karnataka" });
     created.push(other._id);

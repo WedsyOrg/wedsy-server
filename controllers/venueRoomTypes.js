@@ -86,6 +86,25 @@ function validateTypeInput(venue, body, { partial = false } = {}) {
     if (!v.ok) return { error: v.message };
     out.description = v.value;
   }
+  // ── ROOMS 4: WHAT A COUPLE DECIDES ON ────────────────────────────────────
+  // All optional. Stored exactly as typed apart from trimming, because these
+  // are read by a couple in the owner's own words — see the model for why beds
+  // and view are free text rather than lists we invented.
+  if (body.sizeSqFt !== undefined) {
+    const v = optCount(body.sizeSqFt, "sizeSqFt", { max: 100000 });
+    if (!v.ok) return { error: v.message };
+    if (v.value !== undefined) out.sizeSqFt = v.value;
+  }
+  if (body.bedConfiguration !== undefined) {
+    const v = optStr(body.bedConfiguration, "bed configuration", 200);
+    if (!v.ok) return { error: v.message };
+    out.bedConfiguration = v.value;
+  }
+  if (body.view !== undefined) {
+    const v = optStr(body.view, "view", 120);
+    if (!v.ok) return { error: v.message };
+    out.view = v.value;
+  }
   if (body.photos !== undefined) {
     if (!Array.isArray(body.photos)) return { error: "photos must be a list" };
     out.photos = body.photos.map((p) => String(p)).filter(Boolean).slice(0, 20);
