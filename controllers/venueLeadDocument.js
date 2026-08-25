@@ -44,6 +44,7 @@ const axios = require("axios");
 const Venue = require("../models/Venue");
 const VenueQuoteRound = require("../models/VenueQuoteRound");
 const VenueLeadDocument = require("../models/VenueLeadDocument");
+const VenueInvoice = require("../models/VenueInvoice");
 const { originOfKind, CLIENT_KINDS } = require("../models/VenueLeadDocument");
 
 /** Must match the proofType enum on the model. */
@@ -149,6 +150,47 @@ const listLeadDocuments = async (req, res) => {
       .sort({ version: -1 })
       .lean();
 
+    // ── AN INVOICE ROW HAS TO STATE ITS AMOUNT ──────────────────────────────
+    // "Invoice v2 · INV0002 (no GST)" says nothing about money, so the only way
+    // to find out what a document is for was to open the PDF.
+    //
+    // JOINED, NOT STORED. VenueInvoice already links back through
+    // `leadDocument`, and it is the source of truth for invoice money — copying
+    // the figure onto the document row would create a second place it lives,
+    // on a model that is deliberately IMMUTABLE and therefore could never be
+    // corrected if the two ever disagreed. The join also answers for every
+    // invoice already generated, with no backfill.
+    const invoiceDocIds = docs.filter((d) => d.kind === "invoice").map((d) => d._id);
+    const invoiceByDoc = new Map();
+    if (invoiceDocIds.length) {
+      const invoices = await VenueInvoice.find({
+        enquiry: lead._id,
+        leadDocument: { $in: invoiceDocIds },
+      })
+        .select("leadDocument invoiceNumber totals gstMode gstPercent lineItems forMilestoneId forPaymentId")
+        .lean();
+      for (const inv of invoices) invoiceByDoc.set(String(inv.leadDocument), inv);
+    }
+    const invoiceFacts = (d) => {
+      const inv = invoiceByDoc.get(String(d._id));
+      if (!inv) return null;
+      const t = inv.totals || {};
+      return {
+        invoiceNumber: inv.invoiceNumber || "",
+        // The figure a customer would pay. Read from what the invoice STORED,
+        // never recomputed — Build B settled that money has one derivation.
+        amount: Number(t.grandTotal) || 0,
+        subtotal: Number(t.subtotal) || 0,
+        gst: Number(t.gst) || 0,
+        gstMode: inv.gstMode || "exclusive",
+        gstPercent: Number(inv.gstPercent) || 0,
+        // What it covered, in the invoice's own words.
+        covers: (inv.lineItems || []).map((li) => li.label).filter(Boolean),
+        forMilestoneId: inv.forMilestoneId || null,
+        forPaymentId: inv.forPaymentId || null,
+      };
+    };
+
     // What generation would use right now, so the tab can show the empty state
     // with a reason instead of a dead button.
     const resolved = await resolveTermsSource(venue);
@@ -172,6 +214,9 @@ const listLeadDocuments = async (req, res) => {
         ...present(d),
         isLatest: d.version === topByKind.get(d.kind),
         versionsOfKind: countByKind.get(d.kind) || 1,
+        // null for every kind that is not an invoice, and for an invoice whose
+        // row predates the leadDocument link.
+        invoice: invoiceFacts(d),
       })),
       // Kept for callers that still read it, but it is the max across kinds and
       // therefore not what "latest" means for any single document.

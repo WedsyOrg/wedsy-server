@@ -35,6 +35,7 @@ const termsDoc = require("../controllers/venueTermsDocument");
 const leadDocs = require("../controllers/venueLeadDocument");
 const bookingSettings = require("../controllers/venueBookingSettings");
 const leadInvoice = require("../controllers/venueLeadInvoice");
+const leadStatement = require("../controllers/venueLeadStatement");
 const leadPayment = require("../controllers/venueLeadPayment");
 const bookingConfirm = require("../controllers/venueBookingConfirmation");
 const checkin = require("../controllers/venueCheckin");
@@ -216,6 +217,12 @@ router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOw
 // accident. Scope is enforced INSIDE the controller (venueLeadScope, 404 never 403).
 router.get("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.listLeadInvoices);
 router.post("/:slug/enquiries/:enquiryId/invoices", venueOwnerAuth, requireCapability("bookings_money"), leadInvoice.createLeadInvoice);
+// The STATEMENT OF ACCOUNT — the whole booking on one page. Money capability,
+// matching invoices: it states the account, and the account is money.
+// Preview and generate call the same gather+preview, so the numbers an owner
+// reads before pressing the button are the numbers that land in the PDF.
+router.get("/:slug/enquiries/:enquiryId/statement/preview", venueOwnerAuth, requireCapability("bookings_money"), leadStatement.previewStatement);
+router.post("/:slug/enquiries/:enquiryId/statement", venueOwnerAuth, requireCapability("bookings_money"), leadStatement.createStatement);
 
 // ── BOOKING ENGINE S4: recording payments against the schedule ──────────────
 router.get("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.getLeadPayments);

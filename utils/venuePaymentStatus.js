@@ -151,6 +151,19 @@ function describeMilestone(row, now = new Date()) {
     label: row.label || "Instalment",
     /** An extra added after the booking, not part of the agreed value. */
     isAdditional: Boolean(row.isAdditional),
+    /**
+     * Whether THIS row bears GST under a per_instalment booking.
+     *
+     * A passthrough, not a derivation — the flag is already on the stored row;
+     * it simply was not being surfaced. Nothing here computes tax: callers that
+     * need the figure pass this to venuePaymentSchedule.gstOnRow, which is the
+     * one place that rule lives.
+     *
+     * Surfaced because a consumer reading `row.gstApplicable` off this output
+     * silently got `undefined` — every per-instalment GST cell rendered "—",
+     * which reads as "no GST on this row" rather than as a missing field.
+     */
+    gstApplicable: Boolean(row.gstApplicable),
     addedNote: row.addedNote || "",
     addedByName: row.addedByName || "",
     percent: row.percent === null || row.percent === undefined ? null : Number(row.percent),
