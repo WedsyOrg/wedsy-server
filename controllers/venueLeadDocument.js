@@ -146,8 +146,28 @@ const listLeadDocuments = async (req, res) => {
     if (!owned) return;
     const { venue, lead } = owned;
 
+    // ── NEWEST FIRST, BY WHEN IT WAS MADE ───────────────────────────────────
+    // This sorted by `version`, which is not a time and not even comparable
+    // across rows: insertNextVersion scopes the sequence to {enquiry, kind}, so
+    // EVERY kind restarts at v1. A global sort on it put whichever document
+    // happened to have a v2 at the top regardless of age, and left every v1
+    // tied — and MongoDB guarantees no order among ties. On a real lead that
+    // put a three-minute-old statement fourth, below documents from five days
+    // earlier.
+    //
+    // `createdAt` is the only field here that means "when this was generated".
+    // `_id` breaks ties: two documents can share a millisecond (an invoice and
+    // the statement raised straight after it, or a double submit), and an
+    // ObjectId increases with creation time, so it continues the same ordering
+    // rather than introducing an arbitrary one. Without it a tie is once again
+    // undefined, which is the bug this replaces.
+    //
+    // Sorted HERE rather than on the client: the Documents tab only splits this
+    // list into venue and client columns, so both inherit whatever order this
+    // query returns, and a re-sort on top would leave the wrong order to be
+    // fixed again by the next consumer.
     const docs = await VenueLeadDocument.find({ enquiry: lead._id })
-      .sort({ version: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean();
 
     // ── AN INVOICE ROW HAS TO STATE ITS AMOUNT ──────────────────────────────
