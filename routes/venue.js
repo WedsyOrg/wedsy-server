@@ -349,6 +349,11 @@ router.put("/:slug/room-types/:typeId/photos/order", venueOwnerAuth, requireCapa
 router.put("/:slug/room-types/:typeId/photos/cover", venueOwnerAuth, requireCapability("listing"), roomTypes.setTypeCover);
 router.delete("/:slug/room-types/:typeId/photos", venueOwnerAuth, requireCapability("listing"), roomTypes.removeTypePhoto);
 // …and the per-room amenity library the types and rooms reference by key.
+// How this venue sells its rooms. Gated on `listing` like the rest of setup —
+// it describes the property, and it is read by the booking wizard.
+router.get("/:slug/rooms-policy", venueOwnerAuth, roomTypes.getRoomsPolicy);
+router.put("/:slug/rooms-policy", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomsPolicy);
+
 router.get("/:slug/room-amenities", venueOwnerAuth, roomTypes.listRoomAmenities);
 router.post("/:slug/room-amenities", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomAmenity);
 router.patch("/:slug/room-amenities/:key", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomAmenity);

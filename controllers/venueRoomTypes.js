@@ -24,13 +24,14 @@ const {
   projectAccommodation,
   resolveRooms,
 } = require("../utils/venueRoomTypes");
+const { resolvePolicy, includedRooms, quoteRooms } = require("../utils/venueRoomsPolicy");
 
 // `blocks` is in here because validatePlacement and resolveLayout read it, and
 // a select that omits it does not fail loudly — it makes every block look
 // absent, so a correct guard refuses a placement that was perfectly valid. That
 // is the shape of bug this repo has been bitten by before: the guard is right,
 // the arguments it was given are not.
-const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks";
+const SELECT = "_id slug rooms roomTypes roomAmenities accommodation blocks roomsPolicy";
 
 async function resolveOwnedVenue(req, res, select = SELECT) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select);
@@ -563,7 +564,91 @@ const deleteRoomAmenity = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+
+/* ══ HOW THIS VENUE SELLS ITS ROOMS ════════════════════════════════════════ */
+
+/**
+ * The policy, always in the resolved shape, alongside the two facts that make
+ * it legible: how many rooms the venue actually has, and what one example
+ * booking would cost under it.
+ *
+ * The worked example is not decoration. "8 included, Rs. 4,000 extra" is four
+ * numbers an owner has to multiply in their head to know what they just agreed
+ * to; showing the arithmetic is how they catch a policy that says something
+ * they did not mean before a couple is quoted from it.
+ */
+async function getRoomsPolicy(req, res) {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const rooms = resolveRooms(venue);
+    const totalRooms = rooms.filter((r) => r.isActive !== false).length;
+    const policy = resolvePolicy(venue);
+    // The type rate the fallback would actually use — reported so the screen
+    // can say where a number came from rather than just showing one.
+    const rates = (venue.roomTypes || []).map((t) => Number(t.defaultRate) || 0).filter((n) => n > 0);
+    const fallbackTypeRate = rates.length ? Math.min(...rates) : 0;
+    res.status(200).json({
+      policy,
+      totalRooms,
+      includedUnderPolicy: includedRooms(policy, totalRooms),
+      fallbackTypeRate,
+      example: quoteRooms({
+        policy,
+        roomsNeeded: totalRooms,
+        nights: 1,
+        totalRoomsAtVenue: totalRooms,
+        typeRate: fallbackTypeRate,
+      }),
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+async function updateRoomsPolicy(req, res) {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const b = req.body || {};
+
+    if (b.includedWithVenue !== undefined && !["all", "none", "count"].includes(b.includedWithVenue)) {
+      return res.status(400).json({ message: "includedWithVenue must be all, none or count" });
+    }
+    const count = optNumber(b.includedCount, "includedCount");
+    if (!count.ok) return res.status(400).json({ message: count.message });
+    const rate = optNumber(b.extraRoomRate, "extraRoomRate");
+    if (!rate.ok) return res.status(400).json({ message: rate.message });
+    if (count.value !== undefined && count.value < 0) return res.status(400).json({ message: "includedCount cannot be negative" });
+    if (rate.value !== undefined && rate.value < 0) return res.status(400).json({ message: "extraRoomRate cannot be negative" });
+
+    const current = resolvePolicy(venue);
+    const next = {
+      // Saving this screen IS the answer — that is what makes the venue
+      // configured, and what stops a screen showing a policy nobody wrote.
+      configured: true,
+      sellsNightly: b.sellsNightly !== undefined ? b.sellsNightly === true : current.sellsNightly,
+      includedWithVenue: b.includedWithVenue !== undefined ? b.includedWithVenue : current.includedWithVenue,
+      includedCount: count.value !== undefined ? Math.round(count.value) : current.includedCount,
+      extraRoomRate: rate.value !== undefined ? Math.round(rate.value) : current.extraRoomRate,
+    };
+    venue.roomsPolicy = next;
+    await venue.save();
+
+    // NOTHING re-derives here. Changing the policy changes what the NEXT
+    // booking is quoted; it does not touch a booking already confirmed, whose
+    // rooms line was written at confirmation and is now that deal's own fact.
+    req.params.slug = venue.slug;
+    return getRoomsPolicy(req, res);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+}
+
+
 module.exports = {
+  getRoomsPolicy,
+  updateRoomsPolicy,
   resolveOwnedVenue,
   validateAmenityKeys,
   statePayload,

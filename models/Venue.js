@@ -227,6 +227,44 @@ const VenueSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
   }],
 
+  // ══ HOW THIS VENUE SELLS ITS ROOMS ═══════════════════════════════════════
+  // "Some resorts might give rooms on a daily basis and some might not and only
+  // during event they give out the entire property."
+  //
+  // PRICE IS NOT A PROPERTY OF THE ROOM. It is a property of how the room is
+  // being SOLD — the same suite is included in one deal and charged in the
+  // next. So none of this lives on the room or the type: the type's
+  // `defaultRate` answers "what does this room cost per night" and is PUBLIC
+  // (it becomes accommodation.roomTypes[].pricePerNight on the listing); this
+  // answers "what do extra rooms cost when bundled into a venue booking",
+  // which is a different sale.
+  //
+  // ── NO DEFAULTS, DELIBERATELY ────────────────────────────────────────────
+  // A default here would write an answer nobody gave, and "never set up" has to
+  // stay distinguishable from "set up as all-included" — they look identical in
+  // their effect on money (nothing is charged) but they are not the same fact,
+  // and only one of them should show an owner a policy they never wrote.
+  //
+  // Reading goes through utils/venueRoomsPolicy.resolvePolicy, which always
+  // returns the same shape with `configured` telling the two apart — the same
+  // pattern as resolveLayout, and for the same reason.
+  roomsPolicy: {
+    /** Has the owner actually answered these questions? */
+    configured: { type: Boolean },
+    /** Are rooms sold nightly, outside events? Most wedding resorts: no. */
+    sellsNightly: { type: Boolean },
+    /** How many rooms come with the venue hire. */
+    includedWithVenue: { type: String, enum: ["all", "none", "count"] },
+    /** Only meaningful when includedWithVenue is "count". */
+    includedCount: { type: Number, min: 0 },
+    /**
+     * What an EXTRA room costs, per room per night, on a venue booking.
+     * Unset falls back to the room type's own defaultRate — and the booking
+     * line says which one it used, so a number never appears without a source.
+     */
+    extraRoomRate: { type: Number, min: 0 },
+  },
+
   // ══ FIRST-RUN SETUP — ONLY WHAT CANNOT BE DERIVED ════════════════════════
   // The wizard is RESUMABLE, and the cheapest way to be resumable is to have
   // almost no state: which step an owner is on is a function of what they have
