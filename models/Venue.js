@@ -370,6 +370,33 @@ const VenueSchema = new mongoose.Schema({
      * controller: a floor only exists inside a block.
      */
     /**
+     * ── TEMPORARILY UNUSABLE, WITH A REASON AND A DATE RANGE ──────────────
+     * A broken air-conditioner is not a reason to DEACTIVATE a room:
+     * deactivation is permanent and removes it from the property, and an owner
+     * who reaches for it to cover a week of repairs has quietly shrunk their
+     * inventory forever. This is the temporary, dated, reversible answer, and
+     * it expires by itself.
+     *
+     * [from, to) — inclusive of `from`, exclusive of `to`, matching how nights
+     * are stored and how every window in this codebase is compared. Out from
+     * the 10th to the 12th means unusable on the 10th and 11th, and sellable
+     * again on the 12th.
+     *
+     * Unlike isActive this is DATED, so availability cannot filter on it
+     * without knowing which nights are in question — see utils/venueOutOfOrder.
+     *
+     * No defaults: absent means in order, which is every room today.
+     */
+    outOfOrder: {
+      /** Required when set — "out of order" with no reason is unanswerable. */
+      reason: { type: String },
+      from: { type: Date },
+      to: { type: Date },
+      at: { type: Date },
+      byName: { type: String },
+    },
+
+    /**
      * ── IS THIS ROOM READY ────────────────────────────────────────────────
      * A SECOND AXIS, never folded into free/occupied/held: a room can be
      * occupied and dirty, or free and dirty, and collapsing the two would make
@@ -382,6 +409,10 @@ const VenueSchema = new mongoose.Schema({
      *
      * Nothing is inferred from the check-out checklist: it is free text, and a
      * room with every item ticked still needs servicing.
+     *
+     * NOT venue.amenities.housekeeping, which is a marketing boolean meaning
+     * "this venue offers a housekeeping service". Same word, different scope,
+     * different question.
      */
     housekeeping: {
       status: { type: String, enum: ["clean", "dirty", "inspected"] },
@@ -444,6 +475,8 @@ const VenueSchema = new mongoose.Schema({
     liquorLicense: { type: Boolean, default: false },
     dayOfCoordinator: { type: Boolean, default: false },
     securityStaff: { type: Boolean, default: false },
+    // MARKETING: "this venue offers housekeeping". NOT rooms[].housekeeping,
+    // which is the operational clean/dirty/inspected state of one room.
     housekeeping: { type: Boolean, default: false },
     valetParking: { type: Boolean, default: false },
     shuttleService: { type: Boolean, default: false },

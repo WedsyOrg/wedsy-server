@@ -20,6 +20,8 @@ const Venue = require("../models/Venue");
 const { reqStr } = require("../utils/venueInput");
 const { resolveLayout, validatePlacement } = require("../utils/venueRoomLayout");
 const { isValidStatus, HOUSEKEEPING_STATUSES } = require("../utils/venueHousekeeping");
+const { dayStart: ooDayStart } = require("../utils/venueOutOfOrder");
+const { heldNightsForRoom, releaseHeldNightsForRoom } = require("../utils/venueRoomNights");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { isOwnerActor } = require("../utils/venueRbac");
 
@@ -415,8 +417,93 @@ const setHousekeeping = async (req, res) => {
 };
 
 
+
+// ── PUT/DELETE /venues/:slug/rooms/:roomId/out-of-order ─────────────────────
+// Temporary and dated, as opposed to Deactivate which is permanent. Answers
+// with the LAYOUT payload, like every other write on this surface.
+const setOutOfOrder = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const room = venue.rooms.id(req.params.roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
+
+    const b = req.body || {};
+    const reason = String(b.reason || "").trim().slice(0, 200);
+    // Required, deliberately. "Out of order" with no reason is a question
+    // nobody downstream can answer — the same rule additional billing applies
+    // to its label.
+    if (!reason) return res.status(400).json({ message: "Say what's wrong with the room.", code: "reason_required" });
+
+    const from = b.from ? new Date(b.from) : null;
+    const to = b.to ? new Date(b.to) : null;
+    if (!from || !to || Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      return res.status(400).json({ message: "A start and end date are required." });
+    }
+    const fromDay = ooDayStart(from);
+    const toDay = ooDayStart(to);
+    if (!(toDay > fromDay)) {
+      return res.status(400).json({ message: "The end date has to be after the start date.", code: "bad_window" });
+    }
+
+    // ── THE COLLISION ────────────────────────────────────────────────────────
+    // Rooms are reserved as a COUNT (ROOMS 1), so taking one out of order over
+    // dates that already have held nights means the resort has promised more
+    // rooms than it has. Warn, NAME the bookings, and let the owner proceed —
+    // the same shape as rooms_short at confirmation and the deactivate guard.
+    // Scoped to THIS window: holds outside it are not affected and warning
+    // about them would train an owner to click through.
+    const forced = String((req.query && req.query.force) || "") === "1" || b.acknowledgeHeldNights === true;
+    if (!forced) {
+      const held = await heldNightsForRoom(venue._id, room._id, { from: fromDay, to: toDay });
+      if (held.upcoming > 0) {
+        const who = held.bookings
+          .map((x) => `${x.coupleName || "a booking"} (${x.nights} night${x.nights === 1 ? "" : "s"})`)
+          .join(", ");
+        return res.status(409).json({
+          code: "room_has_held_nights",
+          message:
+            `"${room.name}" is promised to ${held.bookings.length} booking${held.bookings.length === 1 ? "" : "s"} ` +
+            `in those dates — ${who}. Take it out of order anyway and ` +
+            `${held.upcoming === 1 ? "that night" : "those nights"} will no longer have a room behind ${held.upcoming === 1 ? "it" : "them"}.`,
+          upcoming: held.upcoming,
+          bookings: held.bookings,
+          acknowledgeWith: "acknowledgeHeldNights",
+        });
+      }
+    }
+
+    // Forced past it: the holds inside THIS WINDOW go, so the booking stops
+    // believing it has a room it cannot be given. Nights carrying an allotment
+    // are kept — moving a guest is the allotment flow's job.
+    const released = await releaseHeldNightsForRoom(venue._id, room._id, { from: fromDay, to: toDay });
+
+    room.outOfOrder = { reason, from: fromDay, to: toDay, at: new Date(), byName: await housekeepingActorName(req) };
+    await venue.save();
+    return res.status(200).json(await layoutPayload(venue, { roomId: room._id, releasedNights: released }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// Back in service. Never re-reserves anything: the holds released on the way in
+// are gone, and silently re-taking rooms a booking was told it had lost would
+// be a second opinion about inventory the owner has already re-planned around.
+const clearOutOfOrder = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const room = venue.rooms.id(req.params.roomId);
+    if (!room) return res.status(404).json({ message: "Room not found" });
+    room.outOfOrder = undefined;
+    await venue.save();
+    return res.status(200).json(await layoutPayload(venue, { roomId: room._id }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+
 module.exports = {
   setHousekeeping,
+  setOutOfOrder,
+  clearOutOfOrder,
   getSetup, skipShape, completeSetup, dismissSetup,
   getLayout, addBlock, updateBlock, deleteBlock,
   addFloor, updateFloor, deleteFloor,

@@ -22,6 +22,7 @@
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRoomNight = require("../models/VenueRoomNight");
 const { resolveHousekeeping } = require("./venueHousekeeping");
+const { isOutOfOrderOn, describeOutOfOrder } = require("./venueOutOfOrder");
 // Required for the populate below, not for a symbol. Mongoose resolves `ref`
 // through its model registry, so this only worked because server.js happens to
 // load every model at boot — anything requiring this file on its own got
@@ -35,7 +36,7 @@ function dayStart(d) {
   return new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth(), t.getUTCDate()));
 }
 
-const STATUSES = ["free", "occupied", "held", "inactive"];
+const STATUSES = ["free", "occupied", "held", "inactive", "out_of_order"];
 
 /**
  * @param {object} venue   with `rooms`
@@ -62,7 +63,27 @@ async function roomStatusOn(venue, on = new Date()) {
     if (hk.tracked) housekeepingByRoom.set(String(r._id), hk);
     // An inactive room is not free — it is not in service at all, and colouring
     // it the same as a bookable empty room is how one gets sold.
-    out.set(String(r._id), { status: r.isActive === false ? "inactive" : "free" });
+    // ── ORDER MATTERS ────────────────────────────────────────────────────
+    // inactive wins over out_of_order: a deactivated room is not coming back
+    // this week OR next, and saying "out of order until Friday" about a room
+    // that has been removed from the property is the more misleading of the
+    // two. Out of order then wins over free/held/occupied below, because it is
+    // the reason the room cannot be used — the loops that follow skip it for
+    // exactly the same reason they skip inactive.
+    const ooo = r.isActive !== false && isOutOfOrderOn(r, from);
+    // TWO different facts, and the drawer needs the second one:
+    //   `outOfOrder`       — out ON THE DAY BEING VIEWED. Drives the chip.
+    //   `outOfOrderWindow` — a window EXISTS, whenever it falls. Drives the
+    //                        drawer, so an owner viewing today can still see
+    //                        and clear a repair booked for September.
+    // Attaching only the first left a room out of order in 2036 looking
+    // completely normal in the panel, with no way to undo it.
+    const windowText = describeOutOfOrder(r);
+    out.set(String(r._id), {
+      status: r.isActive === false ? "inactive" : ooo ? "out_of_order" : "free",
+      ...(ooo ? { outOfOrder: windowText } : {}),
+      ...(windowText ? { outOfOrderWindow: windowText } : {}),
+    });
   }
   if (!rooms.length) return out;
 
@@ -87,13 +108,13 @@ async function roomStatusOn(venue, on = new Date()) {
   for (const n of nights) {
     const key = String(n.room);
     const cur = out.get(key);
-    if (!cur || cur.status === "inactive") continue;
+    if (!cur || cur.status === "inactive" || cur.status === "out_of_order") continue;
     if (!n.allotment) out.set(key, { status: "held", bookingId: n.booking ? String(n.booking) : undefined });
   }
   for (const a of allotments) {
     const key = String(a.room);
     const cur = out.get(key);
-    if (!cur || cur.status === "inactive") continue;
+    if (!cur || cur.status === "inactive" || cur.status === "out_of_order") continue;
     out.set(key, {
       status: "occupied",
       guestName: a.guestName || "",
@@ -113,7 +134,7 @@ async function roomStatusOn(venue, on = new Date()) {
 
 /** Roll a status map into the counts a legend shows. */
 function statusTotals(map) {
-  const totals = { free: 0, occupied: 0, held: 0, inactive: 0 };
+  const totals = { free: 0, occupied: 0, held: 0, inactive: 0, out_of_order: 0 };
   // Counted SEPARATELY, because they are a separate question. A legend reading
   // "12 free, 3 dirty" is answering two things at once and the numbers do not
   // add up to the room count — deliberately, since a room can be both.

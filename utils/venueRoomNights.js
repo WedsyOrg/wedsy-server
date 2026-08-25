@@ -35,6 +35,7 @@
  */
 const mongoose = require("mongoose");
 const VenueRoomNight = require("../models/VenueRoomNight");
+const { isOutOfOrderAcross } = require("./venueOutOfOrder");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 
 /** Nights covered by a stay: check-in day inclusive, check-out day exclusive. */
@@ -86,14 +87,22 @@ async function roomNightOwnerFilter(bookingId) {
  *                    bookings: Array<{bookingId:string, coupleName:string,
  *                                     nights:number, firstNight:Date, lastNight:Date}>}>}
  */
-async function heldNightsForRoom(venueId, roomId, { from = new Date() } = {}) {
+async function heldNightsForRoom(venueId, roomId, { from = new Date(), to = null } = {}) {
   const VenueBooking = require("../models/VenueBooking");
   const cutoff = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
   const rows = await VenueRoomNight.find({ venue: venueId, room: roomId })
     .select("night booking allotment")
     .lean();
 
-  const upcomingRows = rows.filter((r) => new Date(r.night) >= cutoff);
+  // `to` bounds the question to a WINDOW — taking a room out of order for one
+  // week must warn about that week's holds, not about every future night the
+  // room has ever been promised. Unbounded (the delete/deactivate case) still
+  // means "everything from today on".
+  const end = to ? new Date(Date.UTC(new Date(to).getUTCFullYear(), new Date(to).getUTCMonth(), new Date(to).getUTCDate())) : null;
+  const upcomingRows = rows.filter((r) => {
+    const n = new Date(r.night);
+    return n >= cutoff && (!end || n < end);
+  });
   const byBooking = new Map();
   for (const r of upcomingRows) {
     const key = String(r.booking || "");
@@ -143,9 +152,14 @@ async function heldNightsForRoom(venueId, roomId, { from = new Date() } = {}) {
  * strand the allotment instead of the booking. Reported separately so the
  * caller can say so rather than quietly doing half the work.
  */
-async function releaseHeldNightsForRoom(venueId, roomId, { from = new Date() } = {}) {
+async function releaseHeldNightsForRoom(venueId, roomId, { from = new Date(), to = null } = {}) {
   const cutoff = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth(), from.getUTCDate()));
-  const filter = { venue: venueId, room: roomId, night: { $gte: cutoff } };
+  const night = { $gte: cutoff };
+  // Bounded to the same window the warning covered. Releasing holds the owner
+  // was never warned about would be a different, worse bug than the one this
+  // guard exists to prevent.
+  if (to) night.$lt = new Date(Date.UTC(new Date(to).getUTCFullYear(), new Date(to).getUTCMonth(), new Date(to).getUTCDate()));
+  const filter = { venue: venueId, room: roomId, night };
   const withGuest = await VenueRoomNight.countDocuments({ ...filter, allotment: { $ne: null } });
   const { deletedCount } = await VenueRoomNight.deleteMany({ ...filter, allotment: null });
   return { released: deletedCount || 0, keptWithAllotment: withGuest };
@@ -153,6 +167,22 @@ async function releaseHeldNightsForRoom(venueId, roomId, { from = new Date() } =
 
 /** Active, bookable rooms on the venue, in a stable order. */
 const activeRooms = (venue) => (venue.rooms || []).filter((r) => r.isActive !== false);
+
+/**
+ * Rooms that are BOOKABLE for these particular nights.
+ *
+ * `activeRooms` is absolute — isActive can be filtered without knowing any
+ * dates. Out of order is DATED, so it can only be applied here, where the
+ * nights are in hand. Every path that decides availability goes through this
+ * rather than activeRooms directly, so a room out for repairs cannot be sold
+ * by whichever caller forgot.
+ *
+ * All-or-nothing across the window, the same rule roomsFreeAcross applies to
+ * occupancy: a room out of order for one night of a four-night stay is not
+ * usable for that stay, because a guest cannot be moved out and back in.
+ */
+const bookableRooms = (venue, nights) =>
+  activeRooms(venue).filter((r) => !isOutOfOrderAcross(r, nights));
 
 /**
  * Which rooms are free for EVERY night of the window.
@@ -204,7 +234,7 @@ async function reserveRoomNights({ venue, booking, needed, checkIn, checkOut, al
   if (!count || !checkIn || !checkOut) return { ok: true, reserved: 0, rooms: [], nights: [] };
 
   const nights = nightKeys(new Date(checkIn), new Date(checkOut));
-  const rooms = activeRooms(venue);
+  const rooms = bookableRooms(venue, nights);
   const { free, perNight } = await roomsFreeAcross({
     venueId: venue._id,
     rooms,
@@ -299,7 +329,7 @@ async function rederiveRoomNights({ venue, booking, checkIn, checkOut, needed })
     if (nightSet.has(Number(r.night))) keepRooms.set(String(r.room), r.room);
   }
 
-  const rooms = activeRooms(venue);
+  const rooms = bookableRooms(venue, nights);
   const { free } = await roomsFreeAcross({
     venueId: venue._id,
     rooms,
@@ -385,4 +415,5 @@ module.exports = {
   roomNightOwnerFilter,
   roomsFreeAcross,
   activeRooms,
+  bookableRooms,
 };
