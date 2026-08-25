@@ -16,6 +16,8 @@ const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const {
   DEFAULT_ROOM_AMENITIES,
   INHERITABLE_FIELDS,
+  amenityKeyFor,
+  amenityUsage,
   applyTypeToRooms,
   projectAccommodation,
   resolveRooms,
@@ -216,10 +218,149 @@ const deleteRoomType = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
+// ══ THE ROOM-AMENITIES LIBRARY ══════════════════════════════════════════════
+// Defined once per venue, referenced by types and rooms by KEY. Seeded from a
+// starting set rather than fixed as an enum: every venue has something the list
+// did not anticipate, and an enum makes that a schema change.
+//
+// See utils/venueRoomTypes for why this is a new list and not Venue.amenities.
+
+// GET /venues/:slug/room-amenities
+const listRoomAmenities = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    return res.status(200).json({
+      roomAmenities: (venue.roomAmenities || []).map((a) => ({
+        key: a.key, label: a.label, isActive: a.isActive !== false,
+        usage: amenityUsage(venue, a.key),
+      })),
+      suggestions: DEFAULT_ROOM_AMENITIES.filter(
+        (d) => !(venue.roomAmenities || []).some((a) => String(a.key) === d.key)
+      ),
+    });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// POST /venues/:slug/room-amenities
+// Body: { label } for one, or { seed: true } to add whatever of the starting
+// set is missing. Seeding is additive and idempotent — it never removes or
+// relabels an amenity the owner already has.
+const addRoomAmenity = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const body = req.body || {};
+    const existing = new Set((venue.roomAmenities || []).map((a) => String(a.key)));
+
+    if (body.seed) {
+      const added = [];
+      for (const d of DEFAULT_ROOM_AMENITIES) {
+        if (existing.has(d.key)) continue;
+        venue.roomAmenities.push({ key: d.key, label: d.label, isActive: true });
+        added.push(d.key);
+      }
+      await venue.save();
+      return res.status(200).json({ seeded: added.length, roomAmenities: venue.roomAmenities });
+    }
+
+    const v = reqStr(body.label, "label", 80);
+    if (!v.ok) return res.status(400).json({ message: v.message });
+    const key = amenityKeyFor(body.key || v.value);
+    if (!key) return res.status(400).json({ message: "That name has no letters or numbers in it." });
+
+    // ── COLLIDE ON THE LABEL TOO, NOT JUST THE KEY ─────────────────────────
+    // The key is derived from the label, and the derivation is lossy: "Wi-Fi"
+    // becomes `wi_fi`, which does not collide with the seeded `wifi`. Checking
+    // only the key would let an owner create a second entry that is
+    // indistinguishable from the first on every screen that shows it — the
+    // owner sees "Wi-Fi" twice and cannot tell which one their rooms use.
+    //
+    // Collides against INACTIVE entries too. A key is a reference target: types
+    // and rooms still point at retired ones, so reusing a key — or presenting a
+    // second entry under a retired one's label — would silently give them a
+    // different meaning.
+    const wanted = v.value.toLowerCase();
+    const clash = (venue.roomAmenities || []).find(
+      (a) => String(a.key) === key || String(a.label || "").trim().toLowerCase() === wanted
+    );
+    if (clash) {
+      return res.status(409).json({
+        message: clash.isActive === false
+          ? `"${clash.label}" is already on the list, switched off. Turn it back on instead.`
+          : `"${clash.label}" is already on the list.`,
+        code: clash.isActive === false ? "amenity_retired" : "amenity_exists",
+        amenity: { key: clash.key, label: clash.label, isActive: clash.isActive !== false },
+      });
+    }
+
+    venue.roomAmenities.push({ key, label: v.value, isActive: true });
+    await venue.save();
+    return res.status(201).json({
+      amenity: venue.roomAmenities[venue.roomAmenities.length - 1],
+      roomAmenities: venue.roomAmenities,
+    });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// PATCH /venues/:slug/room-amenities/:key — relabel, or switch back on.
+// The KEY is immutable: types and rooms reference it. Only the label moves.
+const updateRoomAmenity = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const amenity = (venue.roomAmenities || []).find((a) => String(a.key) === String(req.params.key));
+    if (!amenity) return res.status(404).json({ message: "Amenity not found" });
+    const body = req.body || {};
+    if (body.label !== undefined) {
+      const v = reqStr(body.label, "label", 80);
+      if (!v.ok) return res.status(400).json({ message: v.message });
+      amenity.label = v.value;
+    }
+    if (body.isActive !== undefined) amenity.isActive = Boolean(body.isActive);
+    await venue.save();
+    return res.status(200).json({ amenity, roomAmenities: venue.roomAmenities });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// DELETE /venues/:slug/room-amenities/:key
+// In use → RETIRED, not removed. Types and rooms hold the key; deleting the
+// row would leave those references unresolvable and the amenity would render as
+// a raw key, or vanish from a room that genuinely has the thing.
+const deleteRoomAmenity = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const idx = (venue.roomAmenities || []).findIndex((a) => String(a.key) === String(req.params.key));
+    if (idx === -1) return res.status(404).json({ message: "Amenity not found" });
+    const amenity = venue.roomAmenities[idx];
+    const usage = amenityUsage(venue, amenity.key);
+    const inUse = usage.types.length + usage.rooms.length > 0;
+
+    if (inUse) {
+      amenity.isActive = false;
+      await venue.save();
+      return res.status(200).json({
+        retired: true,
+        message: `"${amenity.label}" is in use, so it has been switched off rather than deleted. Rooms that have it keep it.`,
+        usage,
+        roomAmenities: venue.roomAmenities,
+      });
+    }
+    venue.roomAmenities.splice(idx, 1);
+    await venue.save();
+    return res.status(200).json({ deleted: true, roomAmenities: venue.roomAmenities });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 module.exports = {
   resolveOwnedVenue,
   validateAmenityKeys,
   statePayload,
+  listRoomAmenities,
+  addRoomAmenity,
+  updateRoomAmenity,
+  deleteRoomAmenity,
   listRoomTypes,
   addRoomType,
   updateRoomType,

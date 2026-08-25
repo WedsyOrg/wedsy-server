@@ -64,6 +64,47 @@ const DEFAULT_ROOM_AMENITIES = [
   { key: "mini_fridge", label: "Mini fridge" },
 ];
 
+/**
+ * ── WHY roomAmenities IS A NEW LIST AND NOT Venue.amenities ─────────────────
+ * `Venue.amenities` (models/Venue.js:190) is a fixed OBJECT OF BOOLEANS about
+ * the PROPERTY: swimmingPool, helipad, garden, fireNOC, liquorLicense,
+ * valetParking, shuttleService. It has no keys and no labels, and the
+ * couple-facing venue search filters straight off its field names —
+ * wedsy-user/pages/venues/index.js:170 says so in as many words: "Amenity
+ * filter keys must match the venue.amenities schema so filtering works without
+ * a translation step."
+ *
+ * Widening it would run both ways and both are wrong: "helipad" and "fire NOC"
+ * would appear in a room's amenity picker, and "attached bathroom" would appear
+ * in the public venue-search filter bar. It is also a fixed schema, so an owner
+ * could not add anything to it without a code change — which is precisely what
+ * this list has to allow.
+ *
+ * So: reused nothing, replaced nothing. A separate list, on purpose.
+ */
+
+/** Machine key from a label. Stable, lowercase, no leading/trailing fill. */
+function amenityKeyFor(label) {
+  return String(label || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 40);
+}
+
+/**
+ * Where an amenity key is actually used, so removing one can say what it would
+ * affect instead of just doing it.
+ */
+function amenityUsage(venue, key) {
+  const k = String(key);
+  const types = (venue.roomTypes || []).filter((t) => (t.amenities || []).map(String).includes(k));
+  const rooms = (venue.rooms || []).filter(
+    (r) => (r.overrides || []).map(String).includes("amenities") && (r.amenities || []).map(String).includes(k)
+  );
+  return { types: types.map((t) => t.name), rooms: rooms.map((r) => r.name) };
+}
+
 function num(v, fallback = 0) {
   const n = Number(v);
   return Number.isFinite(n) ? n : fallback;
@@ -95,26 +136,61 @@ function resolveRoom(room, type) {
     overrides: Array.from(overrides),
     inherited: [],
   };
+  // ── THE OVERRIDE HAS TO BE VISIBLE ON THE ROOM ─────────────────────────────
+  // Not just "this is 9500" but "this is 9500, the type says 4500, and you can
+  // put it back". Without the type's value beside it, an owner cannot tell a
+  // deliberate divergence from a stale number, which is the same ambiguity
+  // `overrides` exists to remove — it would just have moved to the screen.
+  out.fields = {};
   for (const { field, from } of INHERITABLE) {
     const own = room[field];
+    const ownValue = field === "amenities" ? (own || []).map(String) : num(own, field === "capacity" ? 2 : 0);
     if (!type) {
       // A one-off room, from before types existed or deliberately untyped.
       // Nothing to inherit from, so its own column IS the value.
-      out[field] = field === "amenities" ? (own || []).map(String) : num(own, field === "capacity" ? 2 : 0);
+      out[field] = ownValue;
+      out.fields[field] = { value: ownValue, source: "room", typeValue: null, overridden: false };
       continue;
     }
+    const typeValue = from(type);
     if (overrides.has(field)) {
-      out[field] = field === "amenities" ? (own || []).map(String) : num(own, 0);
+      out[field] = ownValue;
+      out.fields[field] = { value: ownValue, source: "room", typeValue, overridden: true };
     } else {
-      out[field] = from(type);
+      out[field] = typeValue;
       out.inherited.push(field);
+      out.fields[field] = { value: typeValue, source: "type", typeValue, overridden: false };
     }
   }
   return out;
 }
 
+/**
+ * Resolve amenity keys to labels for display, and say which have been retired
+ * from the library. A key whose amenity was removed still resolves — the room
+ * genuinely has the thing; the venue simply stopped offering it as a choice —
+ * so it renders with a flag rather than vanishing from the room silently.
+ */
+function describeAmenities(venue, keys) {
+  const known = new Map((venue.roomAmenities || []).map((a) => [String(a.key), a]));
+  return (keys || []).map((k) => {
+    const key = String(k);
+    const found = known.get(key);
+    return {
+      key,
+      label: found ? found.label : key,
+      retired: !found || found.isActive === false,
+      unknown: !found,
+    };
+  });
+}
+
 function resolveRooms(venue) {
-  return (venue.rooms || []).map((r) => resolveRoom(r, findType(venue, r.typeRef)));
+  return (venue.rooms || []).map((r) => {
+    const out = resolveRoom(r, findType(venue, r.typeRef));
+    out.amenityDetail = describeAmenities(venue, out.amenities);
+    return out;
+  });
 }
 
 /**
@@ -225,6 +301,9 @@ function projectAccommodation(venue) {
 
 module.exports = {
   INHERITABLE_FIELDS,
+  amenityKeyFor,
+  amenityUsage,
+  describeAmenities,
   DEFAULT_ROOM_AMENITIES,
   AC_KEY,
   findType,

@@ -308,6 +308,11 @@ router.get("/:slug/room-types", venueOwnerAuth, roomTypes.listRoomTypes);
 router.post("/:slug/room-types", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomType);
 router.patch("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomType);
 router.delete("/:slug/room-types/:typeId", venueOwnerAuth, requireCapability("listing"), roomTypes.deleteRoomType);
+// …and the per-room amenity library the types and rooms reference by key.
+router.get("/:slug/room-amenities", venueOwnerAuth, roomTypes.listRoomAmenities);
+router.post("/:slug/room-amenities", venueOwnerAuth, requireCapability("listing"), roomTypes.addRoomAmenity);
+router.patch("/:slug/room-amenities/:key", venueOwnerAuth, requireCapability("listing"), roomTypes.updateRoomAmenity);
+router.delete("/:slug/room-amenities/:key", venueOwnerAuth, requireCapability("listing"), roomTypes.deleteRoomAmenity);
 
 router.get("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, listAllotments);
 router.post("/:slug/bookings/:bookingId/allotments", venueOwnerAuth, requireCapability("leads"), createAllotments);
