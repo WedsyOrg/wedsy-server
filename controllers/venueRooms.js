@@ -26,6 +26,7 @@
 const Venue = require("../models/Venue");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
+const { expand, planBulk } = require("../utils/venueRoomBulk");
 const {
   INHERITABLE_FIELDS,
   findType,
@@ -253,4 +254,93 @@ const deleteRoom = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { listRooms, addRoom, updateRoom, deleteRoom, validateRoomInput, applyRoomPatch, statePayload };
+// ── POST /venues/:slug/rooms/bulk — listing capability ──────────────────────
+// Create a floor at a time: a range (101→110) or an explicit list.
+//
+// ── COLLISIONS NEVER SILENTLY OVERWRITE, AND NEVER FAIL THE WHOLE BATCH ─────
+// Creating 101–110 when 105 exists is the normal case, not an error: an owner
+// adding a floor does not remember every room already on it. So the default is
+// to REFUSE ONCE and say exactly what clashes — the owner then re-sends with
+// onCollision: "skip" and gets the other nine.
+//
+// Three behaviours were deliberately not chosen:
+//   · overwrite  — 105 is a real room with allotment history behind it
+//   · fail all   — nine good rooms lost to one clash the owner did not know of
+//   · skip quietly — the owner believes they created ten and has nine
+//
+// `preview: true` runs the identical plan and writes nothing, so the screen can
+// show the outcome before the owner commits to it.
+const bulkCreateRooms = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const body = req.body || {};
+
+    // The type is resolved BEFORE expanding, so a bad type fails on nothing
+    // rather than half a floor.
+    let type = null;
+    if (body.typeRef) {
+      type = findType(venue, body.typeRef);
+      if (!type) return res.status(400).json({ message: "That room type does not exist at this venue." });
+      if (type.isActive === false) return res.status(400).json({ message: `"${type.name}" is no longer an active room type.` });
+    }
+
+    const expanded = expand(body);
+    if (expanded.error) return res.status(400).json({ message: expanded.error });
+
+    const plan = planBulk(venue, expanded.names);
+    const onCollision = String(body.onCollision || "");
+    const preview = body.preview === true;
+
+    const planBody = {
+      requested: expanded.names.length,
+      willCreate: plan.create,
+      willSkip: plan.skip,
+      type: type ? { _id: type._id, name: type.name } : null,
+    };
+
+    if (preview) {
+      return res.status(200).json({ preview: true, ...planBody });
+    }
+
+    if (plan.skip.length && onCollision !== "skip") {
+      return res.status(409).json({
+        message: plan.skip.length === 1
+          ? `${plan.skip[0].message} The other ${plan.create.length} can still be created.`
+          : `${plan.skip.length} of these already exist. The other ${plan.create.length} can still be created.`,
+        code: "bulk_collision",
+        hint: 'Send the same request again with onCollision: "skip" to create the rest.',
+        ...planBody,
+      });
+    }
+
+    if (!plan.create.length) {
+      return res.status(409).json({
+        message: "Every room in that batch already exists. Nothing to create.",
+        code: "bulk_all_exist",
+        ...planBody,
+      });
+    }
+
+    for (const name of plan.create) {
+      venue.rooms.push({ name });
+      const room = venue.rooms[venue.rooms.length - 1];
+      applyRoomPatch(venue, room, {
+        name,
+        typeRef: type ? type._id : null,
+        isActive: true,
+      }, []);
+    }
+    projectAccommodation(venue);
+    await venue.save();
+
+    return res.status(201).json(statePayload(venue, {
+      created: plan.create,
+      createdCount: plan.create.length,
+      skipped: plan.skip,
+      ...planBody,
+    }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+module.exports = { listRooms, addRoom, updateRoom, deleteRoom, bulkCreateRooms, validateRoomInput, applyRoomPatch, statePayload };
