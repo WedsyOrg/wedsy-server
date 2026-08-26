@@ -32,6 +32,7 @@ async function housekeepingActorName(req) {
   return (m && m.name) || "team member";
 }
 const { resolveRooms } = require("../utils/venueRoomTypes");
+const { decorateDeletability } = require("../utils/venueRoomDeletion");
 const { roomStatusOn, statusTotals } = require("../utils/venueRoomStatus");
 const { setupState } = require("../utils/venueRoomSetup");
 
@@ -62,7 +63,22 @@ const idOf = (v) => (v === null || v === undefined ? "" : String(v._id || v));
  * screen is given, so the three cannot disagree again.
  */
 async function layoutPayload(venue, extra = {}, { withStatus = true, on } = {}) {
-  const byId = new Map(resolveRooms(venue).map((r) => [String(r._id), r]));
+  // ── DECORATED, BECAUSE THE LAYOUT IS NOW WHERE A ROOM IS EDITED ───────────
+  // ROOMS 8 moved deactivate and delete out of the flat room list and onto the
+  // room's chip on the layout, so this payload is what the drawer's Delete
+  // button reads. It used to call resolveRooms directly, which resolves
+  // inheritance but knows nothing about deletability — so `deletable` arrived
+  // undefined and the drawer would have offered Delete on nothing, ever.
+  //
+  // Measured before this line changed:
+  //   GET /room-blocks → first room → deletable: undefined
+  //
+  // A correct guard reading a field the projection dropped: the button is right,
+  // its argument is not. Same function the rooms-state payload and the DELETE
+  // route use, so all three agree about what may be deleted.
+  const byId = new Map(
+    (await decorateDeletability(venue._id, resolveRooms(venue))).map((r) => [String(r._id), r]),
+  );
   const status = withStatus ? await roomStatusOn(venue, on || new Date()) : null;
   const layout = resolveLayout(venue, {
     presentRoom: (r) => {
