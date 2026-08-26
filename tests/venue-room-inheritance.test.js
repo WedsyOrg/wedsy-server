@@ -55,7 +55,14 @@ const roomNamed = async (name) => (await call(rooms.listRooms, asOwner())).body.
     ok(lib.body.suggestions.length > 0, `…and is offered a starting set of ${lib.body.suggestions.length} to seed`);
 
     const seeded = await call(rt.addRoomAmenity, asOwner({ body: { seed: true } }));
-    ok(seeded.code === 200 && seeded.body.seeded === 10, `seeding adds the starting set (${seeded.body.seeded})`);
+    // Checked against what the LIST endpoint offered, not against a literal.
+    // This was `=== 10` and broke the moment ROOMS 8 fattened the seed — and a
+    // hardcoded 21 would break the next time it grows. Comparing the two
+    // endpoints is a real cross-check rather than a restatement: the set
+    // OFFERED and the set SEEDED come from different call paths and must agree.
+    ok(seeded.code === 200 && seeded.body.seeded === lib.body.suggestions.length,
+      `seeding adds exactly the set that was offered (${seeded.body.seeded} of ${lib.body.suggestions.length})`);
+    ok(seeded.body.seeded > 10, `…and the starting set is a real prompt, not a token one (${seeded.body.seeded})`);
     const reseed = await call(rt.addRoomAmenity, asOwner({ body: { seed: true } }));
     ok(reseed.code === 200 && reseed.body.seeded === 0, "seeding twice adds nothing — it is additive and idempotent");
 
@@ -211,10 +218,14 @@ const roomNamed = async (name) => (await call(rooms.listRooms, asOwner())).body.
     console.log("\n[an amenity already on a type floats WITHIN its group]");
     // hot_water is on Deluxe from earlier in this suite; attached_bath is not.
     const bathroom = listed.filter((a) => a.group === "bathroom");
-    ok(bathroom.length === 2, `two bathroom amenities (${bathroom.map((a) => a.label).join(", ")})`);
+    // The COUNT was the assertion here and the count is not the point — it was
+    // `=== 2` and the seed now carries eight bathroom amenities. What matters
+    // is the ordering rule, and that there are enough of them for the rule to
+    // be observable at all.
+    ok(bathroom.length >= 2, `enough bathroom amenities to order (${bathroom.map((a) => a.label).join(", ")})`);
     ok(bathroom[0].key === "hot_water" && bathroom[0].usedBefore === true,
       "the one already in use comes first inside its group");
-    ok(bathroom[1].usedBefore === false, "…and the unused one after it");
+    ok(bathroom.slice(1).every((a) => a.usedBefore === false), "…and every unused one after it");
     ok(listed[0].group === "comfort",
       "…and it did NOT jump above the Comfort group — floating is within a group, not across the list");
 

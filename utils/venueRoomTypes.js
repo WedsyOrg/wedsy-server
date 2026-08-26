@@ -63,18 +63,49 @@ const AMENITY_GROUP_LABEL = {
   extras: "Extras",
 };
 
-/** The starting library. Owners extend it; it is not an enum. */
+/**
+ * The starting library. Owners extend it; it is not an enum.
+ *
+ * ── WHAT THE BAR FOR INCLUSION IS ───────────────────────────────────────────
+ * A venue looking at a near-empty picker types four things and stops. Every
+ * entry here is one an owner would otherwise have to think of unprompted, so
+ * the test is "a mid-range Indian property would tick this without hesitating",
+ * not "some hotel somewhere has one". Ten was too few to prompt with.
+ *
+ * ── AND WHAT THIS LIST IS NOT ───────────────────────────────────────────────
+ * A SEED. It is copied into the venue's own `roomAmenities` on first use, and
+ * what an owner adds afterwards is THEIRS: it stays on their venue and is never
+ * promoted anywhere. There is no master list here, and deliberately no path
+ * from a venue's custom amenity to one — OS-side curation is a separate build
+ * with its own coordination, and nothing in this file should grow towards it.
+ */
 const DEFAULT_ROOM_AMENITIES = [
+  // Comfort — what decides whether a room is pleasant to sleep in.
   { key: "ac", label: "Air conditioning", group: "comfort" },
-  { key: "attached_bath", label: "Attached bathroom", group: "bathroom" },
-  { key: "hot_water", label: "Hot water", group: "bathroom" },
-  { key: "wifi", label: "Wi-Fi", group: "entertainment" },
-  { key: "tv", label: "Television", group: "entertainment" },
   { key: "wardrobe", label: "Wardrobe", group: "comfort" },
   { key: "balcony", label: "Balcony", group: "comfort" },
   { key: "extra_bed", label: "Extra bed available", group: "comfort" },
+  { key: "desk", label: "Work desk", group: "comfort" },
+  { key: "iron", label: "Iron and board", group: "comfort" },
+
+  // Bathroom — where a wedding party notices the difference first.
+  { key: "attached_bath", label: "Attached bathroom", group: "bathroom" },
+  { key: "hot_water", label: "Hot water", group: "bathroom" },
+  { key: "geyser", label: "Geyser", group: "bathroom" },
+  { key: "bathtub", label: "Bathtub", group: "bathroom" },
+  { key: "toiletries", label: "Toiletries", group: "bathroom" },
+  { key: "towels", label: "Towels", group: "bathroom" },
+  { key: "bathrobe", label: "Bathrobe", group: "bathroom" },
+  { key: "hairdryer", label: "Hairdryer", group: "bathroom" },
+
+  { key: "wifi", label: "Wi-Fi", group: "entertainment" },
+  { key: "tv", label: "Television", group: "entertainment" },
+
   { key: "room_service", label: "Room service", group: "extras" },
   { key: "mini_fridge", label: "Mini fridge", group: "extras" },
+  { key: "minibar", label: "Minibar", group: "extras" },
+  { key: "kettle", label: "Kettle", group: "extras" },
+  { key: "locker", label: "In-room locker", group: "extras" },
 ];
 
 /** Group for an amenity that has none stored. See the model for why. */
