@@ -321,6 +321,11 @@ function projectAccommodation(venue) {
         ? { bedConfiguration: String(t.bedConfiguration).trim() }
         : {}),
       ...(String(t.view || "").trim() ? { view: String(t.view).trim() } : {}),
+      // `accessible: false` is a real answer ("not step-free"), so this tests
+      // for PRESENCE, not truthiness — `t.accessible && …` would silently drop
+      // the venues that answered honestly no.
+      ...(t.smokingPolicy ? { smokingPolicy: t.smokingPolicy } : {}),
+      ...(t.accessible === true || t.accessible === false ? { accessible: t.accessible } : {}),
     };
   });
 

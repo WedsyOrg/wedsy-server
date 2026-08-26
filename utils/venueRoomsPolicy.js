@@ -50,6 +50,10 @@ function resolvePolicy(venue) {
     includedWithVenue: configured && p.includedWithVenue ? p.includedWithVenue : "all",
     includedCount: num(p.includedCount, 0),
     extraRoomRate: num(p.extraRoomRate, 0),
+    // Unset means extra beds are free — never inferred from the room rate. A
+    // rollaway is not a room, and guessing one price from the other invents a
+    // number nobody agreed to.
+    extraBedRate: num(p.extraBedRate, 0),
   };
 }
 
@@ -167,6 +171,26 @@ function describeRoomsWorking({ roomsNeeded, included, chargeable, ratePerNight,
  *
  * Composed from stored counts, never parsed back out of the label.
  */
+function describeAdditionalBeds(row) {
+  const n = num(row && row.extraBeds), nights = num(row && row.extraBedNights);
+  if (n <= 0) return "";
+  const beds = `${n} extra bed${n === 1 ? "" : "s"}`;
+  if (nights <= 0) return beds;
+  return `${beds} × ${nights} night${nights === 1 ? "" : "s"}`;
+}
+
+/**
+ * Whichever detail this additional-billing row carries — rooms or beds.
+ *
+ * ONE function, so the statement does not have to know which kinds exist. A
+ * third kind added later changes this and nothing downstream, which is the
+ * whole reason the counts are stored as numbers instead of being typed into
+ * the label.
+ */
+function describeAdditionalDetail(row) {
+  return describeAdditionalRooms(row) || describeAdditionalBeds(row);
+}
+
 function describeAdditionalRooms(row) {
   const n = num(row && row.roomsCount), nights = num(row && row.roomsNights);
   if (n <= 0) return "";
@@ -234,4 +258,4 @@ function nightsBetween(checkIn, checkOut) {
   return Math.max(0, days);
 }
 
-module.exports = { describeRoomsWorking, describeAdditionalRooms, resolvePolicy, includedRooms, quoteRooms, quoteRoomsForBooking, nightsBetween, describeQuote, RATE_SOURCE };
+module.exports = { describeRoomsWorking, describeAdditionalRooms, describeAdditionalBeds, describeAdditionalDetail, resolvePolicy, includedRooms, quoteRooms, quoteRoomsForBooking, nightsBetween, describeQuote, RATE_SOURCE };

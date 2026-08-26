@@ -162,6 +162,19 @@ const VenueBookingSchema = new mongoose.Schema(
          */
         roomsCount: { type: Number, min: 0 },
         roomsNights: { type: Number, min: 0 },
+        /**
+         * EXTRA BEDS taken at check-in, same reasoning as the rooms counts
+         * above: numbers, not words in a label, so the documents can restate
+         * them and the owner's own label survives untouched.
+         */
+        extraBeds: { type: Number, min: 0 },
+        extraBedNights: { type: Number, min: 0 },
+        /**
+         * Which check-in produced this charge. Present so a second check-in on
+         * the same allotment cannot bill the beds twice — the guard reads this
+         * rather than trying to match on the label, which an owner may edit.
+         */
+        sourceAllotment: { type: mongoose.Schema.Types.ObjectId },
         addedByName: { type: String, default: "" },
       },
     ],

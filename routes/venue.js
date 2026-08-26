@@ -321,6 +321,15 @@ router.post("/:slug/rooms", venueOwnerAuth, requireCapability("listing"), addRoo
 router.post("/:slug/rooms/bulk", venueOwnerAuth, requireCapability("listing"), bulkCreateRooms);
 router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), updateRoom);
 router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
+// Housekeeping is FRONT-DESK work, so it is gated on rooms_checkin rather than
+// listing. The Front Desk bundle holds only rooms_checkin; gating this on
+// listing would ship the surface to everyone except the people who use it.
+router.patch("/:slug/rooms/:roomId/housekeeping", venueOwnerAuth, requireCapability("rooms_checkin"), roomBlocks.setHousekeeping);
+// Out of order is TEMPORARY and dated — as opposed to DELETE /rooms/:id, which
+// deactivates permanently. Gated on `listing` because it changes what the venue
+// can sell, which is the same authority that adds and removes rooms.
+router.put("/:slug/rooms/:roomId/out-of-order", venueOwnerAuth, requireCapability("listing"), roomBlocks.setOutOfOrder);
+router.delete("/:slug/rooms/:roomId/out-of-order", venueOwnerAuth, requireCapability("listing"), roomBlocks.clearOutOfOrder);
 // ROOMS 2 — the room TYPE as a real entity. Reads open to any venue identity,
 // writes on the same `listing` capability the rooms inventory uses.
 // ROOMS 3 — the property's SHAPE. Blocks and floors are both optional; reads

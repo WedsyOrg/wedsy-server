@@ -311,6 +311,42 @@ function renderListing(acc) {
     ok((await call(rt.addTypePhotos, intruder)).code === 403, "another venue's owner → 403");
     const untouched = await Venue.findById(venue._id).select("roomTypes").lean();
     ok(!untouched.roomTypes[0].photos.some((p) => p.url.includes("evil")), "…and nothing was written");
+
+    // ── ROOMS 6: smoking / step-free, tri-state ───────────────────────────
+    // Sibling fields to sizeSqFt/bedConfiguration/view, and the case that
+    // matters is `accessible: false` — an explicit "not step-free" is a real
+    // answer, and a truthiness guard in the projection would drop exactly the
+    // venues honest enough to give it.
+    console.log("\n[ROOMS 6 — smoking and step-free access]");
+    {
+      const v = await Venue.findById(venue._id);
+      const t0 = v.roomTypes[0];
+      const setT = (body) => call(rt.updateRoomType, asOwner({ params: { typeId: String(t0._id) }, body }));
+
+      let r = await setT({ smokingPolicy: "non_smoking", accessible: false });
+      ok(r.code === 200, `set both (got ${r.code})`);
+      let fresh = await Venue.findById(venue._id).lean();
+      let ft = fresh.roomTypes.find((x) => String(x._id) === String(t0._id));
+      ok(ft.smokingPolicy === "non_smoking", "smokingPolicy stored");
+      ok(ft.accessible === false, "accessible stored as an explicit false");
+      let pub = (fresh.accommodation.roomTypes || []).find((x) => x.name === ft.name);
+      ok(pub && pub.accessible === false,
+        "🔴 …and `false` SURVIVES the projection — a truthiness guard would have dropped it");
+      ok(pub && pub.smokingPolicy === "non_smoking", "…alongside the smoking policy");
+
+      r = await setT({ smokingPolicy: "", accessible: null });
+      ok(r.code === 200, "both can be cleared back to not-stated");
+      fresh = await Venue.findById(venue._id).lean();
+      ft = fresh.roomTypes.find((x) => String(x._id) === String(t0._id));
+      ok(ft.smokingPolicy === undefined, "🔴 smokingPolicy is UNSET, not empty-string");
+      ok(ft.accessible === undefined, "🔴 accessible is UNSET, not false");
+      pub = (fresh.accommodation.roomTypes || []).find((x) => x.name === ft.name);
+      ok(pub && !("accessible" in pub), "…and the listing omits it entirely again");
+
+      ok((await setT({ smokingPolicy: "maybe" })).code === 400, "an unknown smoking value is refused");
+      ok((await setT({ accessible: "yes" })).code === 400, "a non-boolean accessible is refused");
+    }
+
   } catch (err) {
     fail += 1;
     console.error("\nFATAL", err);
