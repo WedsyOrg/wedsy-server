@@ -195,6 +195,32 @@ const del = (venue, room, extra = {}) =>
       eq(await VenueRoomAllotment.countDocuments({ _id: allot._id }), 1, "the fixture stay was real");
     }
 
+    console.log("\n[4b. 🔴 THE LAYOUT PAYLOAD CARRIES THE VERDICT TOO — ROOMS 8]");
+    {
+      // ROOMS 8 moved Deactivate and Delete off the flat room list and onto the
+      // room's chip on the LAYOUT, so the drawer reads THIS payload, not the
+      // rooms-state one. layoutPayload built its rooms from resolveRooms
+      // directly, which knows nothing about deletability — `deletable` arrived
+      // undefined, and the drawer would have offered Delete on nothing, ever.
+      // A correct guard reading a field the projection dropped.
+      //
+      // Asserted here because the button in room-drawer.tsx is only correct
+      // while that decoration exists: remove it and this fails, rather than the
+      // control silently vanishing from every room on the property.
+      const f = await fixture();
+      await deactivate(f.venue, f.venue.rooms[1]);
+      const layout = await call(blocks.getLayout, req(f.venue));
+      eq(layout.code, 200, "the layout reads");
+      const all = layout.body.layout.flatMap((b) => b.floors).flatMap((fl) => fl.rooms);
+      const byName = new Map(all.map((r) => [r.name, r]));
+
+      ok("deletable" in byName.get("R1"), "🔴 the LAYOUT payload carries `deletable` at all");
+      eq(byName.get("R1").deletable, false, "R1 is in service, so not deletable");
+      eq(byName.get("R1").undeletable.code, "room_active", "…for the reversible reason");
+      eq(byName.get("R2").deletable, true, "🔴 R2 is deactivated, so it IS — the flag is not always false");
+      eq(byName.get("R2").undeletable, null, "…with nothing to explain");
+    }
+
     console.log("\n[5. the held-nights guard still fires, and still names the couple]");
     {
       const f = await fixture();

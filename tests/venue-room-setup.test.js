@@ -113,10 +113,25 @@ const step = async () => (await call(blocks.getSetup, asOwner())).body.setup;
     ok((await Venue.findById(venue._id)).rooms.length === before, "…and not one room was created");
 
     // ══ 3. DONE, AND STAYING DONE ═══════════════════════════════════════════
-    console.log("\n[rooms exist, so the wizard is done]");
+    // ── THESE ASSERTIONS CHANGED IN ROOMS 8, DELIBERATELY ───────────────────
+    // They read `rooms exist → step "done"`, which is the semantics that let
+    // the wizard's step advance itself. `done` and `finished` are now two
+    // questions:
+    //
+    //   done      should first-run setup be OFFERED?   — a suppression
+    //   finished  has the owner SAID they are done?    — completedAt, only ever
+    //
+    // The suppression guarantee this section exists for is unchanged and still
+    // asserted below. What is no longer claimed is that one room existing means
+    // the owner has finished adding rooms.
+    console.log("\n[rooms exist, so the wizard is not OFFERED — but the step is not over]");
     s = await step();
-    ok(s.step === "done" && s.done === true, `step "${s.step}"`);
+    ok(s.done === true, `not offered unprompted (done=${s.done})`);
+    ok(s.finished === false, `🔴 …but NOT finished — the owner has not said so (finished=${s.finished})`);
+    ok(s.step === "rooms", `🔴 …and the resume point is still the rooms step, not "done" (got "${s.step}")`);
     ok(s.reason === "rooms_exist", `…because rooms exist (${s.reason})`);
+    ok(!s.completed.includes("rooms"),
+      "🔴 the rooms step is NOT in `completed` — completion of it is not derivable");
 
     console.log("\n[and it does not come back when every room is deleted]");
     await call(blocks.completeSetup, asOwner());
@@ -124,8 +139,81 @@ const step = async () => (await call(blocks.getSetup, asOwner())).body.setup;
     stripped.rooms = [];
     await stripped.save();
     s = await step();
-    ok(s.step === "done" && s.done === true, "still done with zero rooms");
+    ok(s.step === "done" && s.done === true && s.finished === true, "still done with zero rooms");
     ok(s.reason === "completed", `…because it was completed (${s.reason}) — being walked through first-run setup on a property you have run for a year is worse than an empty list`);
+
+    // ══ 3b. NO STEP ADVANCES ITSELF — THE BUG THAT SHIPPED TWICE ════════════
+    //
+    // ROOMS 3 fixed it for blocks: adding one block completed the shape step
+    // and a second could not be added. The fix gave the wizard its own `viewing`
+    // state — and then kept ONE server override, `setup.done ? "done" : viewing`,
+    // which made the first ROOM end the rooms step the same way.
+    //
+    // ── WHICH HALF OF THIS THE SERVER OWNS ─────────────────────────────────
+    // The step ADVANCING as data accumulates is correct and intended here: it
+    // is a resume point, and an owner who built their blocks last week should
+    // come back to types, not to a step they finished. That is why this suite
+    // asserts the step moves to "types" once a block exists.
+    //
+    // "No step advances itself" is a CLIENT property — it is about the step on
+    // screen under an owner who is mid-task, and it is held by the wizard's own
+    // `viewing` state, which no server field may write. It is driven in the
+    // browser, not assertable from here.
+    //
+    // What the SERVER owes, and what this asserts, is the other half: the rooms
+    // step is never reported complete from data. That is the field the wizard's
+    // one remaining override read, and it is why the bug came back.
+    console.log("\n[🔴 the rooms step is never completed by data — only by the owner]");
+    {
+      const v = await Venue.create({ name: `${TAG} Self`, slug: `${TAG}-self`, city: "Coorg", state: "Karnataka" });
+      created.push(v._id);
+      const at = async () => (await call(blocks.getSetup, { params: { slug: v.slug }, query: {}, body: {}, venueOwner: { venueId: String(v._id) } })).body.setup;
+
+      ok((await at()).step === "shape", "starts at shape");
+
+      // ── SHAPE: two blocks, and the first must not end the step ────────────
+      const mk = (name) => call(blocks.addBlock, { params: { slug: v.slug }, query: {}, body: { name, floors: ["Ground"] }, venueOwner: { venueId: String(v._id) } });
+      await mk("Garden Block");
+      let s2 = await at();
+      // Intended: a returning owner resumes past a step they have satisfied.
+      // ROOMS 3's bug was the WIZARD rendering off this live, not this value.
+      ok(s2.step === "types", `after the first block the RESUME point moves to types (got "${s2.step}")`);
+      ok(s2.completed.includes("shape") && !s2.completed.includes("rooms"),
+        "…shape is completed by data; rooms is not, and never is");
+      await mk("Lake Wing");
+      ok((await Venue.findById(v._id)).blocks.length === 2, "…and a second block can still be added");
+
+      // ── TYPES: same shape of question ─────────────────────────────────────
+      const fresh = await Venue.findById(v._id);
+      fresh.roomTypes.push({ name: "Standard", sleeps: 2 });
+      await fresh.save();
+      s2 = await at();
+      ok(s2.step === "rooms", "with blocks and a type the resume point moves to rooms");
+
+      // ── ROOMS: the recurrence. One room must not end the step ─────────────
+      const withRoom = await Venue.findById(v._id);
+      withRoom.rooms.push({ name: "101", isActive: true });
+      await withRoom.save();
+      s2 = await at();
+      ok(s2.step === "rooms", `🔴 after the FIRST room the resume point is STILL rooms (got "${s2.step}") — the recurrence`);
+      ok(s2.finished === false, "🔴 …and the owner has not finished, because they have not said so");
+
+      // Ten more, the second batch — the case the ROOMS 3 drive never ran.
+      const more = await Venue.findById(v._id);
+      for (let i = 2; i <= 11; i += 1) more.rooms.push({ name: `1${String(i).padStart(2, "0")}`, isActive: true });
+      await more.save();
+      s2 = await at();
+      ok(s2.step === "rooms", "🔴 eleven rooms in, still the rooms step — nothing has ended it");
+      ok(s2.finished === false, "…still not finished");
+
+      // ── AND ONLY THE EXPLICIT ACTION ENDS IT ──────────────────────────────
+      await call(blocks.completeSetup, { params: { slug: v.slug }, query: {}, body: {}, venueOwner: { venueId: String(v._id) } });
+      s2 = await at();
+      ok(s2.step === "done" && s2.finished === true,
+        "🔴 the owner pressing Finish is the ONLY thing that ended it");
+      ok((await Venue.findById(v._id)).roomSetup.completedAt instanceof Date,
+        "…and it is stored as completedAt, not inferred from the rooms");
+    }
 
     // ══ 4. THE SKIP — THE OTHER THING THAT CANNOT BE DERIVED ════════════════
     console.log("\n['one building, one floor' — the case that breaks a derived step]");
