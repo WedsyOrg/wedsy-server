@@ -31,7 +31,7 @@ async function housekeepingActorName(req) {
   const m = await VenueTeamMember.findById(req.venueOwner && req.venueOwner.memberId).select("name").lean();
   return (m && m.name) || "team member";
 }
-const { resolveRooms } = require("../utils/venueRoomTypes");
+const { resolveRooms, presentTypes, presentAmenities } = require("../utils/venueRoomTypes");
 const { decorateDeletability } = require("../utils/venueRoomDeletion");
 const { roomStatusOn, statusTotals } = require("../utils/venueRoomStatus");
 const { setupState } = require("../utils/venueRoomSetup");
@@ -91,7 +91,19 @@ async function layoutPayload(venue, extra = {}, { withStatus = true, on } = {}) 
     blocks: venue.blocks || [],
     layout: layout.blocks,
     counts: { ...layout.counts, ...(status ? { status: statusTotals(status) } : {}) },
-    roomTypes: venue.roomTypes || [],
+    roomTypes: presentTypes(venue),
+    /**
+     * ── THE LABEL MAP, WITHOUT WHICH THE LAYOUT CANNOT NAME AN AMENITY ─────
+     * `roomTypes[].amenities` holds KEYS. This payload carried the keys and not
+     * the library, so the only true thing the layout could say about them was
+     * how many there were — which is exactly what it said: "10 amenities". The
+     * strip was not being terse, it was being as specific as its arguments
+     * allowed.
+     *
+     * Through the same presenter as everywhere else, so this cannot become a
+     * third shape of the amenity list.
+     */
+    roomAmenities: presentAmenities(venue),
     ...extra,
   };
 }
@@ -103,11 +115,16 @@ const getSetup = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
+    // Through the SAME presenters the rooms payload uses. These two lines were
+    // the write-side of a read/write shape divergence: the wizard's amenity
+    // picker was handed raw subdocuments and silently lost `usedBefore` ordering,
+    // while any amenity predating the `group` field fell into Extras. Same data,
+    // different endpoint, different shape — see utils/venueRoomTypes.
     return res.status(200).json({
       setup: setupState(venue),
       blocks: venue.blocks || [],
-      roomTypes: venue.roomTypes || [],
-      roomAmenities: venue.roomAmenities || [],
+      roomTypes: presentTypes(venue),
+      roomAmenities: presentAmenities(venue),
     });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };

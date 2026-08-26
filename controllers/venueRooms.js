@@ -40,6 +40,7 @@ const {
   resolveRoom,
   resolveRooms,
   projectAccommodation,
+  presentTypes,
 } = require("../utils/venueRoomTypes");
 
 const ROOM_TYPES = ["standard", "deluxe", "suite", "dorm", "other"];
@@ -228,7 +229,9 @@ async function statePayload(venue, extra = {}) {
   const projection = projectAccommodation(venue);
   return {
     rooms: await decorateDeletability(venue._id, resolveRooms(venue)),
-    roomTypes: venue.roomTypes || [],
+    // Presented, not raw — the fourth endpoint to carry types, and the shape has
+    // to be the one the other three return. See utils/venueRoomTypes.
+    roomTypes: presentTypes(venue),
     accommodation: venue.accommodation,
     untypedRooms: projection.untyped,
     ...extra,

@@ -20,6 +20,9 @@ const {
   amenityKeyFor,
   amenityUsage,
   resolveGroup,
+  presentAmenities,
+  presentTypes,
+  typeUsage,
   applyTypeToRooms,
   projectAccommodation,
   resolveRooms,
@@ -148,55 +151,6 @@ function checkOccupancyPair(type) {
 }
 
 /**
- * ── AMENITIES ARE ALWAYS PRESENTED WITH THEIR USAGE ─────────────────────────
- * Only the LIST endpoint attached `usage`; the five write endpoints returned a
- * bare array. The Amenities screen merges whatever a write returns into its
- * state, so the moment an owner added or renamed anything, every row lost its
- * usage and read "Not used yet" — including amenities the Standard type was
- * visibly using two inches away.
- *
- * One presenter, used by every response that carries amenities, so a sixth
- * endpoint cannot forget.
- */
-function presentAmenities(venue) {
-  const rows = (venue.roomAmenities || []).map((a) => {
-    const usage = amenityUsage(venue, a.key);
-    return {
-      key: a.key,
-      label: a.label,
-      isActive: a.isActive !== false,
-      group: resolveGroup(a),
-      usage,
-      /**
-       * ── FLOAT WHAT THE OWNER HAS ALREADY REACHED FOR ────────────────────
-       * An amenity already on some type is one this venue genuinely has, and
-       * is far more likely to be wanted on the next type than the twelfth item
-       * of a starter list. Surfaced as a FLAG rather than by pre-sorting the
-       * array, so a screen can float them WITHIN their group and keep the
-       * grouping intact — sorting them all to the top instead would put
-       * "Attached bathroom" above the Comfort heading.
-       */
-      usedBefore: usage.types.length > 0,
-    };
-  });
-
-  // Stable order: group first (in AMENITY_GROUPS order), used-before next,
-  // then the order the owner created them. Nothing is sorted alphabetically —
-  // a list an owner has arranged should stay arranged.
-  const groupRank = new Map(AMENITY_GROUPS.map((g, i) => [g, i]));
-  return rows
-    .map((r, i) => ({ r, i }))
-    .sort((a, b) => {
-      const ga = groupRank.has(a.r.group) ? groupRank.get(a.r.group) : AMENITY_GROUPS.length;
-      const gb = groupRank.has(b.r.group) ? groupRank.get(b.r.group) : AMENITY_GROUPS.length;
-      if (ga !== gb) return ga - gb;
-      if (a.r.usedBefore !== b.r.usedBefore) return a.r.usedBefore ? -1 : 1;
-      return a.i - b.i;
-    })
-    .map((x) => x.r);
-}
-
-/**
  * The payload every write returns, so the client never re-fetches to redraw.
  *
  * Async since ROOMS 7, and decorating through the SAME function venueRooms uses.
@@ -207,7 +161,7 @@ function presentAmenities(venue) {
 async function statePayload(venue, extra = {}) {
   const projection = projectAccommodation(venue);
   return {
-    roomTypes: venue.roomTypes || [],
+    roomTypes: presentTypes(venue),
     roomAmenities: presentAmenities(venue),
     rooms: await decorateDeletability(venue._id, resolveRooms(venue)),
     accommodation: venue.accommodation,
@@ -422,23 +376,69 @@ const removeTypePhoto = async (req, res) => {
 // A type with rooms is never removed silently: the rooms would be orphaned and
 // their capacity/rate would freeze at whatever the type last said, with nothing
 // on screen explaining why. Refuse and name the count.
+/**
+ * DELETE /venues/:slug/room-types/:typeId
+ *
+ * ── THIS USED TO BE A THIRD PATTERN, AND NOW IS NOT ────────────────────────
+ * Rooms and amenities had each settled the "delete something other things point
+ * at" question, differently but coherently. Types answered it a third way:
+ *
+ *   before   in use → 409 type_in_use, telling the owner to "move them to
+ *                     another type first, or deactivate this one" — advice for a
+ *                     control that existed in NO user interface. PATCH
+ *                     {isActive:false} was accepted and had no caller anywhere.
+ *                     `?force=1` then DETACHED the rooms: typeRef nulled, every
+ *                     inheritable field pushed into `overrides` to freeze the
+ *                     values. So the ordinary path was a dead end and the escape
+ *                     hatch quietly dismantled the type's relationship to its
+ *                     rooms.
+ *
+ *   now      in use → RETIRED, the way an in-use amenity is. isActive goes
+ *                     false, the rooms keep their typeRef and keep inheriting,
+ *                     and the response says so and names them.
+ *            unused → gone, the way an unused amenity is.
+ *
+ * `?force=1` survives as an escape for a caller that genuinely means "detach and
+ * destroy", because that behaviour is occasionally the right one and removing it
+ * outright would leave no way to reach it. It is no longer the ordinary path,
+ * and nothing in the owner-facing client asks for it.
+ *
+ * The two outcomes are BOTH 200s and both name themselves — `retired` or
+ * `deleted` — because a caller that asked to delete and got a retire has to be
+ * able to tell, which is the exact bug utils/venueRoomDeletion was written about.
+ */
 const deleteRoomType = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
     const type = (venue.roomTypes || []).id(req.params.typeId);
     if (!type) return res.status(404).json({ message: "Room type not found" });
-    const attached = (venue.rooms || []).filter((r) => String(r.typeRef || "") === String(type._id));
-    if (attached.length && String(req.query.force || "") !== "1") {
-      return res.status(409).json({
-        message: `${attached.length} room${attached.length === 1 ? " is" : "s are"} still this type. Move them to another type first, or deactivate this one.`,
-        code: "type_in_use",
-        rooms: attached.map((r) => r.name),
-      });
+
+    // Active rooms only — see utils/venueRoomTypes.typeUsage for why a
+    // deactivated room must not keep a type alive forever.
+    const inUse = typeUsage(venue, type._id);
+    const force = String(req.query.force || "") === "1";
+
+    if (inUse.length && !force) {
+      // Already retired: say so rather than reporting a fresh retirement, so a
+      // second press does not read as though it did something new.
+      const already = type.isActive === false;
+      type.isActive = false;
+      projectAccommodation(venue);
+      await venue.save();
+      return res.status(200).json(await statePayload(venue, {
+        retired: true,
+        message: already
+          ? `"${type.name}" was already switched off. ${inUse.length} room${inUse.length === 1 ? " is" : "s are"} still this type and keep${inUse.length === 1 ? "s" : ""} what they inherit from it.`
+          : `${inUse.length} room${inUse.length === 1 ? " is" : "s are"} this type, so "${type.name}" has been switched off rather than deleted. Those rooms keep it, and keep what they inherit from it.`,
+        usage: { rooms: inUse },
+      }));
     }
-    if (attached.length) {
+
+    if (inUse.length) {
       // Explicit force: keep the rooms, but freeze what they inherited so
       // nothing silently changes value the moment the type disappears.
+      const attached = (venue.rooms || []).filter((r) => String(r.typeRef || "") === String(type._id));
       for (const room of attached) {
         room.typeRef = null;
         const has = new Set((room.overrides || []).map(String));
@@ -448,7 +448,7 @@ const deleteRoomType = async (req, res) => {
     type.deleteOne();
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(await statePayload(venue, { deleted: true, detached: attached.length }));
+    return res.status(200).json(await statePayload(venue, { deleted: true, detached: inUse.length }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

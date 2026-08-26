@@ -182,14 +182,53 @@ function renderListing(acc) {
     ok(afterListingSave.accommodation.available === true, "…while `available`, which is genuinely the owner's, still saved");
 
     // ══ 6. DELETING A TYPE THAT ROOMS BELONG TO ═════════════════════════════
-    console.log("\n[a type with rooms is not removed silently]");
-    const refuse = await call(rt.deleteRoomType, asOwner({ params: { typeId: String(deluxe._id) } }));
-    ok(refuse.code === 409, `DELETE a type with 3 rooms → 409 (got ${refuse.code})`);
-    ok(/3 rooms are still this type/.test((refuse.body || {}).message || ""), `…naming the count: "${(refuse.body || {}).message}"`);
-    ok((refuse.body.rooms || []).length === 3, "…and listing which rooms, so the owner can act on it");
+    // ROOMS 9: this used to assert a 409 and a "move them or deactivate this
+    // one" message — advice pointing at a control that existed in no UI, while
+    // PATCH {isActive:false} was accepted with no caller. A type now RETIRES
+    // when it is in use and GOES when it is not, which is what rooms and
+    // amenities already did. See controllers/venueRoomTypes.deleteRoomType.
+    console.log("\n[a type with rooms retires rather than vanishing]");
+    const retire = await call(rt.deleteRoomType, asOwner({ params: { typeId: String(deluxe._id) } }));
+    ok(retire.code === 200, `DELETE a type with 3 rooms → 200 (got ${retire.code})`);
+    ok(retire.body.retired === true && !retire.body.deleted, "…and says RETIRED, not deleted — the caller asked to delete and must be able to tell it did not");
+    ok(/3 rooms are this type/.test((retire.body || {}).message || ""), `…naming the count: "${(retire.body || {}).message}"`);
+    ok(((retire.body.usage || {}).rooms || []).length === 3, "…and listing which rooms, so the owner can act on it");
+
+    // Read the STORED document, not the response body.
+    const afterRetire = await Venue.findById(venueId).select("roomTypes rooms");
+    const storedDeluxe = afterRetire.roomTypes.id(deluxe._id);
+    ok(storedDeluxe && storedDeluxe.isActive === false, "the type is still there, switched off — assert the positive, not an absence");
+    ok(afterRetire.rooms.filter((r) => String(r.typeRef || "") === String(deluxe._id)).length === 3,
+      "…and its 3 rooms still point at it, because retiring is not detaching");
+
+    // The founder's question: does a room still inherit from a RETIRED type?
+    // It must — the alternative is three rooms silently reverting to defaults
+    // the moment an owner tidies a type away.
+    const stillInherits = (await call(rt.listRoomTypes, asOwner())).body.rooms
+      .filter((r) => String(r.typeRef || "") === String(deluxe._id));
+    ok(stillInherits.length === 3 && stillInherits.every((r) => Number(r.rate) === 4500 && Number(r.capacity) === 2),
+      `…and all 3 still inherit the retired type's rate/capacity (${stillInherits.map((r) => r.rate).join(",")})`);
+
+    // A retired type is not an assignment target, though — that guard is at the
+    // write, in venueRooms.validateRoomInput.
+    const ontoRetired = await call(rooms.updateRoom, asOwner({ params: { roomId: String(room102._id) }, body: { typeRef: String(deluxe._id) } }));
+    ok(ontoRetired.code === 400 && /no longer an active room type/.test((ontoRetired.body || {}).message || ""),
+      `a retired type refuses NEW rooms (got ${ontoRetired.code}: "${(ontoRetired.body || {}).message}")`);
+
+    // Pressing delete again on an already-retired, still-used type must not read
+    // as though it did something new.
+    const retireAgain = await call(rt.deleteRoomType, asOwner({ params: { typeId: String(deluxe._id) } }));
+    ok(retireAgain.code === 200 && /was already switched off/.test((retireAgain.body || {}).message || ""),
+      `…and a second press says it was already off, rather than retiring it twice: "${(retireAgain.body || {}).message}"`);
+
+    // Back on, so the rest of this suite runs against a live type.
+    const revive = await call(rt.updateRoomType, asOwner({ params: { typeId: String(deluxe._id) }, body: { isActive: true } }));
+    ok(revive.code === 200 && (await Venue.findById(venueId).select("roomTypes")).roomTypes.id(deluxe._id).isActive !== false,
+      "a retired type can be switched back on — the control the old 409 advised now exists");
 
     const emptyDelete = await call(rt.deleteRoomType, asOwner({ params: { typeId: String(tentType._id) } }));
-    ok(emptyDelete.code === 200, `a type with no rooms deletes cleanly (got ${emptyDelete.code})`);
+    ok(emptyDelete.code === 200 && emptyDelete.body.deleted === true, `a type with no rooms deletes cleanly (got ${emptyDelete.code})`);
+    ok(!(await Venue.findById(venueId).select("roomTypes")).roomTypes.id(tentType._id), "…and is genuinely gone from the stored document");
 
     console.log("\n[forcing it freezes what the rooms had inherited]");
     const forced = await call(rt.deleteRoomType, asOwner({ params: { typeId: String(cottage._id) }, query: { force: "1" } }));
