@@ -96,10 +96,15 @@ function resolveLayout(venue, { presentRoom } = {}) {
       name: "",
       isImplicit: true,
       isUnplaced: false,
+      // Implicit levels have no stored row to retire, so they are always in
+      // use. Stated rather than omitted, because the whole point of this shape
+      // is that a consumer loops and never asks which kind of level it has.
+      isActive: true,
       floors: [{
         _id: null,
         name: "",
         isImplicit: true,
+        isActive: true,
         rooms: rooms.map(present),
       }],
     });
@@ -111,6 +116,13 @@ function resolveLayout(venue, { presentRoom } = {}) {
         _id: f._id,
         name: f.name,
         isImplicit: false,
+        // ── CARRIED, NEVER FILTERED ON ──────────────────────────────────────
+        // A block or floor taken out of use is the step before deleting it, and
+        // it says nothing about whether the rooms inside can be sold. Filtering
+        // here would take a property's inventory off the screen because
+        // somebody started tidying the layout. Rooms keep their own isActive,
+        // and that is the only one availability reads.
+        isActive: f.isActive !== false,
         rooms: (byFloor.get(`${bId}:${idOf(f._id)}`) || []).map(present),
       }));
 
@@ -124,6 +136,8 @@ function resolveLayout(venue, { presentRoom } = {}) {
           _id: null,
           name: "",
           isImplicit: true,
+          // An implicit floor has no row to retire, so it is always in use.
+          isActive: true,
           rooms: direct.map(present),
         });
       }
@@ -133,6 +147,7 @@ function resolveLayout(venue, { presentRoom } = {}) {
         name: b.name,
         isImplicit: false,
         isUnplaced: false,
+        isActive: b.isActive !== false,
         floors: resolvedFloors,
       });
     }
@@ -146,7 +161,8 @@ function resolveLayout(venue, { presentRoom } = {}) {
         name: "",
         isImplicit: true,
         isUnplaced: true,
-        floors: [{ _id: null, name: "", isImplicit: true, rooms: loose.map(present) }],
+        isActive: true,
+        floors: [{ _id: null, name: "", isImplicit: true, isActive: true, rooms: loose.map(present) }],
       });
     }
   }

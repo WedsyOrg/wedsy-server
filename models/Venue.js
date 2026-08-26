@@ -354,12 +354,30 @@ const VenueSchema = new mongoose.Schema({
   blocks: [{
     name: { type: String, required: true, maxlength: 120 },
     /**
+     * ── RETIRED, AS THE STEP BEFORE DELETED ────────────────────────────────
+     * Deleting a block cannot be undone, so it is not one click away: a block
+     * is deactivated first and deleted from there. Absent means active, which
+     * is every block that already exists — no migration, no backfill.
+     *
+     * ── IT IS ORGANISATIONAL ONLY ──────────────────────────────────────────
+     * This does NOT take the rooms inside out of service. A block is where a
+     * room IS, not whether it can be sold, and quietly emptying a property's
+     * inventory because somebody tidied the layout would be a far worse bug
+     * than the one the two-step prevents. Availability reads
+     * Venue.rooms[].isActive and never consults this — see
+     * utils/venueRoomNights.activeRooms — and resolveLayout keeps rendering a
+     * deactivated block's rooms so none of them can fall off the screen.
+     */
+    isActive: { type: Boolean, default: true },
+    /**
      * Floors within this block, in the owner's order. An empty array is a
      * block that holds rooms directly, which resolveLayout renders as one
      * unnamed floor rather than as an absence.
      */
     floors: [{
       name: { type: String, required: true, maxlength: 120 },
+      /** Same two-step, same organisational-only meaning, as the block above. */
+      isActive: { type: Boolean, default: true },
     }],
   }],
 
