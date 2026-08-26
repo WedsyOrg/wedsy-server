@@ -47,6 +47,52 @@ const idOf = (v) => (v === null || v === undefined ? "" : String(v._id || v));
 const UNPLACED_BLOCK_ID = "__unplaced__";
 
 /**
+ * ── HOW MANY STOREYS DOES THIS PROPERTY HAVE ────────────────────────────────
+ * DISTINCT FLOOR NAMES, not block-floor pairs.
+ *
+ * A floor BELONGS TO A BLOCK — that is the storage, and it is right: two blocks
+ * genuinely have their own Ground, and renaming one must not rename the other.
+ * But this header is not counting objects, it is answering an owner's question,
+ * and an owner whose Garden Block and Lake Wing both run Ground and First says
+ * their property has two storeys. It reported four.
+ *
+ *   Garden{Ground,First} + Lake{Ground,First,Second}
+ *     block-floor pairs → 5      what it used to say
+ *     distinct names    → 3      what an owner would say
+ *
+ * ── THIS COUNT IS ONLY HONEST BECAUSE THE FLOOR PICKER EXISTS ───────────────
+ * Distinct-name counting assumes floor names are a CONTROLLED VOCABULARY. If
+ * one block says "1st" and another says "First", a three-storey property
+ * reports four storeys and this function is quietly wrong in the direction it
+ * was written to fix.
+ *
+ * The floor suggestion picker — Ground / Lobby / Mezzanine / 1–10 / Terrace —
+ * is therefore NOT COSMETIC. It is what keeps two blocks agreeing on what a
+ * storey is called, and this arithmetic is load-bearing on it. Removing it, or
+ * adding a path that writes floor names without it, silently degrades this
+ * number. They are one feature in two halves; do not treat them as independent.
+ *
+ * Matched case-insensitively and trimmed, because "Ground" and "ground " are
+ * one storey by any reading. NOTHING IS WRITTEN — the stored name stays exactly
+ * as the owner typed it, as everywhere else in this file.
+ *
+ * @param {object} venue a Venue doc or lean object
+ * @returns {number} distinct storeys across the whole property
+ */
+function distinctFloorCount(venue) {
+  const seen = new Set();
+  for (const b of (venue && venue.blocks) || []) {
+    for (const f of b.floors || []) {
+      const key = String(f.name || "").trim().toLowerCase();
+      // `name` is required in the schema, so an empty one cannot be created.
+      // Skipped rather than counted as a storey called "" if older data has one.
+      if (key) seen.add(key);
+    }
+  }
+  return seen.size;
+}
+
+/**
  * @param {object} venue                a Venue doc or lean object
  * @param {object} [opts]
  * @param {(room:object)=>object} [opts.presentRoom] map each room on the way out
@@ -176,7 +222,8 @@ function resolveLayout(venue, { presentRoom } = {}) {
       active: activeRooms.length,
       inactive: rooms.length - activeRooms.length,
       blocks: blocks.length,
-      floors: blocks.reduce((n, b) => n + (b.floors || []).length, 0),
+      /** Storeys, not block-floor pairs — see distinctFloorCount. */
+      floors: distinctFloorCount(venue),
       /** Rooms with no place, when there is a structure to have a place in. */
       unplaced: blocks.length ? loose.length : 0,
     },
@@ -211,4 +258,13 @@ function validatePlacement(venue, blockRef, floorRef) {
   return { ok: true, value: { blockRef: b._id, floorRef: f._id } };
 }
 
-module.exports = { resolveLayout, locationLabel, validatePlacement, UNPLACED_BLOCK_ID };
+module.exports = {
+  resolveLayout,
+  locationLabel,
+  validatePlacement,
+  // Exported so venueRoomSetup counts storeys the same way this file does.
+  // It had its OWN copy of the pair-summing arithmetic, which is how the two
+  // came to disagree with what an owner sees — one fact, one implementation.
+  distinctFloorCount,
+  UNPLACED_BLOCK_ID,
+};

@@ -18,6 +18,8 @@
  * those — see the model.
  */
 
+const { distinctFloorCount } = require("./venueRoomLayout");
+
 const STEPS = ["shape", "types", "rooms"];
 
 /**
@@ -67,7 +69,10 @@ function setupState(venue) {
     completedAt: setup.completedAt || null,
     counts: {
       blocks: (v.blocks || []).length,
-      floors: (v.blocks || []).reduce((n, b) => n + (b.floors || []).length, 0),
+      // Storeys, from the ONE implementation in venueRoomLayout. This line had
+      // its own copy of the pair-summing arithmetic, so the wizard and the
+      // layout legend could report different floor counts for the same venue.
+      floors: distinctFloorCount(v),
       types: (v.roomTypes || []).length,
       rooms: (v.rooms || []).length,
       amenities: (v.roomAmenities || []).length,
