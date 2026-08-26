@@ -197,29 +197,57 @@ const addBlock = async (req, res) => {
 };
 
 // ── PATCH /venues/:slug/room-blocks/:blockId ────────────────────────────────
-// Rename only. Floors are their own endpoints; order is its own endpoint.
+// Rename, and take out of use / put back. Floors are their own endpoints; order
+// is its own endpoint.
+//
+// `isActive` is what makes deletion a second step (see deleteBlock). It is
+// ORGANISATIONAL ONLY — the rooms inside stay exactly as sellable as they were,
+// because a block is where a room is, not whether it can be sold.
 const updateBlock = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
     const block = (venue.blocks || []).id(req.params.blockId);
     if (!block) return res.status(404).json({ message: "Block not found" });
-    const v = reqStr((req.body || {}).name, "name", 120);
-    if (!v.ok) return res.status(400).json({ message: v.message });
-    const clash = (venue.blocks || []).find(
-      (b) => idOf(b._id) !== idOf(block._id) && String(b.name).trim().toLowerCase() === v.value.toLowerCase()
-    );
-    if (clash) return res.status(409).json({ message: `There is already a block called "${clash.name}".`, code: "block_exists" });
-    block.name = v.value;
+    const body = req.body || {};
+
+    // A rename and a retire are separate acts and arrive separately, so a
+    // payload carrying only isActive must not be failed for having no name.
+    if (body.name !== undefined) {
+      const v = reqStr(body.name, "name", 120);
+      if (!v.ok) return res.status(400).json({ message: v.message });
+      const clash = (venue.blocks || []).find(
+        (b) => idOf(b._id) !== idOf(block._id) && String(b.name).trim().toLowerCase() === v.value.toLowerCase()
+      );
+      if (clash) return res.status(409).json({ message: `There is already a block called "${clash.name}".`, code: "block_exists" });
+      block.name = v.value;
+    } else if (body.isActive === undefined) {
+      // Neither field: the old contract required a name, and silently
+      // succeeding on an empty patch would be a worse answer than saying so.
+      const v = reqStr(body.name, "name", 120);
+      return res.status(400).json({ message: v.message });
+    }
+
+    if (body.isActive !== undefined) block.isActive = Boolean(body.isActive);
+
     await venue.save();
     return res.status(200).json(await layoutPayload(venue, { block }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
 // ── DELETE /venues/:slug/room-blocks/:blockId ───────────────────────────────
-// A block holding rooms is NOT removed silently: those rooms would land in the
-// unplaced bucket with nothing on screen explaining why they moved. Refuse and
-// name the count, unless the owner says so explicitly.
+//
+// Two refusals, and they answer different questions.
+//
+//  1. IS THIS A DELIBERATE, SECOND ACT? Deleting cannot be undone, so a block
+//     in use is not deletable in one click — it is taken out of use first and
+//     deleted from there. Same shape as a room.
+//
+//  2. WHAT BECOMES OF THE ROOMS INSIDE? They are NOT cascaded — a room is real
+//     inventory and its block is only a label for where it sits — so they are
+//     unplaced instead. That is the right behaviour and it is the one an owner
+//     would never guess, which is why it is stated, with the count and the
+//     names, BEFORE it happens rather than discovered afterwards.
 const deleteBlock = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
@@ -227,18 +255,31 @@ const deleteBlock = async (req, res) => {
     const block = (venue.blocks || []).id(req.params.blockId);
     if (!block) return res.status(404).json({ message: "Block not found" });
 
+    if (block.isActive !== false) {
+      return res.status(409).json({
+        code: "block_active",
+        message: `"${block.name}" is still in use. Take it out of use first — deleting a block cannot be undone.`,
+        canDeactivate: true,
+      });
+    }
+
     const inside = (venue.rooms || []).filter((r) => idOf(r.blockRef) === idOf(block._id));
     if (inside.length && String(req.query.force || "") !== "1") {
       return res.status(409).json({
         message: `${inside.length} room${inside.length === 1 ? " is" : "s are"} in ${block.name}. Removing it leaves ${inside.length === 1 ? "it" : "them"} unplaced.`,
         code: "block_in_use",
         rooms: inside.map((r) => r.name),
+        /** The count on its own field, so a screen need not parse the sentence. */
+        roomCount: inside.length,
       });
     }
     for (const r of inside) { r.blockRef = null; r.floorRef = null; }
+    const name = block.name;
     block.deleteOne();
     await venue.save();
-    return res.status(200).json(await layoutPayload(venue, { deleted: true, unplaced: inside.length }));
+    return res.status(200).json(await layoutPayload(venue, {
+      deleted: true, deletedName: name, unplaced: inside.length,
+    }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -262,6 +303,8 @@ const addFloor = async (req, res) => {
 };
 
 // ── PATCH /venues/:slug/room-blocks/:blockId/floors/:floorId ────────────────
+// Rename, and take out of use / put back — the same two fields, the same
+// organisational-only meaning, as a block.
 const updateFloor = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
@@ -270,19 +313,33 @@ const updateFloor = async (req, res) => {
     if (!block) return res.status(404).json({ message: "Block not found" });
     const floor = (block.floors || []).id(req.params.floorId);
     if (!floor) return res.status(404).json({ message: "Floor not found" });
-    const v = reqStr((req.body || {}).name, "name", 120);
-    if (!v.ok) return res.status(400).json({ message: v.message });
-    const clash = (block.floors || []).find(
-      (f) => idOf(f._id) !== idOf(floor._id) && String(f.name).trim().toLowerCase() === v.value.toLowerCase()
-    );
-    if (clash) return res.status(409).json({ message: `${block.name} already has a floor called "${clash.name}".`, code: "floor_exists" });
-    floor.name = v.value;
+    const body = req.body || {};
+
+    if (body.name !== undefined) {
+      const v = reqStr(body.name, "name", 120);
+      if (!v.ok) return res.status(400).json({ message: v.message });
+      const clash = (block.floors || []).find(
+        (f) => idOf(f._id) !== idOf(floor._id) && String(f.name).trim().toLowerCase() === v.value.toLowerCase()
+      );
+      if (clash) return res.status(409).json({ message: `${block.name} already has a floor called "${clash.name}".`, code: "floor_exists" });
+      floor.name = v.value;
+    } else if (body.isActive === undefined) {
+      const v = reqStr(body.name, "name", 120);
+      return res.status(400).json({ message: v.message });
+    }
+
+    if (body.isActive !== undefined) floor.isActive = Boolean(body.isActive);
+
     await venue.save();
     return res.status(200).json(await layoutPayload(venue, { floor }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
 // ── DELETE /venues/:slug/room-blocks/:blockId/floors/:floorId ───────────────
+// Same two refusals as a block, and for the same two reasons: deleting is a
+// second act, and what happens to the rooms on it is said before it happens.
+// A floor's rooms stay in the BLOCK — only the floor is lost — which is a
+// smaller consequence than a block's, and still not one to discover afterwards.
 const deleteFloor = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
@@ -292,20 +349,32 @@ const deleteFloor = async (req, res) => {
     const floor = (block.floors || []).id(req.params.floorId);
     if (!floor) return res.status(404).json({ message: "Floor not found" });
 
+    if (floor.isActive !== false) {
+      return res.status(409).json({
+        code: "floor_active",
+        message: `"${floor.name}" is still in use. Take it out of use first — deleting a floor cannot be undone.`,
+        canDeactivate: true,
+      });
+    }
+
     const inside = (venue.rooms || []).filter((r) => idOf(r.floorRef) === idOf(floor._id));
     if (inside.length && String(req.query.force || "") !== "1") {
       return res.status(409).json({
         message: `${inside.length} room${inside.length === 1 ? " is" : "s are"} on ${floor.name}. Removing it leaves ${inside.length === 1 ? "it" : "them"} in ${block.name} with no floor.`,
         code: "floor_in_use",
         rooms: inside.map((r) => r.name),
+        roomCount: inside.length,
       });
     }
     // They stay in the BLOCK — only the floor is gone. Dropping them all the
     // way to unplaced would lose information the owner did not ask to lose.
     for (const r of inside) r.floorRef = null;
+    const name = floor.name;
     floor.deleteOne();
     await venue.save();
-    return res.status(200).json(await layoutPayload(venue, { deleted: true, keptInBlock: inside.length }));
+    return res.status(200).json(await layoutPayload(venue, {
+      deleted: true, deletedName: name, keptInBlock: inside.length,
+    }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

@@ -183,7 +183,13 @@ const shapeOf = (layout) =>
     ok(ghost.blocks.some((b) => b.isUnplaced), "…in the unplaced bucket");
 
     // ══ 4. DELETING STRUCTURE ═══════════════════════════════════════════════
+    // ROOMS 7: structure is taken out of use before it can be deleted, so the
+    // rooms-inside warning is now the SECOND refusal. Both are asserted, in
+    // order — the first one is what stops a one-click delete.
     console.log("\n[a block holding rooms is not removed silently]");
+    const twoStep = await call(blocks.deleteBlock, asOwner({ params: { blockId: String(garden._id) } }));
+    ok(twoStep.code === 409 && twoStep.body.code === "block_active", `→ 409 in use (got ${twoStep.code}/${twoStep.body.code})`);
+    await call(blocks.updateBlock, asOwner({ params: { blockId: String(garden._id) }, body: { isActive: false } }));
     const refuse = await call(blocks.deleteBlock, asOwner({ params: { blockId: String(garden._id) } }));
     ok(refuse.code === 409 && refuse.body.code === "block_in_use", `→ 409 (got ${refuse.code})`);
     ok(/2 rooms are in Garden Block/.test(refuse.body.message), `…naming the count: "${refuse.body.message}"`);
@@ -192,6 +198,9 @@ const shapeOf = (layout) =>
     console.log("\n[removing a FLOOR keeps its rooms in the block]");
     const v3 = await Venue.findById(venue._id);
     const mg = v3.blocks.id(main._id).floors.find((f) => f.name === "Ground");
+    const floorTwoStep = await call(blocks.deleteFloor, asOwner({ params: { blockId: String(main._id), floorId: String(mg._id) } }));
+    ok(floorTwoStep.code === 409 && floorTwoStep.body.code === "floor_active", `→ 409 in use (got ${floorTwoStep.code}/${floorTwoStep.body.code})`);
+    await call(blocks.updateFloor, asOwner({ params: { blockId: String(main._id), floorId: String(mg._id) }, body: { isActive: false } }));
     const floorRefuse = await call(blocks.deleteFloor, asOwner({ params: { blockId: String(main._id), floorId: String(mg._id) } }));
     ok(floorRefuse.code === 409 && /with no floor/.test(floorRefuse.body.message), `→ 409 naming the consequence: "${floorRefuse.body.message}"`);
     const forced = await call(blocks.deleteFloor, asOwner({ params: { blockId: String(main._id), floorId: String(mg._id) }, query: { force: "1" } }));

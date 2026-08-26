@@ -293,6 +293,15 @@ const del = (venue, room, extra = {}) =>
       eq(placed.rooms.filter((r) => String(r.blockRef) === blockId).length, 2,
         "🔴 two rooms are REALLY in the block — the refusal below has something to refuse");
 
+      // ROOMS 7: a block is taken out of use before it can be deleted, exactly
+      // like a room. The rooms-inside warning is the SECOND refusal, and it is
+      // the one this case is about — see venue-block-delete for the first.
+      const early = await call(blocks.deleteBlock, req(f.venue, { params: { blockId } }));
+      eq(early.code, 409, "a block in use is not deletable in one click");
+      eq(early.body.code, "block_active", "…for the two-step reason");
+      const off = await call(blocks.updateBlock, req(f.venue, { params: { blockId }, body: { isActive: false } }));
+      eq(off.code, 200, "taken out of use");
+
       const r = await call(blocks.deleteBlock, req(f.venue, { params: { blockId } }));
       eq(r.code, 409, "🔴 refused rather than silently unplacing them");
       eq(r.body.code, "block_in_use", "…with its own code");
