@@ -25,6 +25,7 @@ const {
   resolveRooms,
 } = require("../utils/venueRoomTypes");
 const { resolvePolicy, includedRooms, quoteRooms } = require("../utils/venueRoomsPolicy");
+const { decorateDeletability } = require("../utils/venueRoomDeletion");
 
 // `blocks` is in here because validatePlacement and resolveLayout read it, and
 // a select that omits it does not fail loudly — it makes every block look
@@ -195,13 +196,20 @@ function presentAmenities(venue) {
     .map((x) => x.r);
 }
 
-/** The payload every write returns, so the client never re-fetches to redraw. */
-function statePayload(venue, extra = {}) {
+/**
+ * The payload every write returns, so the client never re-fetches to redraw.
+ *
+ * Async since ROOMS 7, and decorating through the SAME function venueRooms uses.
+ * A type edit returns the whole rooms array, so a rooms array without the delete
+ * verdict would silently un-render every Delete button on the screen the moment
+ * somebody renamed a type.
+ */
+async function statePayload(venue, extra = {}) {
   const projection = projectAccommodation(venue);
   return {
     roomTypes: venue.roomTypes || [],
     roomAmenities: presentAmenities(venue),
-    rooms: resolveRooms(venue),
+    rooms: await decorateDeletability(venue._id, resolveRooms(venue)),
     accommodation: venue.accommodation,
     /** Active rooms in no type: real rooms the public listing cannot show. */
     untypedRooms: projection.untyped,
@@ -217,7 +225,7 @@ const listRoomTypes = async (req, res) => {
     if (!venue) return;
     // A read must not persist. statePayload projects onto the in-memory doc to
     // report what the listing WOULD say; nothing is saved here.
-    return res.status(200).json(statePayload(venue));
+    return res.status(200).json(await statePayload(venue));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -240,7 +248,7 @@ const addRoomType = async (req, res) => {
 
     projectAccommodation(venue);
     await venue.save();
-    return res.status(201).json(statePayload(venue, { roomType: created }));
+    return res.status(201).json(await statePayload(venue, { roomType: created }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -268,7 +276,7 @@ const updateRoomType = async (req, res) => {
     const cascaded = applyTypeToRooms(venue, type);
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, {
+    return res.status(200).json(await statePayload(venue, {
       roomType: type,
       cascadedTo: cascaded,
       inheritableFields: INHERITABLE_FIELDS,
@@ -326,7 +334,7 @@ const addTypePhotos = async (req, res) => {
     type.photos = normalisePhotos([...(type.photos || []), ...fresh.map((u) => ({ url: u }))]);
     projectAccommodation(venue);
     await venue.save();
-    return res.status(201).json(statePayload(venue, { roomType: type, added: fresh.length, skipped: urls.length - fresh.length }));
+    return res.status(201).json(await statePayload(venue, { roomType: type, added: fresh.length, skipped: urls.length - fresh.length }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -364,7 +372,7 @@ const reorderTypePhotos = async (req, res) => {
     type.photos = normalisePhotos(want.map((u) => ({ url: u, isCover: u === cover })));
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, { roomType: type }));
+    return res.status(200).json(await statePayload(venue, { roomType: type }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -382,7 +390,7 @@ const setTypeCover = async (req, res) => {
     type.photos = normalisePhotos((type.photos || []).map((p) => ({ url: p.url, isCover: String(p.url) === url })));
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, { roomType: type }));
+    return res.status(200).json(await statePayload(venue, { roomType: type }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -406,7 +414,7 @@ const removeTypePhoto = async (req, res) => {
     type.photos = normalisePhotos(kept.map((p) => ({ url: p.url, isCover: p.isCover })));
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, { roomType: type, removed: 1 }));
+    return res.status(200).json(await statePayload(venue, { roomType: type, removed: 1 }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -440,7 +448,7 @@ const deleteRoomType = async (req, res) => {
     type.deleteOne();
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, { deleted: true, detached: attached.length }));
+    return res.status(200).json(await statePayload(venue, { deleted: true, detached: attached.length }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

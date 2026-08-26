@@ -97,7 +97,18 @@ async function orphans(venueId) {
     console.log("\n[1. DELETE a room that was never allotted — used to HARD DELETE it]");
     {
       const f = await fixture();
-      const r = await call(rooms.deleteRoom, req(f.venue, { params: { roomId: String(f.room._id) } }));
+      // ROOMS 7: delete became a SECOND step, so an in-service room is turned
+      // away before the promise is even weighed. Nothing is deleted, which is
+      // the guarantee this case exists for.
+      const straight = await call(rooms.deleteRoom, req(f.venue, { params: { roomId: String(f.room._id) } }));
+      eq(straight.code, 409, "refused — delete is not offered on a room still in service");
+      eq(straight.body.code, "room_active", "…and names the step that is missing");
+
+      // The promise is raised at the step that actually takes the room out of
+      // availability, and it still names the couple there.
+      const r = await call(rooms.updateRoom, req(f.venue, {
+        params: { roomId: String(f.room._id) }, body: { isActive: false },
+      }));
       eq(r.code, 409, "refused");
       eq(r.body.code, "room_has_held_nights", "…with a code the UI can branch on");
       ok(/Priya & Arjun/.test(r.body.message), `…naming the couple: "${r.body.message}"`);
@@ -142,8 +153,15 @@ async function orphans(venueId) {
       const free = await fixture();
       const spare = free.venue.rooms[2];
       await VenueRoomNight.deleteMany({ venue: free.venue._id, room: spare._id });
+      const off = await call(rooms.updateRoom, req(free.venue, {
+        params: { roomId: String(spare._id) }, body: { isActive: false },
+      }));
+      eq(off.code, 200, "🔴 deactivating a room holding NOTHING raises no warning");
       const unheld = await call(rooms.deleteRoom, req(free.venue, { params: { roomId: String(spare._id) } }));
-      eq(unheld.code, 200, "🔴 a room holding NOTHING still deletes without a warning");
+      eq(unheld.code, 200, "🔴 …and it then deletes without one either");
+      const gone = await Venue.findById(free.venue._id).lean();
+      eq(gone.rooms.filter((x) => String(x._id) === String(spare._id)).length, 0,
+        "🔴 …and it is REALLY gone from the stored document");
     }
 
     console.log("\n[5. proceeding deliberately — and the holds do not survive it]");
@@ -151,6 +169,18 @@ async function orphans(venueId) {
       const f = await fixture();
       const before = await VenueRoomNight.countDocuments({ booking: f.booking._id });
       eq(before, 6, "the booking holds 3 rooms × 2 nights");
+      // Inactive AND still holding nights — the state a deactivation from before
+      // this guard existed left behind, and the one case where a delete meets
+      // the held-nights warning rather than the two-step one. Written to the
+      // stored document directly, because going through updateRoom would
+      // release the holds and there would be nothing left to force past.
+      await Venue.updateOne(
+        { _id: f.venue._id, "rooms._id": f.room._id },
+        { $set: { "rooms.$.isActive": false } }
+      );
+      const warned = await call(rooms.deleteRoom, req(f.venue, { params: { roomId: String(f.room._id) } }));
+      eq(warned.code, 409, "the delete still warns first");
+      eq(warned.body.code, "room_has_held_nights", "…about the promise, not the two-step");
       const r = await call(rooms.deleteRoom, req(f.venue, { params: { roomId: String(f.room._id) }, query: { force: "1" } }));
       eq(r.code, 200, "forced through");
       eq(r.body.releasedNights.released, 2, "🔴 the 2 held nights were RELEASED, and the response says so");
@@ -191,8 +221,17 @@ async function orphans(venueId) {
       const held = await heldNightsForRoom(f.venue._id, f.room._id);
       eq(held.upcoming, 0, "no upcoming nights");
       eq(held.past, 2, "…but the history is still reported");
+      const off = await call(rooms.updateRoom, req(f.venue, {
+        params: { roomId: String(f.room._id) }, body: { isActive: false },
+      }));
+      eq(off.code, 200, "deactivating raises no warning about consumed nights");
       const r = await call(rooms.deleteRoom, req(f.venue, { params: { roomId: String(f.room._id) } }));
       eq(r.code, 200, "🔴 so it deletes without a warning — history is not a promise");
+      // ROOMS 7: those past rows now leave WITH the room. They used to stay,
+      // pointing at a room id that no longer resolved.
+      eq(r.body.sweptNights, 2, "🔴 …and the consumed rows went with it, reported");
+      eq(await VenueRoomNight.countDocuments({ venue: f.venue._id, room: f.room._id }), 0,
+        "🔴 …leaving no orphan behind");
     }
   } catch (err) {
     fail += 1;

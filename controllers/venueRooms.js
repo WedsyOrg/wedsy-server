@@ -24,8 +24,13 @@
  * utils/venueRoomTypes.applyTypeToRooms.
  */
 const Venue = require("../models/Venue");
-const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const { heldNightsForRoom, releaseHeldNightsForRoom } = require("../utils/venueRoomNights");
+const {
+  roomsWithHistory,
+  deletabilityFor,
+  decorateDeletability,
+  sweepRoomNights,
+} = require("../utils/venueRoomDeletion");
 const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const { expand, planBulk } = require("../utils/venueRoomBulk");
 const { validatePlacement } = require("../utils/venueRoomLayout");
@@ -215,10 +220,14 @@ function applyRoomPatch(venue, room, patch, clearList) {
   // not quietly change what a detached room's rate means).
 }
 
-function statePayload(venue, extra = {}) {
+// Async since ROOMS 7: every room carries whether it can be deleted and, when
+// it cannot, why — see utils/venueRoomDeletion. That answer needs the venue's
+// allotment history, which is one query for the whole list rather than one per
+// room.
+async function statePayload(venue, extra = {}) {
   const projection = projectAccommodation(venue);
   return {
-    rooms: resolveRooms(venue),
+    rooms: await decorateDeletability(venue._id, resolveRooms(venue)),
     roomTypes: venue.roomTypes || [],
     accommodation: venue.accommodation,
     untypedRooms: projection.untyped,
@@ -231,7 +240,7 @@ const listRooms = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
-    return res.status(200).json(statePayload(venue));
+    return res.status(200).json(await statePayload(venue));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -266,7 +275,7 @@ const addRoom = async (req, res) => {
     room.floorRef = place.value.floorRef;
     projectAccommodation(venue);
     await venue.save();
-    return res.status(201).json(statePayload(venue, {
+    return res.status(201).json(await statePayload(venue, {
       room: resolveRoom(room, findType(venue, room.typeRef)),
     }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
@@ -307,7 +316,7 @@ const updateRoom = async (req, res) => {
     applyRoomPatch(venue, room, v.value, clearList);
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, {
+    return res.status(200).json(await statePayload(venue, {
       room: resolveRoom(room, findType(venue, room.typeRef)),
       // Reported so "12 nights were released" is something the owner READS,
       // not something they discover later on the booking.
@@ -317,36 +326,72 @@ const updateRoom = async (req, res) => {
 };
 
 // DELETE /venues/:slug/rooms/:roomId — listing capability.
-// Rooms with allotment history are deactivated (the history must stay
-// resolvable); never-used rooms are removed outright.
+//
+// ── DELETING IS NOW A SECOND STEP, AND A REFUSAL IS NOW A REFUSAL ───────────
+// Two things changed here, and they are really one change: this route used to
+// answer a request it had not been given.
+//
+//   · A room with allotment history was DEACTIVATED and returned 200. The
+//     caller asked to delete, was told it worked, and the room was still on the
+//     property. The deactivation was right — a stay refers to that room id and
+//     always will. Doing it under the name "delete" was not. It now refuses and
+//     says so, permanently.
+//
+//   · A room in service deleted outright. Deletion cannot be undone, so it is
+//     no longer one click away from a live room: deactivate first, then delete.
+//     That also puts the held-nights question — which already lives on
+//     deactivation — before the owner while the action is still reversible.
+//
+// The held-nights guard (ROOMS 6 slice 0) is unchanged and still runs here: a
+// room deactivated before that guard existed can still be holding nights, and
+// this is the last moment anyone can be told.
 const deleteRoom = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
     const room = venue.rooms.id(req.params.roomId);
     if (!room) return res.status(404).json({ message: "Room not found" });
-    // BEFORE either branch. Deactivating and deleting both remove the room
-    // from availability, so both owe the same warning — the deactivate branch
-    // looked safer and was not: an inactive room is excluded from
-    // activeRooms(), so its held nights are just as orphaned as a deleted
-    // room's, only harder to notice.
-    const refusal = await heldNightsRefusal(venue, room, req, { verb: "Remove" });
+
+    // The same verdict the room carries on every read, from the same function,
+    // so the screen and the write cannot disagree about what is on offer.
+    const withHistory = await roomsWithHistory(venue._id, [room]);
+    const verdict = deletabilityFor(room, withHistory);
+    if (!verdict.deletable) {
+      return res.status(409).json({
+        code: verdict.undeletable.code,
+        message: `"${room.name}" cannot be deleted. ${verdict.undeletable.reason}`,
+        // Named, so a caller can offer the action that IS available without
+        // parsing the sentence to work out which case it is in.
+        canDeactivate: verdict.undeletable.code === "room_active",
+      });
+    }
+
+    // ROOMS 6, unchanged. A deactivated room can still be holding nights, and
+    // the booking holding them is named before they go.
+    const refusal = await heldNightsRefusal(venue, room, req, { verb: "Delete" });
     if (refusal) return res.status(409).json(refusal);
     // Forced past the warning: the holds go, so the booking stops believing it
     // has a room it does not. Reported, never silent.
     const freedOnDelete = await releaseHeldNightsForRoom(venue._id, room._id);
 
-    const used = await VenueRoomAllotment.exists({ venue: venue._id, room: room._id });
-    if (used) {
-      room.isActive = false;
-      projectAccommodation(venue);
-      await venue.save();
-      return res.status(200).json(statePayload(venue, { deactivated: true, releasedNights: freedOnDelete }));
-    }
+    // ── AND THE ROWS THE RELEASE DOES NOT COVER ─────────────────────────────
+    // Past nights never block a delete — correctly, they are already consumed —
+    // and they were never cleaned up either. Without this the room goes and its
+    // rows stay, pointing at an id that no longer resolves. Measured: 2 rows
+    // left behind. See utils/venueRoomDeletion.sweepRoomNights.
+    const sweptNights = await sweepRoomNights(venue._id, room._id);
+
+    const name = room.name;
     room.deleteOne();
     projectAccommodation(venue);
     await venue.save();
-    return res.status(200).json(statePayload(venue, { deleted: true, releasedNights: freedOnDelete }));
+    return res.status(200).json(await statePayload(venue, {
+      deleted: true,
+      deletedName: name,
+      releasedNights: freedOnDelete,
+      /** Rows removed with the room, so nothing is swept in silence. */
+      sweptNights,
+    }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
@@ -447,7 +492,7 @@ const bulkCreateRooms = async (req, res) => {
     projectAccommodation(venue);
     await venue.save();
 
-    return res.status(201).json(statePayload(venue, {
+    return res.status(201).json(await statePayload(venue, {
       created: plan.create,
       createdCount: plan.create.length,
       skipped: plan.skip,
