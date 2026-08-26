@@ -124,6 +124,32 @@ async function fixture(blockSpecs = []) {
         "🔴 'First' and '1st' count as TWO storeys — the count depends on the picker keeping names uniform");
     }
 
+    {
+      // ── ROOMS 9: THE COST OF CHANGING THE VOCABULARY, STATED ─────────────
+      // The floor picker offered "1", "2", "3" and now offers "First",
+      // "Second", "Third". Nothing was migrated and nothing is ever written
+      // back — a venue that stored "1" keeps "1" and renders it as typed.
+      //
+      // So a property built before this change and extended after it can hold
+      // "1" in one block and "First" in another, and this function will call
+      // that two storeys. That is the SAME property of distinct-name counting
+      // the assertion above protects, reached by a different route, and it is
+      // an accepted cost rather than an oversight: rewriting an owner's stored
+      // floor names to tidy the arithmetic would be the worse trade.
+      //
+      // Asserted so the cost is visible in a test rather than discovered in a
+      // header, and so anyone tempted to "fix" it by migrating sees what they
+      // would be changing.
+      const v = {
+        blocks: [
+          { name: "Old Wing", floors: [{ name: "1" }] },
+          { name: "New Wing", floors: [{ name: "First" }] },
+        ],
+      };
+      eq(distinctFloorCount(v), 2,
+        "🔴 a venue that stored '1' before the ordinals and 'First' after counts TWO — nothing is rewritten to hide it");
+    }
+
     console.log("\n[4. 1b — a floor belongs to a BLOCK, proved on the stored document]");
     {
       const venue = await fixture([
