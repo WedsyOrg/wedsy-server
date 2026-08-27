@@ -391,6 +391,120 @@ function projectAccommodation(venue) {
   return { changed: true, rows, untyped, totalRooms, totalCapacity };
 }
 
+/* ══ THE TWO PRESENTERS ═══════════════════════════════════════════════════════
+ * Both of these lived in controllers/venueRoomTypes.js, which meant every OTHER
+ * controller that returned the same data returned a DIFFERENT SHAPE of it.
+ * Measured on main, before this build:
+ *
+ *   GET /room-types   roomAmenities through presentAmenities  → group, usage,
+ *                                                               usedBefore
+ *   GET /room-setup   venue.roomAmenities RAW                 → none of them
+ *
+ * So the amenity picker inside the WIZARD lost `usedBefore` ordering, and any
+ * amenity created before `group` existed fell through the client's
+ * `a.group ?? "extras"` fallback into Extras — while the same picker under Edit
+ * property grouped it correctly. One concept, two shapes, and the divergence was
+ * invisible because both endpoints "returned the amenities".
+ *
+ * They live here now so a third caller cannot reintroduce the split. Nothing may
+ * return roomAmenities or roomTypes except through these.
+ * ═════════════════════════════════════════════════════════════════════════════
+ */
+
+/**
+ * The amenity library, grouped and ordered, with what each one is used by.
+ *
+ * ── AMENITIES ARE ALWAYS PRESENTED WITH THEIR USAGE ─────────────────────────
+ * Only the LIST endpoint attached `usage`; the five write endpoints returned a
+ * bare array. The Amenities screen merges whatever a write returns into its
+ * state, so the moment an owner added or renamed anything, every row lost its
+ * usage and read "Not used yet" — including amenities the Standard type was
+ * visibly using two inches away.
+ *
+ * One presenter, used by every response that carries amenities, so a sixth
+ * endpoint cannot forget.
+ */
+function presentAmenities(venue) {
+  const rows = (venue.roomAmenities || []).map((a) => {
+    const usage = amenityUsage(venue, a.key);
+    return {
+      key: a.key,
+      label: a.label,
+      isActive: a.isActive !== false,
+      group: resolveGroup(a),
+      usage,
+      /**
+       * ── FLOAT WHAT THE OWNER HAS ALREADY REACHED FOR ────────────────────
+       * An amenity already on some type is one this venue genuinely has, and
+       * is far more likely to be wanted on the next type than the twelfth item
+       * of a starter list. Surfaced as a FLAG rather than by pre-sorting the
+       * array, so a screen can float them WITHIN their group and keep the
+       * grouping intact — sorting them all to the top instead would put
+       * "Attached bathroom" above the Comfort heading.
+       */
+      usedBefore: usage.types.length > 0,
+    };
+  });
+
+  // Stable order: group first (in AMENITY_GROUPS order), used-before next,
+  // then the order the owner created them. Nothing is sorted alphabetically —
+  // a list an owner has arranged should stay arranged.
+  const groupRank = new Map(AMENITY_GROUPS.map((g, i) => [g, i]));
+  return rows
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ga = groupRank.has(a.r.group) ? groupRank.get(a.r.group) : AMENITY_GROUPS.length;
+      const gb = groupRank.has(b.r.group) ? groupRank.get(b.r.group) : AMENITY_GROUPS.length;
+      if (ga !== gb) return ga - gb;
+      if (a.r.usedBefore !== b.r.usedBefore) return a.r.usedBefore ? -1 : 1;
+      return a.i - b.i;
+    })
+    .map((x) => x.r);
+}
+
+/**
+ * Which ACTIVE rooms are of this type.
+ *
+ * Active only, and that is the whole subtlety. A deactivated room still carries
+ * `typeRef`, so counting every room would let a property whose Deluxes were all
+ * taken out of service report the type as "in use" forever — retiring it instead
+ * of deleting it, permanently, with no way for the owner to reach the other
+ * outcome. Deactivated rooms are not on the property; they do not keep a type
+ * alive.
+ */
+function typeUsage(venue, typeId) {
+  const id = String(typeId);
+  return (venue.rooms || [])
+    .filter((r) => r.isActive !== false && String(r.typeRef || "") === id)
+    .map((r) => r.name);
+}
+
+/**
+ * Room types, each carrying WHAT DELETE WILL DO TO IT.
+ *
+ * ── WHY THE VERDICT RIDES ON THE READ ──────────────────────────────────────
+ * The same reason it does for rooms (see utils/venueRoomDeletion): a screen that
+ * offers Delete and is then contradicted has already failed. The owner has to be
+ * able to read "this one retires rather than goes, because six rooms are it"
+ * BEFORE committing to anything.
+ *
+ * `deleteAction` is deliberately not a boolean. Types have two outcomes and both
+ * are successes — `deletable: false` would be a lie about the in-use case, which
+ * does not refuse, it retires. Naming the ACTION rather than the permission is
+ * what lets the drawer word its own button honestly.
+ */
+function presentTypes(venue) {
+  return (venue.roomTypes || []).map((t) => {
+    const obj = typeof t.toObject === "function" ? t.toObject() : { ...t };
+    const rooms = typeUsage(venue, t._id);
+    return {
+      ...obj,
+      usage: { rooms },
+      deleteAction: rooms.length ? "retire" : "delete",
+    };
+  });
+}
+
 module.exports = {
   INHERITABLE_FIELDS,
   coverFirstUrls,
@@ -399,6 +513,9 @@ module.exports = {
   resolveGroup,
   amenityKeyFor,
   amenityUsage,
+  presentAmenities,
+  typeUsage,
+  presentTypes,
   describeAmenities,
   DEFAULT_ROOM_AMENITIES,
   AC_KEY,

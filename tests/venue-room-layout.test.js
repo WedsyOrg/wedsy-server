@@ -284,6 +284,51 @@ const shapeOf = (layout) =>
       `the status totals also sum to ${c.rooms} — "20 active rooms / Rooms · 21 / 20 rooms" cannot recur`);
     ok(st.inactive === c.inactive, `and inactive agrees between the two counts (${st.inactive})`);
 
+    // ══ ROOMS 9 — THE LAYOUT CAN ONLY NAME AN AMENITY BECAUSE OF THIS ══════
+    // ── A FAILING EXPECTATION, NOT A COMMENT ───────────────────────────────
+    // The layout's CATEGORIES section renders each type's amenities by NAME.
+    // It can only do that because GET /room-blocks carries `roomAmenities`
+    // beside `roomTypes` — the types hold amenity KEYS, and without the library
+    // the most specific thing the screen can say is how many there are. That is
+    // exactly what it used to say: "10 amenities".
+    //
+    // The fix lives in the CLIENT, so nothing there would fail if this field
+    // were dropped from the payload. The screen would just quietly go back to
+    // counting. Asserted here so removing it is a red test rather than a
+    // regression nobody notices.
+    console.log("\n[the layout payload carries the amenity LIBRARY, not just the keys]");
+    {
+      const seeded = await call(rt.addRoomAmenity, asOwner({ body: { seed: true } }));
+      ok(seeded.code === 200, `seeded the amenity library (got ${seeded.code})`);
+      const typed = await call(rt.addRoomType, asOwner({
+        body: { name: "Named Amenities", sleeps: 2, amenities: ["ac", "wifi"] },
+      }));
+      ok(typed.code === 201, `a type with two amenities (got ${typed.code})`);
+
+      const payload = (await call(blocks.getLayout, asOwner())).body;
+      ok(Array.isArray(payload.roomAmenities) && payload.roomAmenities.length > 0,
+        `GET /room-blocks carries roomAmenities (${(payload.roomAmenities || []).length} of them)`);
+
+      // The real assertion: every key on every type RESOLVES to a label here.
+      // A payload that carries the array but not the keys' entries is the same
+      // bug wearing a different shape.
+      const labels = new Map((payload.roomAmenities || []).map((a) => [String(a.key), a.label]));
+      const mine = (payload.roomTypes || []).find((t) => t.name === "Named Amenities");
+      ok(!!mine, "…and the type is on the layout payload");
+      const resolved = (mine.amenities || []).map((k) => labels.get(String(k)));
+      ok(resolved.length === 2 && resolved.every(Boolean),
+        `…and every amenity key resolves to a label: ${resolved.join(", ")}`);
+      ok(resolved.join(", ") === "Air conditioning, Wi-Fi",
+        `…to the RIGHT labels, not just to something truthy (${resolved.join(", ")})`);
+
+      // And the delete verdict rides on this read too — the drawer words its
+      // button from it BEFORE anything is pressed.
+      ok(mine.deleteAction === "delete",
+        `a type with no rooms reports deleteAction "delete" (got ${mine.deleteAction})`);
+      ok(mine.usage && Array.isArray(mine.usage.rooms) && mine.usage.rooms.length === 0,
+        "…and usage.rooms is an empty list, not absent — the drawer counts from this, never from a local filter");
+    }
+
     console.log("\n[validatePlacement on its own]");
     ok(validatePlacement(after, null, null).ok === true, "null/null is valid — a room may simply have no place");
     ok(validatePlacement(after, null, String(mg._id)).ok === false, "floor without block is not");
