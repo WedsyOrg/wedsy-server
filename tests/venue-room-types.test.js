@@ -111,9 +111,27 @@ function renderListing(acc) {
     console.log("\n[input the type refuses]");
     const dup = await call(rt.addRoomType, asOwner({ body: { name: "deluxe", sleeps: 2 } }));
     ok(dup.code === 409, `a name that only differs in case → 409 (got ${dup.code})`);
-    const badMax = await call(rt.addRoomType, asOwner({ body: { name: "Broken", sleeps: 4, maxOccupancy: 2 } }));
-    ok(badMax.code === 400, `maxOccupancy below sleeps → 400 (got ${badMax.code})`);
-    ok(/cannot be below/.test((badMax.body || {}).message || ""), "…and says which way round it should be");
+    // ── ROOMS 10: THE CONTRADICTION THIS GUARDED CANNOT ARISE ─────────────
+    // This asserted a 400 for "maxOccupancy below sleeps", which was a real
+    // contradiction while the maximum was typed independently of the base.
+    // The maximum is now DERIVED (bedsSleep + extraBedsPossible), so it is
+    // never below its own base by construction, and the 400 has nothing left
+    // to refuse. A total at or below the base states no extra beds.
+    //
+    // Asserted as the GUARANTEE rather than deleted, so "the maximum can never
+    // be below the base" stays a checked property rather than a claim in a
+    // comment.
+    const wasBad = await call(rt.addRoomType, asOwner({ body: { name: "Once Broken", sleeps: 4, maxOccupancy: 2 } }));
+    ok(wasBad.code === 201, `a total below the base is no longer a contradiction (got ${wasBad.code})`);
+    const wasBadType = (wasBad.body.roomTypes || []).find((t) => t.name === "Once Broken");
+    ok(wasBadType.occupancy.base === 4, `…the base is what was typed (${wasBadType.occupancy.base})`);
+    ok(wasBadType.occupancy.maximum === 4,
+      `…and the maximum is the base, never below it (${wasBadType.occupancy.maximum})`);
+    ok(wasBadType.occupancy.extraStated === false,
+      "…with extra beds left UNSTATED — a total of 2 is not a claim that 0 extra beds fit");
+    ok(wasBadType.occupancy.maximum >= wasBadType.occupancy.base,
+      "🔴 the maximum is never below the base — the property the old 400 existed to protect");
+    await call(rt.deleteRoomType, asOwner({ params: { typeId: String(wasBadType._id) } }));
     const badAmenity = await call(rt.addRoomType, asOwner({ body: { name: "Jacuzzi Suite", amenities: ["jacuzzi"] } }));
     ok(badAmenity.code === 400, `an amenity key not in the venue's library → 400 (got ${badAmenity.code})`);
     ok(/not in this venue's amenity list/.test((badAmenity.body || {}).message || ""), "…and points the owner at the list to fix it");

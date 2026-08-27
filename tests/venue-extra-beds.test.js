@@ -38,12 +38,19 @@ const pdfText = (built) => {
 
 let seq = 0;
 const made = [];
-async function fixture({ bedRate, nights = 2 } = {}) {
+async function fixture({ bedRate, nights = 2, typeSpec = null } = {}) {
   seq += 1;
   const slug = `${TAG}-${seq}`;
+  // ROOMS 10: the room may belong to a TYPE that states how many extra beds
+  // fit. Built through the model the way a real venue holds it, so the guard is
+  // handed the shape a real caller produces.
+  const typeId = new mongoose.Types.ObjectId();
   const venue = await Venue.create({
     name: slug, slug, city: "Bangalore", state: "Karnataka",
-    rooms: [{ name: "104", isActive: true }],
+    ...(typeSpec
+      ? { roomTypes: [{ _id: typeId, name: typeSpec.name || "Quad", ...typeSpec.fields }] }
+      : {}),
+    rooms: [{ name: "104", isActive: true, ...(typeSpec ? { typeRef: typeId } : {}) }],
     roomsPolicy: bedRate === undefined
       ? { configured: true, includedWithVenue: "all" }
       : { configured: true, includedWithVenue: "all", extraBedRate: bedRate },
@@ -64,7 +71,7 @@ async function fixture({ bedRate, nights = 2 } = {}) {
     checkOutAt: new Date(D("2036-09-30").getTime() + nights * 86400000), status: "allotted",
   });
   made.push({ venue, lead, owner });
-  return { venue, owner, lead, booking, allotment };
+  return { venue, owner, lead, booking, allotment, typeId };
 }
 const req = (f, extra = {}) => ({
   params: { slug: f.venue.slug, allotmentId: String(f.allotment._id), ...(extra.params || {}) },
@@ -77,6 +84,90 @@ const checkIn = (f, body) => call(checkin.checkInAllotment, req(f, { body }));
 (async () => {
   try {
     await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
+
+    // ══ ROOMS 10: A ROOM CANNOT BE BILLED MORE BEDS THAN IT HOLDS ══════════
+    // ROOMS 6 shipped per-bed billing with no ceiling anywhere. The only limit
+    // was `extraBeds > 20` — a range check on the input, not a fact about the
+    // room — so four rollaways could be billed into a room that fits one, and
+    // the money left through additional billing with nothing to catch it.
+    console.log("\n[the ceiling: beds 4 + 1 extra = a maximum of 5]");
+    {
+      // The founder's case, exactly: the beds sleep four, one rollaway fits.
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Standard Quadruple", fields: { bedsSleep: 4, extraBedsPossible: 1 } } });
+
+      // The arithmetic, asserted as literals rather than recomputed.
+      const { occupancyOf } = require("../utils/venueRoomTypes");
+      const stored = await Venue.findById(f.venue._id).select("roomTypes").lean();
+      const occ = occupancyOf(stored.roomTypes[0]);
+      eq(occ.base, 4, "🔴 base is what the permanent beds hold");
+      eq(occ.extra, 1, "🔴 …one extra bed fits");
+      eq(occ.maximum, 5, "🔴 …so the maximum is 5 — DERIVED, never typed");
+      ok(stored.roomTypes[0].maxOccupancy === 0 || stored.roomTypes[0].maxOccupancy === undefined,
+        "…and no independent total was stored that could contradict those two");
+
+      // One bed is within the ceiling and bills normally.
+      const okRes = await checkIn(f, { guestCount: 5, extraBeds: 1 });
+      eq(okRes.code, 200, "one extra bed is allowed");
+      eq(okRes.body.extraBedCharge.charged, true, "…and billed");
+    }
+
+    console.log("\n[a second extra bed on that room is refused, out loud]");
+    {
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Standard Quadruple", fields: { bedsSleep: 4, extraBedsPossible: 1 } } });
+      const r = await checkIn(f, { guestCount: 6, extraBeds: 2 });
+      eq(r.code, 409, "🔴 two extra beds into a room that fits one → 409");
+      eq(r.body.code, "extra_beds_over_capacity", "…with a code the screen can act on");
+      eq(r.body.allowed, 1, "…naming what the room actually takes");
+      eq(r.body.requested, 2, "…and what was asked for");
+      ok(/104/.test(r.body.message), `…and which room: "${r.body.message}"`);
+
+      // NOTHING happened — asserted positively on the stored documents.
+      const a = await VenueRoomAllotment.findById(f.allotment._id).lean();
+      eq(a.status, "allotted", "🔴 the allotment is STILL allotted, not checked in");
+      eq(a.checkIn.extraBeds, 0, "…and no bed count was recorded");
+      const bk = await VenueBooking.findById(f.booking._id).lean();
+      eq(bk.paymentSchedule.filter((x) => x.isAdditional).length, 0,
+        "🔴 …and not one rupee of additional billing was raised");
+    }
+
+    console.log("\n[a type set up with NO extra beds refuses the first one]");
+    {
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Twin", fields: { bedsSleep: 2, extraBedsPossible: 0 } } });
+      const r = await checkIn(f, { guestCount: 3, extraBeds: 1 });
+      eq(r.code, 409, "an explicit zero is a real answer and is enforced");
+      ok(/takes no extra beds/.test(r.body.message), `…worded for a zero: "${r.body.message}"`);
+    }
+
+    console.log("\n[but silence is NOT a zero — an unanswered type is not guarded]");
+    {
+      // Every type in production predates this field. If unset meant zero,
+      // every venue would refuse its first rollaway on the day this ships —
+      // a guard firing on a fact nobody stated, which is worse than the gap.
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Legacy", fields: { bedsSleep: 4 } } });
+      const r = await checkIn(f, { guestCount: 5, extraBeds: 2 });
+      eq(r.code, 200, "🔴 a type that never stated a ceiling still checks in");
+      eq(r.body.extraBedCharge.charged, true, "…and bills as it always did");
+    }
+
+    console.log("\n[a room with no type at all is likewise unguarded]");
+    {
+      const f = await fixture({ bedRate: 800, nights: 2 });
+      const r = await checkIn(f, { guestCount: 4, extraBeds: 3 });
+      eq(r.code, 200, "no type means no ceiling to enforce");
+    }
+
+    console.log("\n[a legacy maxOccupancy states the ceiling without being migrated]");
+    {
+      // An owner who typed "sleeps 4, max 5" already said one extra bed fits.
+      // Reading that back is not inventing a number — it is the same fact.
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Old Deluxe", fields: { sleeps: 4, maxOccupancy: 5 } } });
+      const r = await checkIn(f, { guestCount: 6, extraBeds: 2 });
+      eq(r.code, 409, "🔴 the ceiling implied by a legacy pair is enforced");
+      eq(r.body.allowed, 1, "…recovered as 5 − 4 = 1, with nothing written back");
+      const stored = await Venue.findById(f.venue._id).select("roomTypes").lean();
+      ok(stored.roomTypes[0].extraBedsPossible === undefined,
+        "…and the stored document was NOT migrated behind the owner's back");
+    }
 
     console.log("\n[the charge]");
     {

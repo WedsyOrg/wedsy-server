@@ -171,9 +171,55 @@ const VenueSchema = new mongoose.Schema({
   // and a single-occurrence replace aimed at one will silently hit the other.
   roomTypes: [{
     name: { type: String, required: true },
-    /** How many it sleeps — the listing's occupancyPerRoom. */
-    sleeps: { type: Number, default: 2, min: 1 },
-    /** Ceiling with extra beds; falls back to `sleeps` when 0. */
+    /**
+     * ── THREE FACTS, AND ONLY TWO ARE TYPED ──────────────────────────────
+     * What the PERMANENT beds hold. Typed by the owner.
+     *
+     * NO SCHEMA DEFAULT, deliberately, and this is a change. It carried
+     * `default: 2`, which made "nobody has said" indistinguishable from
+     * "somebody said two" the moment a type was created — the same
+     * not-stated-becomes-stated bug `sizeSqFt`, `smokingPolicy` and
+     * `accessible` are all written to avoid, sitting on the field an owner is
+     * most likely to care about.
+     *
+     * Removing the default does NOT break any reader: every one of them
+     * already falls back to 2 at read time (`num(t.sleeps, 2)` in
+     * projectAccommodation and INHERITABLE, `Number(type.sleeps) || 2` in
+     * venueRooms). So a stored blank still RENDERS as 2 — it simply stops
+     * being recorded as though the owner had said so.
+     */
+    bedsSleep: { type: Number, min: 1 },
+    /**
+     * LEGACY NAME for the same fact, kept because every venue in production
+     * stores it and nothing is migrated. Read through
+     * utils/venueRoomTypes.occupancyOf, never directly.
+     */
+    sleeps: { type: Number, min: 1 },
+    /**
+     * ── HOW MANY EXTRA BEDS THIS ROOM CAN PHYSICALLY TAKE ────────────────
+     * Typed. THE FIELD THAT DID NOT EXIST, and the important one: it is what
+     * the check-in guard needs to refuse billing four rollaways into a room
+     * that fits one. ROOMS 6 shipped per-bed billing with nothing anywhere
+     * stating a ceiling.
+     *
+     * UNSET IS NOT ZERO. Absent means "nobody has said whether an extra bed
+     * fits"; 0 means "none fits, and I am telling you so". The check-in guard
+     * treats those differently — see venueCheckin.
+     */
+    extraBedsPossible: { type: Number, min: 0 },
+    /**
+     * ── DERIVED. NEVER TYPED. ────────────────────────────────────────────
+     * The maximum is `bedsSleep + extraBedsPossible` and is computed on read
+     * by utils/venueRoomTypes.occupancyOf. It is NOT stored, because a stored
+     * total is a third number free to contradict the two it comes from —
+     * which is exactly what it did: a type could read "Sleeps 5" beside
+     * "MAX WITH EXTRA BEDS 0", a maximum below its own base.
+     *
+     * This field remains ONLY to read the venues that already hold it. It is
+     * never written again. Where it is present and exceeds the base, the extra
+     * beds it implies are recovered on READ (max − base) rather than migrated,
+     * so nothing invents a number nobody typed.
+     */
     maxOccupancy: { type: Number, default: 0 },
     /**
      * ── WHAT A COUPLE ACTUALLY DECIDES ON ─────────────────────────────────

@@ -37,6 +37,7 @@ const { validatePlacement } = require("../utils/venueRoomLayout");
 const {
   INHERITABLE_FIELDS,
   findType,
+  occupancyOf,
   resolveRoom,
   resolveRooms,
   projectAccommodation,
@@ -211,7 +212,12 @@ function applyRoomPatch(venue, room, patch, clearList) {
   // at the next type edit.
   const type = findType(venue, room.typeRef);
   if (type) {
-    if (!overrides.has("capacity")) room.capacity = Number(type.sleeps) || 2;
+    // Through occupancyOf, NOT `type.sleeps` directly. This read `.sleeps` and
+    // silently produced 2 for every room the moment the field it reads stopped
+    // being the field the type writes — a resolver swapped underneath a caller
+    // whose default arguments nobody diffed. Caught by a fixture asserting a
+    // literal 4.
+    if (!overrides.has("capacity")) room.capacity = occupancyOf(type).base;
     if (!overrides.has("amenities")) room.amenities = (type.amenities || []).map(String);
     if (!overrides.has("rate")) room.rate = Number(type.defaultRate) || 0;
   }
