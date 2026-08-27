@@ -53,6 +53,28 @@ async function resolveOwnedVenue(req, res, select = SELECT) {
 const idOf = (v) => (v === null || v === undefined ? "" : String(v._id || v));
 
 /**
+ * ── ONE WRITER WINS, ATOMICALLY ──────────────────────────────────────────────
+ * Every create in this file did read → clash-check → push → save. Two
+ * concurrent creates of the same name both passed the check on their own
+ * stale read and both pushed: a double-click on "Add block" stored two Block
+ * Bs. Verified with two parallel calls before this existed.
+ *
+ * A save-and-retry on VersionError was tried first and does NOT cover this:
+ * mongoose only bumps __v for array pushes it can attribute, and a push into
+ * a nested subdocument array under save() slipped through — floors and types
+ * still duplicated. So the guard is the FILTER of a single updateOne: it
+ * asserts the name is absent, and of two writers exactly one matches. That is
+ * the VenueRoomNight unique-index pattern, expressed for an embedded array
+ * that cannot carry a unique index of its own.
+ *
+ * `matchedCount === 0` means somebody else got there first — which is also
+ * exactly what "already exists" means, so it is reported as that.
+ */
+const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const nameAbsent = (field, name) => ({ [field]: { $not: { $elemMatch: { name: new RegExp(`^\\s*${escapeRe(name)}\\s*$`, "i") } } } });
+
+
+/**
  * The whole shape, resolved: structure, rooms (inheritance already applied),
  * and — when asked — what each room IS today.
  *
@@ -193,18 +215,9 @@ const getLayout = async (req, res) => {
 // Body: { name, floors?: string[] } — floors optional, created in the order given.
 const addBlock = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
     const body = req.body || {};
     const v = reqStr(body.name, "name", 120);
     if (!v.ok) return res.status(400).json({ message: v.message });
-
-    const clash = (venue.blocks || []).find(
-      (b) => String(b.name).trim().toLowerCase() === v.value.toLowerCase()
-    );
-    if (clash) {
-      return res.status(409).json({ message: `There is already a block called "${clash.name}".`, code: "block_exists" });
-    }
 
     let floors = [];
     if (body.floors !== undefined) {
@@ -222,8 +235,17 @@ const addBlock = async (req, res) => {
       }
     }
 
-    venue.blocks.push({ name: v.value, floors });
-    await venue.save();
+    const owned = await resolveOwnedVenue(req, res, "_id");
+    if (!owned) return;
+    const r = await Venue.updateOne(
+      { _id: owned._id, ...nameAbsent("blocks", v.value) },
+      { $push: { blocks: { name: v.value, floors } } }
+    );
+    if (r.matchedCount === 0) {
+      return res.status(409).json({ message: `There is already a block called "${v.value}".`, code: "block_exists" });
+    }
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
     const created = venue.blocks[venue.blocks.length - 1];
     return res.status(201).json(await layoutPayload(venue, { block: created }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
@@ -319,18 +341,27 @@ const deleteBlock = async (req, res) => {
 // ── POST /venues/:slug/room-blocks/:blockId/floors ──────────────────────────
 const addFloor = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res);
-    if (!venue) return;
-    const block = (venue.blocks || []).id(req.params.blockId);
-    if (!block) return res.status(404).json({ message: "Block not found" });
     const v = reqStr((req.body || {}).name, "name", 120);
     if (!v.ok) return res.status(400).json({ message: v.message });
-    const clash = (block.floors || []).find((f) => String(f.name).trim().toLowerCase() === v.value.toLowerCase());
-    if (clash) {
-      return res.status(409).json({ message: `${block.name} already has a floor called "${clash.name}".`, code: "floor_exists" });
+    const owned = await resolveOwnedVenue(req, res, "_id blocks");
+    if (!owned) return;
+    const existing = (owned.blocks || []).id(req.params.blockId);
+    if (!existing) return res.status(404).json({ message: "Block not found" });
+    // The filter pins the block by id AND asserts the floor name is absent in
+    // THAT block, so a concurrent identical add matches nothing.
+    const r = await Venue.updateOne(
+      {
+        _id: owned._id,
+        blocks: { $elemMatch: { _id: existing._id, ...nameAbsent("floors", v.value) } },
+      },
+      { $push: { "blocks.$.floors": { name: v.value } } }
+    );
+    if (r.matchedCount === 0) {
+      return res.status(409).json({ message: `${existing.name} already has a floor called "${v.value}".`, code: "floor_exists" });
     }
-    block.floors.push({ name: v.value });
-    await venue.save();
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const block = venue.blocks.id(req.params.blockId);
     return res.status(201).json(await layoutPayload(venue, { floor: block.floors[block.floors.length - 1] }));
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
@@ -485,6 +516,44 @@ const placeRoom = async (req, res) => {
 };
 
 
+// ── PATCH /venues/:slug/rooms/place ─────────────────────────────────────────
+// MOVE SEVERAL ROOMS TO ONE PLACE, in one write.
+//
+// The per-room `placeRoom` above already existed. What did not exist was any
+// way to act on the answer to "where are they?" — an owner told that four
+// rooms already exist elsewhere had to open four drawers and move four times.
+// This is that answer as one action: the add-rooms collision panel offers
+// "Move them here", and this is what it calls.
+//
+// Validated as ONE batch before anything changes: every id must be a room of
+// this venue and the target must be a real place, or nothing moves. A move
+// that half-succeeds leaves rooms scattered across two floors, which is worse
+// than the state it was fixing.
+const placeRooms = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const body = req.body || {};
+    const ids = Array.isArray(body.roomIds) ? body.roomIds.map(String) : [];
+    if (!ids.length) return res.status(400).json({ message: "roomIds must list at least one room" });
+    if (ids.length > 200) return res.status(400).json({ message: "roomIds is too long (max 200)" });
+    const v = validatePlacement(venue, body.blockRef || null, body.floorRef || null);
+    if (!v.ok) return res.status(400).json({ message: v.message });
+    const found = [];
+    for (const id of new Set(ids)) {
+      const room = (venue.rooms || []).id(id);
+      if (!room) return res.status(404).json({ message: "One of those rooms is not on this property." });
+      found.push(room);
+    }
+    for (const room of found) {
+      room.blockRef = v.value.blockRef;
+      room.floorRef = v.value.floorRef;
+    }
+    await venue.save();
+    return res.status(200).json(await layoutPayload(venue, { moved: found.map((r) => r.name) }));
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 // ── PATCH /venues/:slug/rooms/:roomId/housekeeping ──────────────────────────
 // Lives HERE, beside placeRoom, and not in venueRooms — because it must answer
 // with the LAYOUT payload.
@@ -607,7 +676,7 @@ module.exports = {
   setOutOfOrder,
   clearOutOfOrder,
   getSetup, skipShape, completeSetup, dismissSetup,
-  getLayout, addBlock, updateBlock, deleteBlock,
+  getLayout, addBlock, updateBlock, deleteBlock, placeRooms,
   addFloor, updateFloor, deleteFloor,
   reorder, placeRoom, layoutPayload, resolveOwnedVenue,
 };

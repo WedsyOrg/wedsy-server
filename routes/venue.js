@@ -319,6 +319,9 @@ router.get("/:slug/payments/summary", venueOwnerAuth, paymentsSummary);
 router.get("/:slug/rooms", venueOwnerAuth, listRooms);
 router.post("/:slug/rooms", venueOwnerAuth, requireCapability("listing"), addRoom);
 router.post("/:slug/rooms/bulk", venueOwnerAuth, requireCapability("listing"), bulkCreateRooms);
+// ── BEFORE /rooms/:roomId, or Express reads "place" as a room id ───────────
+// Bulk move — the answer to "they already exist, elsewhere". See roomBlocks.placeRooms.
+router.patch("/:slug/rooms/place", venueOwnerAuth, requireCapability("listing"), roomBlocks.placeRooms);
 router.patch("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), updateRoom);
 router.delete("/:slug/rooms/:roomId", venueOwnerAuth, requireCapability("listing"), deleteRoom);
 // Housekeeping is FRONT-DESK work, so it is gated on rooms_checkin rather than

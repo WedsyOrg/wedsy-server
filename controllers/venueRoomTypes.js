@@ -243,20 +243,33 @@ const listRoomTypes = async (req, res) => {
 // ── POST /venues/:slug/room-types ───────────────────────────────────────────
 const addRoomType = async (req, res) => {
   try {
+    // ── ONE WRITER WINS, ATOMICALLY ────────────────────────────────────────
+    // Two concurrent "Add type" calls both passed the clash check on their own
+    // stale read and both pushed: a double-click stored two Suites. A
+    // VersionError retry was tried and did not cover a nested array push, so
+    // the guard is the FILTER of one updateOne asserting the name is absent
+    // among ACTIVE types — of two writers exactly one matches. Same pattern as
+    // venueRoomBlocks.addBlock.
+    const probe = await resolveOwnedVenue(req, res);
+    if (!probe) return;
+    const v = validateTypeInput(probe, req.body || {});
+    if (v.error) return res.status(400).json({ message: v.error });
+    const bad = checkOccupancyPair(v.value);
+    if (bad) return res.status(400).json({ message: bad });
+    const esc = String(v.value.name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const r = await Venue.updateOne(
+      {
+        _id: probe._id,
+        roomTypes: { $not: { $elemMatch: { isActive: { $ne: false }, name: new RegExp(`^\\s*${esc}\\s*$`, "i") } } },
+      },
+      { $push: { roomTypes: v.value } }
+    );
+    if (r.matchedCount === 0) {
+      return res.status(409).json({ message: `A room type called "${v.value.name}" already exists.` });
+    }
     const venue = await resolveOwnedVenue(req, res);
     if (!venue) return;
-    const v = validateTypeInput(venue, req.body || {});
-    if (v.error) return res.status(400).json({ message: v.error });
-    const clash = (venue.roomTypes || []).find(
-      (t) => t.isActive !== false && String(t.name).toLowerCase() === v.value.name.toLowerCase()
-    );
-    if (clash) return res.status(409).json({ message: `A room type called "${clash.name}" already exists.` });
-
-    venue.roomTypes.push(v.value);
     const created = venue.roomTypes[venue.roomTypes.length - 1];
-    const bad = checkOccupancyPair(created);
-    if (bad) return res.status(400).json({ message: bad });
-
     projectAccommodation(venue);
     await venue.save();
     return res.status(201).json(await statePayload(venue, { roomType: created }));
