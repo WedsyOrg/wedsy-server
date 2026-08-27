@@ -14,6 +14,7 @@
 const Venue = require("../models/Venue");
 const { reqStr, optStr, optNumber, optCount } = require("../utils/venueInput");
 const {
+  occupancyOf,
   DEFAULT_ROOM_AMENITIES,
   INHERITABLE_FIELDS,
   AMENITY_GROUPS,
@@ -61,25 +62,72 @@ function validateAmenityKeys(venue, raw, field = "amenities") {
   return { ok: true, value: out };
 }
 
-function validateTypeInput(venue, body, { partial = false } = {}) {
+function validateTypeInput(venue, body, { partial = false, existing = null } = {}) {
   const out = {};
   if (!partial || body.name !== undefined) {
     const v = reqStr(body.name, "name", 200);
     if (!v.ok) return { error: v.message };
     out.name = v.value;
   }
-  if (body.sleeps !== undefined) {
-    const v = optCount(body.sleeps, "sleeps", { max: 200 });
+  // ── THE TWO TYPED FACTS ────────────────────────────────────────────────
+  // `bedsSleep` is the field; `sleeps` is its legacy name and is accepted so
+  // existing callers and the migration script keep working. Both write
+  // `bedsSleep`, so there is one field going forward and the old column stops
+  // being the one anything writes to.
+  const bedsRaw = body.bedsSleep !== undefined ? body.bedsSleep : body.sleeps;
+  if (bedsRaw !== undefined) {
+    const v = optCount(bedsRaw, "bedsSleep", { max: 200 });
     if (!v.ok) return { error: v.message };
     if (v.value !== undefined) {
-      if (v.value < 1) return { error: "sleeps must be at least 1" };
-      out.sleeps = v.value;
+      if (v.value < 1) return { error: "the beds must sleep at least 1" };
+      out.bedsSleep = v.value;
     }
   }
-  if (body.maxOccupancy !== undefined) {
+  if (body.extraBedsPossible !== undefined) {
+    // "" and null CLEAR back to not-stated. An owner who answered by mistake
+    // must be able to unanswer, and "no extra bed fits" is a claim the
+    // check-in guard acts on — it must not be reachable by accident.
+    if (body.extraBedsPossible === "" || body.extraBedsPossible === null) {
+      out.extraBedsPossible = undefined;
+    } else {
+      // NOT optCount — that refuses 0 as "must be a positive whole number",
+      // and 0 is the one value this field most needs to hold: it is the owner
+      // saying "no extra bed fits", which is what the check-in guard refuses
+      // on. The whole unset-is-not-zero design rests on 0 being storable, and
+      // it was not. Caught by driving a type with an explicit zero and finding
+      // it silently never created.
+      const n = Number(body.extraBedsPossible);
+      if (!Number.isInteger(n) || n < 0) {
+        return { error: "extraBedsPossible must be a whole number, 0 or more." };
+      }
+      if (n > 50) return { error: "extraBedsPossible is out of range" };
+      out.extraBedsPossible = n;
+    }
+  }
+  // ── THE DERIVED ONE IS TRANSLATED, NOT STORED ──────────────────────────
+  // A caller sending `maxOccupancy` is stating a total. The total is no longer
+  // a field, but the FACT inside it is real and recoverable: a maximum above
+  // the base says how many extra beds fit, which is precisely
+  // `extraBedsPossible`. So it is converted rather than refused.
+  //
+  // Refusing was the first implementation and was wrong for a plain reason:
+  // every existing caller sends this — three test fixtures and the venue app —
+  // and a 400 on the shape real callers actually send buys nothing. Nothing
+  // independent is stored either way, which is the invariant that matters.
+  //
+  // An explicit `extraBedsPossible` always wins; this only fills a gap.
+  if (body.maxOccupancy !== undefined && out.extraBedsPossible === undefined) {
     const v = optCount(body.maxOccupancy, "maxOccupancy", { max: 200 });
     if (!v.ok) return { error: v.message };
-    if (v.value !== undefined) out.maxOccupancy = v.value;
+    if (v.value !== undefined) {
+      const base = out.bedsSleep !== undefined
+        ? out.bedsSleep
+        : occupancyOf(existing || {}).base;
+      // At or below the base it states no extra beds — and "0" as a total is
+      // the old sentinel for "not stated", not a claim that none fit. Neither
+      // is turned into a stated zero.
+      if (v.value > base) out.extraBedsPossible = v.value - base;
+    }
   }
   if (body.defaultRate !== undefined) {
     const v = optNumber(body.defaultRate, "defaultRate", { max: 1e9 });
@@ -143,10 +191,19 @@ function validateTypeInput(venue, body, { partial = false } = {}) {
   return { value: out };
 }
 
-function checkOccupancyPair(type) {
-  const sleeps = Number(type.sleeps) || 0;
-  const max = Number(type.maxOccupancy) || 0;
-  if (max && max < sleeps) return `maxOccupancy (${max}) cannot be below sleeps (${sleeps}).`;
+/**
+ * There is no longer a pair to check.
+ *
+ * This guarded `maxOccupancy < sleeps` — a real contradiction while the maximum
+ * was typed independently. It cannot arise now: the maximum is
+ * `bedsSleep + extraBedsPossible` and both inputs are non-negative, so it is
+ * never below its own base by construction.
+ *
+ * Kept as a named no-op rather than deleted at its three call sites, so the
+ * guarantee stays greppable and the removal is a decision on the record rather
+ * than three quiet deletions.
+ */
+function checkOccupancyPair() {
   return null;
 }
 
@@ -214,7 +271,9 @@ const updateRoomType = async (req, res) => {
     if (!venue) return;
     const type = (venue.roomTypes || []).id(req.params.typeId);
     if (!type) return res.status(404).json({ message: "Room type not found" });
-    const v = validateTypeInput(venue, req.body || {}, { partial: true });
+    // `existing` so a partial patch that sends only maxOccupancy resolves the
+    // base from the STORED type rather than from nothing.
+    const v = validateTypeInput(venue, req.body || {}, { partial: true, existing: type });
     if (v.error) return res.status(400).json({ message: v.error });
     if (v.value.name) {
       const clash = (venue.roomTypes || []).find(

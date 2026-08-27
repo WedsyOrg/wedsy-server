@@ -17,13 +17,19 @@ const { ON_CHECK_OUT } = require("../utils/venueHousekeeping");
 const { resolvePolicy, nightsBetween } = require("../utils/venueRoomsPolicy");
 const { streamSettlementPdf } = require("../utils/venuePdf");
 const { optStr } = require("../utils/venueInput");
+const { findType, occupancyOf } = require("../utils/venueRoomTypes");
 
 // `roomsPolicy` is in here because billExtraBeds reads the extra-bed rate off
 // it. Omitting it does NOT fail loudly: resolvePolicy returns an unconfigured
 // venue, the rate is 0, and every check-in silently records "no rate set" while
 // the venue has one. Fourth time a missing select field has produced a correct
 // guard operating on wrong arguments in this build.
-async function resolveOwnedVenue(req, res, select = "_id rooms invoicePrefix roomsPolicy") {
+// `roomTypes` joins that list for the SAME reason, and the fifth time is worth
+// stating plainly: the extra-bed ceiling lives on the type, so a select that
+// omits it leaves capacityForExtraBeds resolving every room to no type, finding
+// no ceiling, and permitting every count — a guard that runs, returns "allowed"
+// every time, and looks exactly like a guard that works.
+async function resolveOwnedVenue(req, res, select = "_id rooms roomTypes invoicePrefix roomsPolicy") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) { res.status(403).json({ message: "Forbidden" }); return null; }
@@ -40,6 +46,37 @@ function cleanUrl(v, field) {
   if (v === undefined || v === null || v === "") return { ok: true, value: "" };
   if (typeof v !== "string" || v.length > 2000) return { ok: false, message: `${field} must be a string (max 2000 chars)` };
   return { ok: true, value: v.trim() };
+}
+
+/**
+ * ══ HOW MANY EXTRA BEDS THIS ROOM CAN TAKE ══════════════════════════════════
+ *
+ * ROOMS 6 shipped extra-bed billing that fires at check-in and charges per bed
+ * per night. Nothing anywhere stated how many a room could hold, so the only
+ * limit was `extraBeds > 20` — a range check on the input, not a fact about the
+ * room. A clerk could bill four rollaways into a room that fits one, and the
+ * money went out through additional billing with nothing to catch it.
+ *
+ * `extraBedsPossible` on the room's TYPE is the number that guard needs.
+ *
+ * ── UNSET IS NOT ZERO, AND THAT IS THE WHOLE SUBTLETY ──────────────────────
+ * A venue that has never answered must not have "no extra beds" invented for
+ * it: every existing type would refuse its first rollaway, and a guard that
+ * fires on a fact nobody stated is worse than the gap it closes. So this
+ * refuses ONLY when the owner has actually said how many fit.
+ *
+ * Untyped rooms are likewise unguarded — there is no type to carry a ceiling.
+ *
+ * @returns {{limited:boolean, allowed:number, typeName:string}}
+ */
+function capacityForExtraBeds(venue, roomId) {
+  const room = (venue.rooms || []).find((r) => String(r._id) === String(roomId));
+  if (!room) return { limited: false, allowed: 0, typeName: "" };
+  const type = findType(venue, room.typeRef);
+  if (!type) return { limited: false, allowed: 0, typeName: "" };
+  const occ = occupancyOf(type);
+  if (!occ.extraStated) return { limited: false, allowed: 0, typeName: type.name || "" };
+  return { limited: true, allowed: occ.extra, typeName: type.name || "" };
 }
 
 // POST /venues/:slug/allotments/:allotmentId/check-in — rooms_checkin.
@@ -61,6 +98,25 @@ const checkInAllotment = async (req, res) => {
     const extraBeds = Number(body.extraBeds) || 0;
     if (guestCount < 0 || guestCount > 500) return res.status(400).json({ message: "guestCount out of range" });
     if (extraBeds < 0 || extraBeds > 20) return res.status(400).json({ message: "extraBeds out of range" });
+
+    // ── REFUSED OUT LOUD, BEFORE ANYTHING IS WRITTEN ───────────────────────
+    // Ahead of the status change and the billing, so a refused check-in leaves
+    // the allotment exactly as it was rather than checked in and unbilled.
+    const cap = capacityForExtraBeds(venue, allotment.room);
+    if (cap.limited && extraBeds > cap.allowed) {
+      const room = (venue.rooms || []).find((r) => String(r._id) === String(allotment.room));
+      const roomName = (room && room.name) || "this room";
+      return res.status(409).json({
+        code: "extra_beds_over_capacity",
+        message: cap.allowed === 0
+          ? `${roomName} takes no extra beds — ${cap.typeName} is set up with none. Nothing was checked in or billed.`
+          : `${roomName} takes ${cap.allowed} extra bed${cap.allowed === 1 ? "" : "s"}, and ${extraBeds} were entered. `
+            + `${cap.typeName} is set up for ${cap.allowed}. Nothing was checked in or billed.`,
+        allowed: cap.allowed,
+        requested: extraBeds,
+        typeName: cap.typeName,
+      });
+    }
     let inventory = [];
     if (body.inventory !== undefined) {
       if (!Array.isArray(body.inventory) || body.inventory.length > 100) return res.status(400).json({ message: "inventory must be an array (max 100)" });

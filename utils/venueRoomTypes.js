@@ -41,7 +41,10 @@
  * reads `capacity`.
  */
 const INHERITABLE = [
-  { field: "capacity", from: (t) => num(t.sleeps, 2) },
+  // The BASE, not the maximum: a room's capacity is what its permanent beds
+  // hold. Extra beds are a thing a clerk adds at check-in, not standing
+  // capacity, and folding them in here would silently oversell every room.
+  { field: "capacity", from: (t) => occupancyOf(t).base },
   { field: "amenities", from: (t) => (t.amenities || []).map(String) },
   { field: "rate", from: (t) => num(t.defaultRate, 0) },
 ];
@@ -180,6 +183,65 @@ function num(v, fallback = 0) {
 }
 
 const idOf = (v) => (v === null || v === undefined ? "" : String(v._id || v));
+
+/**
+ * ══ OCCUPANCY: THE ONE PLACE THE ARITHMETIC LIVES ═══════════════════════════
+ *
+ * Three facts, and only two of them are ever typed:
+ *
+ *   base      what the permanent beds hold          TYPED  (bedsSleep/sleeps)
+ *   extra     how many extra beds physically fit    TYPED  (extraBedsPossible)
+ *   maximum   base + extra                          DERIVED, never stored
+ *
+ * ── WHY THE MAXIMUM STOPPED BEING A FIELD ──────────────────────────────────
+ * It was `maxOccupancy`, typed independently of the base, and a third number
+ * free to contradict the two it comes from. It duly did: a type could read
+ * "Sleeps 5" beside "MAX WITH EXTRA BEDS 0" — a maximum below its own base,
+ * arithmetic that cannot be true, and the form offered no way to say the thing
+ * the owner actually meant, which was "the beds hold four and one rollaway
+ * fits". There was no field for the rollaway.
+ *
+ * ── READING VENUES THAT PREDATE THIS, WITHOUT MIGRATING THEM ───────────────
+ * Every venue in production stores `sleeps` and `maxOccupancy`. Nothing is
+ * rewritten. Instead:
+ *
+ *   base   = bedsSleep ?? sleeps ?? 2        (2 is the READ fallback that has
+ *                                             always existed, not a stored
+ *                                             default — see models/Venue)
+ *   extra  = extraBedsPossible, or, when that has never been set and a legacy
+ *            maxOccupancy exceeds the base, the difference it implies
+ *
+ * That difference is not an invention: an owner who typed "sleeps 4, max 5"
+ * stated that one extra bed fits. Recovering it says back what they already
+ * said, in the vocabulary that can now hold it. Where `maxOccupancy` is absent,
+ * 0, or ≤ base, nothing is implied and `extra` stays UNSET — because "no extra
+ * bed fits" and "nobody has said" are different facts and only one of them
+ * should stop a clerk at check-in.
+ *
+ * @returns {{base:number, extra:number|null, maximum:number, extraStated:boolean}}
+ */
+function occupancyOf(type) {
+  const t = type || {};
+  const base = Math.max(1, num(t.bedsSleep, num(t.sleeps, 2)));
+
+  let extra = null;
+  if (t.extraBedsPossible !== undefined && t.extraBedsPossible !== null) {
+    extra = Math.max(0, num(t.extraBedsPossible, 0));
+  } else {
+    const legacyMax = num(t.maxOccupancy, 0);
+    if (legacyMax > base) extra = legacyMax - base;
+  }
+
+  return {
+    base,
+    extra,
+    // An unstated ceiling is not a ceiling of zero: the maximum is the base
+    // until somebody says otherwise, which is what the listing has always
+    // rendered.
+    maximum: base + (extra || 0),
+    extraStated: extra !== null,
+  };
+}
 
 function findType(venue, typeRef) {
   const want = idOf(typeRef);
@@ -320,14 +382,19 @@ function projectAccommodation(venue) {
 
   const rows = types.map((t) => {
     const amenities = new Set((t.amenities || []).map(String));
-    const sleeps = Math.max(1, num(t.sleeps, 2));
+    // ONE arithmetic, shared with the owner-facing payloads and the check-in
+    // guard. The listing used to compute its own ceiling here; two places
+    // deciding what a maximum is, is one that can disagree with the screen the
+    // owner typed it into.
+    const occ = occupancyOf(t);
     return {
       name: t.name,
       count: countByType.get(idOf(t._id)) || 0,
-      occupancyPerRoom: sleeps,
-      // The listing shows a ceiling; a type that has not set one means "no
-      // extra beds", which is `sleeps`, not zero.
-      maxPeoplePerRoom: Math.max(sleeps, num(t.maxOccupancy, 0)),
+      occupancyPerRoom: occ.base,
+      // A type that has not stated extra beds means "no extra beds", so the
+      // ceiling is the base — never zero, which would put the listing's
+      // capacity sum below the number of beds it just advertised.
+      maxPeoplePerRoom: occ.maximum,
       pricePerNight: num(t.defaultRate, 0),
       // Only assert non-AC when the venue's library can actually express AC.
       // Otherwise the owner has no way to say yes, and silence is not a no —
@@ -497,8 +564,27 @@ function presentTypes(venue) {
   return (venue.roomTypes || []).map((t) => {
     const obj = typeof t.toObject === "function" ? t.toObject() : { ...t };
     const rooms = typeUsage(venue, t._id);
+    const occ = occupancyOf(t);
     return {
       ...obj,
+      /**
+       * ── THE ARITHMETIC TRAVELS WITH THE TYPE ──────────────────────────
+       * `maximum` is sent, never recomputed on a screen. Two places deciding
+       * what a maximum is, is one that can disagree with the other — and the
+       * screen that disagrees is always the one the owner is reading.
+       *
+       * `bedsSleep` is echoed resolved so a legacy type that only stores
+       * `sleeps` still answers the field the client now binds to.
+       */
+      bedsSleep: occ.base,
+      extraBedsPossible: occ.extra,
+      occupancy: {
+        base: occ.base,
+        extra: occ.extra,
+        maximum: occ.maximum,
+        /** false = nobody has said whether an extra bed fits. Not "none". */
+        extraStated: occ.extraStated,
+      },
       usage: { rooms },
       deleteAction: rooms.length ? "retire" : "delete",
     };
@@ -513,6 +599,7 @@ module.exports = {
   resolveGroup,
   amenityKeyFor,
   amenityUsage,
+  occupancyOf,
   presentAmenities,
   typeUsage,
   presentTypes,

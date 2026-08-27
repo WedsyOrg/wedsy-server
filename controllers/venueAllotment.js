@@ -12,6 +12,7 @@
 const Venue = require("../models/Venue");
 const { resolveScopedBooking, bookingInScope } = require("../utils/venueBookingScope");
 const VenueBooking = require("../models/VenueBooking");
+const { findType, occupancyOf } = require("../utils/venueRoomTypes");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 const VenueRoomNight = require("../models/VenueRoomNight");
 const VenueEnquiry = require("../models/VenueEnquiry");
@@ -267,7 +268,11 @@ async function roomsRequirementFor(venue, booking) {
 // longer an island the lead's requirement never reaches.
 const listAllotments = async (req, res) => {
   try {
-    const owned = await resolveScopedBooking(req, res, "_id rooms");
+    // `roomTypes` because each allotment carries its room's extra-bed ceiling —
+    // see below. Omitting it does not fail loudly; it makes every room look
+    // unrestricted, which is the same missing-select shape that has bitten this
+    // area repeatedly.
+    const owned = await resolveScopedBooking(req, res, "_id rooms roomTypes");
     if (!owned) return;
     const venue = owned.venue;
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id })
@@ -279,7 +284,25 @@ const listAllotments = async (req, res) => {
       .sort({ checkInAt: 1 })
       .lean();
     const roomsById = Object.fromEntries((venue.rooms || []).map((r) => [String(r._id), r]));
-    for (const a of allotments) a.roomDetail = roomsById[String(a.room)] || null;
+    for (const a of allotments) {
+      a.roomDetail = roomsById[String(a.room)] || null;
+      /**
+       * ── THE CEILING TRAVELS WITH THE ALLOTMENT ───────────────────────────
+       * So the check-in screen can SAY how many extra beds this room takes
+       * before a clerk enters more, rather than letting them enter four and
+       * be refused afterwards. Same principle as the type's `deleteAction`:
+       * the verdict rides on the read, and the control is worded from it.
+       *
+       * `stated: false` means nobody has answered for this room's type, and
+       * the screen must not invent a limit — the server does not enforce one
+       * either.
+       */
+      const type = a.roomDetail ? findType(venue, a.roomDetail.typeRef) : null;
+      const occ = type ? occupancyOf(type) : null;
+      a.extraBeds = occ && occ.extraStated
+        ? { stated: true, allowed: occ.extra, typeName: type.name || "" }
+        : { stated: false, allowed: null, typeName: type ? type.name || "" : "" };
+    }
 
     const requirement = await roomsRequirementFor(venue, booking);
     return res.status(200).json({ allotments, requirement });
