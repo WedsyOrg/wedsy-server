@@ -373,6 +373,10 @@ const updateBookingWindow = async (req, res) => {
 //   5. stage=booked + timeline entry; booking↔lead resolvable both ways
 const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CONFIRM_FUNCTIONS = 20;
+// A venue with more bookable spaces than this on one row is not a wedding
+// venue picker problem; the cap exists so a malformed payload cannot fan out
+// into an unbounded calendar write.
+const MAX_CONFIRM_SPACES = 50;
 const MAX_SCHEDULE_ROWS = 12;
 
 function parseConfirmDay(s) {
@@ -484,7 +488,9 @@ const confirmBookingFromLead = async (req, res) => {
     // sentinel row carries the claim on its own in that case; see
     // utils/venueWholeVenue.js on why a sentinel alone is not enough once real
     // spaces exist.
-    const wantsAnyNamedSpace = fns.some((f) => f && f.space !== undefined && f.space !== null && f.space !== "");
+    const wantsAnyNamedSpace = fns.some(
+      (f) => f && ((f.space !== undefined && f.space !== null && f.space !== "") || (Array.isArray(f.spaces) && f.spaces.length > 0))
+    );
     if (bookable.length === 0 && wantsAnyNamedSpace) {
       return res.status(400).json({ message: "Venue has no bookable spaces" });
     }
@@ -495,7 +501,45 @@ const confirmBookingFromLead = async (req, res) => {
       const day = parseConfirmDay(f.date);
       if (!day) return res.status(400).json({ message: `functions[${i}].date must be YYYY-MM-DD` });
       let spaces;
-      if (f.space !== undefined && f.space !== null && f.space !== "") {
+      /**
+       * ── A ROW MAY NOW NAME SEVERAL SPACES ────────────────────────────────
+       * `spaces: [id, ...]` is what the confirm wizard sends since BOOKING 1.
+       * Step 1 used to list the lead's FUNCTIONS and take each one's own space,
+       * which meant the picker answered "what are you blocking?" with the
+       * couple's itinerary — three functions in one hall offered three rows for
+       * one space. It now offers the venue's actual spaces, so a row carries
+       * the DATE and the names/pax of that day's functions (which is what
+       * booking.days is built from) while the SPACE SET is the owner's tick.
+       *
+       * `space` (singular) stays for anything already sending it. An explicit
+       * EMPTY array is refused rather than falling through to whole-property:
+       * "the owner ticked nothing" and "the owner chose the whole venue" are
+       * different answers, and only one of them should claim every space on the
+       * calendar. That distinction is the whole reason this branch is written
+       * out rather than defaulted.
+       */
+      const many = f.spaces;
+      if (many !== undefined && many !== null) {
+        if (!Array.isArray(many)) return res.status(400).json({ message: `functions[${i}].spaces must be a list` });
+        if (many.length === 0) {
+          return res.status(400).json({ message: `functions[${i}].spaces is empty — pick at least one space, or leave it out for the entire property` });
+        }
+        if (many.length > MAX_CONFIRM_SPACES) {
+          return res.status(400).json({ message: `functions[${i}].spaces is too long (max ${MAX_CONFIRM_SPACES})` });
+        }
+        const picked = [];
+        const seen = new Set();
+        for (const raw of many) {
+          const key = String(raw);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const match = spaceById.get(key);
+          if (!match) return res.status(400).json({ message: `functions[${i}].spaces contains a space that is not of this venue` });
+          if (match.isBookable === false) return res.status(400).json({ message: `functions[${i}].spaces contains a space that is not bookable` });
+          picked.push(match);
+        }
+        spaces = picked;
+      } else if (f.space !== undefined && f.space !== null && f.space !== "") {
         const match = spaceById.get(String(f.space));
         if (!match) return res.status(400).json({ message: `functions[${i}].space is not a space of this venue` });
         if (match.isBookable === false) return res.status(400).json({ message: `functions[${i}].space is not bookable` });
