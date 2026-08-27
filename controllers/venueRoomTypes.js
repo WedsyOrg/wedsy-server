@@ -90,9 +90,18 @@ function validateTypeInput(venue, body, { partial = false, existing = null } = {
     if (body.extraBedsPossible === "" || body.extraBedsPossible === null) {
       out.extraBedsPossible = undefined;
     } else {
-      const v = optCount(body.extraBedsPossible, "extraBedsPossible", { max: 50 });
-      if (!v.ok) return { error: v.message };
-      if (v.value !== undefined) out.extraBedsPossible = v.value;
+      // NOT optCount — that refuses 0 as "must be a positive whole number",
+      // and 0 is the one value this field most needs to hold: it is the owner
+      // saying "no extra bed fits", which is what the check-in guard refuses
+      // on. The whole unset-is-not-zero design rests on 0 being storable, and
+      // it was not. Caught by driving a type with an explicit zero and finding
+      // it silently never created.
+      const n = Number(body.extraBedsPossible);
+      if (!Number.isInteger(n) || n < 0) {
+        return { error: "extraBedsPossible must be a whole number, 0 or more." };
+      }
+      if (n > 50) return { error: "extraBedsPossible is out of range" };
+      out.extraBedsPossible = n;
     }
   }
   // ── THE DERIVED ONE IS TRANSLATED, NOT STORED ──────────────────────────

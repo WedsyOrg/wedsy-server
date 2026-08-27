@@ -132,6 +132,38 @@ function renderListing(acc) {
     ok(wasBadType.occupancy.maximum >= wasBadType.occupancy.base,
       "🔴 the maximum is never below the base — the property the old 400 existed to protect");
     await call(rt.deleteRoomType, asOwner({ params: { typeId: String(wasBadType._id) } }));
+    // ── ZERO IS A VALUE, AND IT IS THE ONE THAT MUST STORE ────────────────
+    // extraBedsPossible ran through optCount, which refuses 0 as "must be a
+    // positive whole number". So "no extra bed fits" — the single fact the
+    // check-in guard refuses on — could not be saved at all, and the whole
+    // unset-is-not-zero design rested on a value the validator rejected.
+    // Found by driving a type with an explicit zero and watching it never
+    // appear.
+    const zeroExtra = await call(rt.addRoomType, asOwner({ body: { name: "No Rollaway", bedsSleep: 2, extraBedsPossible: 0 } }));
+    ok(zeroExtra.code === 201, `🔴 an explicit zero extra beds is accepted (got ${zeroExtra.code}: ${(zeroExtra.body || {}).message || ""})`);
+    const zeroRow = (zeroExtra.body.roomTypes || []).find((t) => t.name === "No Rollaway");
+    ok(zeroRow.occupancy.extra === 0, `…stored as 0, not dropped (${zeroRow.occupancy.extra})`);
+    ok(zeroRow.occupancy.extraStated === true,
+      "🔴 …and reported as STATED — the difference between 'none fits' and 'nobody said'");
+    const storedZero = (await Venue.findById(venueId).select("roomTypes")).roomTypes.find((t) => t.name === "No Rollaway");
+    ok(storedZero.extraBedsPossible === 0, `…and it is a real 0 on the STORED document (${storedZero.extraBedsPossible})`);
+
+    const unstated = await call(rt.addRoomType, asOwner({ body: { name: "Never Said", bedsSleep: 3 } }));
+    const unstatedStored = (await Venue.findById(venueId).select("roomTypes")).roomTypes.find((t) => t.name === "Never Said");
+    ok(unstatedStored.extraBedsPossible === undefined,
+      "🔴 …while a type that never mentioned extra beds stores NOTHING, not a zero");
+    const unstatedRow = (unstated.body.roomTypes || []).find((t) => t.name === "Never Said");
+    ok(unstatedRow.occupancy.extraStated === false && unstatedRow.occupancy.maximum === 3,
+      `…and reports unstated with the maximum at the base (${unstatedRow.occupancy.maximum})`);
+
+    const negExtra = await call(rt.addRoomType, asOwner({ body: { name: "Negative", bedsSleep: 2, extraBedsPossible: -1 } }));
+    ok(negExtra.code === 400, `a negative count is still refused (got ${negExtra.code})`);
+
+    for (const n of ["No Rollaway", "Never Said"]) {
+      const row = (await Venue.findById(venueId).select("roomTypes")).roomTypes.find((t) => t.name === n);
+      if (row) await call(rt.deleteRoomType, asOwner({ params: { typeId: String(row._id) } }));
+    }
+
     const badAmenity = await call(rt.addRoomType, asOwner({ body: { name: "Jacuzzi Suite", amenities: ["jacuzzi"] } }));
     ok(badAmenity.code === 400, `an amenity key not in the venue's library → 400 (got ${badAmenity.code})`);
     ok(/not in this venue's amenity list/.test((badAmenity.body || {}).message || ""), "…and points the owner at the list to fix it");

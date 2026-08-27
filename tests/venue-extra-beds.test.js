@@ -111,6 +111,41 @@ const checkIn = (f, body) => call(checkin.checkInAllotment, req(f, { body }));
       eq(okRes.body.extraBedCharge.charged, true, "…and billed");
     }
 
+    console.log("\n[the ceiling rides on the allotment READ, so the screen can say it first]");
+    {
+      // A guard that refuses correctly while the screen still offers the thing
+      // is the shape this codebase keeps fixing. The check-in stepper caps at
+      // this number, so a clerk cannot reach a count that will be refused.
+      const alloc = require("../controllers/venueAllotment");
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Standard Quadruple", fields: { bedsSleep: 4, extraBedsPossible: 1 } } });
+      const res = await call(alloc.listAllotments, {
+        params: { slug: f.venue.slug, bookingId: String(f.booking._id) },
+        query: {}, body: {},
+        venueOwner: { type: "venue_owner", venueId: f.venue._id, venueOwnerId: f.owner._id },
+        venueMember: null,
+      });
+      eq(res.code, 200, "the allotments read succeeds");
+      const row = (res.body.allotments || [])[0];
+      eq(row.extraBeds.stated, true, "🔴 the row says a ceiling HAS been stated");
+      eq(row.extraBeds.allowed, 1, "…and what it is");
+      eq(row.extraBeds.typeName, "Standard Quadruple", "…and which type says so");
+    }
+
+    console.log("\n[…and an unstated one caps nothing, on the read as on the write]");
+    {
+      const alloc = require("../controllers/venueAllotment");
+      const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Legacy", fields: { bedsSleep: 4 } } });
+      const res = await call(alloc.listAllotments, {
+        params: { slug: f.venue.slug, bookingId: String(f.booking._id) },
+        query: {}, body: {},
+        venueOwner: { type: "venue_owner", venueId: f.venue._id, venueOwnerId: f.owner._id },
+        venueMember: null,
+      });
+      const row = (res.body.allotments || [])[0];
+      eq(row.extraBeds.stated, false, "🔴 unstated is reported as unstated");
+      eq(row.extraBeds.allowed, null, "…with no number for a screen to cap on");
+    }
+
     console.log("\n[a second extra bed on that room is refused, out loud]");
     {
       const f = await fixture({ bedRate: 800, nights: 2, typeSpec: { name: "Standard Quadruple", fields: { bedsSleep: 4, extraBedsPossible: 1 } } });
