@@ -66,11 +66,28 @@ const UNPLACED_BLOCK_ID = "__unplaced__";
  * reports four storeys and this function is quietly wrong in the direction it
  * was written to fix.
  *
- * The floor suggestion picker — Ground / Lobby / Mezzanine / 1–10 / Terrace —
- * is therefore NOT COSMETIC. It is what keeps two blocks agreeing on what a
- * storey is called, and this arithmetic is load-bearing on it. Removing it, or
- * adding a path that writes floor names without it, silently degrades this
- * number. They are one feature in two halves; do not treat them as independent.
+ * The floor suggestion picker is therefore NOT COSMETIC. It is what keeps two
+ * blocks agreeing on what a storey is called, and this arithmetic is
+ * load-bearing on it. Removing it, or adding a path that writes floor names
+ * without it, silently degrades this number. They are one feature in two
+ * halves; do not treat them as independent.
+ *
+ * ── WHAT IT ACTUALLY OFFERS, KEPT CURRENT ──────────────────────────────────
+ * This line said "Ground / Lobby / Mezzanine / 1–10 / Terrace" and had been
+ * wrong since ROOMS 9 replaced the digits with ordinals. A stale description of
+ * the half this arithmetic depends on, sitting directly above the paragraph
+ * explaining that dependency, is the comment a future reader would trust most.
+ *
+ *   always shown   Ground, Lobby, Mezzanine, First … Tenth, and Terrace
+ *   behind a tap   Eleventh … Twentieth
+ *   pinned last    Terrace, in both states — it is a top-of-building answer,
+ *                  not a numbered storey, so it must not scroll out with the
+ *                  ordinals
+ *
+ * Above the twentieth the box takes free text, which is the point at which
+ * uniformity stops being guaranteed and this count starts depending on the
+ * owner. See wedsy-venue app/(portal)/dashboard/_components/suggest-field.tsx
+ * and its rule in suggest-visible.ts.
  *
  * Matched case-insensitively and trimmed, because "Ground" and "ground " are
  * one storey by any reading. NOTHING IS WRITTEN — the stored name stays exactly
