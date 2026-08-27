@@ -449,7 +449,8 @@ const bulkCreateRooms = async (req, res) => {
     const expanded = expand(body);
     if (expanded.error) return res.status(400).json({ message: expanded.error });
 
-    const plan = planBulk(venue, expanded.names);
+    // The target travels in so each clash can say whether it is ALREADY here.
+    const plan = planBulk(venue, expanded.names, place.value);
     const onCollision = String(body.onCollision || "");
     const preview = body.preview === true;
 
@@ -487,21 +488,54 @@ const bulkCreateRooms = async (req, res) => {
       });
     }
 
-    for (const name of plan.create) {
-      venue.rooms.push({ name });
-      const room = venue.rooms[venue.rooms.length - 1];
-      applyRoomPatch(venue, room, {
-        name,
-        typeRef: type ? type._id : null,
-        isActive: true,
-      }, []);
-      room.blockRef = place.value.blockRef;
-      room.floorRef = place.value.floorRef;
+    // ── ONE WRITER WINS, ATOMICALLY ────────────────────────────────────────
+    // `plan` was computed on a stale read. Two concurrent creates of 301–303
+    // both planned the same three, both pushed, and six rooms landed — the
+    // double-click on "Create" that the block/floor/type creates were already
+    // guarded against. Same guard: a single updateOne whose FILTER asserts
+    // none of the planned names exist, so of two writers exactly one matches.
+    // The loser re-plans on a fresh read and reports its names as clashes,
+    // which is the truth by the time it looks.
+    const esc = (x) => String(x).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const docs = plan.create.map((name) => {
+      const draft = { name, typeRef: type ? type._id : null, isActive: true, blockRef: place.value.blockRef, floorRef: place.value.floorRef };
+      // Inheritance snapshot, exactly as applyRoomPatch would have written it.
+      if (type) {
+        draft.capacity = occupancyOf(type).base;
+        draft.amenities = (type.amenities || []).map(String);
+        draft.rate = Number(type.defaultRate) || 0;
+      }
+      return draft;
+    });
+    const filter = {
+      _id: venue._id,
+      rooms: { $not: { $elemMatch: { name: { $in: plan.create.map((n) => new RegExp(`^\\s*${esc(n)}\\s*$`, "i")) } } } },
+    };
+    const wrote = await Venue.updateOne(filter, { $push: { rooms: { $each: docs } } });
+    if (wrote.matchedCount === 0) {
+      // Somebody else created at least one of these between our plan and our
+      // write. Re-plan on the truth and answer as a collision, never a dupe.
+      const fresh = await resolveOwnedVenue(req, res);
+      if (!fresh) return;
+      const replan = planBulk(fresh, expanded.names, place.value);
+      return res.status(409).json({
+        message: replan.skip.length === 1
+          ? `${replan.skip[0].message} The other ${replan.create.length} can still be created.`
+          : `${replan.skip.length} of these already exist. The other ${replan.create.length} can still be created.`,
+        code: "bulk_collision",
+        hint: 'Send the same request again with onCollision: "skip" to create the rest.',
+        requested: expanded.names.length, willCreate: replan.create, willSkip: replan.skip,
+        type: type ? { _id: type._id, name: type.name } : null, placement: place.value,
+      });
     }
-    projectAccommodation(venue);
-    await venue.save();
+    // Re-read so the projection and the response see what actually landed.
+    const venueAfter = await resolveOwnedVenue(req, res);
+    if (!venueAfter) return;
+    projectAccommodation(venueAfter);
+    await venueAfter.save();
+    const venueOut = venueAfter;
 
-    return res.status(201).json(await statePayload(venue, {
+    return res.status(201).json(await statePayload(venueOut, {
       created: plan.create,
       createdCount: plan.create.length,
       skipped: plan.skip,
