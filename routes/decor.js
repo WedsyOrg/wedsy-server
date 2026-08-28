@@ -49,6 +49,13 @@ router.post("/drafts/:id/reject", CheckAdminLogin, canPublish, decorDraft.Reject
 // posting straight to /decor. (Curation rides PUT /decor/:_id?addTo=, so the
 // same route gate covers it.) GET stays public — unchanged.
 router.post("/", CheckAdminLogin, canPublish, decor.CreateNew);
+// RECENTLY USED, BY THE SIGNED-IN ADMIN. A literal path, so it MUST stay above
+// "/:_id" or Express captures "recently-used" as an id. Admin-gated because the
+// answer is per-actor: it reads req.auth.user_id and returns that admin's own
+// history — there is no id in the path to authorise against, and no permission
+// beyond "is a signed-in admin", because a planner asking what THEY used is not
+// reading anyone else's data.
+router.get("/recently-used", CheckAdminLogin, decor.RecentlyUsed);
 router.get("/", decor.GetAll);
 // S3 — curation reorder (literal path — MUST stay above /:_id).
 router.put("/reorder", CheckAdminLogin, canPublish, decor.Reorder);
