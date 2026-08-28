@@ -162,16 +162,26 @@ const withEnv = async (patch, fn) => {
     console.log("\n[C2. masthead: Venue.logo → image, else the venue's NAME; the same for every send; never the Wedsy logo]");
     {
       const fs = require("fs");
-      const html = fs.readFileSync(require("path").join(__dirname, "..", "emails", "venue_terms_sent.html"), "utf8");
-      const text = fs.readFileSync(require("path").join(__dirname, "..", "emails", "venue_terms_sent.txt"), "utf8");
-      const imgs = html.match(/<img[^>]*>/g) || [];
-      eq(imgs.length, 1, "🔴 the template carries exactly ONE image");
-      ok(/src="\{\{var:venue_logo\}\}"/.test(imgs[0]), "🔴 …and its src is {{var:venue_logo}} — the venue's, never a fixed asset");
-      ok(!/mjt\.lu|wedsy\.in\/|wedsy.*\.(png|jpg|svg)/i.test(html), "🔴 no Wedsy-hosted or Wedsy-named asset anywhere in the HTML");
+      const path = require("path");
+      // The repo holds the STARTING POINT (Mailjet is the source of truth for
+      // the live design); these pin what the starting point sends.
+      const tree = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "emails", "venue_terms_sent.mjml.json"), "utf8"));
+      const text = fs.readFileSync(path.join(__dirname, "..", "emails", "venue_terms_sent.txt"), "utf8");
+      const blocks = tree.children.find((c) => c.tagName === "mj-body").children[0].children[0].children;
+      const images = blocks.filter((b) => b.tagName === "mj-image");
+      eq(images.length, 1, "🔴 the template carries exactly ONE image block");
+      eq(images[0].attributes.src, "{{var:venue_logo}}", "🔴 …and its src is {{var:venue_logo}} — the venue's, never a fixed asset");
+      const raws = blocks.filter((b) => b.tagName === "mj-raw").map((b) => b.content.trim());
+      eq(JSON.stringify(raws), JSON.stringify(["{% if var:venue_logo %}", "{% else %}", "{% endif %}"]), "🔴 the image sits inside {% if var:venue_logo %} … {% else %} … {% endif %}");
+      const imgIdx = blocks.indexOf(images[0]);
+      const elseIdx = blocks.findIndex((b) => b.tagName === "mj-raw" && /else/.test(b.content));
+      ok(imgIdx < elseIdx && /\{\{var:venue_name\}\}/.test(blocks[elseIdx + 1].content), "🔴 …with the venue NAME as text in the else branch");
+      const greetingIdx = blocks.findIndex((b) => b.content && /Dear \{\{var:couple_name\}\}/.test(b.content));
+      ok(blocks.findIndex((b) => b.tagName === "mj-raw" && /endif/.test(b.content)) < greetingIdx, "…and that conditional IS the masthead — it sits above the greeting");
+      const html = require("mjml")(tree, { validationLevel: "soft" }).html;
+      ok(!/mjt\.lu|wedsy\.in\/|wedsy.*\.(png|jpg|svg)/i.test(html), "🔴 compiled: no Wedsy-hosted or Wedsy-named asset anywhere");
       const wedsyMentions = (html.match(/wedsy/gi) || []).length;
-      ok(wedsyMentions === 1 && /POWERED BY WEDSY/.test(html), `'Wedsy' appears exactly once in the HTML, as 'Powered by Wedsy' in the footer (${wedsyMentions})`);
-      ok(/\{% if var:venue_logo %\}[\s\S]*<img[\s\S]*\{% else %\}[\s\S]*\{\{var:venue_name\}\}[\s\S]*\{% endif %\}/.test(html), "🔴 the image is inside {% if var:venue_logo %}, with the venue NAME in the else branch");
-      ok(html.indexOf("{% endif %}") < html.indexOf("Dear {{var:couple_name}}"), "…and that conditional IS the masthead — it sits above the greeting");
+      ok(wedsyMentions === 1 && /POWERED BY WEDSY/.test(html), `compiled: 'Wedsy' appears exactly once, as 'Powered by Wedsy' in the footer (${wedsyMentions})`);
       ok(!/<img/.test(text) && text.trim().startsWith("{{var:venue_name}}"), "the text part's masthead is the venue name, flattened");
 
       // Same venue, two sends that differ ONLY in From: the masthead input is identical.

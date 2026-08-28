@@ -1,0 +1,73 @@
+{
+  "tagName": "mjml",
+  "attributes": { "owa": "desktop", "version": "4.14.1" },
+  "children": [
+    {
+      "tagName": "mj-head",
+      "children": [
+        { "tagName": "mj-raw", "content": "<meta name=\"supported-color-scheme\" value=\"light dark\">" },
+        { "tagName": "mj-style", "content": "\n    :root {\n      color-scheme: light dark;\n    }\n  " },
+        { "tagName": "mj-preview", "content": "Your booking terms from {{var:venue_name}} are attached." }
+      ]
+    },
+    {
+      "tagName": "mj-body",
+      "attributes": { "background-color": "#F4F4F4", "color": "#55575d", "font-family": "Arial, sans-serif" },
+      "children": [
+        {
+          "tagName": "mj-section",
+          "attributes": { "padding": "20px 0px 20px 0px", "background-repeat": "repeat", "background-size": "auto" },
+          "children": [
+            {
+              "tagName": "mj-column",
+              "children": [
+                { "tagName": "mj-raw", "content": "{% if var:venue_logo %}" },
+                {
+                  "tagName": "mj-image",
+                  "attributes": { "alt": "{{var:venue_name}}", "href": "", "src": "{{var:venue_logo}}", "target": "_blank", "title": "", "align": "center", "border": "none", "height": "auto", "padding": "10px 25px", "width": "180px" }
+                },
+                { "tagName": "mj-raw", "content": "{% else %}" },
+                {
+                  "tagName": "mj-text",
+                  "attributes": { "font-family": "Arial, sans-serif", "align": "center", "color": "#840032", "font-size": "22px", "letter-spacing": "1px", "padding": "10px 25px" },
+                  "content": "<p class=\"text-build-content\" style=\"margin: 10px 0;\"><b>{{var:venue_name}}</b></p>"
+                },
+                { "tagName": "mj-raw", "content": "{% endif %}" },
+                {
+                  "tagName": "mj-divider",
+                  "attributes": { "border-color": "#E6E6E6", "border-width": "2px", "border-style": "solid", "padding": "10px 25px", "width": "100%" },
+                  "content": ""
+                },
+                {
+                  "tagName": "mj-text",
+                  "attributes": { "font-family": "Arial, sans-serif", "align": "left", "color": "#000000", "font-size": "13px", "line-height": "1.5", "padding": "10px 25px", "padding-bottom": "0px", "padding-top": "0px" },
+                  "content": "<p class=\"text-build-content\" style=\"margin: 10px 0; margin-top: 10px;\">Dear {{var:couple_name}},</p><p class=\"text-build-content\" style=\"margin: 10px 0;\">Thank you for your interest in <b>{{var:venue_name}}</b>.</p><p class=\"text-build-content\" style=\"margin: 10px 0;\">Our booking terms and conditions are attached to this email. Please read through them before confirming your booking.</p>"
+                },
+                {
+                  "tagName": "mj-text",
+                  "attributes": { "font-family": "Arial, sans-serif", "align": "left", "color": "#000000", "font-size": "13px", "line-height": "1.5", "padding": "10px 25px", "padding-bottom": "0px", "padding-top": "14px" },
+                  "content": "<p class=\"text-build-content\" style=\"margin: 10px 0;\">{{var:owner_name}}</p><p class=\"text-build-content\" style=\"margin: 10px 0; margin-bottom: 10px;\">{{var:venue_name}}</p>"
+                },
+                {
+                  "tagName": "mj-divider",
+                  "attributes": { "border-color": "#E6E6E6", "border-width": "2px", "border-style": "solid", "padding": "10px 25px", "width": "100%" },
+                  "content": ""
+                },
+                {
+                  "tagName": "mj-text",
+                  "attributes": { "font-family": "Verdana, Helvetica, Arial, sans-serif", "padding-bottom": "0px", "padding": "0px 20px 0px 20px", "padding-top": "0px" },
+                  "content": "<p class=\"text-build-content\" style=\"text-align: center; margin: 10px 0; margin-top: 10px; margin-bottom: 10px;\"><span style=\"color:#55575d;font-family:Arial;font-size:13px;line-height:22px;\">This email was sent automatically. Please do not reply.<br>Questions about these terms? Contact {{var:venue_name}} on {{var:venue_phone}}.</span></p>"
+                },
+                {
+                  "tagName": "mj-text",
+                  "attributes": { "font-family": "Arial, sans-serif", "align": "left", "color": "#000000", "font-size": "13px", "padding": "10px 25px", "padding-bottom": "0px", "padding-top": "0px" },
+                  "content": "<p class=\"text-build-content\" style=\"text-align: center; margin: 10px 0; margin-top: 10px; margin-bottom: 10px;\"><span style=\"font-size:10px;letter-spacing:2px;color:#999999;\">POWERED BY WEDSY</span></p>"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
