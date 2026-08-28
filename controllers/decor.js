@@ -1,4 +1,6 @@
+const mongoose = require("mongoose");
 const Decor = require("../models/Decor");
+const LeadPlan = require("../models/LeadPlan");
 const Attribute = require("../models/Attribute");
 const Anthropic = require("@anthropic-ai/sdk");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("../services/decorPricing");
@@ -549,7 +551,6 @@ const Reorder = (req, res) => {
   if (!field || !Array.isArray(ids) || !ids.length) {
     return res.status(400).send({ message: 'Pass collection ("bestSeller"|"popular"|"spotlight") and a non-empty ids array' });
   }
-  const mongoose = require("mongoose");
   if (!ids.every((id) => mongoose.Types.ObjectId.isValid(String(id)))) {
     return res.status(400).send({ message: "ids must all be valid object ids" });
   }
@@ -1696,9 +1697,62 @@ Return ONLY valid JSON:
   }
 };
 
+// ── RECENTLY USED, BY THE ADMIN ASKING ─────────────────────────────────────
+// The décor this planner has themselves put on a couple's Inspiration deck,
+// most recent first. It answers "where is that one I used last week" without
+// making them remember the name.
+//
+// INSPIRATION ONLY, and deliberately. LeadPlan.looks carries `addedBy` and
+// `addedAt` on every subdocument and prod has them set on all 102 looks. Build &
+// Bill draft items (Event.days[].decorItems) carry NEITHER — no actor, no
+// timestamp — and the plan change log records the item's CATEGORY rather than
+// its decorId, so the same question cannot be asked of drafts at all. Adding
+// those fields is a separate decision; this route does not pretend to cover it.
+//
+// $match BEFORE $unwind, on the array itself. At 130 plans / 102 looks the whole
+// collection is a rounding error and any pipeline shape would do — but written
+// this way an index on { "looks.addedBy": 1 } can serve the match without a
+// collection scan, and that becomes necessary in the THOUSANDS of looks. Adding
+// it later is then a one-line migration rather than a rewrite.
+const RecentlyUsed = async (req, res) => {
+  try {
+    const adminId = req.auth && req.auth.user_id;
+    if (!adminId) return res.status(401).send({ message: "Not signed in" });
+    const actor = new mongoose.Types.ObjectId(String(adminId));
+
+    const rows = await LeadPlan.aggregate([
+      { $match: { "looks.addedBy": actor } },
+      { $unwind: "$looks" },
+      { $match: { "looks.addedBy": actor, "looks.source": "decor", "looks.decorId": { $ne: null } } },
+      { $group: { _id: "$looks.decorId", last: { $max: "$looks.addedAt" } } },
+      { $sort: { last: -1 } },
+    ]);
+
+    // TWO SHAPES, ON PURPOSE. The band shows eight tiles and needs whole
+    // documents to render them. The "used before" badge needs to know about
+    // EVERY product this planner has used, not just the eight — so the ids go
+    // back in full and unhydrated, which costs nothing, rather than the client
+    // making a second call or the badge quietly under-reporting.
+    const decorIds = rows.map((r) => String(r._id));
+    const top = rows.slice(0, 8).map((r) => r._id);
+    // VISIBLE PRODUCTS ONLY, the same gate GET /decor applies. A product pulled
+    // from the catalogue must not come back through a history band — the store
+    // would be offering something it will not sell.
+    const docs = top.length ? await Decor.find({ _id: { $in: top }, productVisibility: true }).lean() : [];
+    // `$in` does not preserve order; restore the recency order the sort produced.
+    const rank = new Map(top.map((id, i) => [String(id), i]));
+    docs.sort((a, b) => rank.get(String(a._id)) - rank.get(String(b._id)));
+
+    return res.send({ products: docs, decorIds });
+  } catch (error) {
+    console.error("RecentlyUsed error:", (error && error.message) || error);
+    return res.status(500).send({ message: "recently_used_failed", error: (error && error.message) || String(error) });
+  }
+};
+
 module.exports = {
   CreateNew, GetAll, Get, Update, Delete, AiAnalyze, AiRegenerate, Reorder, SuggestPrice, AnalyseImage, DemoPrice,
-  DecorAnalysis,
+  DecorAnalysis, RecentlyUsed,
   // exported for the response-contract test — the wire-shaping boundary
   shapeClientResponse, shapeDemoPrice, shapeAnalyseImage, shapeDecorAnalysis,
 };
