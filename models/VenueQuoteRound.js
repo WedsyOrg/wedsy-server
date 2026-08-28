@@ -82,6 +82,15 @@ const VenueQuoteRoundSchema = new mongoose.Schema(
     // get" cannot be answered by re-reading a template that has since changed.
     termsSentAt: { type: Date },
     termsSentTo: { type: String, default: "" },
+    // The DELIVERY verdict, separate from the send record above. `termsSentAt`
+    // says the owner sent; these say whether the email actually left — set
+    // from what Mailjet returned, never from the fact that we asked it to.
+    // A false with a reason is a true statement on a dispute record; a true
+    // written before the transport answered would be a lie on one.
+    termsDelivered: { type: Boolean, default: false },
+    termsDeliveryError: { type: String, default: "" },
+    termsDeliveredAt: { type: Date },
+    termsMessageId: { type: String, default: "" },
     termsSnapshot: [
       {
         heading: { type: String, default: "" },

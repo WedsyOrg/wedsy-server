@@ -34,10 +34,11 @@
  * contains none.
  *
  * ── DELIVERY HONESTY, PRESERVED ─────────────────────────────────────────────
- * `delivered` stays false with an explanatory `deliveryError` until the
- * "venue_terms_sent" Mailjet template exists. Two suites pin this. Telling an
- * owner their terms went out when nothing left the building is the exact
- * failure a dispute would expose, and the RECORD is complete either way.
+ * `delivered` is what Mailjet ANSWERED, never what we asked. The send goes
+ * through services/VenueTermsMail — awaited, with the stitched PDF attached —
+ * and the verdict (delivered / deliveryError) is written onto the quote round.
+ * Telling an owner their terms went out when nothing left the building is the
+ * exact failure a dispute would expose, and the RECORD is complete either way.
  */
 const mongoose = require("mongoose");
 const axios = require("axios");
@@ -60,7 +61,7 @@ const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { resolveTermsSource } = require("./venueTerms");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const TERMS_TRIGGER = "venue_terms_sent";
+const { sendVenueTermsEmail, recordDelivery } = require("../services/VenueTermsMail");
 const MAX_NOTE = 2000;
 const VERSION_RETRIES = 5;
 
@@ -447,41 +448,30 @@ const generateTermsDocument = async (req, res) => {
     round.termsDocument = { url, filename: finalName };
     await round.save();
 
-    // Transport is best-effort and must never fail the record.
+    // Transport must never fail the record — and must never be claimed before
+    // Mailjet answers. The stitched bytes are still in hand, so they are the
+    // attachment: the couple gets exactly the versioned document the row
+    // points at. services/VenueTermsMail decides everything else and the
+    // verdict is written onto the round from its answer.
     let delivered = false;
     let deliveryError = "";
     if (email) {
-      try {
-        const NotificationService = require("../services/NotificationService");
-        const trigger = NotificationService.TRIGGERS && NotificationService.TRIGGERS[TERMS_TRIGGER];
-        if (!trigger) {
-          deliveryError = `No "${TERMS_TRIGGER}" email template is configured — the document was generated and recorded, but not emailed.`;
-        } else if (!process.env.MAILJET_API_KEY) {
-          deliveryError = "Email transport is not configured on this environment.";
-        } else {
-          NotificationService.send(TERMS_TRIGGER, {
-            email,
-            name: lead.coupleName || lead.name || "",
-            emailVariables: {
-              venue_name: venue.name || "",
-              lead_name: lead.coupleName || lead.name || "",
-              clause_count: "0",
-              terms_url: url,
-              terms_filename: finalName,
-            },
-          });
-          delivered = true;
-        }
-      } catch (e) {
-        deliveryError = e.message;
-        console.warn(`[venueLeadDocument] send failed for lead ${lead._id}: ${e.message}`);
-      }
+      const verdict = await sendVenueTermsEmail({
+        venue,
+        lead,
+        email,
+        attachment: { filename: finalName, buffer: stitched.buffer },
+      });
+      recordDelivery(round, verdict);
+      await round.save();
+      delivered = verdict.delivered;
+      deliveryError = verdict.deliveryError;
     }
 
     lead.activities.push({
       type: "terms_sent",
       description: email
-        ? `Terms & conditions v${doc.version} sent to ${email}${note ? ` — ${note}` : ""}`
+        ? `Terms & conditions v${doc.version} sent to ${email}${delivered ? "" : " — recorded, not emailed"}${note ? ` — ${note}` : ""}`
         : `Terms & conditions v${doc.version} generated${note ? ` — ${note}` : ""}`,
       actor: actorId(req),
       timestamp: new Date(),

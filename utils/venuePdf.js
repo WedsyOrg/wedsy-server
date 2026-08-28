@@ -323,6 +323,25 @@ async function streamContractPdf(res, { venue, contract }) {
 async function streamTermsPdf(res, { venue, lead, sections, sentAt }) {
   const logoBuffer = await loadLogoBuffer(venue.logo);
   const doc = startDoc(res, `terms-${lead._id}.pdf`);
+  renderTermsPdf(doc, { venue, lead, sections, sentAt, logoBuffer });
+  doc.end();
+}
+
+/**
+ * The same terms document as BYTES, for attaching to the email that says
+ * "our terms are attached". Generated clauses are the venue's terms exactly as
+ * much as an uploaded PDF is, so the generated path attaches too — the one
+ * renderer above, collected through bufferDoc rather than piped at a response.
+ */
+async function buildTermsPdfBuffer({ venue, lead, sections, sentAt }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo);
+  const { doc, done } = bufferDoc();
+  renderTermsPdf(doc, { venue, lead, sections, sentAt, logoBuffer });
+  doc.end();
+  return done;
+}
+
+function renderTermsPdf(doc, { venue, lead, sections, sentAt, logoBuffer }) {
   venueHeader(doc, venue, "Terms & Conditions", logoBuffer);
 
   doc.fillColor(GREY).fontSize(10);
@@ -352,7 +371,6 @@ async function streamTermsPdf(res, { venue, lead, sections, sentAt }) {
     { width: 495 }
   );
   poweredByFooter(doc);
-  doc.end();
 }
 
 // D6 deposit-settlement slip — printed at guest check-out.
@@ -413,6 +431,7 @@ module.exports = {
   streamBillPdf,
   streamSettlementPdf,
   streamTermsPdf,
+  buildTermsPdfBuffer,
   // Exposed so utils/venueTermsCover can build the T&C cover page out of the
   // SAME letterhead, footer, palette and A4 grid as every other venue document,
   // rather than a lookalike that drifts the first time the logo block moves.

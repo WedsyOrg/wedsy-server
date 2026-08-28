@@ -81,6 +81,10 @@ function shapeRound(r, taskByRound) {
     quoteRef: r.quoteRef || null,
     termsSentAt: r.termsSentAt || null,
     termsSentTo: r.termsSentTo || "",
+    // Whether the terms email actually left, so the thread never reads "sent"
+    // over a send that was recorded but not delivered.
+    termsDelivered: Boolean(r.termsDelivered),
+    termsDeliveryError: r.termsDeliveryError || "",
     createdAt: r.createdAt,
     task: task
       ? { _id: task._id, title: task.title, dueAt: task.dueAt, status: task.status }

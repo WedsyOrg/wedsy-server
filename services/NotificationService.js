@@ -96,25 +96,53 @@ function sendWhatsApp(phone, campaignName, variables = [], name = "") {
   });
 }
 
-function sendEmail(email, templateId, variables = {}, name = "") {
+// Mailjet's ceiling for one message — headers, body and every attachment once
+// base64-encoded — is 15 MB. Anything past it is rejected at the API, so a
+// caller attaching a file must check BEFORE sending rather than discover it
+// as a transport error with a document already promised in the body.
+const MAILJET_MESSAGE_LIMIT_BYTES = 15 * 1024 * 1024;
+
+/**
+ * The v3.1 message for one template send. Pure — exists so the payload every
+ * existing caller produces can be asserted byte-for-byte after the two
+ * additions below, rather than assumed unchanged.
+ *
+ * `opts.from`        — {Email, Name}: per-send sender, for mail that must
+ *                      arrive AS the venue rather than as Wedsy. Omitted =
+ *                      the account default, exactly as before.
+ * `opts.attachments` — [{filename, contentType, base64}]: mapped onto
+ *                      Mailjet's Attachments[]. Omitted = no key, as before.
+ */
+function buildEmailMessage(email, templateId, variables = {}, name = "", opts = {}) {
+  const from = opts.from || {};
+  const message = {
+    From: {
+      Email: from.Email || process.env.MAILJET_FROM_EMAIL || "notifications@wedsy.in",
+      Name: from.Name || process.env.MAILJET_FROM_NAME || "Wedsy",
+    },
+    To: [{ Email: email, Name: name }],
+    TemplateID: templateId,
+    TemplateLanguage: true,
+    Variables: variables,
+  };
+  if (Array.isArray(opts.attachments) && opts.attachments.length) {
+    message.Attachments = opts.attachments.map((a) => ({
+      ContentType: a.contentType || "application/octet-stream",
+      Filename: a.filename || "attachment",
+      Base64Content: a.base64,
+    }));
+  }
+  return message;
+}
+
+function sendEmail(email, templateId, variables = {}, name = "", opts = {}) {
   if (!email) return Promise.resolve();
   const client = new MailjetClient({
     apiKey: process.env.MAILJET_API_KEY,
     apiSecret: process.env.MAILJET_SECRET_KEY,
   });
   return client.post("send", { version: "v3.1" }).request({
-    Messages: [
-      {
-        From: {
-          Email: process.env.MAILJET_FROM_EMAIL || "notifications@wedsy.in",
-          Name: process.env.MAILJET_FROM_NAME || "Wedsy",
-        },
-        To: [{ Email: email, Name: name }],
-        TemplateID: templateId,
-        TemplateLanguage: true,
-        Variables: variables,
-      },
-    ],
+    Messages: [buildEmailMessage(email, templateId, variables, name, opts)],
   });
 }
 
@@ -170,4 +198,4 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
   });
 }
 
-module.exports = { send, TRIGGERS };
+module.exports = { send, sendEmail, buildEmailMessage, TRIGGERS, MAILJET_MESSAGE_LIMIT_BYTES };
