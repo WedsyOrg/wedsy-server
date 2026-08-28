@@ -1,0 +1,16 @@
+{{var:venue_name}}
+--------------------------------------------------------------------------------
+Dear {{var:couple_name}},
+
+Thank you for your interest in {{var:venue_name}}.
+
+Our booking terms and conditions are attached to this email. Please read through them before confirming your booking.
+
+{{var:owner_name}}
+{{var:venue_name}}
+
+--------------------------------------------------------------------------------
+This email was sent automatically. Please do not reply.
+Questions about these terms? Contact {{var:venue_name}} on {{var:venue_phone}}.
+
+Powered by Wedsy.

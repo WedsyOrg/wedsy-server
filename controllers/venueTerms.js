@@ -44,19 +44,35 @@ const VenueDocumentTemplate = require("../models/VenueDocumentTemplate");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { seedSections } = require("./venueContract");
 const { cleanStr } = require("../utils/venueInput");
-const { streamTermsPdf } = require("../utils/venuePdf");
+const { streamTermsPdf, buildTermsPdfBuffer } = require("../utils/venuePdf");
+const { fetchSourcePdf } = require("../utils/pdfStitch");
+const { sendVenueTermsEmail, recordDelivery } = require("../services/VenueTermsMail");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-// The NotificationService trigger this send would use. It does not exist in
-// TRIGGERS yet — a Mailjet template has to be created for it — so the code
-// reports honestly rather than pretending the email went.
-const TERMS_TRIGGER = "venue_terms_sent";
+
+/**
+ * The PDF that goes in the email — always one. The uploaded document is
+ * fetched from storage (under pdfStitch's cap, which sits above the 10 MB
+ * upload limit, so the cap that actually bites is Mailjet's, and
+ * VenueTermsMail names it); generated clauses are rendered to bytes by the
+ * same renderer the download uses, so what is attached is what a later
+ * download shows.
+ */
+async function termsAttachment(venue, lead, resolved, sentAt) {
+  if (resolved.kind === "document") {
+    const buffer = await fetchSourcePdf(resolved.document.url);
+    return { filename: resolved.document.filename || "terms.pdf", buffer };
+  }
+  const buffer = await buildTermsPdfBuffer({ venue, lead, sections: resolved.sections, sentAt });
+  return { filename: `terms-${(venue.name || "venue").replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "venue"}.pdf`, buffer };
+}
 
 async function resolveOwnedLead(req, res) {
   const venue = await Venue.findOne({ slug: req.params.slug })
     // termsDocument is what resolveTermsSource() checks FIRST — leaving it out
     // of the projection made every venue look like it had no uploaded terms.
-    .select("_id name policies policyDoc settings termsDocument")
+    // logo / contact / phone are what the email signs itself with.
+    .select("_id name logo contact phone policies policyDoc settings termsDocument")
     .lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) {
@@ -246,52 +262,31 @@ const sendTerms = async (req, res) => {
     }
     await round.save();
 
-    // Transport is best-effort and must never fail the record: the fact that
-    // terms were sent is the thing that matters in a dispute, and losing that
-    // because Mailjet was down would be the worst possible trade.
-    let delivered = false;
-    let deliveryError = "";
-    try {
-      const NotificationService = require("../services/NotificationService");
-      const trigger = NotificationService.TRIGGERS && NotificationService.TRIGGERS[TERMS_TRIGGER];
-      if (!trigger) {
-        // Said out loud rather than reported as a successful send. The
-        // NotificationService no-ops on an unknown trigger, so claiming
-        // delivery here would tell an owner their terms went out when nothing
-        // left the building — the exact failure a dispute would expose.
-        // The Mailjet template for this trigger has to be created in the
-        // Mailjet account before the email can go; the RECORD is complete
-        // either way, which is what the thread and any dispute rely on.
-        deliveryError = `No "${TERMS_TRIGGER}" email template is configured — the send was recorded but not emailed.`;
-      } else if (!process.env.MAILJET_API_KEY) {
-        deliveryError = "Email transport is not configured on this environment.";
-      } else {
-        NotificationService.send(TERMS_TRIGGER, {
-          email,
-          name: lead.coupleName || lead.name || "",
-          emailVariables: {
-            venue_name: venue.name || "",
-            lead_name: lead.coupleName || lead.name || "",
-            clause_count: String(clauseCount),
-            // The attachment the couple actually opens. Empty for the
-            // generated path, which renders its clauses in the body.
-            terms_url: resolved.kind === "document" ? resolved.document.url : "",
-            terms_filename: resolved.kind === "document" ? resolved.document.filename : "",
-          },
-        });
-        delivered = true;
-      }
-    } catch (e) {
-      deliveryError = e.message;
-      console.warn(`[venueTerms] send failed for lead ${lead._id}: ${e.message}`);
-    }
+    // Transport must never fail the record: the fact that terms were sent is
+    // the thing that matters in a dispute, and losing that because Mailjet
+    // was down would be the worst possible trade. But the record must not
+    // CLAIM delivery either — `delivered` is set from Mailjet's answer, after
+    // awaiting it, and the PDF is attached in both cases (uploaded or
+    // generated) or the email does not go. services/VenueTermsMail is the one
+    // place all of that is decided.
+    const verdict = await sendVenueTermsEmail({
+      venue,
+      lead,
+      email,
+      // Lazy: fetched from storage / rendered only once the transport is
+      // known to be configured, and a failure to get the bytes is a verdict.
+      attachment: () => termsAttachment(venue, lead, resolved, round.termsSentAt),
+    });
+    recordDelivery(round, verdict);
+    await round.save();
+    const { delivered, deliveryError } = verdict;
 
     lead.activities.push({
       type: "terms_sent",
       description:
-        resolved.kind === "document"
+        (resolved.kind === "document"
           ? `Terms & conditions (${resolved.document.filename}) sent to ${email}`
-          : `Terms & conditions sent to ${email}`,
+          : `Terms & conditions sent to ${email}`) + (delivered ? "" : " — recorded, not emailed"),
       actor: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null,
       timestamp: new Date(),
     });
