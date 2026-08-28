@@ -39,7 +39,10 @@ async function findByName(client, name) {
   let offset = 0;
   const limit = 100;
   for (;;) {
-    const res = await client.get("template", { version: "v3" }).request({ OwnerType: "user", Limit: limit, Offset: offset });
+    // node-mailjet: query parameters are request()'s SECOND argument; passed
+    // as the first they are silently ignored and the default page of 10 comes
+    // back — which made the first version of this script create a duplicate.
+    const res = await client.get("template", { version: "v3" }).request({}, { OwnerType: "user", Limit: limit, Offset: offset });
     const rows = (res.body && res.body.Data) || [];
     const hit = rows.find((t) => t.Name === name);
     if (hit) return hit;
