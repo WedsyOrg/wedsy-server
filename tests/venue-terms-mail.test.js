@@ -158,6 +158,48 @@ const withEnv = async (patch, fn) => {
         ok(/No\s*fireworks\s*after\s*10pm/.test(pdfText), "🔴 …containing the venue's actual clauses");
       }));
 
+    // ══ C2. THE MASTHEAD — the venue's, identical across sends, never Wedsy ═══
+    console.log("\n[C2. masthead: Venue.logo → image, else the venue's NAME; the same for every send; never the Wedsy logo]");
+    {
+      const fs = require("fs");
+      const html = fs.readFileSync(require("path").join(__dirname, "..", "emails", "venue_terms_sent.html"), "utf8");
+      const text = fs.readFileSync(require("path").join(__dirname, "..", "emails", "venue_terms_sent.txt"), "utf8");
+      const imgs = html.match(/<img[^>]*>/g) || [];
+      eq(imgs.length, 1, "🔴 the template carries exactly ONE image");
+      ok(/src="\{\{var:venue_logo\}\}"/.test(imgs[0]), "🔴 …and its src is {{var:venue_logo}} — the venue's, never a fixed asset");
+      ok(!/mjt\.lu|wedsy\.in\/|wedsy.*\.(png|jpg|svg)/i.test(html), "🔴 no Wedsy-hosted or Wedsy-named asset anywhere in the HTML");
+      const wedsyMentions = (html.match(/wedsy/gi) || []).length;
+      ok(wedsyMentions === 1 && /POWERED BY WEDSY/.test(html), `'Wedsy' appears exactly once in the HTML, as 'Powered by Wedsy' in the footer (${wedsyMentions})`);
+      ok(/\{% if var:venue_logo %\}[\s\S]*<img[\s\S]*\{% else %\}[\s\S]*\{\{var:venue_name\}\}[\s\S]*\{% endif %\}/.test(html), "🔴 the image is inside {% if var:venue_logo %}, with the venue NAME in the else branch");
+      ok(html.indexOf("{% endif %}") < html.indexOf("Dear {{var:couple_name}}"), "…and that conditional IS the masthead — it sits above the greeting");
+      ok(!/<img/.test(text) && text.trim().startsWith("{{var:venue_name}}"), "the text part's masthead is the venue name, flattened");
+
+      // Same venue, two sends that differ ONLY in From: the masthead input is identical.
+      const seen = [];
+      const fake = async (email, templateId, variables, name, opts) => { seen.push({ logo: variables.venue_logo, from: opts.from.Name }); return MJ_OK; };
+      await withEnv(ENV_OK, async () => {
+        await Mail.sendVenueTermsEmail({ venue: venue.toObject(), lead, email: "p@x.y", attachment: { filename: "t.pdf", buffer: Buffer.from("%PDF-1.4 x") }, transport: fake });
+        await Mail.sendVenueTermsEmail({ venue: { ...venue.toObject(), name: "A Different Display Name" }, lead, email: "p@x.y", attachment: { filename: "t.pdf", buffer: Buffer.from("%PDF-1.4 x") }, transport: fake });
+      });
+      ok(seen[0].from !== seen[1].from, `two sends, two From names (${seen[0].from} / ${seen[1].from})`);
+      ok(seen[0].logo === seen[1].logo && seen[0].logo === venue.logo, "🔴 …and the SAME masthead input: venue_logo is Venue.logo on both, untouched by From");
+
+      // Both fallback states, from stored fixtures.
+      const withLogo = await Venue.create({ name: `${TAG} Logo Venue`, slug: `${TAG}-logo`, logo: "https://cdn.example.com/venues/logo-venue.jpg" });
+      const noLogo = await Venue.create({ name: `${TAG} Plain Venue`, slug: `${TAG}-plain` });
+      created.venues.push(withLogo._id, noLogo._id);
+      const vars = [];
+      const capture = async (e, t, variables) => { vars.push(variables); return MJ_OK; };
+      await withEnv(ENV_OK, async () => {
+        await Mail.sendVenueTermsEmail({ venue: (await Venue.findById(withLogo._id).lean()), lead, email: "p@x.y", attachment: { filename: "t.pdf", buffer: Buffer.from("%PDF-1.4 x") }, transport: capture });
+        await Mail.sendVenueTermsEmail({ venue: (await Venue.findById(noLogo._id).lean()), lead, email: "p@x.y", attachment: { filename: "t.pdf", buffer: Buffer.from("%PDF-1.4 x") }, transport: capture });
+      });
+      eq(vars[0].venue_logo, "https://cdn.example.com/venues/logo-venue.jpg", "🔴 a venue WITH a logo → venue_logo is that URL → the if-branch renders the image");
+      eq(vars[1].venue_logo, "", "🔴 a venue WITHOUT a logo → venue_logo is '' → the else-branch renders the venue's name as text");
+      eq(vars[1].venue_name, noLogo.name, "…and that name is the venue's");
+      ok(!vars.some((v) => /mjt\.lu|wedsy/i.test(v.venue_logo)), "🔴 neither send carries a Wedsy image as the logo");
+    }
+
     // ══ D. MAILJET REFUSES IN-BAND (200 with Status:error) ═══════════════════
     console.log("\n[D. Mailjet answers Status:error → not delivered, its reason on the record]");
     await withEnv(ENV_OK, () =>
