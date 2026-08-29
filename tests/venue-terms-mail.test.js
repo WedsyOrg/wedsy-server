@@ -144,7 +144,8 @@ const withEnv = async (patch, fn) => {
         eq(payload.opts.from.Email, "partner_venue@wedsy.in", "🔴 From address is partner_venue@wedsy.in");
         eq(payload.variables.venue_name, venue.name, "var venue_name");
         eq(payload.variables.couple_name, "Priya & Arjun", "var couple_name");
-        eq(payload.variables.owner_name, "Meera Rao", "🔴 var owner_name is the VenueOwner, not 'Wedsy'");
+        eq(payload.variables.sender_name, "Meera Rao", "🔴 var sender_name: the OWNER who pressed send signs (the controller passes venueOwnerId), never 'Wedsy'");
+        ok(!("owner_name" in payload.variables), "owner_name is no longer a variable");
         eq(payload.variables.venue_phone, "+91 98450 00000", "var venue_phone from contact.primaryPhone");
         eq(payload.variables.venue_logo, "https://example.com/crown.png", "var venue_logo is the http URL");
         ok(!Object.values(payload.variables).some((v) => /wedsy/i.test(v)), "no variable carries 'Wedsy' — the voice is the venue's");
@@ -280,15 +281,20 @@ const withEnv = async (patch, fn) => {
       ok(notConfigured.delivered === false && prepared === 0, "…and with no template configured the PDF is never even fetched");
     }
 
-    // ══ H. OWNER NAME FALLBACKS ══════════════════════════════════════════════
-    console.log("\n[H. owner_name: VenueOwner → contact.primaryName → venue name; never blank, never Wedsy]");
+    // ══ H. WHO SIGNS: the member who sent → the owner → the venue ═══════════
+    console.log("\n[H. resolveSender: memberId → VenueTeamMember, venueOwnerId → VenueOwner, else the venue; never blank, never Wedsy]");
     {
-      const v2 = await Venue.create({ name: `${TAG} No Owner`, slug: `${TAG}-v2`, contact: { primaryName: "Front Desk" } });
-      created.venues.push(v2._id);
-      eq(await Mail.resolveOwnerName(v2.toObject()), "Front Desk", "no VenueOwner → contact.primaryName");
+      const VenueTeamMember = require("../models/VenueTeamMember");
+      const member = await VenueTeamMember.create({ venueId: venue._id, ownerId: owner._id, name: "Arjun Sales", phone: `${TAG}m`, role: "sales", isActive: true });
+      const sM = await Mail.resolveSender({ memberId: member._id, venueOwnerId: owner._id }, venue.toObject());
+      ok(sM.name === "Arjun Sales" && sM.phone === `${TAG}m` && sM.via === "member", "🔴 a memberId resolves to the TEAM MEMBER's name and OTP phone, not the owner's");
+      const sO = await Mail.resolveSender({ venueOwnerId: owner._id }, venue.toObject());
+      ok(sO.name === "Meera Rao" && sO.phone === `${TAG}o` && sO.via === "owner", "a venueOwnerId resolves to the owner");
+      const sV = await Mail.resolveSender({ memberId: new mongoose.Types.ObjectId() }, venue.toObject());
+      ok(sV.name === venue.name && sV.phone === "+91 98450 00000" && sV.via === "venue", "an id that resolves to nothing → the venue name + venue phone, not a blank signature");
+      await VenueTeamMember.deleteOne({ _id: member._id });
       const v3 = await Venue.create({ name: `${TAG} Bare`, slug: `${TAG}-v3` });
       created.venues.push(v3._id);
-      eq(await Mail.resolveOwnerName(v3.toObject()), v3.name, "nothing at all → the venue's name");
       const noLogo = await withEnv(ENV_OK, () => Mail.sendVenueTermsEmail({ venue: { ...v3.toObject(), logo: "data:image/png;base64,AAAA" }, lead, email: "p@x.y", attachment: { filename: "t.pdf", buffer: Buffer.from("%PDF-1.4 x") }, transport: async (e, t, vars) => { payload = vars; return MJ_OK; } }));
       ok(noLogo.delivered && payload.venue_logo === "", "a data: URI logo is sent as EMPTY, so the template falls back to the name in text");
     }

@@ -129,6 +129,32 @@ function venueDateLabel(instant, tz = VENUE_TZ) {
   return venueDateKey(new Date(instant), tz);
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+/** "30 Aug 2026" in the venue timezone. */
+function venueDateHuman(instant, tz = VENUE_TZ) {
+  const p = tzParts(new Date(instant), tz);
+  return `${p.day} ${MONTHS[p.month - 1]} ${p.year}`;
+}
+/** "30 Aug 2026, 4:00 PM" in the venue timezone. */
+function venueDateTimeHuman(instant, tz = VENUE_TZ) {
+  const p = tzParts(new Date(instant), tz);
+  const h12 = p.hour % 12 === 0 ? 12 : p.hour % 12;
+  return `${venueDateHuman(instant, tz)}, ${h12}:${String(p.minute).padStart(2, "0")} ${p.hour < 12 ? "AM" : "PM"}`;
+}
+/**
+ * The event window as words, or "" — never an invented one.
+ *   checkIn + checkOut  → "30 Aug 2026, 4:00 PM to 31 Aug 2026, 4:00 PM"
+ *   only eventDate      → "30 Aug 2026" (the real fact: a day, no times)
+ *   nothing set         → ""  (the sentence carrying it is dropped by the caller)
+ */
+function eventWindowLabel(lead, tz = VENUE_TZ) {
+  const ok = (d) => d && !Number.isNaN(new Date(d).getTime());
+  if (!lead) return "";
+  if (ok(lead.checkIn) && ok(lead.checkOut)) return `${venueDateTimeHuman(lead.checkIn, tz)} to ${venueDateTimeHuman(lead.checkOut, tz)}`;
+  if (ok(lead.eventDate)) return venueDateHuman(lead.eventDate, tz);
+  return "";
+}
+
 function venueDateTimeLabel(instant, tz = VENUE_TZ) {
   const p = tzParts(new Date(instant), tz);
   const hh = String(p.hour).padStart(2, "0");
@@ -138,6 +164,9 @@ function venueDateTimeLabel(instant, tz = VENUE_TZ) {
 
 module.exports = {
   VENUE_TZ,
+  venueDateHuman,
+  venueDateTimeHuman,
+  eventWindowLabel,
   venueDateKey,
   venueDateLabel,
   venueDateTimeLabel,

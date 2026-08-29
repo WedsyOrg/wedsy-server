@@ -105,19 +105,21 @@ const sendPreview = async (req, res) => {
     const { venue, lead } = owned;
     const doc = await resolveDocument(req, res, lead);
     if (!doc) return;
-    const message = req.query.message !== undefined ? cleanStr(req.query.message).slice(0, MAX_MESSAGE) : VenueMail.defaultMessage(doc.kind, { venue, document: doc });
+    const message = req.query.message !== undefined ? cleanStr(req.query.message).slice(0, MAX_MESSAGE) : VenueMail.defaultMessage(doc.kind, { venue, document: doc, lead });
+    const sender = await VenueMail.resolveSender(req.venueOwner, venue);
     // Who it is addressed to, so the greeting is theirs: a contact's email
     // resolves to their name; a typed name is used as given; nobody → couple.
     const toEmail = cleanStr(req.query.to).toLowerCase();
     const toContact = toEmail ? (lead.contacts || []).find((c) => String(c.email || "").toLowerCase() === toEmail) : null;
     const recipientName = (toContact && toContact.name) || cleanStr(req.query.toName).slice(0, 200) || "";
-    const rendered = await VenueMail.renderPreview({ venue, lead, kind: doc.kind, message, document: doc, recipientName });
+    const rendered = await VenueMail.renderPreview({ venue, lead, kind: doc.kind, message, document: doc, recipientName, sender });
     const src = await VenueMail.templateSource(doc.kind, rendered.templateId);
     const options = recipientOptions(lead);
     return res.status(200).json({
       document: { _id: doc._id, kind: doc.kind, label: VenueMail.KINDS[doc.kind].label, version: doc.version, filename: doc.filename, sizeBytes: doc.sizeBytes || null },
       ...options,
-      defaultMessage: VenueMail.defaultMessage(doc.kind, { venue, document: doc }),
+      defaultMessage: VenueMail.defaultMessage(doc.kind, { venue, document: doc, lead }),
+      sender: { name: sender.name, phone: sender.phone },
       message,
       subject: rendered.subject,
       from: { email: rendered.from.Email, name: rendered.from.Name },
@@ -163,7 +165,7 @@ const sendDocument = async (req, res) => {
       name = (hit && hit.name) || "";
     }
 
-    const actor = await actorOf(req);
+    const actor = { ...(await actorOf(req)), memberId: req.venueOwner.memberId, venueOwnerId: req.venueOwner.venueOwnerId };
     const { send, verdict } = await VenueMail.sendDocumentEmail({
       venue,
       lead,

@@ -18,7 +18,7 @@
         },
         {
           "tagName": "mj-preview",
-          "content": "Your booking with {{var:venue_name}} is confirmed — confirmation attached."
+          "content": "{{var:venue_name}} has received your payment — receipt attached."
         }
       ]
     },

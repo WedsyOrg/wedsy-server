@@ -168,7 +168,10 @@ pdfStitch.fetchSourcePdf = async (url) => { fetched.push(url); return Buffer.fro
         eq(s.to.name, "Mr Rao", "STORED: recipient name resolved from the contact");
         eq(s.from.name, venue.name, "🔴 STORED: sender display name is the venue");
         eq(s.from.email, "partner_venue@wedsy.in", "STORED: sender address");
-        ok(/Your quote from/.test(s.subject), `STORED: subject "${s.subject}"`);
+        ok(new RegExp(`^${venue.name} — quote for your event$`).test(s.subject), `STORED: subject "${s.subject}" — the {{venue}} — <thing> pattern`);
+        eq(s.variables.sender_name, "Meera Rao", "🔴 the signature is the SENDER (the owner row this actor resolves to)");
+        eq(s.variables.sender_phone, owner.phone, "…with the sender's OTP phone");
+        ok(!("owner_name" in s.variables), "🔴 owner_name is gone from the wire — the live templates no longer reference it");
         eq(s.message, "Dear Mr Rao, here is our quote.\nCall me anytime.", "STORED: the owner's words");
         ok(/Dear Mr Rao, here is our quote\.<br>Call me anytime\./.test(s.renderedHtml), "🔴 STORED: the rendered HTML carries the message inside the frame");
         ok(/Dear Mr Rao,/.test(s.renderedText) && /Dear Mr Rao, here is our quote\./.test(s.renderedText), "STORED: the text part too");

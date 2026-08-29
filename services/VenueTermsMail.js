@@ -45,7 +45,7 @@ module.exports = {
   attachmentVerdict: VenueMail.attachmentVerdict,
   verdictFromResponse: VenueMail.verdictFromResponse,
   verdictFromThrown: VenueMail.verdictFromThrown,
-  resolveOwnerName: VenueMail.resolveOwnerName,
+  resolveSender: VenueMail.resolveSender,
   TEMPLATE_ENV,
   TRIGGER,
   BODY_ALLOWANCE_BYTES: VenueMail.BODY_ALLOWANCE_BYTES,
