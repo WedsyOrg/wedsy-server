@@ -70,6 +70,47 @@ function walk(dir, out = []) {
       ok(orig.replace("POWERED BY WEDSY", "POWERED BY WEDSY ") !== fresh, "…a hand edit to the artefact would not equal the fresh compile");
     }
 
+    // ══ B2. THE SETTLED COPY — rules that must hold in every template and default ══
+    console.log("\n[B2. copy rules: event not wedding; no reply-to; no owner_name; the {{venue}} — <thing> subject; the window sentence]");
+    {
+      const sources = [];
+      for (const spec of Object.values(VenueMail.KINDS)) {
+        sources.push(fs.readFileSync(path.join(ROOT, "emails", `${spec.slug}.txt`), "utf8"));
+        sources.push(fs.readFileSync(path.join(ROOT, "emails", `${spec.slug}.mjml.json`), "utf8"));
+        sources.push(fs.readFileSync(path.join(VenueMail.COMPILED_DIR, `${spec.slug}.html`), "utf8"));
+      }
+      eq(Object.keys(VenueMail.KINDS).length, 6, "six kinds (terms, quote, booking_confirmation, invoice, statement, receipt)");
+      const venue = { name: "Crown Estate", contact: { primaryPhone: "+91 98450 00000" } };
+      const withWindow = { checkIn: "2026-08-30T10:30:00Z", checkOut: "2026-08-31T10:30:00Z" };
+      const defaults = Object.keys(VenueMail.KINDS).map((k) => VenueMail.defaultMessage(k, { venue, lead: withWindow, amount: 250000 }));
+      const everything = sources.concat(defaults).join("\n");
+      eq((everything.match(/wedding/gi) || []).length, 0, "🔴 'wedding' appears nowhere — corporate and social bookings are events");
+      eq((everything.match(/reply to this email/gi) || []).length, 0, "🔴 no 'reply to this email' — the sender is unmonitored");
+      eq((everything.match(/owner_name/g) || []).length, 0, "🔴 no owner_name — the signature is the sender");
+      eq((everything.match(/do not reply/gi) || []).length, 0, "the old footer line is gone");
+      for (const src of sources.filter((x) => /^\{\{var:venue_name\}\}/.test(x))) {
+        ok(/Warm regards,\n\{\{var:sender_name\}\}\n\{\{var:venue_name\}\}\n\{\{var:sender_phone\}\}/.test(src), "text signature: Warm regards / sender / venue / sender phone");
+        ok(/This is an automated email which cannot take replies\.\nFor any queries contact \{\{var:venue_name\}\} on \{\{var:venue_phone\}\}\./.test(src) && /Powered by Wedsy/.test(src), "text footer as settled, then Powered by Wedsy");
+      }
+      for (const spec of Object.values(VenueMail.KINDS)) {
+        ok(/^\{\{var:venue_name\}\} — /.test(spec.subject({ venue_name: "{{var:venue_name}}" })), `${spec.slug}: subject starts "{{var:venue_name}} — " ("${spec.subject({ venue_name: "{{var:venue_name}}" })}")`);
+      }
+      // The window sentence: present with a window, a single day when only a day, DROPPED when nothing.
+      const q = (lead) => VenueMail.defaultMessage("quote", { venue, lead });
+      ok(/Please find your quote attached, for 30 Aug 2026, 4:00 PM to 31 Aug 2026, 4:00 PM\./.test(q(withWindow)), "🔴 quote: the window renders as '30 Aug 2026, 4:00 PM to 31 Aug 2026, 4:00 PM'");
+      ok(/Please find your quote attached, for 30 Aug 2026\./.test(q({ eventDate: "2026-08-30T10:30:00Z" })), "🔴 only a day known → '30 Aug 2026', no invented times");
+      ok(/Please find your quote attached\./.test(q({})) && !/ for /.test(q({}).split("\n")[2]), "🔴 no dates → the sentence carrying them is DROPPED, not blanked");
+      const b = (lead) => VenueMail.defaultMessage("booking_confirmation", { venue, lead });
+      ok(/confirm your booking for 30 Aug 2026, 4:00 PM to 31 Aug 2026, 4:00 PM\. Your booking confirmation is attached/.test(b(withWindow)), "booking: window inside the sentence");
+      ok(/confirm your booking\. Your booking confirmation is attached/.test(b({})), "booking: no dates → 'confirm your booking.'");
+      const st = (lead) => VenueMail.defaultMessage("statement", { venue, lead });
+      ok(/attached, covering your booking for 30 Aug 2026/.test(st(withWindow)) && /attached\.\n/.test(st({})), "statement: 'covering your booking for …' only with dates");
+      const r = VenueMail.defaultMessage("receipt", { venue, lead: withWindow, amount: 250000 });
+      ok(/received your payment of ₹2,50,000 towards your booking with Crown Estate for your event on 30 Aug 2026/.test(r), `🔴 receipt: amount formatted in INR and the event date ("${r.split("\n")[0]}")`);
+      ok(/received your payment towards your booking with Crown Estate\./.test(VenueMail.defaultMessage("receipt", { venue, lead: {} })), "receipt: no amount, no dates → both phrases dropped, sentence still whole");
+      ok(!("receipt" in { terms: 1, quote: 1, booking_confirmation: 1, invoice: 1, statement: 1 }) && !require("../models/VenueLeadDocument").schema.path("kind").enumValues.includes("receipt"), "receipt has NO document kind yet — nothing can file or send one");
+    }
+
     // ══ FIXTURE ══════════════════════════════════════════════════════════════
     await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
     const venue = await Venue.create({ name: `${TAG} Venue`, slug: `${TAG}-v`, city: "Bangalore", state: "Karnataka" });
