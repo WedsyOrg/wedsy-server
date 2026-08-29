@@ -142,6 +142,9 @@ pdfStitch.fetchSourcePdf = async (url) => { fetched.push(url); return Buffer.fro
       ok(new RegExp(venue.name).test(r.body.html) && /Meera Rao/.test(r.body.html), "…carries the venue name and the owner's signature");
       ok(!/Team Wedsy|help@wedsy\.in/.test(r.body.html) && /POWERED BY WEDSY/.test(r.body.html), "🔴 venue voice: no Team Wedsy, no help@, Powered by Wedsy only");
       eq(r.body.messageSupported, true, "the template carries the message region");
+      ok(/Dear Mr Rao,/.test((await call(send.sendPreview, req({ params: { documentId: String(qdoc._id) }, query: { to: "rao@example.com" } }))).body.html), "preview ?to= a contact → greeting is that contact");
+      ok(/Dear Kavya,/.test((await call(send.sendPreview, req({ params: { documentId: String(qdoc._id) }, query: { to: "new@x.y", toName: "Kavya" } }))).body.html), "preview ?to= a typed address with a name → greeting is that name");
+      ok(/Dear Priya & Arjun,/.test((await call(send.sendPreview, req({ params: { documentId: String(qdoc._id) }, query: { to: "new@x.y" } }))).body.html), "…a typed address with no name → the couple");
       eq(r.body.from.name, venue.name, "From display name is the venue");
       const custom = await call(send.sendPreview, req({ params: { documentId: String(qdoc._id) }, query: { message: "Hello <script>alert(1)</script>\n\nSecond para" } }));
       ok(/Hello &lt;script&gt;/.test(custom.body.html) && !/<script>/.test(custom.body.html), "🔴 a typed message is escaped into the frame");
@@ -168,7 +171,9 @@ pdfStitch.fetchSourcePdf = async (url) => { fetched.push(url); return Buffer.fro
         ok(/Your quote from/.test(s.subject), `STORED: subject "${s.subject}"`);
         eq(s.message, "Dear Mr Rao, here is our quote.\nCall me anytime.", "STORED: the owner's words");
         ok(/Dear Mr Rao, here is our quote\.<br>Call me anytime\./.test(s.renderedHtml), "🔴 STORED: the rendered HTML carries the message inside the frame");
-        ok(/Dear Priya & Arjun/.test(s.renderedText) && /Dear Mr Rao, here is our quote\./.test(s.renderedText), "STORED: the text part too");
+        ok(/Dear Mr Rao,/.test(s.renderedText) && /Dear Mr Rao, here is our quote\./.test(s.renderedText), "STORED: the text part too");
+        ok(/Dear Mr Rao,<\/p>/.test(s.renderedHtml) && !/Dear Priya & Arjun/.test(s.renderedHtml), "🔴 the greeting addresses the RECIPIENT (Mr Rao), not the couple — found by driving");
+        eq(s.variables.couple_full_name, "Priya & Arjun", "…the couple's name is still a variable of its own");
         eq(s.renderedFrom, "repo", "STORED: where the body was rendered from");
         eq(s.templateId, 1001, "STORED: the template id from the env var");
         eq(s.attachment.filename, "quote-Priya-Arjun-v1.pdf", "STORED: attachment filename");
@@ -238,7 +243,7 @@ pdfStitch.fetchSourcePdf = async (url) => { fetched.push(url); return Buffer.fro
         ok(/Namaste Priya/.test(fresh.html), "the template changed: a NEW render says Namaste");
         const again = await VenueEmailSend.findById(first._id).lean();
         eq(again.renderedHtml, before, "🔴 …and the stored email still says exactly what it said");
-        ok(/Dear Priya/.test(again.renderedHtml), "…Dear, not Namaste");
+        ok(/Dear Mr Rao/.test(again.renderedHtml), "…Dear, not Namaste");
       } finally { fs.writeFileSync(tplPath, original); }
     }
 

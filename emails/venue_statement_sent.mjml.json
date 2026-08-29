@@ -138,7 +138,7 @@
                     "padding": "0px 20px 0px 20px",
                     "padding-top": "0px"
                   },
-                  "content": "<p class=\"text-build-content\" style=\"text-align: center; margin: 10px 0; margin-top: 10px; margin-bottom: 10px;\"><span style=\"color:#55575d;font-family:Arial;font-size:13px;line-height:22px;\">This email was sent automatically. Please do not reply.<br>Questions about these terms? Contact {{var:venue_name}} on {{var:venue_phone}}.</span></p>"
+                  "content": "<p class=\"text-build-content\" style=\"text-align: center; margin: 10px 0; margin-top: 10px; margin-bottom: 10px;\"><span style=\"color:#55575d;font-family:Arial;font-size:13px;line-height:22px;\">This email was sent automatically. Please do not reply.<br>Questions? Contact {{var:venue_name}} on {{var:venue_phone}}.</span></p>"
                 },
                 {
                   "tagName": "mj-text",

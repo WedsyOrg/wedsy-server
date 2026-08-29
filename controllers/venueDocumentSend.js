@@ -106,7 +106,12 @@ const sendPreview = async (req, res) => {
     const doc = await resolveDocument(req, res, lead);
     if (!doc) return;
     const message = req.query.message !== undefined ? cleanStr(req.query.message).slice(0, MAX_MESSAGE) : VenueMail.defaultMessage(doc.kind, { venue, document: doc });
-    const rendered = await VenueMail.renderPreview({ venue, lead, kind: doc.kind, message, document: doc });
+    // Who it is addressed to, so the greeting is theirs: a contact's email
+    // resolves to their name; a typed name is used as given; nobody → couple.
+    const toEmail = cleanStr(req.query.to).toLowerCase();
+    const toContact = toEmail ? (lead.contacts || []).find((c) => String(c.email || "").toLowerCase() === toEmail) : null;
+    const recipientName = (toContact && toContact.name) || cleanStr(req.query.toName).slice(0, 200) || "";
+    const rendered = await VenueMail.renderPreview({ venue, lead, kind: doc.kind, message, document: doc, recipientName });
     const src = await VenueMail.templateSource(doc.kind, rendered.templateId);
     const options = recipientOptions(lead);
     return res.status(200).json({

@@ -193,12 +193,17 @@ async function templateSource(kind, templateId, { allowMailjet = true } = {}) {
 }
 
 // ─── Variables ──────────────────────────────────────────────────────────────
-async function buildVariables({ venue, lead, kind, message, document }) {
+async function buildVariables({ venue, lead, kind, message, document, recipientName }) {
   const coupleName = (lead && (lead.coupleName || lead.name)) || "";
   const spec = KINDS[kind];
   const vars = {
     venue_name: venue.name || "",
-    couple_name: coupleName,
+    // The greeting addresses the PERSON the email goes to. A document sent to
+    // the bride's father must not open "Dear Priya & Arjun" — that is the
+    // couple's name on someone else's email. The couple's name stays
+    // available as its own variable for templates that want it.
+    couple_name: (recipientName && String(recipientName).trim()) || coupleName,
+    couple_full_name: coupleName,
     owner_name: await resolveOwnerName(venue),
     venue_phone: resolvePhone(venue),
     venue_logo: resolveLogoUrl(venue),
@@ -224,10 +229,10 @@ function defaultMessage(kind, { venue, document } = {}) {
  * Render the email as it WOULD be sent — used by the modal preview and by the
  * send itself, so what the owner saw is what the record holds.
  */
-async function renderPreview({ venue, lead, kind, message, document, allowMailjet = true }) {
+async function renderPreview({ venue, lead, kind, message, document, recipientName, allowMailjet = true }) {
   const spec = KINDS[kind];
   const templateId = Number(process.env[spec.env]) || 0;
-  const vars = await buildVariables({ venue, lead, kind, message, document });
+  const vars = await buildVariables({ venue, lead, kind, message, document, recipientName });
   const src = await templateSource(kind, templateId, { allowMailjet });
   const subject = renderTemplate(src.subject || spec.subject(vars), vars);
   return {
@@ -261,7 +266,7 @@ async function sendDocumentEmail({ venue, lead, kind, document, email, name, mes
   const finalMessage = String(message == null || String(message).trim() === "" ? defaultMessage(kind, { venue, document }) : message);
 
   // 1 — the record, before anything can fail.
-  const rendered = await renderPreview({ venue, lead, kind, message: finalMessage, document, allowMailjet });
+  const rendered = await renderPreview({ venue, lead, kind, message: finalMessage, document, recipientName: to.name, allowMailjet });
   const send = await VenueEmailSend.create({
     venue: venue._id,
     enquiry: lead._id,
