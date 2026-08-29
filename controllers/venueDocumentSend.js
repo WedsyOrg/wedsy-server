@@ -123,7 +123,9 @@ const sendPreview = async (req, res) => {
       from: { email: rendered.from.Email, name: rendered.from.Name },
       html: rendered.html,
       renderedFrom: rendered.renderedFrom,
-      messageSupported: /\{\{\s*var:message_html\s*\}\}/.test(src.html),
+      // Said on screen, not thrown: a send made now would record this reason.
+      renderError: rendered.renderError || "",
+      messageSupported: Boolean(src) && /\{\{\s*var:message_html\s*\}\}/.test(src.html),
       configured: Boolean(rendered.templateId),
     });
   } catch (err) {

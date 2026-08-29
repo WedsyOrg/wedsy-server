@@ -22,6 +22,12 @@ this table from the code):
 | `venue_invoice_sent` | Invoice | `MAILJET_TEMPLATE_VENUE_INVOICE` |
 | `venue_statement_sent` | Statement of account | `MAILJET_TEMPLATE_VENUE_STATEMENT` |
 
+`compiled/<slug>.html` is a BUILD ARTEFACT — `node scripts/mailjet-template-venue.js
+--compile` writes it from the `.mjml.json`. It is the runtime fallback body when
+Mailjet cannot be read; the MJML compiler itself is a devDependency and is never
+required on the request path (the suite asserts both, and that the artefact
+matches a fresh compile of its source — recompile after editing a source).
+
 All five are COUPLE-FACING and white-label: sent from partner_venue@wedsy.in
 with the venue's name as display name, signed by the owner, Wedsy only as
 "Powered by Wedsy". The body has ONE variable region, `{{var:message_html}}`

@@ -235,7 +235,9 @@ pdfStitch.fetchSourcePdf = async (url) => { fetched.push(url); return Buffer.fro
     {
       const first = await VenueEmailSend.findOne({ enquiry: lead._id, delivered: true }).lean();
       const before = first.renderedHtml;
-      const tplPath = path.join(__dirname, "..", "emails", "venue_quote_sent.mjml.json");
+      // The runtime fallback body is the COMPILED artefact (the compiler is not
+      // on the request path); editing it is what "the template changed" means here.
+      const tplPath = path.join(__dirname, "..", "emails", "compiled", "venue_quote_sent.html");
       const original = fs.readFileSync(tplPath, "utf8");
       try {
         fs.writeFileSync(tplPath, original.replace("Dear {{var:couple_name}},", "Namaste {{var:couple_name}},"));
