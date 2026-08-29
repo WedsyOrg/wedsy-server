@@ -1714,11 +1714,27 @@ Return ONLY valid JSON:
 // this way an index on { "looks.addedBy": 1 } can serve the match without a
 // collection scan, and that becomes necessary in the THOUSANDS of looks. Adding
 // it later is then a one-line migration rather than a rewrite.
+//
+// ── FILTERED HERE, NOT ON THE CLIENT, AND THE ORDER IS THE REASON ──────────
+// The band this feeds sits directly above the store's grid and has to obey the
+// same filters, or it offers stages on a nameboard slide — which is exactly what
+// it did. Filtering the EIGHT hydrated documents on the client would apply the
+// limit before the filter: eight recent picks, then keep the nameboards, and a
+// planner whose last eight were stages gets an empty band while their nameboard
+// history sits in row nine. So the filter runs against the WHOLE ordered history
+// and the limit is taken afterwards, which is the only order that keeps the band
+// full.
+//
+// `category` and `occassion` are read with GET /decor's own semantics —
+// equality for the first, pipe-separated case-insensitive regex for the second —
+// so the band and the grid cannot disagree about what a filter means.
+const RECENT_LIMIT = 8;
 const RecentlyUsed = async (req, res) => {
   try {
     const adminId = req.auth && req.auth.user_id;
     if (!adminId) return res.status(401).send({ message: "Not signed in" });
     const actor = new mongoose.Types.ObjectId(String(adminId));
+    const { category, occassion } = req.query;
 
     const rows = await LeadPlan.aggregate([
       { $match: { "looks.addedBy": actor } },
@@ -1728,20 +1744,33 @@ const RecentlyUsed = async (req, res) => {
       { $sort: { last: -1 } },
     ]);
 
-    // TWO SHAPES, ON PURPOSE. The band shows eight tiles and needs whole
-    // documents to render them. The "used before" badge needs to know about
-    // EVERY product this planner has used, not just the eight — so the ids go
-    // back in full and unhydrated, which costs nothing, rather than the client
-    // making a second call or the badge quietly under-reporting.
+    // TWO SHAPES, ON PURPOSE, AND ONLY ONE OF THEM IS FILTERED.
+    // `products` is the band: the eight most recent that match the store's
+    // current filters, hydrated so the tiles render without a second call.
+    // `decorIds` is the "used before" badge, and it is the WHOLE history,
+    // unfiltered and unhydrated — the badge answers "have I used this before",
+    // which is a question about the product, not about the category the planner
+    // happens to be looking at. Filtering it would make the badge vanish and
+    // reappear as the filters changed.
     const decorIds = rows.map((r) => String(r._id));
-    const top = rows.slice(0, 8).map((r) => r._id);
+
     // VISIBLE PRODUCTS ONLY, the same gate GET /decor applies. A product pulled
     // from the catalogue must not come back through a history band — the store
     // would be offering something it will not sell.
-    const docs = top.length ? await Decor.find({ _id: { $in: top }, productVisibility: true }).lean() : [];
-    // `$in` does not preserve order; restore the recency order the sort produced.
-    const rank = new Map(top.map((id, i) => [String(id), i]));
-    docs.sort((a, b) => rank.get(String(a._id)) - rank.get(String(b._id)));
+    const filter = { _id: { $in: rows.map((r) => r._id) }, productVisibility: true };
+    if (category) filter.category = category;
+    if (occassion) {
+      filter["productVariation.occassion"] = { $in: String(occassion).split("|").map((i) => new RegExp(i, "i")) };
+    }
+    // The find covers the whole history rather than eight ids. At 102 looks that
+    // is ~60 documents and not worth a thought; past a few thousand it wants the
+    // same index note as the aggregation above.
+    const matched = rows.length ? await Decor.find(filter).lean() : [];
+    // `$in` does not preserve order; restore the recency order the sort produced,
+    // THEN take the limit — see the note on the pipeline for why that way round.
+    const rank = new Map(rows.map((r, i) => [String(r._id), i]));
+    matched.sort((a, b) => rank.get(String(a._id)) - rank.get(String(b._id)));
+    const docs = matched.slice(0, RECENT_LIMIT);
 
     return res.send({ products: docs, decorIds });
   } catch (error) {
