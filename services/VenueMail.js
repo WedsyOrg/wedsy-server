@@ -31,6 +31,8 @@ const VenueOwner = require("../models/VenueOwner");
 const VenueEmailSend = require("../models/VenueEmailSend");
 const NotificationService = require("./NotificationService");
 const { renderTemplate, messageToHtml, escapeHtml } = require("../utils/mailjetTemplateRender");
+const { eventWindowLabel } = require("../utils/venueTime");
+const { formatINR } = require("../utils/venueMoney");
 
 // ─── The five kinds ────────────────────────────────────────────────────────
 // slug = the Mailjet template name (account convention audience_thing_action);
@@ -42,41 +44,53 @@ const KINDS = {
     slug: "venue_terms_sent",
     env: "MAILJET_TEMPLATE_VENUE_TERMS",
     label: "Terms & conditions",
-    subject: (v) => `Your booking terms — ${v.venue_name}`,
+    subject: (v) => `${v.venue_name} — terms for your booking`,
     defaultMessage: (c) =>
-      `Thank you for your interest in ${c.venueName}.\n\nOur booking terms and conditions are attached to this email. Please read through them before confirming your booking.`,
+      `Thank you for considering ${c.venueName} for your event — we would be delighted to host you.\n\nOur booking terms and conditions are attached. Please do read through them before you confirm your booking.\n\nIf anything needs explaining or you would like to talk it through, do give us a call. We look forward to hearing from you.`,
   },
   quote: {
     slug: "venue_quote_sent",
     env: "MAILJET_TEMPLATE_VENUE_QUOTE",
     label: "Quote",
-    subject: (v) => `Your quote from ${v.venue_name}`,
+    subject: (v) => `${v.venue_name} — quote for your event`,
     defaultMessage: (c) =>
-      `Thank you for considering ${c.venueName} for your wedding.\n\nOur quote${c.version ? ` (v${c.version})` : ""} is attached. It sets out what is included and the amount payable. We would be glad to walk you through it or adjust it — reply to this email or call us on ${c.venuePhone || "the number below"}.`,
+      `Thank you for considering ${c.venueName} for your event — it would be a pleasure to host you.\n\n${c.dates ? `Please find your quote attached, for ${c.dates}.` : "Please find your quote attached."}\n\nWe would be glad to talk it through or make adjustments if anything needs changing. Do give us a call — we look forward to hearing from you.`,
   },
   booking_confirmation: {
     slug: "venue_booking_confirmed",
     env: "MAILJET_TEMPLATE_VENUE_BOOKING_CONFIRMED",
     label: "Booking confirmation",
-    subject: (v) => `Your booking is confirmed — ${v.venue_name}`,
+    subject: (v) => `${v.venue_name} — your booking is confirmed`,
     defaultMessage: (c) =>
-      `We are delighted to confirm your booking with ${c.venueName}.\n\nYour booking confirmation is attached. It records the dates, the spaces reserved for you and the agreed amount. Please keep it safe and let us know straight away if anything on it is not as you expected.`,
+      `Congratulations — and thank you for choosing ${c.venueName}.\n\n${c.dates ? `We are delighted to confirm your booking for ${c.dates}. ` : "We are delighted to confirm your booking. "}Your booking confirmation is attached; do keep it safe, and let us know straight away if anything on it is not as you expected.\n\nWe could not be happier to be part of your celebration, and we look forward to welcoming you.`,
   },
   invoice: {
     slug: "venue_invoice_sent",
     env: "MAILJET_TEMPLATE_VENUE_INVOICE",
     label: "Invoice",
-    subject: (v) => `Your invoice from ${v.venue_name}`,
+    subject: (v) => `${v.venue_name} — your invoice`,
     defaultMessage: (c) =>
-      `Please find your invoice from ${c.venueName} attached.\n\nIt shows the amount due and how to pay. If you have already paid, thank you — please ignore this reminder. For any question about the invoice, reply to this email or call us on ${c.venuePhone || "the number below"}.`,
+      `Please find your invoice from ${c.venueName} attached.\n\nDo have a look through it, and if anything needs clarifying, give us a call — we are happy to help.\n\nThank you.`,
   },
   statement: {
     slug: "venue_statement_sent",
     env: "MAILJET_TEMPLATE_VENUE_STATEMENT",
     label: "Statement of account",
-    subject: (v) => `Your statement of account — ${v.venue_name}`,
+    subject: (v) => `${v.venue_name} — your statement of account`,
     defaultMessage: (c) =>
-      `Please find your statement of account from ${c.venueName} attached.\n\nIt lists the agreed amount, everything billed, everything received so far and the balance outstanding, all on one page. If any line does not match your records, tell us and we will look into it.`,
+      `${c.dates ? `Please find your statement of account from ${c.venueName} attached, covering your booking for ${c.dates}.` : `Please find your statement of account from ${c.venueName} attached.`}\n\nDo look it over, and if any line does not match your records, tell us and we will look into it.\n\nThank you.`,
+  },
+  // A per-payment receipt. Copy and template are settled and committed; the
+  // PDF generator does NOT exist yet, so nothing files a "receipt" document,
+  // VenueLeadDocument has no such kind, and the template is not created in
+  // Mailjet. `amount` is the payment row's amount, formatted, when it exists.
+  receipt: {
+    slug: "venue_receipt_sent",
+    env: "MAILJET_TEMPLATE_VENUE_RECEIPT",
+    label: "Payment receipt",
+    subject: (v) => `${v.venue_name} — payment received`,
+    defaultMessage: (c) =>
+      `Thank you — we have received your payment${c.amount ? ` of ${c.amount}` : ""} towards your booking with ${c.venueName}${c.dates ? ` for your event on ${c.dates}` : ""}.\n\nYour receipt is attached for your records. If anything on it does not look right, do give us a call.\n\nWe look forward to welcoming you.`,
   },
 };
 
@@ -85,15 +99,23 @@ const BODY_ALLOWANCE_BYTES = 256 * 1024;
 const TEMPLATE_CACHE_MS = 5 * 60 * 1000;
 const mb = (n) => `${(n / 1048576).toFixed(1)} MB`;
 
-// ─── Venue identity (who the email is from, in words) ──────────────────────
-async function resolveOwnerName(venue) {
-  const owner = await VenueOwner.findOne({ venueId: venue._id, role: "owner", isActive: { $ne: false } })
-    .sort({ createdAt: 1 })
-    .select("name")
-    .lean();
-  if (owner && owner.name) return owner.name;
-  const contact = venue.contact || {};
-  return contact.primaryName || venue.name || "";
+// ─── Who signs: the TEAM MEMBER who pressed send ────────────────────────────
+// VenueOwner and VenueTeamMember are different identities with the same two
+// required fields (name, phone — the OTP login number). The request carries
+// only ids, so the signature is a lookup: memberId → VenueTeamMember, else
+// venueOwnerId → VenueOwner. A row that no longer resolves (deleted, bad
+// token) falls back to the venue itself rather than a blank signature.
+async function resolveSender(actor, venue) {
+  const VenueTeamMember = require("../models/VenueTeamMember");
+  if (actor && actor.memberId) {
+    const m = await VenueTeamMember.findById(actor.memberId).select("name phone").lean();
+    if (m && m.name) return { name: m.name, phone: m.phone || "", id: m._id, via: "member" };
+  }
+  if (actor && (actor.venueOwnerId || actor.id)) {
+    const o = await VenueOwner.findById(actor.venueOwnerId || actor.id).select("name phone").lean();
+    if (o && o.name) return { name: o.name, phone: o.phone || "", id: o._id, via: "owner" };
+  }
+  return { name: venue.name || "", phone: resolvePhone(venue), id: null, via: "venue" };
 }
 function resolvePhone(venue) {
   const contact = venue.contact || {};
@@ -211,18 +233,22 @@ async function templateSource(kind, templateId, { allowMailjet = true } = {}) {
 }
 
 // ─── Variables ──────────────────────────────────────────────────────────────
-async function buildVariables({ venue, lead, kind, message, document, recipientName }) {
+async function buildVariables({ venue, lead, kind, message, document, recipientName, sender, amount }) {
   const coupleName = (lead && (lead.coupleName || lead.name)) || "";
   const spec = KINDS[kind];
+  const who = sender || { name: venue.name || "", phone: resolvePhone(venue) };
   const vars = {
     venue_name: venue.name || "",
+    sender_name: who.name || venue.name || "",
+    sender_phone: who.phone || resolvePhone(venue),
+    event_window: eventWindowLabel(lead),
+    amount: amount ? formatINR(amount) : "",
     // The greeting addresses the PERSON the email goes to. A document sent to
     // the bride's father must not open "Dear Priya & Arjun" — that is the
     // couple's name on someone else's email. The couple's name stays
     // available as its own variable for templates that want it.
     couple_name: (recipientName && String(recipientName).trim()) || coupleName,
     couple_full_name: coupleName,
-    owner_name: await resolveOwnerName(venue),
     venue_phone: resolvePhone(venue),
     venue_logo: resolveLogoUrl(venue),
     document_label: spec.label,
@@ -235,11 +261,15 @@ async function buildVariables({ venue, lead, kind, message, document, recipientN
 }
 
 /** The default owner message for a kind, in the venue's words. */
-function defaultMessage(kind, { venue, document } = {}) {
+function defaultMessage(kind, { venue, document, lead, amount } = {}) {
   return KINDS[kind].defaultMessage({
     venueName: (venue && venue.name) || "",
     venuePhone: resolvePhone(venue || {}),
     version: document && document.version,
+    // The sentence carrying the window DROPS when there is no window — a
+    // window nobody typed is never invented (a lone eventDate renders as a day).
+    dates: eventWindowLabel(lead),
+    amount: amount ? formatINR(amount) : "",
   });
 }
 
@@ -247,10 +277,10 @@ function defaultMessage(kind, { venue, document } = {}) {
  * Render the email as it WOULD be sent — used by the modal preview and by the
  * send itself, so what the owner saw is what the record holds.
  */
-async function renderPreview({ venue, lead, kind, message, document, recipientName, allowMailjet = true }) {
+async function renderPreview({ venue, lead, kind, message, document, recipientName, sender, amount, allowMailjet = true }) {
   const spec = KINDS[kind];
   const templateId = Number(process.env[spec.env]) || 0;
-  const vars = await buildVariables({ venue, lead, kind, message, document, recipientName });
+  const vars = await buildVariables({ venue, lead, kind, message, document, recipientName, sender, amount });
   const src = await templateSource(kind, templateId, { allowMailjet });
   const subject = renderTemplate((src && src.subject) || spec.subject(vars), vars);
   if (!src) {
@@ -291,11 +321,12 @@ async function renderPreview({ venue, lead, kind, message, document, recipientNa
  *                      a 10 MB file to then not send it.
  * @param p.transport   sendEmail override (tests)
  */
-async function sendDocumentEmail({ venue, lead, kind, document, email, name, message, attachment, actor, transport, allowMailjet = true } = {}) {
+async function sendDocumentEmail({ venue, lead, kind, document, email, name, message, attachment, actor, amount, transport, allowMailjet = true } = {}) {
   const spec = KINDS[kind];
   if (!spec) throw new Error(`Unknown venue email kind "${kind}"`);
   const to = { email: String(email || "").trim().toLowerCase(), name: name || (lead && (lead.coupleName || lead.name)) || "" };
-  const finalMessage = String(message == null || String(message).trim() === "" ? defaultMessage(kind, { venue, document }) : message);
+  const finalMessage = String(message == null || String(message).trim() === "" ? defaultMessage(kind, { venue, document, lead, amount }) : message);
+  const sender = await resolveSender(actor, venue);
 
   // 1 — THE RECORD, BEFORE ANYTHING CAN FAIL. Inserted bare: the render is
   // not trusted to succeed — it reads Mailjet or a repo artefact, either can
@@ -316,8 +347,8 @@ async function sendDocumentEmail({ venue, lead, kind, document, email, name, mes
     attachment: { url: "", filename: "", sizeBytes: undefined },
     delivered: false,
     deliveryError: "in flight",
-    triggeredBy: actor && actor.id ? actor.id : undefined,
-    triggeredByName: (actor && actor.name) || "",
+    triggeredBy: (sender && sender.id) || (actor && actor.id) || undefined,
+    triggeredByName: (sender && sender.via !== "venue" && sender.name) || (actor && actor.name) || "",
   });
 
   // 2 — render, then the verdict. Everything in here degrades to a verdict.
@@ -327,7 +358,7 @@ async function sendDocumentEmail({ venue, lead, kind, document, email, name, mes
   try {
     verdict = await (async () => {
       try {
-        rendered = await renderPreview({ venue, lead, kind, message: finalMessage, document, recipientName: to.name, allowMailjet });
+        rendered = await renderPreview({ venue, lead, kind, message: finalMessage, document, recipientName: to.name, sender, amount, allowMailjet });
       } catch (e) {
         console.error(`[VenueMail] render failed for lead ${lead._id}: ${e.message}`);
         return { delivered: false, deliveryError: `The ${spec.label} email could not be rendered (${e.message}). The send was recorded but not emailed.` };
@@ -420,7 +451,7 @@ module.exports = {
   attachmentVerdict,
   verdictFromResponse,
   verdictFromThrown,
-  resolveOwnerName,
+  resolveSender,
   resolvePhone,
   resolveLogoUrl,
   venueFrom,

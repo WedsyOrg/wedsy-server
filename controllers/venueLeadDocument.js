@@ -467,7 +467,7 @@ const generateTermsDocument = async (req, res) => {
         email,
         document: doc,
         message: cleanStr(body.message).slice(0, 4000),
-        actor: { id: actorId(req), name: generatedByName },
+        actor: { id: actorId(req), memberId: req.venueOwner.memberId, venueOwnerId: req.venueOwner.venueOwnerId, name: generatedByName },
         attachment: { filename: finalName, buffer: stitched.buffer, url },
       });
       recordDelivery(round, verdict);

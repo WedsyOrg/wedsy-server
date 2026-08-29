@@ -3,9 +3,25 @@
  * scripts/mailjet-template-venue.js — create ONE venue email template in
  * Mailjet, once, from the repo's starting point.
  *
- *   node scripts/mailjet-template-venue.js <slug>            # create if absent, print ID
- *   node scripts/mailjet-template-venue.js <slug> --dry-run  # say what it would do
- *   node scripts/mailjet-template-venue.js --list            # the slugs and their env vars
+ *   node scripts/mailjet-template-venue.js <slug>                 # create if absent, print ID
+ *   node scripts/mailjet-template-venue.js <slug> --dry-run       # say what it would do
+ *   node scripts/mailjet-template-venue.js <slug> --push-content  # OVERWRITE an existing template's content
+ *   node scripts/mailjet-template-venue.js --compile [slug]       # (re)write emails/compiled/<slug>.html
+ *   node scripts/mailjet-template-venue.js --list                 # the slugs and their env vars
+ *
+ * ── --push-content: READ THIS BEFORE USING IT ────────────────────────────
+ * Mailjet is the source of truth for the DESIGN, and the create-once refusal
+ * exists so a script never silently overwrites what a human edited in
+ * Passport. --push-content reopens that door on purpose, for a deliberate
+ * contract change (new variables, settled copy) that every live template
+ * must take in the same pass. It therefore:
+ *   - takes ONE slug per invocation — no bulk flag, no "all"
+ *   - prints what Mailjet holds now (subject, sizes, the variables it
+ *     references) and what it is about to write, BEFORE writing
+ *   - reads the result back and prints what Mailjet holds after
+ * It OVERWRITES content a human may have edited in Passport. If the live
+ * template has been redesigned since the repo's starting point, that work
+ * is lost by this command. Look at the "before" it prints.
  *
  * Slugs and env vars are the KINDS table in services/VenueMail — one template
  * per couple-facing document kind (terms, quote, booking confirmation,
@@ -46,6 +62,11 @@ if (process.argv.includes("--list")) {
   process.exit(0);
 }
 const NAME = args[0];
+const PUSH_CONTENT = process.argv.includes("--push-content");
+if (PUSH_CONTENT && (args.length !== 1 || !BY_SLUG[NAME])) {
+  console.error("--push-content takes exactly ONE slug. No bulk, no \"all\". See the header of this script.");
+  process.exit(2);
+}
 // `--compile [slug]` — (re)write the runtime fallback artefacts. No Mailjet.
 if (process.argv.includes("--compile")) {
   const SRC_ = path.join(__dirname, "..", "emails");
@@ -133,6 +154,27 @@ async function main() {
   const client = new MailjetClient({ apiKey: process.env.MAILJET_API_KEY, apiSecret: process.env.MAILJET_SECRET_KEY });
 
   const existing = await findByName(client, NAME);
+  if (existing && PUSH_CONTENT) {
+    // BEFORE: what Mailjet holds. Printed so the overwrite is a decision, not a surprise.
+    const cur = (await client.get("template", { version: "v3" }).id(existing.ID).action("detailcontent").request()).body.Data[0] || {};
+    const vars = (t) => [...new Set(((t || "").match(/\{\{\s*var:([A-Za-z0-9_]+)/g) || []).map((v) => v.replace(/\{\{\s*var:/, "")))].join(",");
+    console.log(`ABOUT TO OVERWRITE "${NAME}" (ID ${existing.ID}, EditMode ${existing.EditMode}, last updated ${existing.LastUpdatedAt}) — content a human may have edited in Passport.`);
+    console.log(`  BEFORE: subject "${(cur.Headers || {}).Subject}" | html ${(cur["Html-part"] || "").length} B | text ${(cur["Text-part"] || "").length} B | vars [${vars((cur["Html-part"] || "") + (cur["Text-part"] || ""))}]`);
+    const html = compileHtml();
+    const content = {
+      MJMLContent: JSON.stringify(MJML_JSON),
+      "Html-part": html,
+      "Text-part": TEXT,
+      Headers: { Subject: SUBJECT, SenderName: SENDER_NAME, SenderEmail: SENDER_EMAIL, From: `${SENDER_NAME} <${SENDER_EMAIL}>`, ReplyEmail: "", "Reply-To": "", "X-MJ-TemplateLanguage": "1" },
+    };
+    console.log(`  WITH:   subject "${SUBJECT}" | html ${html.length} B | text ${TEXT.length} B | vars [${vars(html + TEXT)}]`);
+    if (dryRun) { console.log("  (dry run — nothing written)"); return; }
+    await client.post("template", { version: "v3" }).id(existing.ID).action("detailcontent").request(content);
+    const back = (await client.get("template", { version: "v3" }).id(existing.ID).action("detailcontent").request()).body.Data[0] || {};
+    console.log(`  AFTER (read back): subject "${(back.Headers || {}).Subject}" | html ${(back["Html-part"] || "").length} B | text ${(back["Text-part"] || "").length} B | vars [${vars((back["Html-part"] || "") + (back["Text-part"] || ""))}] | MJMLContent ${back.MJMLContent ? "present" : "MISSING"}`);
+    console.log(`\n${SPEC.env}=${existing.ID}`);
+    return;
+  }
   if (existing) {
     console.log(`"${NAME}" already exists — ID ${existing.ID}, EditMode ${existing.EditMode}, created ${existing.CreatedAt}.`);
     console.log("REFUSING to touch it: the live design in Mailjet is the source of truth and may have been edited by hand.");

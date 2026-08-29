@@ -274,7 +274,7 @@ const sendTerms = async (req, res) => {
       lead,
       email,
       message: cleanStr((req.body || {}).message).slice(0, 4000),
-      actor: { id: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null, name: req.venueOwner.name || "Owner" },
+      actor: { id: req.venueOwner.memberId || req.venueOwner.venueOwnerId || null, memberId: req.venueOwner.memberId, venueOwnerId: req.venueOwner.venueOwnerId, name: req.venueOwner.name || "Owner" },
       // Lazy: fetched from storage / rendered only once the transport is
       // known to be configured, and a failure to get the bytes is a verdict.
       attachment: () => termsAttachment(venue, lead, resolved, round.termsSentAt),
