@@ -22,8 +22,10 @@ const VenueQuoteRound = require("../models/VenueQuoteRound");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
-const { fetchSourcePdf } = require("../utils/pdfStitch");
-const { uploadBufferToS3 } = require("../utils/s3Upload");
+// Referenced through their modules (not destructured) so a suite can stand
+// in for storage without a network: the send path is what is under test.
+const pdfStitch = require("../utils/pdfStitch");
+const s3 = require("../utils/s3Upload");
 const { buildQuotePdfBuffer } = require("../utils/venuePdf");
 const { sanitizeContacts } = require("../utils/venueContacts");
 const { recipientOptions, isOnLead, EMAIL_RE } = require("../utils/venueRecipients");
@@ -166,7 +168,7 @@ const sendDocument = async (req, res) => {
       actor,
       // Lazy: fetched from storage only once the transport is known to be
       // configured; a storage failure becomes a verdict on the record.
-      attachment: async () => ({ filename: doc.filename || `${doc.kind}.pdf`, buffer: await fetchSourcePdf(doc.url), url: doc.url }),
+      attachment: async () => ({ filename: doc.filename || `${doc.kind}.pdf`, buffer: await pdfStitch.fetchSourcePdf(doc.url), url: doc.url }),
     });
     await lead.save();
 
@@ -227,7 +229,7 @@ const storeQuoteDocument = async (req, res) => {
     const key = `venues/${venue._id}/quotes/${stamp}.pdf`;
     let url;
     try {
-      url = await uploadBufferToS3({ buffer, key, contentType: "application/pdf" });
+      url = await s3.uploadBufferToS3({ buffer, key, contentType: "application/pdf" });
     } catch (e) {
       console.error(`[venueDocumentSend] S3 upload failed for quote ${quote._id}: ${e.message}`);
       return res.status(502).json({ message: "The quote PDF was generated but could not be stored. Nothing was sent — try again.", code: "storage_failed" });
