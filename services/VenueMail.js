@@ -169,27 +169,45 @@ async function fetchMailjetTemplate(templateId) {
   templateCache.set(templateId, { at: Date.now(), value });
   return value;
 }
+/**
+ * The repo's fallback body is a PRECOMPILED ARTEFACT — emails/compiled/<slug>.html,
+ * written by `scripts/mailjet-template-venue.js --compile` from the
+ * .mjml.json source at dev time — not compiled here. The MJML compiler is a
+ * devDependency: 123 packages and a deprecated glob with published CVEs, on
+ * a box that installs with --omit=dev. Requiring it at runtime made the
+ * fallback indistinguishable from a missing module in production. Nothing
+ * under services/ requires "mjml"; the suite asserts that, and asserts the
+ * artefact matches a fresh compile of its source so a stale copy fails.
+ */
+const COMPILED_DIR = path.join(__dirname, "..", "emails", "compiled");
 function repoTemplate(kind) {
-  const base = path.join(__dirname, "..", "emails", KINDS[kind].slug);
-  const tree = JSON.parse(fs.readFileSync(`${base}.mjml.json`, "utf8"));
-  const html = require("mjml")(tree, { validationLevel: "soft" }).html;
-  const text = fs.readFileSync(`${base}.txt`, "utf8");
+  const slug = KINDS[kind].slug;
+  const htmlPath = path.join(COMPILED_DIR, `${slug}.html`);
+  const html = fs.readFileSync(htmlPath, "utf8");
+  const text = fs.readFileSync(path.join(__dirname, "..", "emails", `${slug}.txt`), "utf8");
   return { html, text, subject: undefined, updatedAt: null };
 }
 /**
  * The template body to render from, and where it came from. Mailjet is the
- * source of truth for the live design; the repo is the fallback so a send is
- * never blocked on a read of the template, and the row records which.
+ * source of truth for the live design; the compiled repo artefact is the
+ * fallback so a send is never blocked on a read of the template. When
+ * neither can be read this returns `null` rather than throwing — the caller
+ * turns that into a VERDICT on the record, never a 500.
  */
 async function templateSource(kind, templateId, { allowMailjet = true } = {}) {
   if (allowMailjet && templateId && process.env.MAILJET_API_KEY && process.env.MAILJET_SECRET_KEY && process.env.VENUE_MAIL_RENDER !== "repo") {
     try {
       return { ...(await fetchMailjetTemplate(templateId)), from: "mailjet" };
     } catch (e) {
-      console.warn(`[VenueMail] could not read template ${templateId} from Mailjet (${e.message}); rendering from the repo starting point`);
+      console.warn(`[VenueMail] could not read template ${templateId} from Mailjet (${e.message}); rendering from the compiled repo artefact`);
     }
   }
-  return { ...repoTemplate(kind), from: "repo" };
+  try {
+    return { ...repoTemplate(kind), from: "repo" };
+  } catch (e) {
+    console.error(`[VenueMail] no fallback body for ${KINDS[kind].slug}: ${e.message}`);
+    return null;
+  }
 }
 
 // ─── Variables ──────────────────────────────────────────────────────────────
@@ -234,12 +252,26 @@ async function renderPreview({ venue, lead, kind, message, document, recipientNa
   const templateId = Number(process.env[spec.env]) || 0;
   const vars = await buildVariables({ venue, lead, kind, message, document, recipientName });
   const src = await templateSource(kind, templateId, { allowMailjet });
-  const subject = renderTemplate(src.subject || spec.subject(vars), vars);
+  const subject = renderTemplate((src && src.subject) || spec.subject(vars), vars);
+  if (!src) {
+    return {
+      subject,
+      html: "",
+      text: "",
+      renderedFrom: "",
+      renderError: `The ${spec.label} email could not be rendered: the template could not be read from Mailjet and the repo has no compiled fallback (emails/compiled/${spec.slug}.html).`,
+      templateId,
+      templateUpdatedAt: null,
+      variables: vars,
+      from: venueFrom(venue),
+    };
+  }
   return {
     subject,
     html: renderTemplate(src.html, vars),
     text: renderTemplate(src.text, vars),
     renderedFrom: src.from,
+    renderError: "",
     templateId,
     templateUpdatedAt: src.updatedAt,
     variables: vars,
@@ -265,24 +297,22 @@ async function sendDocumentEmail({ venue, lead, kind, document, email, name, mes
   const to = { email: String(email || "").trim().toLowerCase(), name: name || (lead && (lead.coupleName || lead.name)) || "" };
   const finalMessage = String(message == null || String(message).trim() === "" ? defaultMessage(kind, { venue, document }) : message);
 
-  // 1 — the record, before anything can fail.
-  const rendered = await renderPreview({ venue, lead, kind, message: finalMessage, document, recipientName: to.name, allowMailjet });
+  // 1 — THE RECORD, BEFORE ANYTHING CAN FAIL. Inserted bare: the render is
+  // not trusted to succeed — it reads Mailjet or a repo artefact, either can
+  // be missing — and a failure there must become a verdict on this row, not
+  // a 500 with no row. (The first version rendered before inserting; a
+  // missing module produced no row, no verdict and a 500 in the modal — the
+  // build's own honest-failure rule broken in its own code.)
   const send = await VenueEmailSend.create({
     venue: venue._id,
     enquiry: lead._id,
     document: document && document._id ? document._id : undefined,
     documentKind: kind,
     documentVersion: document && document.version,
-    subject: rendered.subject,
+    subject: spec.subject({ venue_name: venue.name || "" }),
     to,
-    from: { email: rendered.from.Email, name: rendered.from.Name },
+    from: { email: venueFrom(venue).Email, name: venueFrom(venue).Name },
     message: finalMessage,
-    renderedHtml: rendered.html,
-    renderedText: rendered.text,
-    renderedFrom: rendered.renderedFrom,
-    templateId: rendered.templateId || undefined,
-    templateUpdatedAt: rendered.templateUpdatedAt || undefined,
-    variables: rendered.variables,
     attachment: { url: "", filename: "", sizeBytes: undefined },
     delivered: false,
     deliveryError: "in flight",
@@ -290,11 +320,19 @@ async function sendDocumentEmail({ venue, lead, kind, document, email, name, mes
     triggeredByName: (actor && actor.name) || "",
   });
 
-  // 2 — the verdict.
+  // 2 — render, then the verdict. Everything in here degrades to a verdict.
   let verdict;
+  let rendered = null;
   let att = attachment;
   try {
     verdict = await (async () => {
+      try {
+        rendered = await renderPreview({ venue, lead, kind, message: finalMessage, document, recipientName: to.name, allowMailjet });
+      } catch (e) {
+        console.error(`[VenueMail] render failed for lead ${lead._id}: ${e.message}`);
+        return { delivered: false, deliveryError: `The ${spec.label} email could not be rendered (${e.message}). The send was recorded but not emailed.` };
+      }
+      if (rendered.renderError) return { delivered: false, deliveryError: `${rendered.renderError} The send was recorded but not emailed.` };
       const templateId = rendered.templateId;
       if (!templateId) {
         return { delivered: false, deliveryError: `No "${spec.slug}" email template is configured (${spec.env}) — the send was recorded but not emailed.` };
@@ -331,8 +369,18 @@ async function sendDocumentEmail({ venue, lead, kind, document, email, name, mes
     verdict = { delivered: false, deliveryError: `Unexpected failure before the email left: ${e.message}. The send was recorded.` };
   }
 
-  // 3 — finalise the row (the one permitted post-insert write).
+  // 3 — finalise the row (the one permitted post-insert write): what was
+  // rendered, if anything, and the verdict.
   send.$locals.allowVerdict = true;
+  if (rendered) {
+    send.subject = rendered.subject;
+    send.renderedHtml = rendered.html;
+    send.renderedText = rendered.text;
+    send.renderedFrom = rendered.renderedFrom;
+    send.templateId = rendered.templateId || undefined;
+    send.templateUpdatedAt = rendered.templateUpdatedAt || undefined;
+    send.variables = rendered.variables;
+  }
   send.delivered = Boolean(verdict.delivered);
   send.deliveryError = verdict.delivered ? "" : verdict.deliveryError || "";
   send.messageId = verdict.delivered ? verdict.messageId || "" : "";
@@ -380,4 +428,5 @@ module.exports = {
   escapeHtml,
   BODY_ALLOWANCE_BYTES,
   DEFAULT_VENUE_SENDER,
+  COMPILED_DIR,
 };

@@ -46,6 +46,22 @@ if (process.argv.includes("--list")) {
   process.exit(0);
 }
 const NAME = args[0];
+// `--compile [slug]` — (re)write the runtime fallback artefacts. No Mailjet.
+if (process.argv.includes("--compile")) {
+  const SRC_ = path.join(__dirname, "..", "emails");
+  const slugs = NAME && BY_SLUG[NAME] ? [NAME] : Object.keys(BY_SLUG);
+  for (const slug of slugs) {
+    const tree = JSON.parse(fs.readFileSync(path.join(SRC_, `${slug}.mjml.json`), "utf8"));
+    const mjml2html = require("mjml");
+    const out = mjml2html(tree, { validationLevel: "soft" });
+    const real = out.errors.filter((e) => !/mj-body\) — Attributes color, font-family are illegal/.test(e.formattedMessage));
+    if (real.length) { console.error(`${slug}: MJML did not compile cleanly:\n${real.map((e) => e.formattedMessage).join("\n")}`); process.exit(1); }
+    fs.mkdirSync(path.join(SRC_, "compiled"), { recursive: true });
+    fs.writeFileSync(path.join(SRC_, "compiled", `${slug}.html`), out.html);
+    console.log(`compiled emails/compiled/${slug}.html (${out.html.length} bytes)`);
+  }
+  process.exit(0);
+}
 if (!NAME || !BY_SLUG[NAME]) {
   console.error(`usage: node scripts/mailjet-template-venue.js <slug> [--dry-run]\nslugs: ${Object.keys(BY_SLUG).join(", ")}`);
   process.exit(2);
@@ -66,15 +82,31 @@ const TEXT = fs.readFileSync(path.join(SRC, `${NAME}.txt`), "utf8");
 
 const dryRun = process.argv.includes("--dry-run");
 
-function compileHtml() {
+/**
+ * Compile one kind's .mjml.json to HTML. The ONLY place mjml is required
+ * outside tests: it is a devDependency (123 packages, a deprecated glob with
+ * published CVEs) and must never be on the request path. The result is
+ * written to emails/compiled/<slug>.html — the runtime fallback body — by
+ * --compile, and the suite asserts that artefact matches a fresh compile.
+ */
+function compileHtmlFor(tree) {
   // Passport's mj-body carries color/font-family, which strict MJML rejects
   // but Passport itself emits — so validation is soft, and only that one
   // warning is tolerated.
   const mjml2html = require("mjml");
-  const out = mjml2html(MJML_JSON, { validationLevel: "soft" });
+  const out = mjml2html(tree, { validationLevel: "soft" });
   const real = out.errors.filter((e) => !/mj-body\) — Attributes color, font-family are illegal/.test(e.formattedMessage));
   if (real.length) throw new Error(`MJML did not compile cleanly:\n${real.map((e) => e.formattedMessage).join("\n")}`);
   return out.html;
+}
+const compileHtml = () => compileHtmlFor(MJML_JSON);
+const COMPILED_DIR = path.join(SRC, "compiled");
+function writeCompiled(slug) {
+  const tree = JSON.parse(fs.readFileSync(path.join(SRC, `${slug}.mjml.json`), "utf8"));
+  const html = compileHtmlFor(tree);
+  fs.mkdirSync(COMPILED_DIR, { recursive: true });
+  fs.writeFileSync(path.join(COMPILED_DIR, `${slug}.html`), html);
+  return html.length;
 }
 
 async function findByName(client, name) {
