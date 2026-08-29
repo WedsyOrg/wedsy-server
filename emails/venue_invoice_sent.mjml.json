@@ -18,7 +18,7 @@
         },
         {
           "tagName": "mj-preview",
-          "content": "Your booking terms from {{var:venue_name}} are attached."
+          "content": "Your invoice from {{var:venue_name}} is attached."
         }
       ]
     },

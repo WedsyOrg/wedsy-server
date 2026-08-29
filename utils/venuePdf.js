@@ -184,6 +184,25 @@ function poweredByFooter(doc, systemLine, whiteLabel) {
 async function streamQuotePdf(res, { venue, enquiry, quote }) {
   const logoBuffer = await loadLogoBuffer(venue.logo); // resolve before piping starts
   const doc = startDoc(res, `quote-${quote.version || 1}.pdf`);
+  renderQuotePdf(doc, { venue, enquiry, quote, logoBuffer });
+  doc.end();
+}
+
+/**
+ * The same quote as BYTES, so it can be stored and attached to an email. The
+ * quote was the one venue document with no stored artefact — streamed to the
+ * response and gone — which is why it could not be sent. One renderer, two
+ * openings, same as terms.
+ */
+async function buildQuotePdfBuffer({ venue, enquiry, quote }) {
+  const logoBuffer = await loadLogoBuffer(venue.logo);
+  const { doc, done } = bufferDoc();
+  renderQuotePdf(doc, { venue, enquiry, quote, logoBuffer });
+  doc.end();
+  return done;
+}
+
+function renderQuotePdf(doc, { venue, enquiry, quote, logoBuffer }) {
   venueHeader(doc, venue, `Quotation  ·  v${quote.version || 1}`, logoBuffer);
   doc.fillColor(GREY).fontSize(10);
   doc.text(`For: ${(enquiry && (enquiry.coupleName || enquiry.name)) || "—"}`);
@@ -195,7 +214,6 @@ async function streamQuotePdf(res, { venue, enquiry, quote }) {
   termsBlock(doc, quote.terms);
   acceptanceLine(doc, quote.acceptance);
   poweredByFooter(doc, "This is a system-generated quotation.", quote.whiteLabel);
-  doc.end();
 }
 
 // Invoice PDF (GST format).
@@ -432,6 +450,7 @@ module.exports = {
   streamSettlementPdf,
   streamTermsPdf,
   buildTermsPdfBuffer,
+  buildQuotePdfBuffer,
   // Exposed so utils/venueTermsCover can build the T&C cover page out of the
   // SAME letterhead, footer, palette and A4 grid as every other venue document,
   // rather than a lookalike that drifts the first time the logo block moves.

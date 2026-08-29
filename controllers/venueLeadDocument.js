@@ -381,6 +381,34 @@ const generateTermsDocument = async (req, res) => {
       });
     }
 
+    // The quote round this send is recorded against — resolved BEFORE the
+    // insert so the document row can point at it (VenueLeadDocument.quoteRound
+    // was declared and presented but never written until now).
+    let round = null;
+    const roundId = body.roundId;
+    if (roundId) {
+      if (!mongoose.isValidObjectId(roundId)) return res.status(400).json({ message: "roundId is not valid" });
+      round = await VenueQuoteRound.findOne({ _id: roundId, enquiry: lead._id });
+      if (!round) return res.status(404).json({ message: "Round not found" });
+    } else {
+      round = await VenueQuoteRound.findOne({ enquiry: lead._id }).sort({ createdAt: -1 });
+    }
+    if (!round) {
+      const count = await VenueQuoteRound.countDocuments({ enquiry: lead._id });
+      round = await VenueQuoteRound.create({
+        venue: venue._id,
+        enquiry: lead._id,
+        roundNumber: count + 1,
+        amount: null,
+        clientResponse: "",
+        terms: "",
+        reasoning: "Terms & conditions sent.",
+        outcome: "pending",
+        sentAt: new Date(),
+        sentVia: "email",
+        createdBy: actorId(req),
+      });
+    }
     const generatedByName = await actorDisplayName(req);
     const doc = await insertNextVersion({
       venue: venue._id,
@@ -409,35 +437,12 @@ const generateTermsDocument = async (req, res) => {
       sourceVerifiedPages: verified.checkedPages,
       generatedBy: actorId(req),
       generatedByName,
+      quoteRound: round._id,
     }, (version) => ({ filename: `terms-${safeCouple}-v${version}.pdf` }));
     const finalName = doc.filename;
 
-    // 6 — record on the quote round, exactly as the existing path does
-    let round = null;
-    const roundId = body.roundId;
-    if (roundId) {
-      if (!mongoose.isValidObjectId(roundId)) return res.status(400).json({ message: "roundId is not valid" });
-      round = await VenueQuoteRound.findOne({ _id: roundId, enquiry: lead._id });
-      if (!round) return res.status(404).json({ message: "Round not found" });
-    } else {
-      round = await VenueQuoteRound.findOne({ enquiry: lead._id }).sort({ createdAt: -1 });
-    }
-    if (!round) {
-      const count = await VenueQuoteRound.countDocuments({ enquiry: lead._id });
-      round = await VenueQuoteRound.create({
-        venue: venue._id,
-        enquiry: lead._id,
-        roundNumber: count + 1,
-        amount: null,
-        clientResponse: "",
-        terms: "",
-        reasoning: "Terms & conditions sent.",
-        outcome: "pending",
-        sentAt: new Date(),
-        sentVia: "email",
-        createdBy: actorId(req),
-      });
-    }
+    // 6 — record on the quote round (resolved above, before the insert, so the
+    // document row carries `quoteRound` — a link the data keeps, not a null)
     if (email) {
       round.termsSentAt = issuedAt;
       round.termsSentTo = email;
@@ -460,7 +465,10 @@ const generateTermsDocument = async (req, res) => {
         venue,
         lead,
         email,
-        attachment: { filename: finalName, buffer: stitched.buffer },
+        document: doc,
+        message: cleanStr(body.message).slice(0, 4000),
+        actor: { id: actorId(req), name: generatedByName },
+        attachment: { filename: finalName, buffer: stitched.buffer, url },
       });
       recordDelivery(round, verdict);
       await round.save();
