@@ -76,7 +76,7 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     // by declaring itself rather than by someone remembering to update a UI.
     kind: {
       type: String,
-      enum: ["terms", "booking_confirmation", "invoice", "statement", "address_proof", "client_document"],
+      enum: ["terms", "quote", "booking_confirmation", "invoice", "statement", "address_proof", "client_document"],
       default: "terms",
       required: true,
     },

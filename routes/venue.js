@@ -33,6 +33,7 @@ const cal = require("../controllers/venueCalendar");
 const docs = require("../controllers/venueDocs");
 const termsDoc = require("../controllers/venueTermsDocument");
 const leadDocs = require("../controllers/venueLeadDocument");
+const docSend = require("../controllers/venueDocumentSend");
 const bookingSettings = require("../controllers/venueBookingSettings");
 const leadInvoice = require("../controllers/venueLeadInvoice");
 const leadStatement = require("../controllers/venueLeadStatement");
@@ -218,6 +219,15 @@ router.post("/:slug/enquiries/:enquiryId/documents/terms", venueOwnerAuth, requi
 // the booking is worth.
 router.post("/:slug/enquiries/:enquiryId/documents/client", venueOwnerAuth, requireCapability("documents"), leadDocs.uploadClientDocument);
 router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOwnerAuth, requireCapability("documents"), leadDocs.downloadLeadDocument);
+// ── SEND TO CLIENT — one control on every venue document, one record per send.
+// `documents`, like the tab it lives on; the quote filing is the same, so a
+// quote becomes a document under the capability that governs documents.
+router.get("/:slug/enquiries/:enquiryId/documents/quote/options", venueOwnerAuth, requireCapability("documents"), docSend.quoteOptions);
+router.post("/:slug/enquiries/:enquiryId/documents/quote", venueOwnerAuth, requireCapability("documents"), docSend.storeQuoteDocument);
+router.get("/:slug/enquiries/:enquiryId/documents/:documentId/send-preview", venueOwnerAuth, requireCapability("documents"), docSend.sendPreview);
+router.post("/:slug/enquiries/:enquiryId/documents/:documentId/send", venueOwnerAuth, requireCapability("documents"), docSend.sendDocument);
+router.get("/:slug/enquiries/:enquiryId/emails", venueOwnerAuth, requireCapability("documents"), docSend.listEmails);
+router.get("/:slug/enquiries/:enquiryId/emails/:sendId", venueOwnerAuth, requireCapability("documents"), docSend.getEmail);
 
 // ── BOOKING ENGINE S5: invoices raised from the lead ────────────────────────
 // bookings_money, not `documents`: an invoice is a money instrument and the GST
@@ -258,10 +268,12 @@ router.delete("/:slug/enquiries/:enquiryId/additional-billing/:rowId", venueOwne
 router.get("/:slug/enquiries/:enquiryId/booking-confirmation/options", venueOwnerAuth, requireCapability("documents"), bookingConfirm.getConfirmationOptions);
 router.post("/:slug/enquiries/:enquiryId/booking-confirmation", venueOwnerAuth, requireCapability("documents"), bookingConfirm.generateBookingConfirmation);
 
-// ── Phase 3: quotes (3.2) — reads/PDF open (FLAGGED), writes=leads ──
+// ── Phase 3: quotes (3.2) — list/get reads open (FLAGGED), writes=leads ──
 router.get("/:slug/quotes", venueOwnerAuth, listQuotes);
 router.post("/:slug/quotes", venueOwnerAuth, requireCapability("leads"), createQuote);
-router.get("/:slug/quotes/:quoteId/pdf", venueOwnerAuth, quotePdf);
+// The PDF is a money document: `bookings_money`, the capability the invoice
+// and statement generators carry. "Reads/PDF open" was a gap, not a ruling.
+router.get("/:slug/quotes/:quoteId/pdf", venueOwnerAuth, requireCapability("bookings_money"), quotePdf);
 router.get("/:slug/quotes/:quoteId", venueOwnerAuth, getQuote);
 router.patch("/:slug/quotes/:quoteId", venueOwnerAuth, requireCapability("leads"), updateQuote);
 // "Quote accepted -> confirm booking" owner action (D8 review add).

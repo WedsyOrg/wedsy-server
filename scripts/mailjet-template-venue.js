@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 /**
- * scripts/mailjet-template-venue-terms.js — create the `venue_terms_sent`
- * Mailjet template ONCE, from the repo, as a Passport (drag-and-drop) template.
+ * scripts/mailjet-template-venue.js — create ONE venue email template in
+ * Mailjet, once, from the repo's starting point.
  *
- *   node scripts/mailjet-template-venue-terms.js            # create if absent, print ID
- *   node scripts/mailjet-template-venue-terms.js --dry-run  # say what it would do
+ *   node scripts/mailjet-template-venue.js <slug>            # create if absent, print ID
+ *   node scripts/mailjet-template-venue.js <slug> --dry-run  # say what it would do
+ *   node scripts/mailjet-template-venue.js --list            # the slugs and their env vars
+ *
+ * Slugs and env vars are the KINDS table in services/VenueMail — one template
+ * per couple-facing document kind (terms, quote, booking confirmation,
+ * invoice, statement).
  *
  * ── CREATE-ONCE, THEN HANDS OFF ─────────────────────────────────────────────
  * MAILJET IS THE SOURCE OF TRUTH FOR THE DESIGN. The repo holds the STARTING
@@ -22,8 +27,8 @@
  *   1 = Drag-and-drop builder (Passport)   2 = HTML builder
  *   3 = Saved Section builder              4 = MJML builder
  *
- * Prints the template ID. Put it in MAILJET_TEMPLATE_VENUE_TERMS — the code
- * reads the ID from that env var and never hardcodes it.
+ * Prints the template ID. Put it in the kind's env var — the code reads the ID
+ * from there and never hardcodes it.
  *
  * Needs MAILJET_API_KEY / MAILJET_SECRET_KEY in the environment, and `mjml`
  * (devDependency) to compile the Html-part.
@@ -33,8 +38,22 @@ const fs = require("fs");
 const path = require("path");
 const { Client: MailjetClient } = require("node-mailjet");
 
-const NAME = "venue_terms_sent";
-const SUBJECT = "Your booking terms — {{var:venue_name}}";
+const { KINDS } = require("../services/VenueMail");
+const BY_SLUG = Object.fromEntries(Object.entries(KINDS).map(([kind, k]) => [k.slug, { kind, ...k }]));
+const args = process.argv.slice(2).filter((a) => !a.startsWith("--"));
+if (process.argv.includes("--list")) {
+  for (const [slug, k] of Object.entries(BY_SLUG)) console.log(`${slug}\t${k.env}\t${k.label}`);
+  process.exit(0);
+}
+const NAME = args[0];
+if (!NAME || !BY_SLUG[NAME]) {
+  console.error(`usage: node scripts/mailjet-template-venue.js <slug> [--dry-run]\nslugs: ${Object.keys(BY_SLUG).join(", ")}`);
+  process.exit(2);
+}
+const SPEC = BY_SLUG[NAME];
+// The subject as the template's default header; the send path renders the
+// same wording into the record. {{var:venue_name}} is substituted by Mailjet.
+const SUBJECT = SPEC.subject({ venue_name: "{{var:venue_name}}" });
 // The Active sender for venue-voiced mail. The per-send From (the venue's
 // name) is set by services/VenueTermsMail at send time and overrides this.
 const SENDER_EMAIL = process.env.MAILJET_VENUE_FROM_EMAIL || "partner_venue@wedsy.in";
@@ -86,7 +105,7 @@ async function main() {
     console.log(`"${NAME}" already exists — ID ${existing.ID}, EditMode ${existing.EditMode}, created ${existing.CreatedAt}.`);
     console.log("REFUSING to touch it: the live design in Mailjet is the source of truth and may have been edited by hand.");
     console.log("To start over deliberately, delete it in Mailjet and run this again (the ID will change).");
-    console.log(`\nMAILJET_TEMPLATE_VENUE_TERMS=${existing.ID}`);
+    console.log(`\n${SPEC.env}=${existing.ID}`);
     return;
   }
 
@@ -113,7 +132,7 @@ async function main() {
   const created = await client.post("template", { version: "v3" }).request({
     Name: NAME,
     Author: "wedsy-server/emails",
-    Description: "Venue → couple: booking terms & conditions, PDF attached. Starting point from scripts/mailjet-template-venue-terms.js; edited in Passport thereafter.",
+    Description: `Venue → couple: ${SPEC.label}, PDF attached. Starting point from scripts/mailjet-template-venue.js; edited in Passport thereafter.`,
     Locale: "en_US",
     OwnerType: "user",
     Purposes: ["transactional"],
@@ -128,7 +147,7 @@ async function main() {
   const back = (await client.get("template", { version: "v3" }).id(template.ID).action("detailcontent").request()).body.Data[0];
   const ok = back.MJMLContent && (back["Html-part"] || "").length > 0 && (back["Text-part"] || "").length > 0;
   console.log(`read back: MJMLContent ${back.MJMLContent ? "present" : "MISSING"}, Html-part ${(back["Html-part"] || "").length} bytes, Text-part ${(back["Text-part"] || "").length} bytes → ${ok ? "OK" : "INCOMPLETE"}`);
-  console.log(`\nMAILJET_TEMPLATE_VENUE_TERMS=${template.ID}`);
+  console.log(`\n${SPEC.env}=${template.ID}`);
 }
 
 main().catch((e) => {

@@ -11,9 +11,25 @@ Text-part, then hands off: the owner edits the live template in Passport, and
 the script REFUSES to touch a template that already exists. What is in this
 directory is where the design started, not what it currently is.
 
-| slug | script | env var carrying the ID |
+One script, `node scripts/mailjet-template-venue.js <slug>` (`--list` prints
+this table from the code):
+
+| slug | document | env var carrying the ID |
 |---|---|---|
-| `venue_terms_sent` | `node scripts/mailjet-template-venue-terms.js` | `MAILJET_TEMPLATE_VENUE_TERMS` |
+| `venue_terms_sent` | Terms & conditions | `MAILJET_TEMPLATE_VENUE_TERMS` |
+| `venue_quote_sent` | Quote | `MAILJET_TEMPLATE_VENUE_QUOTE` |
+| `venue_booking_confirmed` | Booking confirmation | `MAILJET_TEMPLATE_VENUE_BOOKING_CONFIRMED` |
+| `venue_invoice_sent` | Invoice | `MAILJET_TEMPLATE_VENUE_INVOICE` |
+| `venue_statement_sent` | Statement of account | `MAILJET_TEMPLATE_VENUE_STATEMENT` |
+
+All five are COUPLE-FACING and white-label: sent from partner_venue@wedsy.in
+with the venue's name as display name, signed by the owner, Wedsy only as
+"Powered by Wedsy". The body has ONE variable region, `{{var:message_html}}`
+(`{{var:message_text}}` in the text part) — the owner's message from the
+Send-to-client modal; masthead, greeting, attachment line, signature and
+footer are the fixed frame. `services/VenueMail` renders the same template with
+the same variables into the send record, so what a past email said is stored,
+not recomputed.
 
 The scripts find the template by exact name and create it only if absent; an
 existing one is never overwritten. They print the ID; put it in the env var.

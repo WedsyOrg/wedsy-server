@@ -249,6 +249,12 @@ const VenueEnquirySchema = new mongoose.Schema(
         via: { type: String },
         actor: { type: mongoose.Schema.Types.ObjectId },
         timestamp: { type: Date, default: Date.now },
+        // A pointer to the record this row is ABOUT, when there is one — an
+        // email send, a document. Before this the only link from a row to its
+        // subject was inside the English of `description`, which a screen
+        // cannot follow. Optional and additive: every existing row is valid.
+        ref: { type: mongoose.Schema.Types.ObjectId },
+        refModel: { type: String, default: "" },
       },
     ],
     status: {
