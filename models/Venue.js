@@ -153,6 +153,44 @@ const VenueSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
   }],
 
+  // ══ STANDING CHARGES — the booking engine's charge library ════════════════
+  // What this venue bills beside the venue amount: cleaning, the security
+  // deposit, generator, lighting, and whatever the owner adds. Seeded from
+  // utils/venueBookingCharges.DEFAULT_BOOKING_CHARGES the same way
+  // roomAmenities is seeded; picked from on the Money tab.
+  //
+  // ── NO isActive, AND THAT IS A RULING, NOT AN OMISSION ────────────────────
+  // Amenities retire when in use because rooms and types hold the amenity's
+  // KEY — a live reference. A charge picked onto a quote is a COPY: the line
+  // carries its own label, amount, treatment and flag from the moment of the
+  // pick, and nothing ever resolves back through `key` (`source.chargeKey` on
+  // a line is a breadcrumb, never a join). So deleting a charge here — even
+  // one in use — orphans nothing: lines already on quotes and bookings stand
+  // exactly as they are until deleted from that document by hand. Do not add
+  // retirement "for consistency with amenities"; the consistency that matters
+  // is copy-vs-reference, and tests/venue-money-lines fails if this list
+  // grows an isActive.
+  //
+  // Editing an entry here changes only what the NEXT pick copies. A quote
+  // already sent must never move because Settings did — the same rule as room
+  // types inheriting to rooms.
+  bookingCharges: [{
+    /** Stable machine key, derived from the label at create. Identity only. */
+    key: { type: String, required: true },
+    label: { type: String, required: true },
+    /** What a pick pre-fills. 0 means "set the amount on the line". */
+    defaultAmount: { type: Number, default: 0, min: 0 },
+    /** none = no GST · full = GST on the amount · part = GST on taxableAmount. */
+    gstTreatment: { type: String, enum: ["none", "full", "part"], default: "none" },
+    /** Only meaningful under "part"; strictly less than the amount. */
+    taxableAmount: { type: Number, default: 0, min: 0 },
+    /**
+     * Held and returned — inside the document total, NEVER revenue. A
+     * non-refundable "deposit" is an ordinary charge and does not set this.
+     */
+    refundable: { type: Boolean, default: false },
+  }],
+
   // ══ THE ROOM TYPE — A REAL ENTITY ════════════════════════════════════════
   // What a Deluxe IS: how many it sleeps, what is in it, what it costs, what it
   // looks like. Rooms belong to a type and inherit from it.

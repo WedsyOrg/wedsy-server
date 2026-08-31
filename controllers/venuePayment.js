@@ -63,6 +63,7 @@ const summary = async (req, res) => {
     const perBooking = [];
     const overdue = [];
     let confirmedValue = 0;
+    let payable = 0;
     let received = 0;
 
     for (const b of bookings) {
@@ -75,14 +76,22 @@ const summary = async (req, res) => {
       const totalValue = s.totals.bookingValue;
       const recv = s.totals.received;
       const balance = s.totals.balance;
-      confirmedValue += s.totals.total;
+      // CHARGED, not total: `total` includes the refundable held (the security
+      // deposit on a line booking), and a "confirmed value" that counted held
+      // money as revenue would read correct and mean something else — the same
+      // shape as the four dashboard revenue sums this figure sits beside.
+      confirmedValue += s.totals.charged;
+      payable += s.totals.total;
       received += recv;
       perBooking.push({
         bookingId: b._id,
         coupleName: b.coupleName,
         totalValue,
         additional: s.totals.additional,
+        /** What the couple pays — includes the refundable held. */
         total: s.totals.total,
+        /** Held and returned; the gap between `total` and revenue. */
+        refundable: s.totals.refundable,
         received: recv,
         balance,
         // Claimed but unapproved, shown beside the balance rather than inside
@@ -120,7 +129,12 @@ const summary = async (req, res) => {
 
     return res.status(200).json({
       perBooking,
-      totals: { confirmedValue, received, pending: confirmedValue - received, pendingApproval },
+      // `pending` is what is still to COLLECT, so it runs against payable —
+      // received deposits are money in the bank, and subtracting all money
+      // received from a revenue-only figure would go negative the day a
+      // deposit landed. Identical to the old expression wherever payable ==
+      // confirmedValue, which is every booking without a refundable line.
+      totals: { confirmedValue, payable, received, pending: payable - received, pendingApproval },
       pendingEntries,
       overdue,
     });
