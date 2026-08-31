@@ -1,4 +1,5 @@
 const DecorDraftService = require("../services/DecorDraftService");
+const { adminHasPermission } = require("../middlewares/requirePermission");
 
 // A2S ("Add to Store") — the approval queue endpoints. Every handler is
 // try/catch'd: a failure must return a clear message to the extension, never a
@@ -28,6 +29,52 @@ const Create = async (req, res) => {
   }
 };
 
+// POST /decor/drafts/uploads — the bulk-upload intake.
+//
+// CONTRACT (multipart): files image_0..image_4, CONTIGUOUS from image_0, each
+// with text fields category_i (required, a real catalogue category) and
+// occasion_i (an OCCASIONS value, or empty for an explicit "none") beside it.
+// The response is per-item: { batchId, results: [{ position, status:
+// "queued"|"failed", draft?|error? }] } — position equals the field index.
+// 201 when at least one item queued; 400 when every item failed.
+const CreateUploads = async (req, res) => {
+  try {
+    const files = req.files || {};
+    const body = req.body || {};
+    const items = [];
+    for (let i = 0; i < 5; i++) {
+      const f = files[`image_${i}`];
+      if (!f) break; // contiguous from 0 — a gap ends the batch
+      const file = Array.isArray(f) ? f[0] : f;
+      items.push({
+        buffer: file.data,
+        truncated: !!file.truncated,
+        originalFilename: file.name || "",
+        category: body[`category_${i}`],
+        occasion: body[`occasion_${i}`],
+      });
+    }
+    // Anything outside image_0..image_(n-1) means the client built the form
+    // wrong — refuse loudly rather than silently dropping their file.
+    const stray = Object.keys(files).filter(
+      (k) => !/^image_[0-4]$/.test(k) || Number(k.slice(6)) >= items.length
+    );
+    if (!items.length || stray.length) {
+      return res.status(400).send({
+        message:
+          "attach 1-5 images as multipart fields image_0..image_4, contiguous from image_0, with category_i and occasion_i beside each",
+      });
+    }
+    const out = await DecorDraftService.createUploadBatch({ items }, req.auth && req.auth.user_id);
+    const anyQueued = out.results.some((r) => r.status === "queued");
+    return res
+      .status(anyQueued ? 201 : 400)
+      .send({ message: anyQueued ? "queued" : "no drafts created", ...out });
+  } catch (error) {
+    return respondErr(res, error, "A2S:CreateUploads");
+  }
+};
+
 // GET /decor/drafts?status=queued&page=&limit=
 const List = async (req, res) => {
   try {
@@ -41,7 +88,17 @@ const List = async (req, res) => {
 // GET /decor/drafts/:id — full detail incl. the complete aiAnalysis.
 const Get = async (req, res) => {
   try {
-    return res.send(await DecorDraftService.getDraft(req.params.id));
+    const doc = await DecorDraftService.getDraft(req.params.id);
+    // Approvers get the document byte-for-byte. Everyone else loses ONLY the
+    // full aiAnalysis — the internal evidence half (price ladder, comparables,
+    // confidence gates). Sales still sees status, pricing.uploadQuote (its
+    // no_quote reason included), the copy, and the history. Annotate, never
+    // reject: a non-approver's request is answered, not refused.
+    if (await adminHasPermission(req.auth && req.auth.user_id, "store:approve:all")) {
+      return res.send(doc);
+    }
+    const { aiAnalysis, ...rest } = doc;
+    return res.send(rest);
   } catch (error) {
     return respondErr(res, error, "A2S:Get");
   }
@@ -87,4 +144,4 @@ const Reject = async (req, res) => {
   }
 };
 
-module.exports = { Create, List, Get, Approve, Reject, RetryCopy };
+module.exports = { Create, CreateUploads, List, Get, Approve, Reject, RetryCopy };

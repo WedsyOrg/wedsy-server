@@ -6,6 +6,9 @@ const { uploadBufferToS3 } = require("./s3Upload");
 // own asset, so the catalogue never depends on a pinimg URL continuing to
 // resolve. Same pattern WhatsAppMediaService already uses for Meta media:
 //   fetch(remote) → Buffer → uploadBufferToS3 → our URL.
+// The bulk-upload intake enters one step later: the bytes arrive by multipart,
+// so storeUploadedImage skips the fetch and joins at the same normalise+store
+// tail — one JPEG pipeline and one key scheme for both origins.
 //
 // Normalised to JPEG for the same reason controllers/file.js does it (HEIC /
 // WebP / AVIF are not universally renderable).
@@ -53,15 +56,10 @@ const fetchRemoteImage = async (url) => {
   return buf;
 };
 
-// Fetch a remote image and store it as OUR S3 asset. Returns { url, buffer },
-// where `buffer` is the normalised JPEG (reused for the vision calls, so the
-// image is fetched exactly once per A2S click).
-const storeRemoteImage = async ({ url, path = "decor-drafts", id }) => {
-  if (!url) throw new Error("storeRemoteImage: url is required");
-  if (!id) throw new Error("storeRemoteImage: id is required");
-
-  const raw = await fetchRemoteImage(url);
-
+// The shared tail: normalise whatever bytes we hold to JPEG and store under the
+// one key scheme. Split out so the remote-fetch and staff-upload origins cannot
+// drift — a draft's storedImage must look the same downstream either way.
+const normalizeAndStore = async (raw, { path, id }) => {
   let jpeg;
   try {
     jpeg = await sharp(raw, { failOn: "none" }).rotate().jpeg({ quality: 90 }).toBuffer();
@@ -77,6 +75,28 @@ const storeRemoteImage = async ({ url, path = "decor-drafts", id }) => {
   return { url: storedUrl, buffer: jpeg };
 };
 
+// Fetch a remote image and store it as OUR S3 asset. Returns { url, buffer },
+// where `buffer` is the normalised JPEG (reused for the vision calls, so the
+// image is fetched exactly once per A2S click).
+const storeRemoteImage = async ({ url, path = "decor-drafts", id }) => {
+  if (!url) throw new Error("storeRemoteImage: url is required");
+  if (!id) throw new Error("storeRemoteImage: id is required");
+  return normalizeAndStore(await fetchRemoteImage(url), { path, id });
+};
+
+// Staff-uploaded bytes (multipart) → OUR S3 asset. No fetch — the bytes are in
+// hand. The size cap is enforced here as well as at the multipart layer: this
+// util is the last line before S3, and a caller that forgot to configure the
+// route limit must not become a way past it.
+const storeUploadedImage = async ({ buffer, path = "decor-drafts", id }) => {
+  if (!buffer || !buffer.length) throw new Error("storeUploadedImage: buffer is required");
+  if (!id) throw new Error("storeUploadedImage: id is required");
+  if (buffer.length > MAX_BYTES) {
+    throw new Error(`image is ${Math.round(buffer.length / 1024)}KB — over the ${Math.round(MAX_BYTES / 1024)}KB limit`);
+  }
+  return normalizeAndStore(buffer, { path, id });
+};
+
 // Downscale for the vision calls — same budget as the demo path (max 800px
 // longest edge), so token cost and latency match the calibrated behaviour.
 const DEMO_MAX_EDGE = Number(process.env.DEMO_IMAGE_MAX_EDGE) || 800;
@@ -89,4 +109,4 @@ const toAnalysisBase64 = async (buffer) => {
   return out.toString("base64");
 };
 
-module.exports = { storeRemoteImage, fetchRemoteImage, toAnalysisBase64 };
+module.exports = { storeRemoteImage, storeUploadedImage, fetchRemoteImage, toAnalysisBase64 };

@@ -182,16 +182,27 @@ const pickPanelRow = (rows, analysis) => {
   return list[0];
 };
 
-const panelQuoteFor = async (analysis, { pinText } = {}) => {
+const panelQuoteFor = async (analysis, { pinText, occasion } = {}) => {
   if (!analysis || analysis.isDecorProduct === false || !analysis.category) return null;
-  const occasion = resolveOccasion(pinText, analysis.occasion);
+  // ── Seam A (bulk upload, 2026-08-31) ──────────────────────────────────────
+  // An EXPLICIT occasion — staff stated it at upload — takes precedence over
+  // inference. Presence is keyed on `undefined`, NEVER truthiness: a caller
+  // passing `occasion: null` means "no occasion, and do not infer one", and a
+  // truthiness check would fall through to resolveOccasion and let a pinText
+  // keyword resurrect exactly what the caller ruled out. The A2S path passes
+  // only { pinText }, so it takes the resolveOccasion branch with the same
+  // arguments as before this seam existed — byte-identical behaviour.
+  // An explicit value must be resolveOccasion-shaped: { value, source, conflict }
+  // (or null) — buildDemoPrice and buildSizeOptions read `.value` off it.
+  const resolvedOccasion =
+    occasion !== undefined ? occasion : resolveOccasion(pinText, analysis.occasion);
   const docs = await Decor.find(
     { category: analysis.category, productVisibility: true, productAvailability: true },
     "name productInfo.id productInfo.measurements productTypes image thumbnail"
   ).lean();
   const out = buildDemoPrice(analysis, docs.map(normalizeComparable), {
     includeExamples: false,
-    occasion,
+    occasion: resolvedOccasion,
   });
   if (!out || out.rejected) return null;
 

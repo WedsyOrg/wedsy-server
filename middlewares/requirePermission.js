@@ -31,6 +31,19 @@ const permissionsForAdmin = async (admin) => {
   return [...set];
 };
 
+// Annotate-never-reject: does this admin hold the permission? For handlers that
+// shape a RESPONSE by permission (e.g. hiding aiAnalysis from non-approvers on
+// the draft detail) without gating the route — a missing grant changes what
+// they see, never whether they may ask. Fail-closed to false on any lookup gap.
+const adminHasPermission = async (adminId, requiredStr) => {
+  if (!adminId) return false;
+  const admin = await AdminRepository.findById(adminId);
+  if (!admin || roleIdsOf(admin).length === 0) return false;
+  const perms = await permissionsForAdmin(admin);
+  if (!perms.length) return false;
+  return permissionSatisfies(perms, requiredStr).allowed;
+};
+
 // Do the granted permission strings satisfy the required one?
 // Wildcards (*) allowed on resource and action. Scope expands: all >= department >= team >= own.
 // effectiveScope = broadest granted scope for the matched resource:action (used to build the filter).
@@ -133,6 +146,7 @@ module.exports = {
   parsePermission,
   permissionSatisfies,
   permissionsForAdmin,
+  adminHasPermission,
   roleIdsOf,
   buildScopeFilter,
   getSubordinateIds,
