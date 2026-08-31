@@ -68,11 +68,18 @@ const getConfirmationOptions = async (req, res) => {
     const owned = await resolveOwnedLead(req, res);
     if (!owned) return;
     const { venue, lead } = owned;
-    const booking = await VenueBooking.findOne({ enquiry: lead._id }).select("_id totalValue paymentSchedule days").lean();
+    const booking = await VenueBooking.findOne({ enquiry: lead._id }).select("_id totalValue paymentSchedule days lineItems").lean();
     const policyBlocks = (venue.cancellationPolicy && venue.cancellationPolicy.blocks) || [];
+    // Held money, stated beside the value so the dialog can say what the
+    // document will say: payable includes the deposit, revenue does not.
+    const refundable = ((booking && booking.lineItems) || [])
+      .filter((li) => li && li.refundable)
+      .reduce((s, li) => s + (Math.round(Number(li.amount)) || 0), 0);
     return res.status(200).json({
       hasBooking: Boolean(booking),
       bookingValue: booking ? Number(booking.totalValue) || 0 : 0,
+      refundableHeld: refundable,
+      payable: (booking ? Number(booking.totalValue) || 0 : 0) + refundable,
       scheduleRows: booking ? (booking.paymentSchedule || []).length : 0,
       hasCancellationPolicy: policyBlocks.length > 0,
       hasTermsDocument: Boolean(venue.termsDocument && venue.termsDocument.url),

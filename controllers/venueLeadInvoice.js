@@ -46,7 +46,7 @@ const VenueLeadDocument = require("../models/VenueLeadDocument");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
-const { computeTotals } = require("../utils/venueMoney");
+const { computeTotals, invoiceViewOfLines } = require("../utils/venueMoney");
 const { resolveBranding, BRANDING_SELECT } = require("../utils/venueBranding");
 const { billedToSnapshot } = require("../utils/venueBilledTo");
 const { buildInvoicePdf } = require("../utils/venueInvoicePdf");
@@ -221,6 +221,13 @@ const createLeadInvoice = async (req, res) => {
     // inferred from which of amount/percent happens to be populated. Both are
     // populated on a normal percentage row, and reading that pair as a signal
     // is precisely the mistake that broke the wizard in S4.
+    // The BOOKING-LEVEL invoice on a line booking bills the booking's own
+    // lines — non-refundable only, with per-line GST — instead of fabricating
+    // one "Venue booking" line from the scalar. The held deposit is not on it:
+    // see invoiceViewOfLines for why held money is never on a tax invoice.
+    const lineView = !paymentPieces.length && !milestone && (booking.lineItems || []).length
+      ? invoiceViewOfLines(booking.lineItems, booking.gstPercent)
+      : null;
     const lineItems = paymentPieces.length
       ? paymentPieces.map((x) => ({
           label:
@@ -239,12 +246,14 @@ const createLeadInvoice = async (req, res) => {
             qty: 1,
             unitPrice: Math.round(Number(milestone.amount) || 0),
           }]
-        : [{
-            label: `Venue booking — ${booking.coupleName || "booking"}`,
-            category: "venue",
-            qty: 1,
-            unitPrice: Math.round(Number(booking.totalValue) || 0),
-          }];
+        : lineView
+          ? lineView.lineItems
+          : [{
+              label: `Venue booking — ${booking.coupleName || "booking"}`,
+              category: "venue",
+              qty: 1,
+              unitPrice: Math.round(Number(booking.totalValue) || 0),
+            }];
     if (!lineItems.reduce((sum, li) => sum + li.unitPrice, 0)) {
       return res.status(400).json({
         message: forPaymentId
@@ -295,6 +304,24 @@ const createLeadInvoice = async (req, res) => {
       if (derivedGst.bears && !brand.hasGstin) {
         return res.status(400).json({
           message: "This payment covers a GST-bearing instalment, but no GSTIN is set. Add it in Settings → Billing & tax.",
+          code: "no_gstin",
+        });
+      }
+    } else if (lineView) {
+      // Same rule as the payment invoice, one level up: the AGREEMENT decides
+      // the GST, not the owner's checkbox. A line booking's tax was settled
+      // line by line when the quote was accepted, so body.gst / body.gstMode /
+      // body.gstPercent are ignored here exactly as they are on a payment
+      // invoice — a tax invoice reflects what was agreed, not what somebody
+      // ticked when raising it.
+      derivedGst = {
+        bears: lineView.bears,
+        gstPercent: lineView.gstPercent,
+        totals: { ...lineView.totals, discount: 0 },
+      };
+      if (derivedGst.bears && !brand.hasGstin) {
+        return res.status(400).json({
+          message: "This booking's lines bear GST, but no GSTIN is set. Add it in Settings → Billing & tax.",
           code: "no_gstin",
         });
       }

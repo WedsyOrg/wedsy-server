@@ -200,7 +200,13 @@ async function buildBookingConfirmationPdf({
   // COMPONENT of it — not an extra on top — so the two lines above add to the
   // one below and can be checked by adding them up.
   const rc = bk && bk.roomsCharge;
-  if (rc && Number(rc.amount) > 0) {
+  // A LINE booking itemises its own lines (money lines S4); the Venue/Rooms
+  // subtraction split stays for everything else — beside real lines it would
+  // show the same money twice.
+  const bkLines = (bk && bk.lineItems) || [];
+  if (bkLines.length) {
+    for (const li of bkLines.filter((l) => !l.refundable)) right(clean(li.label) || "Charge", money(li.amount));
+  } else if (rc && Number(rc.amount) > 0) {
     right("Venue", money(Math.max(0, s.totals.bookingValue - Number(rc.amount))));
     right("Rooms", money(rc.amount));
     const working = describeRoomsWorking(rc);
@@ -211,9 +217,25 @@ async function buildBookingConfirmationPdf({
     }
   }
   right(s.totals.additional > 0 ? "Agreed value" : "Booking value", money(s.totals.bookingValue));
-  if (s.totals.additional > 0) {
-    right("Additional billing", `+ ${money(s.totals.additional)}`);
-    right("Total", money(s.totals.total));
+  if (s.totals.additional > 0) right("Additional billing", `+ ${money(s.totals.additional)}`);
+  // RULING B, Rohaan's exact wording: the held deposit is inside the total,
+  // and its own line under the total says what comes back — the couple never
+  // does the arithmetic themselves.
+  if (s.totals.refundable > 0) right("Refundable deposit, held", `+ ${money(s.totals.refundable)}`);
+  // "Total" keeps its shipped label when only extras are in play; the payable
+  // wording arrives with the held deposit it exists to explain.
+  if (s.totals.additional > 0 || s.totals.refundable > 0) {
+    right(s.totals.refundable > 0 ? "Total payable" : "Total", money(s.totals.total));
+  }
+  if (s.totals.refundable > 0) {
+    doc.fillColor(GREY).fontSize(9).text(
+      `of which refundable, held — returned after the event: ${money(s.totals.refundable)}`,
+      300,
+      doc.y,
+      { width: 245, align: "right" }
+    );
+    doc.fillColor(BODY).fontSize(10);
+    doc.moveDown(0.3);
   }
   if (s.totals.received > 0) right("Received", `− ${money(s.totals.received)}`);
   right("Balance due", money(s.totals.balance), true);

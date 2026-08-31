@@ -24,6 +24,13 @@ const Venue = require("../models/Venue");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { normalizeBlocks, blocksToPlainText, RichTextError, MAX_TOTAL_CHARS } = require("../utils/venueRichText");
 const { normalizeSlabs, BUILTIN_SLABS, ScheduleError } = require("../utils/venuePaymentSchedule");
+const {
+  DEFAULT_BOOKING_CHARGES,
+  chargeKeyFor,
+  checkChargeMoney,
+  presentCharges,
+  chargeSuggestions,
+} = require("../utils/venueBookingCharges");
 const { resolveBranding, BRANDING_SELECT } = require("../utils/venueBranding");
 
 const PDF_MIME = "application/pdf";
@@ -36,7 +43,7 @@ const MAX_BYTES = 10 * 1024 * 1024; // same ceiling as the T&C upload
  */
 async function resolveOwnedVenue(req, res, select = BRANDING_SELECT) {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(
-    `${select} briefDocument cancellationPolicy termsDocument`
+    `${select} briefDocument cancellationPolicy termsDocument bookingCharges`
   );
   if (!venue) {
     res.status(404).json({ message: "Venue not found" });
@@ -105,6 +112,10 @@ const getBookingSettings = async (req, res) => {
       // The wizard falls back to these when the venue has saved none. Sent so
       // the shape list is identical in Settings and in the wizard.
       builtinSlabs: BUILTIN_SLABS,
+      // Standing charges + the seed entries not yet added, in the one read the
+      // Settings page makes — same reason branding and slabs are here.
+      bookingCharges: presentCharges(venue),
+      chargeSuggestions: chargeSuggestions(venue),
       limits: { policyMaxChars: MAX_TOTAL_CHARS, briefMaxBytes: MAX_BYTES },
     });
   } catch (err) {
@@ -218,12 +229,190 @@ const putPaymentSlabs = async (req, res) => {
   }
 };
 
+/* ══ STANDING CHARGES — the charge library (money lines S2) ═════════════════
+ * The amenity endpoints' shape (list + suggestions, add-or-seed, patch,
+ * delete), with the one ruled difference spelled out on DELETE below. */
+
+// ── GET /venues/:slug/booking-settings/charges ──────────────────────────────
+// The picker's read: the venue's list plus whatever of the seed is not on it.
+const listBookingCharges = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    return res.status(200).json({
+      charges: presentCharges(venue),
+      suggestions: chargeSuggestions(venue),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/** Shared by add and update: the money fields, validated as one shape. */
+function chargeMoneyFrom(body, current, where) {
+  return checkChargeMoney(
+    {
+      amount: body.defaultAmount !== undefined ? body.defaultAmount : (current && current.defaultAmount) || 0,
+      gstTreatment: body.gstTreatment !== undefined ? body.gstTreatment : (current && current.gstTreatment) || "none",
+      taxableAmount: body.taxableAmount !== undefined ? body.taxableAmount : (current && current.taxableAmount) || 0,
+      refundable: body.refundable !== undefined ? body.refundable : Boolean(current && current.refundable),
+    },
+    where
+  );
+}
+
+// ── POST /venues/:slug/booking-settings/charges ─────────────────────────────
+// Body: { label, defaultAmount?, gstTreatment?, taxableAmount?, refundable? }
+// for one, or { seed: true } to add whatever of the starting set is missing.
+// Seeding is additive and idempotent — it never removes or relabels a charge
+// the owner already has (the amenity seeding rule, verbatim).
+const addBookingCharge = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const body = req.body || {};
+    venue.bookingCharges = venue.bookingCharges || [];
+    const existing = new Set(venue.bookingCharges.map((c) => String(c.key)));
+
+    if (body.seed) {
+      const added = [];
+      for (const d of DEFAULT_BOOKING_CHARGES) {
+        if (existing.has(d.key)) continue;
+        venue.bookingCharges.push({
+          key: d.key,
+          label: d.label,
+          defaultAmount: 0,
+          gstTreatment: "none",
+          taxableAmount: 0,
+          refundable: Boolean(d.refundable),
+        });
+        added.push(d.key);
+      }
+      await venue.save();
+      return res.status(200).json({ seeded: added.length, charges: presentCharges(venue), suggestions: chargeSuggestions(venue) });
+    }
+
+    const label = String(body.label || "").trim().slice(0, 80);
+    if (!label) return res.status(400).json({ message: "A charge needs a name" });
+    const key = chargeKeyFor(body.key || label);
+    if (!key) return res.status(400).json({ message: "That name has no letters or numbers in it." });
+
+    // Label AND key, both ways — the amenity collision rule: the key
+    // derivation is lossy, and two entries the owner cannot tell apart on any
+    // screen is the failure being prevented.
+    const wanted = label.toLowerCase();
+    const clash = venue.bookingCharges.find(
+      (c) => String(c.key) === key || String(c.label || "").trim().toLowerCase() === wanted
+    );
+    if (clash) {
+      return res.status(409).json({
+        message: `"${clash.label}" is already on the list.`,
+        code: "charge_exists",
+        charge: { key: clash.key, label: clash.label },
+      });
+    }
+
+    const money = chargeMoneyFrom(body, null, "charge");
+    if (!money.ok) return res.status(400).json({ message: money.message });
+
+    venue.bookingCharges.push({
+      key,
+      label,
+      defaultAmount: money.value.amount,
+      gstTreatment: money.value.gstTreatment,
+      taxableAmount: money.value.taxableAmount,
+      refundable: money.value.refundable,
+    });
+    await venue.save();
+    return res.status(201).json({
+      charge: presentCharges(venue).find((c) => c.key === key),
+      charges: presentCharges(venue),
+      suggestions: chargeSuggestions(venue),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// ── PATCH /venues/:slug/booking-settings/charges/:key ───────────────────────
+// The KEY is immutable identity; everything else moves. Editing here changes
+// only what the NEXT pick copies — lines already on quotes hold their own
+// values and must never move because Settings did.
+const updateBookingCharge = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const charge = (venue.bookingCharges || []).find((c) => String(c.key) === String(req.params.key));
+    if (!charge) return res.status(404).json({ message: "Charge not found" });
+    const body = req.body || {};
+
+    if (body.label !== undefined) {
+      const label = String(body.label || "").trim().slice(0, 80);
+      if (!label) return res.status(400).json({ message: "A charge needs a name" });
+      const wanted = label.toLowerCase();
+      const clash = (venue.bookingCharges || []).find(
+        (c) => String(c.key) !== String(charge.key) && String(c.label || "").trim().toLowerCase() === wanted
+      );
+      if (clash) return res.status(409).json({ message: `"${clash.label}" is already on the list.`, code: "charge_exists" });
+      charge.label = label;
+    }
+
+    const money = chargeMoneyFrom(body, charge, "charge");
+    if (!money.ok) return res.status(400).json({ message: money.message });
+    charge.defaultAmount = money.value.amount;
+    charge.gstTreatment = money.value.gstTreatment;
+    charge.taxableAmount = money.value.taxableAmount;
+    charge.refundable = money.value.refundable;
+
+    await venue.save();
+    return res.status(200).json({
+      charge: presentCharges(venue).find((c) => c.key === String(req.params.key)),
+      charges: presentCharges(venue),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// ── DELETE /venues/:slug/booking-settings/charges/:key ──────────────────────
+// A HARD DELETE, even when quotes use the charge — ruled, and safe by
+// construction: a line holds a COPY of the charge's values from the moment of
+// the pick, and nothing resolves back through the key. This is deliberately
+// NOT the amenity rule (unused deletes, in-use retires): amenities retire
+// because rooms and types hold the amenity's KEY as a live reference. If you
+// are adding retirement here "for consistency", the consistency that matters
+// is copy-vs-reference — tests/venue-money-lines fails on an isActive field
+// appearing in this list. Lines already on quotes and bookings stay exactly
+// as they are until deleted from that document by hand.
+const deleteBookingCharge = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res);
+    if (!venue) return;
+    const idx = (venue.bookingCharges || []).findIndex((c) => String(c.key) === String(req.params.key));
+    if (idx === -1) return res.status(404).json({ message: "Charge not found" });
+    venue.bookingCharges.splice(idx, 1);
+    await venue.save();
+    return res.status(200).json({
+      deleted: true,
+      message: "Deleted from the library. Lines already on quotes and bookings keep their copied values.",
+      charges: presentCharges(venue),
+      suggestions: chargeSuggestions(venue),
+    });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
   getBookingSettings,
   putBrief,
   deleteBrief,
   putCancellationPolicy,
   putPaymentSlabs,
+  listBookingCharges,
+  addBookingCharge,
+  updateBookingCharge,
+  deleteBookingCharge,
   presentDoc,
   presentPolicy,
   MAX_BYTES,

@@ -309,6 +309,13 @@ router.put("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("d
 router.delete("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.deleteBrief);
 router.put("/:slug/booking-settings/cancellation-policy", venueOwnerAuth, requireCapability("documents"), bookingSettings.putCancellationPolicy);
 router.put("/:slug/booking-settings/payment-slabs", venueOwnerAuth, requireCapability("bookings_money"), bookingSettings.putPaymentSlabs);
+// Standing charges (money lines): the read is open to any venue user — the
+// Money tab's picker needs it — while writes take the money capability, same
+// as the slabs they sit beside.
+router.get("/:slug/booking-settings/charges", venueOwnerAuth, bookingSettings.listBookingCharges);
+router.post("/:slug/booking-settings/charges", venueOwnerAuth, requireCapability("bookings_money"), bookingSettings.addBookingCharge);
+router.patch("/:slug/booking-settings/charges/:key", venueOwnerAuth, requireCapability("bookings_money"), bookingSettings.updateBookingCharge);
+router.delete("/:slug/booking-settings/charges/:key", venueOwnerAuth, requireCapability("bookings_money"), bookingSettings.deleteBookingCharge);
 router.get("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.listTemplates);
 router.post("/:slug/doc-templates", venueOwnerAuth, requireCapability("documents"), docs.createTemplate);
 router.patch("/:slug/doc-templates/:templateId", venueOwnerAuth, requireCapability("documents"), docs.updateTemplate);

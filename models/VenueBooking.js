@@ -43,6 +43,42 @@ const VenueBookingSchema = new mongoose.Schema(
       },
     ],
     totalValue: { type: Number, default: 0 },
+    // ══ THE LINES BEHIND THE VALUE (money lines, Phase 1) ═════════════════
+    // A booking made from a LINE quote carries the quote's lines, snapshotted
+    // at acceptance — the deal's own frozen facts, like roomsCharge below.
+    // Empty on every booking that predates lines and on wizard-built ones;
+    // empty means "no lines", and every guard falls back to today's exact
+    // behaviour.
+    //
+    // ── totalValue IS DERIVED FROM THESE, AND ONLY THESE ──────────────────
+    // On a line booking, totalValue = Σ amount over the NON-refundable lines
+    // (CHARGED: ex-GST, deposit excluded) — written by the acceptance seam
+    // and re-asserted at confirm. A caller-stated totalValue that disagrees
+    // is refused (code total_is_derived_from_lines), never accepted or
+    // silently overridden. The other two figures derive in JS where needed:
+    // refundable held = Σ refundable amounts; GST = per-line treatment
+    // against gstPercent (venueMoney.computeLineTotals). They are NOT stored
+    // as scalars — a stored copy of a sum goes stale, the roomsCharge lesson.
+    //
+    // GST NOTE (ruling A): a booking with lines has gstMode "none" FORCED —
+    // its GST belongs to the lines, and the per-instalment machinery below
+    // must not be able to tax the same money twice. gstPercent stays, copied
+    // from the quote: it is the one rate the line treatments apply.
+    lineItems: [
+      {
+        label: { type: String, default: "" },
+        /** Whole rupees. */
+        amount: { type: Number, default: 0 },
+        /** none = no GST · full = on the amount · part = on taxableAmount. */
+        gstTreatment: { type: String, enum: ["none", "full", "part"], default: "none" },
+        /** Only under "part"; strictly less than amount. */
+        taxableAmount: { type: Number, default: 0 },
+        /** Held and returned — inside what is collected, never in totalValue. */
+        refundable: { type: Boolean, default: false },
+        /** Breadcrumb to the standing charge it was picked from. Never a join. */
+        source: { chargeKey: { type: String, default: "" } },
+      },
+    ],
     // Booking-engine S2/S4 EXTEND this rather than introducing a second model.
     // It already held {label, dueDate, amount}; what was missing is the shape the
     // money came from and whether it has arrived.

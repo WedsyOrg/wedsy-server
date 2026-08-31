@@ -145,6 +145,51 @@ const updateBooking = async (req, res) => {
     const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: venue._id });
     if (!booking) return res.status(404).json({ message: "Booking not found" });
     const wasCancelled = booking.status === "cancelled";
+
+    // ── LINE BOOKINGS: the same three rules as confirm, or the generic PATCH
+    // is the trivial bypass of all of them. Non-line bookings take this path
+    // exactly as they always have.
+    if ((booking.lineItems || []).length > 0) {
+      const { computeLineTotals } = require("../utils/venueMoney");
+      const lf = computeLineTotals(booking.lineItems, booking.gstPercent);
+      if (req.body.totalValue !== undefined && Math.round(Number(req.body.totalValue)) !== lf.charged) {
+        return res.status(400).json({
+          message: `This booking's value comes from its quote lines: ${inr(lf.charged)} charged. Edit the lines to change it.`,
+          code: "total_is_derived_from_lines",
+          chargedFromLines: lf.charged,
+          refundableHeld: lf.refundable,
+          statedTotal: Number(req.body.totalValue),
+        });
+      }
+      if (req.body.gstMode !== undefined && req.body.gstMode !== "" && req.body.gstMode !== "none") {
+        return res.status(400).json({
+          message: "This booking's GST comes from its quote lines — a booking-level GST mode does not apply.",
+          code: "line_booking_gst",
+        });
+      }
+      if (req.body.paymentSchedule !== undefined) {
+        // Additional billing is the sanctioned money ABOVE the agreed value
+        // and is excluded from the equality; everything else — the advance row
+        // included, since a stored schedule carries it as a paid row — must
+        // total what the lines say is collected.
+        const rows = Array.isArray(req.body.paymentSchedule) ? req.body.paymentSchedule : [];
+        const scheduled = rows.filter((r) => !(r && r.isAdditional)).reduce((s, r) => s + (Math.round(Number(r && r.amount)) || 0), 0);
+        const payable = lf.charged + lf.refundable;
+        if (scheduled !== payable) {
+          return res.status(400).json({
+            message:
+              `The schedule comes to ${inr(scheduled)}, but this booking collects ${inr(payable)}` +
+              (lf.refundable > 0 ? ` (${inr(lf.charged)} charged plus ${inr(lf.refundable)} refundable held).` : `.`),
+            code: "schedule_value_mismatch",
+            bookingValue: lf.charged,
+            refundableHeld: lf.refundable,
+            payable,
+            scheduledAmount: scheduled,
+          });
+        }
+      }
+    }
+
     for (const k of UPDATABLE) {
       if (req.body[k] !== undefined) booking[k] = req.body[k];
     }
@@ -600,6 +645,51 @@ const confirmBookingFromLead = async (req, res) => {
     // body validator in one place is what stops that recurring.
     const totalV = optNumber(body.totalValue, "totalValue");
     if (!totalV.ok) return res.status(400).json({ message: totalV.message });
+
+    // ── A LINE BOOKING KNOWS ITS OWN VALUE (money lines S3) ─────────────────
+    // A draft made from a LINE quote carries the quote's lines, and its value
+    // is DERIVED from them — charged (revenue) plus the refundable held. The
+    // peek happens here, with the money validators and BEFORE any guard reads
+    // it (the totalV lesson above, learned once, applied twice).
+    //
+    // `hasLines` false — every wizard-built and pre-existing booking — leaves
+    // EVERY branch below byte-identical to today, gates and all.
+    const { computeLineTotals } = require("../utils/venueMoney");
+    const draftForLines = await VenueBooking.findOne({ venue: venue._id, enquiry: enquiry._id })
+      .select("lineItems gstPercent")
+      .lean();
+    const bookingLines = (draftForLines && draftForLines.lineItems) || [];
+    const hasLines = bookingLines.length > 0;
+    const lineFigures = hasLines ? computeLineTotals(bookingLines, draftForLines.gstPercent) : null;
+    const payableFromLines = hasLines ? lineFigures.charged + lineFigures.refundable : 0;
+
+    // RULING C: a caller-stated totalValue that DISAGREES with the lines is
+    // refused, with both numbers — being told beats being overridden, in
+    // either direction. Stating the derived figure back (the wizard echoes the
+    // draft's own value) is a no-op, not an error: there is nothing to tell.
+    if (hasLines && totalV.value !== undefined && totalV.value !== lineFigures.charged) {
+      return res.status(400).json({
+        message:
+          `This booking's value comes from its quote lines: ${inr(lineFigures.charged)} charged` +
+          (lineFigures.refundable > 0 ? ` plus ${inr(lineFigures.refundable)} refundable held` : "") +
+          `. Edit the lines to change it — a typed total here would silently disagree with the quote.`,
+        code: "total_is_derived_from_lines",
+        chargedFromLines: lineFigures.charged,
+        refundableHeld: lineFigures.refundable,
+        statedTotal: totalV.value,
+      });
+    }
+    // RULING A, enforced at the door: a line booking's GST belongs to its
+    // lines. gstMode stays "none" (the seam forced it) and a caller asking for
+    // row-level GST is refused rather than quietly creating the double-tax
+    // state the enum exists to make unrepresentable. Refused HERE, before the
+    // calendar is touched, so no rollback is ever owed for it.
+    if (hasLines && body.gstMode !== undefined && body.gstMode !== "" && body.gstMode !== "none") {
+      return res.status(400).json({
+        message: "This booking's GST comes from its quote lines — a booking-level GST mode does not apply.",
+        code: "line_booking_gst",
+      });
+    }
     const schedRaw = Array.isArray(body.paymentSchedule) ? body.paymentSchedule : [];
     if (schedRaw.length > MAX_SCHEDULE_ROWS) return res.status(400).json({ message: `paymentSchedule is too long (max ${MAX_SCHEDULE_ROWS})` });
     const schedule = [];
@@ -638,7 +728,12 @@ const confirmBookingFromLead = async (req, res) => {
       // percentage rows, and the rule that replaces the old all-or-none check is
       // checkMixedTotal: fixed comes off the top, percentages split what remains.
       const { checkMixedTotal, ScheduleError } = require("../utils/venuePaymentSchedule");
-      const balanceForRows = totalV.value !== undefined ? totalV.value - (tokenV.value || 0) : schedule.reduce((sum, r) => sum + (r.amount || 0), 0);
+      // A LINE booking's percentages split what its lines say must be
+      // collected — charged plus the refundable held — minus the advance.
+      // Every other booking keeps the exact expression that shipped.
+      const balanceForRows = hasLines
+        ? payableFromLines - (tokenV.value || 0)
+        : totalV.value !== undefined ? totalV.value - (tokenV.value || 0) : schedule.reduce((sum, r) => sum + (r.amount || 0), 0);
       let mixed;
       try {
         mixed = checkMixedTotal(
@@ -675,7 +770,10 @@ const confirmBookingFromLead = async (req, res) => {
       //
       // Checked only when the caller states the booking value. An amounts-only
       // schedule with no declared total still derives it, exactly as before.
-      if (totalV.value !== undefined) {
+      // (!hasLines: a line booking gets the UNCONDITIONAL guard below instead,
+      // against its own payable — running both would report the same schedule
+      // twice against two different bases.)
+      if (!hasLines && totalV.value !== undefined) {
         const tokenNow = tokenV.value || 0;
         const scheduled = schedule.reduce((sum, r) => sum + (r.amount || 0), 0);
         if (tokenNow + scheduled !== totalV.value) {
@@ -690,6 +788,40 @@ const confirmBookingFromLead = async (req, res) => {
             scheduledAmount: scheduled,
           });
         }
+      }
+    }
+
+    // ── THE LINE GUARD: UNCONDITIONAL, both gates gone ──────────────────────
+    // The old guard had two gates — a percentage row present, a stated
+    // totalValue — because the server otherwise had nothing to check against,
+    // and it once shipped having never executed behind them. A line booking's
+    // truth is its own lines, so for it the guard runs on EVERY schedule
+    // write, amounts-only included: advance + instalments must equal what the
+    // lines say is collected — charged PLUS the refundable held. A schedule
+    // built over charged alone is the deposit silently never collected; the
+    // message says which row to add.
+    //
+    // A money-less confirm (no token, no rows) writes no schedule and owes
+    // this guard nothing.
+    if (hasLines && ((tokenV.value || 0) > 0 || schedule.length > 0)) {
+      const tokenNow = tokenV.value || 0;
+      const scheduled = schedule.reduce((sum, r) => sum + (r.amount || 0), 0);
+      if (tokenNow + scheduled !== payableFromLines) {
+        return res.status(400).json({
+          message:
+            `The advance and the instalments come to ${inr(tokenNow + scheduled)}, but this booking collects ${inr(payableFromLines)}` +
+            ` — ${inr(lineFigures.charged)} charged` +
+            (lineFigures.refundable > 0
+              ? ` plus ${inr(lineFigures.refundable)} refundable held. The schedule must collect the deposit too — add it as a row.`
+              : `.`),
+          code: "schedule_value_mismatch",
+          bookingValue: lineFigures.charged,
+          refundableHeld: lineFigures.refundable,
+          payable: payableFromLines,
+          advanceAmount: tokenNow,
+          balance: payableFromLines - tokenNow,
+          scheduledAmount: scheduled,
+        });
       }
     }
     let agreementDoc;
@@ -959,14 +1091,25 @@ const confirmBookingFromLead = async (req, res) => {
     // can legitimately differ (a corporate client who needs a tax invoice, a
     // family function that does not), and reading it off venue settings would
     // silently re-tax an old booking the day the setting changed.
-    {
+    if (hasLines) {
+      // RULING A: the lines own the GST. gstMode stays "none" and the quote's
+      // rate stays as the seam wrote it — a wizard echoing gstMode "none" /
+      // gstPercent 0 must not wipe the rate the line treatments apply. A
+      // non-none mode was already refused at the door.
+      booking.gstMode = "none";
+    } else {
       const { normaliseGst } = require("../utils/venuePaymentSchedule");
       const g = normaliseGst({ gstMode: req.body.gstMode, gstPercent: req.body.gstPercent });
       booking.gstMode = g.gstMode;
       booking.gstPercent = g.gstPercent;
     }
     const computedTotal = token + schedule.reduce((s, r) => s + (r.amount || 0), 0);
-    if (totalV.value !== undefined) booking.totalValue = totalV.value;
+    // INVARIANT #7, line edition: a line booking's totalValue is derived from
+    // its LINES, never from the schedule — token + rows includes the
+    // refundable held, and deriving the value from it would write the deposit
+    // into revenue. Re-asserted here so a drifted draft cannot survive confirm.
+    if (hasLines) booking.totalValue = lineFigures.charged;
+    else if (totalV.value !== undefined) booking.totalValue = totalV.value;
     else if (computedTotal > 0) booking.totalValue = computedTotal;
 
     if (roomsQuote) {
