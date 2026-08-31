@@ -31,6 +31,18 @@ const VenueContractSchema = new mongoose.Schema(
           guestCount: { type: Number, default: 0 },
         },
       ],
+      /**
+       * ── KNOWN UNDERSTATEMENT ON LINE BOOKINGS (money lines, ruling D) ──────
+       * This snapshots VenueBooking.totalValue, which on a line booking is the
+       * CHARGED figure only — GST-exclusive and excluding any refundable
+       * deposit. The document total the couple was quoted is charged + GST +
+       * refundable, so a contract for a line booking UNDERSTATES what the
+       * couple pays by the deposit and the tax. Ruled acceptable for Phase 1
+       * (2026-08-31): the contract build that reworks document layouts should
+       * snapshot the booking's lines here and state all three figures. Until
+       * then, do not "fix" this by writing a grander total into totalValue —
+       * that re-creates the GST-inflated seam defect this build removed.
+       */
       totalValue: { type: Number, default: 0 },
       paymentSchedule: [
         {
