@@ -33,6 +33,7 @@ const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
 const { BRANDING_SELECT } = require("../utils/venueBranding");
 const { summarizeSchedule } = require("../utils/venuePaymentStatus");
+const { computeLineTotals } = require("../utils/venueMoney");
 const { buildStatementPdf } = require("../utils/venueStatementPdf");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { insertNextVersion } = require("./venueLeadDocument");
@@ -92,9 +93,17 @@ function previewOf({ booking, summary, invoices }) {
   const gstMode = booking.gstMode || "none";
   const gstPercent = Number(booking.gstPercent) || 0;
   const gstOn = gstMode !== "none" && gstPercent > 0;
+  // A LINE booking's GST lives on its lines (gstMode is forced "none" there),
+  // so the preview states it from the lines — same figures the PDF prints.
+  const lines = booking.lineItems || [];
+  const lineGst = lines.length ? computeLineTotals(lines, gstPercent) : null;
   return {
     bookingValue: totals.bookingValue,
     additional: totals.additional,
+    /** Revenue: agreed + extras. */
+    charged: totals.charged,
+    /** Held and returned — inside `total`, never revenue. */
+    refundable: totals.refundable,
     total: totals.total,
     received: totals.received,
     balance: totals.balance,
@@ -109,22 +118,33 @@ function previewOf({ booking, summary, invoices }) {
     invoiceCount: invoices.length,
     // What the document will SAY about GST, so the owner reads it before
     // generating rather than discovering it in the PDF.
-    gst: {
-      on: gstOn,
-      mode: gstMode,
-      percent: gstPercent,
-      instalmentsBearing: gstOn && gstMode === "per_instalment" ? rows.filter((r) => r.gstApplicable).length : gstOn ? rows.length : 0,
-      instalments: rows.length,
-      /**
-       * The honest sentence, and the reason it is worded this way:
-       * summarizeSchedule is GST-agnostic (it has no reference to GST at all),
-       * so the totals follow the schedule and tax is stated where it was
-       * charged rather than added into a new grand total nothing holds.
-       */
-      note: gstOn
-        ? "GST is stated per instalment and on each invoice. The totals follow the agreed schedule, which is recorded exclusive of GST."
-        : "GST is not applicable on this booking.",
-    },
+    gst: lineGst && lineGst.gst > 0
+      ? {
+          on: true,
+          mode: "lines",
+          percent: gstPercent,
+          taxable: lineGst.taxable,
+          amount: lineGst.gst,
+          note:
+            `GST at ${gstPercent}% applies to the taxable portion of the quoted lines and is stated on each invoice. ` +
+            `The totals follow the agreed schedule, which is recorded exclusive of GST.`,
+        }
+      : {
+          on: gstOn,
+          mode: gstMode,
+          percent: gstPercent,
+          instalmentsBearing: gstOn && gstMode === "per_instalment" ? rows.filter((r) => r.gstApplicable).length : gstOn ? rows.length : 0,
+          instalments: rows.length,
+          /**
+           * The honest sentence, and the reason it is worded this way:
+           * summarizeSchedule is GST-agnostic (it has no reference to GST at all),
+           * so the totals follow the schedule and tax is stated where it was
+           * charged rather than added into a new grand total nothing holds.
+           */
+          note: gstOn
+            ? "GST is stated per instalment and on each invoice. The totals follow the agreed schedule, which is recorded exclusive of GST."
+            : "GST is not applicable on this booking.",
+        },
     scheduleMatchesValue: totals.scheduleMatchesValue,
   };
 }

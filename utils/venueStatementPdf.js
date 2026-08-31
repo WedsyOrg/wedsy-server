@@ -55,6 +55,7 @@ const { resolveBranding } = require("./venueBranding");
 const { docDayWithWeekday, docInstantDay, docDay } = require("./documentDate");
 const { renderTable } = require("./venueDocTable");
 const { gstOnRow } = require("./venuePaymentSchedule");
+const { computeLineTotals } = require("./venueMoney");
 
 const BODY = "#222222";
 const TEXT_W = 495;
@@ -128,15 +129,21 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
   const gstMode = bk.gstMode || "none";
   const gstPercent = Number(bk.gstPercent) || 0;
   const gstOn = gstMode !== "none" && gstPercent > 0;
+  // A LINE booking's GST lives on its lines (gstMode is forced "none" there),
+  // so "does this document state tax" is asked of the lines too.
+  const lines = (bk && bk.lineItems) || [];
+  const hasLines = lines.length > 0;
+  const lineGst = hasLines ? computeLineTotals(lines, gstPercent) : null;
+  const bearsGst = gstOn || (lineGst && lineGst.gst > 0);
 
   const { doc, done } = bufferDoc();
   const stats = [];
   venueHeader(doc, venue || {}, "Statement of Account", logoBuffer);
 
-  if (gstOn && brand.taxLine) {
+  if (bearsGst && brand.taxLine) {
     doc.fillColor(GREY).fontSize(9).text(brand.taxLine, 50, doc.y, { width: TEXT_W });
     doc.moveDown(0.4);
-  } else if (!gstOn && brand.pan) {
+  } else if (!bearsGst && brand.pan) {
     doc.fillColor(GREY).fontSize(9).text(`PAN: ${brand.pan}`, 50, doc.y, { width: TEXT_W });
     doc.moveDown(0.4);
   }
@@ -174,13 +181,28 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
   // can check them. Same reason the extras are itemised rather than summed:
   // this document exists so somebody can see what they are paying for.
   const rc = bk && bk.roomsCharge;
+  // ── LINE BOOKINGS ITEMISE THEIR OWN LINES (money lines S4) ──────────────
+  // The lines ARE the breakdown, so the Venue/Rooms subtraction split does
+  // not run for them — a subtraction beside real lines would show the same
+  // money twice. Refundable lines are labelled as held ON the row, because a
+  // couple reading a dispute record must tell what they owe from what they
+  // get back without doing arithmetic.
   const owedTable = [];
-  if (rc && Number(rc.amount) > 0) {
+  if (hasLines) {
+    for (const li of lines.filter((l) => !l.refundable)) {
+      owedTable.push([ascii(li.label || "Charge"), money(li.amount)]);
+    }
+  } else if (rc && Number(rc.amount) > 0) {
     const working = describeRoomsWorking(rc);
     owedTable.push(["Venue", money(Math.max(0, totals.bookingValue - Number(rc.amount)))]);
     owedTable.push([ascii(working ? `Rooms — ${working}` : "Rooms"), money(rc.amount)]);
   }
   owedTable.push(["Agreed booking value", money(totals.bookingValue)]);
+  if (hasLines) {
+    for (const li of lines.filter((l) => l.refundable)) {
+      owedTable.push([ascii(`${li.label || "Deposit"} — refundable, held`), money(li.amount)]);
+    }
+  }
   if (additionalRows.length) {
     // ITEMISED, not a single "additional" figure. The whole reason an owner
     // sends this document is so the client can see what the extras were.
@@ -212,6 +234,12 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
     }
   }
   owedTable.push([{ text: "Total payable", backgroundColor: PANEL }, { text: money(totals.total), backgroundColor: PANEL }]);
+  // RULING B, Rohaan's exact wording: the held deposit is INSIDE the total,
+  // and its own line right under it says so — the couple reads what they get
+  // back without doing arithmetic.
+  if (Number(totals.refundable) > 0) {
+    owedTable.push(["of which refundable, held — returned after the event", money(totals.refundable)]);
+  }
   stats.push(
     renderTable(doc, {
       header: [
@@ -335,7 +363,19 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
   };
   right("Agreed booking value", money(totals.bookingValue));
   if (Number(totals.additional) > 0) right("Additional billing", money(totals.additional));
+  // The addend row, so the column ADDS UP on the page; the sentence below the
+  // total is ruling B's own line, in Rohaan's exact words.
+  if (Number(totals.refundable) > 0) right("Refundable deposit, held", money(totals.refundable));
   right("Total payable", money(totals.total));
+  if (Number(totals.refundable) > 0) {
+    doc.fillColor(GREY).fontSize(9).text(
+      `of which refundable, held — returned after the event: ${money(totals.refundable)}`,
+      50,
+      doc.y,
+      { width: 495, align: "right" }
+    );
+    doc.moveDown(0.3);
+  }
   right("Received", `- ${money(totals.received)}`);
   right("Balance due", money(totals.balance), true);
 
@@ -359,7 +399,21 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
   // that gets read as an oversight.
   doc.moveDown(0.45);
   let gstStated;
-  if (!gstOn) {
+  if (lineGst && lineGst.gst > 0) {
+    // A line booking's GST lives on its LINES (gstMode is forced "none"
+    // there — ruling A), so the sentence states it from the lines: one rate,
+    // the taxable portion, the amount. The totals above stay ex-GST, same as
+    // every other mode's statement.
+    gstStated = "lines";
+    doc.fillColor(GREY).fontSize(9).text(
+      `GST at ${Number(bk.gstPercent) || 0}% applies to the taxable ${money(lineGst.taxable)} of the quoted lines — ` +
+        `${money(lineGst.gst)} in all. The totals here follow the agreed payment schedule, which is recorded ` +
+        `exclusive of GST — the tax charged on each invoice is stated on that invoice.`,
+      50,
+      doc.y,
+      { width: TEXT_W }
+    );
+  } else if (!gstOn) {
     gstStated = "none";
     doc.fillColor(GREY).fontSize(9).text("GST is not applicable on this booking.", 50, doc.y, { width: TEXT_W });
   } else if (gstMode === "whole") {
