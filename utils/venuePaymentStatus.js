@@ -207,7 +207,18 @@ function summarizeSchedule(booking, now = new Date()) {
   // and rewriting it would destroy the record that settles a dispute — so the
   // extras are added on top and both numbers are reported.
   const additional = rows.filter((r) => r.isAdditional).reduce((s2, r) => s2 + r.amount, 0);
-  const owed = bookingValue + additional;
+  // ── HELD MONEY IS OWED, NEVER EARNED (money lines S4) ─────────────────────
+  // A refundable line (the security deposit) is collected through the same
+  // schedule as everything else, so it belongs in what the couple OWES — but
+  // it is held and returned, so it must never sit in a revenue figure. Hence
+  // two totals below: `charged` (agreed + extras — what the venue earns) and
+  // `total` (charged + the refundable held — what the couple pays). Derived
+  // from the booking's own lines every time, never stored as a scalar: a
+  // stored copy of a sum goes stale, the roomsCharge lesson.
+  const refundable = ((booking && booking.lineItems) || [])
+    .filter((li) => li && li.refundable)
+    .reduce((s2, li) => s2 + round(li.amount), 0);
+  const owed = bookingValue + additional + refundable;
   const overdue = rows.filter((r) => r.isOverdue && r.outstanding > 0);
   const next = rows
     .filter((r) => r.outstanding > 0 && r.dueDate)
@@ -222,7 +233,16 @@ function summarizeSchedule(booking, now = new Date()) {
       bookingValue,
       /** Extras added after the fact. */
       additional,
-      /** Agreed + additional — everything the couple owes. */
+      /**
+       * The REVENUE figure: agreed + extras. This — never `total` — is what a
+       * "confirmed value" or revenue sum may add up: `total` includes the
+       * refundable held, and held money that reads as revenue is the defect
+       * this build exists to make unrepresentable.
+       */
+      charged: bookingValue + additional,
+      /** Held and returned. Inside `total`, never inside `charged`. */
+      refundable,
+      /** Charged + refundable held — everything the couple pays. */
       total: owed,
       scheduled,
       received,
