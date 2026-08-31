@@ -523,11 +523,15 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
 //     reason "ai_rejected") where both sales and the approver will see it.
 
 const createUploadDraft = async (
-  { buffer, originalFilename, category, occasion } = {},
+  { buffer, originalFilename, category, occasion, truncated } = {},
   { batchId, position } = {},
   actorId
 ) => {
   if (!buffer || !buffer.length) throw err(400, "an image file is required");
+  // express-fileupload CUTS an oversized file to the limit instead of rejecting
+  // it, so the truncated buffer would pass the byte cap and hand sharp a
+  // corrupt partial JPEG. Fail the item, loudly, before any spend.
+  if (truncated) throw err(413, "this file was cut off by the upload size limit — compress it and try again");
   const cat = String(category || "").trim();
   if (!cat) throw err(400, "category is required");
   if (!CATEGORY_LIST.includes(cat)) {

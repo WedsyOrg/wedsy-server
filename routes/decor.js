@@ -1,5 +1,6 @@
 const express = require("express");
 const bodyParser = require("body-parser");
+const fileUpload = require("express-fileupload");
 const router = express.Router();
 
 const decor = require("../controllers/decor");
@@ -10,6 +11,15 @@ const { requirePermission } = require("../middlewares/requirePermission");
 // Large parser only for the AI image upload route — base64 of a photo can be
 // several MB, well past the default 100kb json limit.
 const largeJson = bodyParser.json({ limit: "50mb" });
+
+// Multipart parser for the bulk-upload intake ONLY — mounted per-route, the
+// same pattern as routes/reimbursement.js. fileSize mirrors the
+// A2S_IMAGE_MAX_BYTES cap that utils/remoteImageToS3 enforces; an oversized
+// file arrives TRUNCATED (express-fileupload cuts, it does not reject), which
+// the intake fails per-item on the truncated flag.
+const uploadParser = fileUpload({
+  limits: { fileSize: Number(process.env.A2S_IMAGE_MAX_BYTES) || 15 * 1024 * 1024, files: 5 },
+});
 
 // A2S publish gate. Reuses the existing "approve" action verb — see the note in
 // utils/rbacPermissions.js for why no "publish" verb was added.
@@ -36,6 +46,11 @@ router.post("/demo-price", largeJson, CheckAdminLogin, decor.DemoPrice);
 // member can queue a pin); approve/reject need store:approve:all — the queue is
 // meaningless if anyone can publish.
 router.post("/drafts", largeJson, CheckAdminLogin, decorDraft.Create);
+// Bulk upload — sales staff, up to 5 images with per-file category + occasion.
+// Admin auth only, same rule as queueing a pin: uploading is not publishing.
+// Literal path — above the "/drafts/:id/*" routes to match this file's
+// convention (no POST /drafts/:id exists, so nothing can capture it anyway).
+router.post("/drafts/uploads", CheckAdminLogin, uploadParser, decorDraft.CreateUploads);
 router.get("/drafts", CheckAdminLogin, decorDraft.List);
 router.get("/drafts/:id", CheckAdminLogin, decorDraft.Get);
 // Re-run the copy pass on a draft whose copy is pending or failed. Admin-only,
