@@ -69,6 +69,30 @@ function normalizeQuoteLines(items) {
 const storedLineMode = (quote) => (quote.lineItems || []).some((li) => li.gstTreatment);
 
 /**
+ * ── THE VALUE A QUOTE HANDS A BOOKING — the unit-mismatch fix ───────────────
+ * VenueBooking.totalValue is declared GST-EXCLUSIVE ("totalValue stays what
+ * was NEGOTIATED… plus GST, derived per row" — models/VenueBooking.js), but
+ * acceptance wrote quote.totals.grandTotal, which under the default
+ * "exclusive" mode INCLUDES the GST. Every quote left at 18% exclusive and
+ * accepted wrote an inflated totalValue into the four revenue sums, the
+ * pipeline write-back, pricing-intel comparables and the schedule's spread
+ * base — and a booking GST mode set later taxed the inflated figure AGAIN.
+ *
+ * totals.taxable is the ex-GST base under all three document modes (exclusive:
+ * the base itself; inclusive: base − the GST inside it; none: the base), so it
+ * is the one figure that matches the booking's declaration. A LINE quote's
+ * ex-GST figure is totals.charged — same declaration, and the refundable
+ * deposit additionally kept out of revenue.
+ *
+ * scripts/assess-quote-accept-gst-seam.js counts what the old seam already
+ * stored; remediation of stored data is the founder's decision, not code's.
+ */
+function bookingValueFromQuote(quote) {
+  const totals = quote.totals || {};
+  return storedLineMode(quote) ? totals.charged || 0 : totals.taxable || 0;
+}
+
+/**
  * The two document-mode knobs a line quote refuses. GST comes from each
  * line's treatment against the one rate, so a document gstMode has nothing to
  * say; and a document discount would be a number outside the lines on a quote
@@ -245,7 +269,7 @@ const updateQuote = async (req, res) => {
       const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
       if (enquiry) {
         booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
-        booking.totalValue = quote.totals.grandTotal;
+        booking.totalValue = bookingValueFromQuote(quote);
         await booking.save();
       }
     }
@@ -268,7 +292,7 @@ const confirmBookingFromQuote = async (req, res) => {
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found for this venue" });
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
-    booking.totalValue = quote.totals.grandTotal;
+    booking.totalValue = bookingValueFromQuote(quote);
     await booking.save();
     return res.status(200).json({ quote, booking });
   } catch (err) { return res.status(500).json({ message: err.message }); }
