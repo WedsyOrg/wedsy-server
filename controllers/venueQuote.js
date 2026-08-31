@@ -93,6 +93,39 @@ function bookingValueFromQuote(quote) {
 }
 
 /**
+ * ── THE SEAM: what acceptance hands the booking ─────────────────────────────
+ * One function for both call sites (the accepted PATCH and the dashboard's
+ * confirm-booking), because two seams that drift is how the last defect
+ * shipped twice.
+ *
+ * A LINE quote's booking gets:
+ *   · the LINES, snapshotted — the deal's frozen facts, exactly as accepted
+ *   · totalValue = CHARGED (ex-GST, refundable excluded) — the revenue figure
+ *     every scalar consumer reads
+ *   · gstPercent copied — the one rate the line treatments apply
+ *   · gstMode FORCED "none" (ruling A): the lines own the GST, and the
+ *     per-instalment machinery must not be able to tax the same money twice.
+ *     Two GST systems on one booking is the exact shape of bug this project
+ *     keeps shipping.
+ * A LEGACY quote's booking gets the ex-GST value and nothing else new.
+ */
+function applyQuoteToBooking(booking, quote) {
+  booking.totalValue = bookingValueFromQuote(quote);
+  if (storedLineMode(quote)) {
+    booking.lineItems = (quote.lineItems || []).map((li) => ({
+      label: li.label || "",
+      amount: Math.round(Number(li.amount) || 0),
+      gstTreatment: li.gstTreatment || "none",
+      taxableAmount: Math.round(Number(li.taxableAmount) || 0),
+      refundable: Boolean(li.refundable),
+      source: { chargeKey: (li.source && li.source.chargeKey) || "" },
+    }));
+    booking.gstPercent = Number(quote.gstPercent) || 0;
+    booking.gstMode = "none";
+  }
+}
+
+/**
  * The two document-mode knobs a line quote refuses. GST comes from each
  * line's treatment against the one rate, so a document gstMode has nothing to
  * say; and a document discount would be a number outside the lines on a quote
@@ -269,7 +302,7 @@ const updateQuote = async (req, res) => {
       const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
       if (enquiry) {
         booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
-        booking.totalValue = bookingValueFromQuote(quote);
+        applyQuoteToBooking(booking, quote);
         await booking.save();
       }
     }
@@ -292,7 +325,7 @@ const confirmBookingFromQuote = async (req, res) => {
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found for this venue" });
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
-    booking.totalValue = bookingValueFromQuote(quote);
+    applyQuoteToBooking(booking, quote);
     await booking.save();
     return res.status(200).json({ quote, booking });
   } catch (err) { return res.status(500).json({ message: err.message }); }

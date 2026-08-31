@@ -95,6 +95,31 @@ async function acceptQuote(quoteBody) {
     eq(r.code, 200, "confirm-booking-from-quote answers");
     eq(r.body.booking.totalValue, 200000, "🔴 the dashboard's call site writes ex-GST too — both seams, one helper");
 
+    // ══ B. THE SEAM CARRIES THE LINES ═══════════════════════════════════════
+    console.log("\n[B. a line quote's booking carries the lines, the rate, and gstMode none]");
+    a = await acceptQuote({
+      gstPercent: 18,
+      lineItems: [
+        { label: "Venue", amount: 500000, gstTreatment: "full" },
+        { label: "Security deposit", amount: 25000, gstTreatment: "none", refundable: true, source: { chargeKey: "security_deposit" } },
+      ],
+    });
+    let bk = await VenueBooking.findById(a.booking._id).lean();
+    eq(bk.lineItems.length, 2, "🔴 the lines are ON the booking — snapshotted at acceptance");
+    const dep = bk.lineItems.find((l) => l.refundable);
+    ok(dep && dep.amount === 25000 && dep.gstTreatment === "none" && dep.source.chargeKey === "security_deposit",
+      "…the deposit line keeps amount, treatment, flag and breadcrumb");
+    eq(bk.totalValue, 500000, "totalValue is charged — the deposit is not in it");
+    eq(bk.gstPercent, 18, "the quote's one rate rides along");
+    eq(bk.gstMode, "none", "🔴 RULING A: gstMode is FORCED none — the lines own the GST, the row machinery cannot double-tax");
+
+    // A LEGACY acceptance stays exactly as it was: no lines, gst untouched.
+    a = await acceptQuote({ gstPercent: 18, gstMode: "exclusive", lineItems: [{ label: "Venue", qty: 1, unitPrice: 100000 }] });
+    bk = await VenueBooking.findById(a.booking._id).lean();
+    eq((bk.lineItems || []).length, 0, "a legacy quote's booking carries NO lines");
+    eq(bk.gstMode, "none", "…and its gstMode is the model default, written by nothing here");
+    eq(bk.gstPercent, 0, "…rate likewise untouched (the confirm wizard sets booking GST, not the seam)");
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {
