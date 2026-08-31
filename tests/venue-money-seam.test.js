@@ -130,17 +130,22 @@ async function acceptQuote(quoteBody) {
 
     // ══ C. NON-LINE BOOKINGS: TODAY'S GATES, BYTE-IDENTICAL ═════════════════
     console.log("\n[C. the guard that once never ran keeps BOTH its gates for non-line bookings]");
-    // Gate 1: amounts-only schedules skip the guard entirely — a stated total
-    // that disagrees with the rows STILL lands. Today's shipped behaviour,
-    // asserted rather than assumed.
+    // ── KNOWN GAP, PINNED — NOT DESIRED BEHAVIOUR ──────────────────────────
+    // Gate 1 lets an amounts-only schedule skip the guard entirely, so a
+    // stated total that disagrees with the rows STILL lands on non-line
+    // bookings. This test RECORDS that defect so it stays visible and so a
+    // change to it is a decision, not an accident. Do not defend this as
+    // intentional: whether it should keep sailing through is an open call
+    // nobody has made yet. (Line bookings already refuse this shape — the
+    // gateless guard in section D.)
     let lead = await mkLead();
     r = await confirmLead(lead, {
       functions: fn(nextDate()), tokenAmount: 10000, totalValue: 100000,
       paymentSchedule: [{ label: "Only", amount: 50000 }],
     });
-    eq(r.code, 200, "🔴 GATE 1 UNCHANGED: amounts-only + mismatched stated total sails through, as shipped");
+    eq(r.code, 200, "🔴 KNOWN GAP (recorded, not endorsed): gate 1 lets amounts-only + a mismatched stated total sail through on non-line bookings");
     bk = await VenueBooking.findOne({ enquiry: lead._id }).lean();
-    eq(bk.totalValue, 100000, "…and the stated value is what lands (60,000 scheduled against it — the gate's own gap)");
+    eq(bk.totalValue, 100000, "…the mismatched value lands with only 60,000 scheduled — pinned so changing it is a DECISION, not a drift");
 
     // Gate 2: percentages but NO stated total — the guard has nothing to check
     // against and the total derives from token + rows (invariant #7).
