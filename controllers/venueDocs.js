@@ -167,7 +167,7 @@ const createBill = async (req, res) => {
     if (body.whiteLabel !== undefined && typeof body.whiteLabel !== "boolean") {
       return res.status(400).json({ message: "whiteLabel must be a boolean" });
     }
-    const booking = await VenueBooking.findOne({ _id: body.booking, venue: venue._id }).select("_id totalValue").lean();
+    const booking = await VenueBooking.findOne({ _id: body.booking, venue: venue._id }).select("_id totalValue lineItems gstPercent").lean();
     if (!booking) return res.status(404).json({ message: "Booking not found for this venue" });
 
     let template = null;
@@ -186,8 +186,32 @@ const createBill = async (req, res) => {
     const disc = Number(body.discount) || 0;
     if (disc < 0) return res.status(400).json({ message: "discount must be >= 0" });
 
-    const items = itemsV.value || (template && template.lineItems.length ? template.lineItems : [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: booking.totalValue || 0 }]);
-    const mode = body.gstMode || (template && template.gstMode) || "exclusive";
+    // Fabrication order: explicit body > template > the booking's own lines >
+    // one line from the scalar. A LINE booking seeds the bill with its
+    // NON-REFUNDABLE lines — the held deposit is never billed (see
+    // invoiceViewOfLines) — and the bill's single-rate math is set to match
+    // when it can be exact: every line "full" → exclusive at the booking's
+    // rate; no line taxable → none. MIXED treatments (a "part" line among
+    // them) cannot be expressed by one rate on one subtotal, so the bill
+    // seeds mode "none" and under-states the tax rather than over-charging
+    // it — the bill is a working document, and the tax document (the
+    // invoice) derives per line and is exact.
+    let items = itemsV.value || (template && template.lineItems.length ? template.lineItems : null);
+    let mode = body.gstMode || (template && template.gstMode) || "exclusive";
+    let effPct = pct;
+    if (!items) {
+      const billable = ((booking.lineItems || [])).filter((li) => li && !li.refundable);
+      if (billable.length) {
+        items = billable.map((li) => ({ label: li.label || "Charge", category: "venue", qty: 1, unitPrice: Math.round(Number(li.amount) || 0) }));
+        if (body.gstPercent === undefined && !template) effPct = Number(booking.gstPercent) || 0;
+        if (body.gstMode === undefined && !(template && template.gstMode)) {
+          const allFull = billable.every((li) => (li.gstTreatment || "none") === "full");
+          mode = allFull && effPct > 0 ? "exclusive" : "none";
+        }
+      } else {
+        items = [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: booking.totalValue || 0 }];
+      }
+    }
     const terms = termsV.value !== undefined ? termsV.value : template && template.terms.length ? template.terms : termsFromPolicyDoc(venue);
 
     const seq = await VenueCounter.next(`${venue._id}:bill`);
@@ -200,9 +224,9 @@ const createBill = async (req, res) => {
       gstMode: mode,
       // E3x: explicit per-doc flag wins; otherwise the venue-level default.
       whiteLabel: body.whiteLabel !== undefined ? body.whiteLabel : !!(venue.settings && venue.settings.documentsWhiteLabelDefault),
-      gstPercent: pct,
+      gstPercent: effPct,
       discount: disc,
-      totals: computeTotals(items, pct, disc, mode),
+      totals: computeTotals(items, effPct, disc, mode),
       terms,
       notes: typeof body.notes === "string" ? body.notes.slice(0, 2000) : "",
     });

@@ -7,7 +7,7 @@ const VenueInvoice = require("../models/VenueInvoice");
 const VenueBooking = require("../models/VenueBooking");
 const VenueQuote = require("../models/VenueQuote");
 const VenueCounter = require("../models/VenueCounter");
-const { computeTotals, GST_MODES } = require("../utils/venueMoney");
+const { computeTotals, invoiceViewOfLines, GST_MODES } = require("../utils/venueMoney");
 const { streamInvoicePdf } = require("../utils/venuePdf");
 const { isOwnerActor } = require("../utils/venueRbac");
 const { invoiceInScope } = require("../utils/venueBookingScope");
@@ -100,7 +100,7 @@ async function allocateInvoice(venue, fields) {
 // POST /venues/:slug/invoices — create-from-booking.
 const createFromBooking = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "_id invoicePrefix settings");
+    const venue = await resolveOwnedVenue(req, res, "_id invoicePrefix settings gstin");
     if (!venue) return;
     const { booking, kind, lineItems, gstPercent, gstMode, discount, terms, whiteLabel } = req.body || {};
     if (!booking) return res.status(400).json({ message: "booking is required" });
@@ -116,24 +116,54 @@ const createFromBooking = async (req, res) => {
       return res.status(400).json({ message: "terms must be an array of strings (max 50 × 2000 chars)" });
     }
 
-    // Line items: explicit body > latest accepted quote for the enquiry > single line from booking total.
+    // Line items: explicit body > the booking's own lines > latest accepted
+    // quote for the enquiry > single line from booking total.
     let items = Array.isArray(lineItems) ? lineItems : null;
     let pct = gstPercent !== undefined ? Number(gstPercent) : 18;
     let disc = Number(discount) || 0;
     let mode = gstMode || "exclusive";
     // E3x: explicit per-doc flag > source quote's flag > venue-level default.
     let wl = whiteLabel !== undefined ? whiteLabel : !!(venue.settings && venue.settings.documentsWhiteLabelDefault);
+    // A LINE booking's invoice bills its own lines — non-refundable only, per
+    // line GST, finished totals (see invoiceViewOfLines: held money is never
+    // on a tax invoice, and computeTotals' one-rate math would over-tax a
+    // "part" or "none" line). `derived` carries the totals past computeTotals.
+    let derived = null;
+    if (!items && (bookingDoc.lineItems || []).length) {
+      derived = invoiceViewOfLines(bookingDoc.lineItems, bookingDoc.gstPercent);
+      items = derived.lineItems;
+      pct = derived.gstPercent;
+      disc = 0;
+      mode = derived.gstMode;
+    }
     if (!items && bookingDoc.enquiry) {
       const quote = await VenueQuote.findOne({ enquiry: bookingDoc.enquiry, status: "accepted" }).sort({ version: -1 }).lean()
         || await VenueQuote.findOne({ enquiry: bookingDoc.enquiry }).sort({ version: -1 }).lean();
-      if (quote) {
+      if (quote && (quote.lineItems || []).some((li) => li.gstTreatment)) {
+        // A LINE quote reached here without its booking carrying lines (a
+        // wizard-built booking beside an unaccepted line quote). Copying its
+        // rows wholesale would put the held deposit on a tax invoice and
+        // one-rate the treatments — same derivation as above instead.
+        derived = invoiceViewOfLines(quote.lineItems, quote.gstPercent);
+        items = derived.lineItems;
+        pct = derived.gstPercent;
+        disc = 0;
+        mode = derived.gstMode;
+        if (whiteLabel === undefined && quote.whiteLabel !== undefined) wl = !!quote.whiteLabel;
+      } else if (quote) {
         items = quote.lineItems; pct = quote.gstPercent; disc = quote.discount;
         if (!gstMode && quote.gstMode) mode = quote.gstMode;
         if (whiteLabel === undefined && quote.whiteLabel !== undefined) wl = !!quote.whiteLabel;
       }
     }
     if (!items) items = [{ label: "Venue booking", category: "venue_hire", qty: 1, unitPrice: bookingDoc.totalValue || 0 }];
-    const totals = computeTotals(items, pct, disc, mode);
+    if (derived && derived.bears && !venue.gstin) {
+      return res.status(400).json({
+        message: "These lines bear GST, but no GSTIN is set. Add it in Settings → Billing & tax.",
+        code: "no_gstin",
+      });
+    }
+    const totals = derived ? derived.totals : computeTotals(items, pct, disc, mode);
 
     const KINDS = ["advance", "final", "addon"];
     const invoice = await allocateInvoice(venue, {

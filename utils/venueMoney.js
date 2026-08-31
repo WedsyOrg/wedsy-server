@@ -100,10 +100,51 @@ function computeLineTotals(lineItems, gstPercent = 18) {
   return { subtotal, charged, refundable, taxable, gst, grandTotal: subtotal + gst };
 }
 
+/**
+ * ── THE TAX-INVOICE VIEW OF A SET OF LINES (money lines S5) ─────────────────
+ * What an invoice raised from lines bills: the NON-REFUNDABLE lines, with GST
+ * derived per line against the one rate and stored as finished totals —
+ * computeTotals would apply one rate to the whole subtotal and over-tax any
+ * line whose treatment is "part" or "none" (the same reasoning as the payment
+ * invoice's per-row derivation in controllers/venueLeadInvoice).
+ *
+ * ── WHY THE HELD DEPOSIT IS NOT HERE ────────────────────────────────────────
+ * A refundable line is money the venue HOLDS, not money it earns, and this
+ * model already refuses to invoice held money: the room-stay deposit
+ * (controllers/venueCheckin) is never invoiced — only its materialised
+ * DEDUCTION becomes a real add-on invoice, at the moment damages make it
+ * consideration. A tax invoice evidences a supply; a deposit held against one
+ * is not that, and it becomes invoiceable only if it is ever applied — which
+ * is a forfeiture flow this build does not have. The deposit lives on the
+ * statement ("of which refundable, held") and in the schedule; it does not
+ * live on a tax invoice.
+ *
+ * `gstMode` comes back "exclusive" when any line bears GST (grandTotal =
+ * base + GST is that shape) and "none" otherwise, so the invoice PDF's
+ * header ("Tax Invoice" vs "Invoice") and its GST block stay truthful.
+ */
+function invoiceViewOfLines(lines, gstPercent) {
+  const billable = (Array.isArray(lines) ? lines : []).filter((li) => li && !li.refundable);
+  const t = computeLineTotals(billable, gstPercent);
+  return {
+    hasBillable: billable.length > 0,
+    bears: t.gst > 0,
+    gstMode: t.gst > 0 ? "exclusive" : "none",
+    gstPercent: Number(gstPercent) || 0,
+    lineItems: billable.map((li) => ({
+      label: li.label || "Charge",
+      category: "venue",
+      qty: 1,
+      unitPrice: Math.round(Number(li.amount) || 0),
+    })),
+    totals: { subtotal: t.subtotal, taxable: t.taxable, gst: t.gst, grandTotal: t.grandTotal },
+  };
+}
+
 // Format integer rupees as "₹1,12,100" (Indian grouping).
 function formatINR(amount) {
   const n = Math.round(Number(amount) || 0);
   return "₹" + n.toLocaleString("en-IN");
 }
 
-module.exports = { computeTotals, computeLineTotals, lineTaxable, formatINR, GST_MODES };
+module.exports = { computeTotals, computeLineTotals, lineTaxable, invoiceViewOfLines, formatINR, GST_MODES };
