@@ -4,8 +4,6 @@ Dear {{var:couple_name}},
 
 {{var:message_text}}
 
-Attached: {{var:document_name}}
-
 Warm regards,
 {{var:sender_name}}
 {{var:venue_name}}

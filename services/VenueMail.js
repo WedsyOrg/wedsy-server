@@ -252,7 +252,6 @@ async function buildVariables({ venue, lead, kind, message, document, recipientN
     venue_phone: resolvePhone(venue),
     venue_logo: resolveLogoUrl(venue),
     document_label: spec.label,
-    document_name: (document && document.filename) || "",
     document_version: document && document.version ? String(document.version) : "",
     message_text: String(message || ""),
     message_html: messageToHtml(message || ""),

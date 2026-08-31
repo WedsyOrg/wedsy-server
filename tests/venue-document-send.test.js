@@ -138,7 +138,7 @@ pdfStitch.fetchSourcePdf = async (url) => { fetched.push(url); return Buffer.fro
       eq(r.body.preselected, "rao@example.com", "🔴 the decision maker (not the primary) is preselected");
       eq(r.body.recipients.length, 2, "both email-bearing contacts listed");
       ok(/Thank you for considering/.test(r.body.defaultMessage), "the default copy is the quote's");
-      ok(/Attached: <b>quote-Priya-Arjun-v1\.pdf<\/b>/.test(r.body.html), "🔴 the rendered HTML names the attachment");
+      ok(!/quote-Priya-Arjun-v1\.pdf|Attached:/.test(r.body.html), "🔴 the internal filename stays out of the email — the mail client shows the attachment");
       ok(new RegExp(venue.name).test(r.body.html) && /Meera Rao/.test(r.body.html), "…carries the venue name and the owner's signature");
       ok(!/Team Wedsy|help@wedsy\.in/.test(r.body.html) && /POWERED BY WEDSY/.test(r.body.html), "🔴 venue voice: no Team Wedsy, no help@, Powered by Wedsy only");
       eq(r.body.messageSupported, true, "the template carries the message region");
