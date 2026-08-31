@@ -4,7 +4,8 @@
  */
 const Venue = require("../models/Venue");
 const VenueQuote = require("../models/VenueQuote");
-const { computeTotals, GST_MODES } = require("../utils/venueMoney");
+const { computeTotals, computeLineTotals, GST_MODES } = require("../utils/venueMoney");
+const { checkChargeMoney } = require("../utils/venueBookingCharges");
 const { streamQuotePdf } = require("../utils/venuePdf");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
@@ -14,6 +15,73 @@ async function resolveOwnedVenue(req, res, select = "_id") {
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) { res.status(403).json({ message: "Forbidden" }); return null; }
   return venue;
+}
+
+// ── MONEY LINES: one payload, one mode ──────────────────────────────────────
+// A quote is LINE-MODE when its items carry the new money facts (amount, GST
+// treatment, refundable), LEGACY when they carry qty × unitPrice and nothing
+// new. A payload mixing the two shapes is refused rather than guessed at: a
+// row that half-says what it means would get whichever math noticed it first.
+const isLineShaped = (li) =>
+  li && (li.amount !== undefined || li.gstTreatment !== undefined || li.refundable !== undefined || li.taxableAmount !== undefined);
+
+const LINE_CATEGORIES = ["venue_hire", "catering", "decoration", "accommodation", "other"];
+
+/**
+ * Validate + normalize a line-mode payload. qty/unitPrice are MIRRORED
+ * (qty 1, unitPrice = amount) so every existing renderer and the invoice
+ * precedence that read qty × unitPrice keep totalling correctly, unmodified.
+ * @returns {{ ok: true, lines: Array } | { ok: false, message: string }}
+ */
+function normalizeQuoteLines(items) {
+  const out = [];
+  for (let i = 0; i < items.length; i++) {
+    const li = items[i] || {};
+    const where = `lineItems[${i}]`;
+    if (!isLineShaped(li)) {
+      return { ok: false, message: `${where}: every line on a line quote needs an amount and a GST treatment — this one has neither` };
+    }
+    const label = String(li.label || "").trim().slice(0, 120);
+    if (!label) return { ok: false, message: `${where}: a line needs a label` };
+    if (li.amount === undefined || li.amount === null || li.amount === "") {
+      return { ok: false, message: `${where}: a line needs an amount` };
+    }
+    const money = checkChargeMoney(li, where);
+    if (!money.ok) return money;
+    out.push({
+      label,
+      category: LINE_CATEGORIES.includes(li.category) ? li.category : "other",
+      qty: 1,
+      unitPrice: money.value.amount,
+      perDay: false,
+      day: null,
+      amount: money.value.amount,
+      gstTreatment: money.value.gstTreatment,
+      taxableAmount: money.value.taxableAmount,
+      refundable: money.value.refundable,
+      source: { chargeKey: String((li.source && li.source.chargeKey) || "").slice(0, 60) },
+    });
+  }
+  return { ok: true, lines: out };
+}
+
+/** A stored quote is line-mode when its rows carry a treatment. */
+const storedLineMode = (quote) => (quote.lineItems || []).some((li) => li.gstTreatment);
+
+/**
+ * The two document-mode knobs a line quote refuses. GST comes from each
+ * line's treatment against the one rate, so a document gstMode has nothing to
+ * say; and a document discount would be a number outside the lines on a quote
+ * whose rule is "everything is a line" — adjust the line amounts instead.
+ */
+function lineModeConflicts({ gstMode, discount }) {
+  if (gstMode !== undefined && gstMode !== "exclusive") {
+    return "A line quote's GST comes from each line's treatment — gstMode does not apply.";
+  }
+  if (discount !== undefined && Number(discount) !== 0) {
+    return "On a line quote there is no document discount — adjust the line amounts instead.";
+  }
+  return null;
 }
 
 // POST /venues/:slug/quotes — create a new quote version for an enquiry.
@@ -39,8 +107,23 @@ const createQuote = async (req, res) => {
     if (terms !== undefined && (!Array.isArray(terms) || terms.some((t) => typeof t !== "string" || t.length > 2000) || terms.length > 50)) {
       return res.status(400).json({ message: "terms must be an array of strings (max 50 × 2000 chars)" });
     }
-    const mode = gstMode || "exclusive";
-    const totals = computeTotals(lineItems, pct, disc, mode);
+
+    // ── which math this quote gets, decided once ────────────────────────────
+    const lineMode = Array.isArray(lineItems) && lineItems.some(isLineShaped);
+    let items = Array.isArray(lineItems) ? lineItems : [];
+    let mode = gstMode || "exclusive";
+    let totals;
+    if (lineMode) {
+      const conflict = lineModeConflicts({ gstMode, discount });
+      if (conflict) return res.status(400).json({ message: conflict });
+      const norm = normalizeQuoteLines(items);
+      if (!norm.ok) return res.status(400).json({ message: norm.message });
+      items = norm.lines;
+      mode = "exclusive";
+      totals = computeLineTotals(items, pct);
+    } else {
+      totals = computeTotals(items, pct, disc, mode);
+    }
 
     // Next version + supersede earlier non-final versions.
     const latest = await VenueQuote.findOne({ enquiry }).sort({ version: -1 }).select("version").lean();
@@ -54,7 +137,7 @@ const createQuote = async (req, res) => {
       venue: venue._id,
       enquiry,
       version,
-      lineItems: Array.isArray(lineItems) ? lineItems : [],
+      lineItems: items,
       gstPercent: pct,
       gstMode: mode,
       // E3x: explicit per-doc flag wins; otherwise the venue-level default.
@@ -121,14 +204,38 @@ const updateQuote = async (req, res) => {
     if (status === "accepted" && (!effItems || effItems.length === 0)) {
       return res.status(400).json({ message: "cannot accept a quote with no line items" });
     }
-    if (lineItems !== undefined) quote.lineItems = Array.isArray(lineItems) ? lineItems : [];
+
+    // ── which math, decided from the EFFECTIVE items ────────────────────────
+    // A legacy quote may be upgraded to lines by sending line-shaped items; a
+    // line quote never silently degrades — sending legacy-shaped items to one
+    // is refused, because the flip would drop every treatment and flag the
+    // owner set and the totals would quietly change meaning.
+    const payloadLineMode = lineItems !== undefined && effItems.some(isLineShaped);
+    const effLineMode = lineItems !== undefined ? payloadLineMode : storedLineMode(quote);
+    if (storedLineMode(quote) && lineItems !== undefined && !payloadLineMode && effItems.length > 0) {
+      return res.status(400).json({ message: "This is a line quote — every line needs an amount and a GST treatment." });
+    }
+    let normalizedLines = null;
+    if (effLineMode) {
+      const conflict = lineModeConflicts({ gstMode, discount });
+      if (conflict) return res.status(400).json({ message: conflict });
+      if (lineItems !== undefined) {
+        const norm = normalizeQuoteLines(effItems);
+        if (!norm.ok) return res.status(400).json({ message: norm.message });
+        normalizedLines = norm.lines;
+      }
+    }
+
+    if (lineItems !== undefined) quote.lineItems = normalizedLines || (Array.isArray(lineItems) ? lineItems : []);
     if (gstPercent !== undefined) quote.gstPercent = Number(gstPercent);
     if (gstMode !== undefined) quote.gstMode = gstMode;
     if (discount !== undefined) quote.discount = Number(discount) || 0;
     if (terms !== undefined) quote.terms = terms;
     if (whiteLabel !== undefined) quote.whiteLabel = whiteLabel;
     if (lineItems !== undefined || gstPercent !== undefined || discount !== undefined || gstMode !== undefined) {
-      quote.totals = computeTotals(quote.lineItems, quote.gstPercent, quote.discount, quote.gstMode);
+      quote.totals = effLineMode
+        ? computeLineTotals(quote.lineItems, quote.gstPercent)
+        : computeTotals(quote.lineItems, quote.gstPercent, quote.discount, quote.gstMode);
     }
     if (status !== undefined) quote.status = status;
     await quote.save();

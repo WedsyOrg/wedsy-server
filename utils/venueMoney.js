@@ -49,10 +49,61 @@ function computeTotals(lineItems, gstPercent = 18, discount = 0, gstMode = "excl
   };
 }
 
+/**
+ * ══ LINE-MODE TOTALS (money lines, Phase 1) ═════════════════════════════════
+ * A line-mode quote is a set of lines each carrying its own GST TREATMENT and
+ * REFUNDABLE flag; the single `gstPercent` is the one rate, applied per line
+ * to whatever that line says is taxable:
+ *
+ *   none — taxable 0 · full — taxable = amount · part — taxable = taxableAmount
+ *
+ * GST rounds PER LINE (Math.round, same as gstOnRow) so a line's own
+ * arithmetic is printable: 5,00,000 with GST on part 2,00,000 at 18% is
+ * 36,000, and the line contributes 5,36,000 — a sentence, not a residue.
+ *
+ * ── CHARGED vs REFUNDABLE, the split this build exists for ─────────────────
+ * `charged` is the revenue figure: the sum of NON-refundable line amounts,
+ * GST-exclusive. `refundable` is held-and-returned money: inside the document
+ * total, never revenue. `grandTotal` = everything + GST — what the document
+ * shows on top. The seam (S3) writes `charged` into VenueBooking.totalValue,
+ * which is how every scalar revenue consumer stays correct without changing.
+ *
+ * This does NOT replace computeTotals above: bills, invoices, templates and
+ * legacy quotes keep document-mode math untouched. A quote is one or the
+ * other, never both — the controller refuses a mixed payload.
+ */
+function lineTaxable(line) {
+  const amount = Math.round(Number(line && line.amount) || 0);
+  const t = String((line && line.gstTreatment) || "none");
+  if (t === "full") return amount;
+  if (t === "part") return Math.round(Number(line.taxableAmount) || 0);
+  return 0;
+}
+
+function computeLineTotals(lineItems, gstPercent = 18) {
+  const items = Array.isArray(lineItems) ? lineItems : [];
+  const pct = Number(gstPercent) || 0;
+  let subtotal = 0;
+  let charged = 0;
+  let refundable = 0;
+  let taxable = 0;
+  let gst = 0;
+  for (const li of items) {
+    const amount = Math.round(Number(li && li.amount) || 0);
+    subtotal += amount;
+    if (li && li.refundable) refundable += amount;
+    else charged += amount;
+    const t = lineTaxable(li);
+    taxable += t;
+    gst += Math.round((t * pct) / 100);
+  }
+  return { subtotal, charged, refundable, taxable, gst, grandTotal: subtotal + gst };
+}
+
 // Format integer rupees as "₹1,12,100" (Indian grouping).
 function formatINR(amount) {
   const n = Math.round(Number(amount) || 0);
   return "₹" + n.toLocaleString("en-IN");
 }
 
-module.exports = { computeTotals, formatINR, GST_MODES };
+module.exports = { computeTotals, computeLineTotals, lineTaxable, formatINR, GST_MODES };
