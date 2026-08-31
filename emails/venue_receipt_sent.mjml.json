@@ -103,7 +103,7 @@
                     "padding-bottom": "0px",
                     "padding-top": "0px"
                   },
-                  "content": "<p class=\"text-build-content\" style=\"margin: 10px 0; margin-top: 10px;\">Dear {{var:couple_name}},</p>{{var:message_html}}<p class=\"text-build-content\" style=\"margin: 10px 0;\">Attached: <b>{{var:document_name}}</b></p>"
+                  "content": "<p class=\"text-build-content\" style=\"margin: 10px 0; margin-top: 10px;\">Dear {{var:couple_name}},</p>{{var:message_html}}"
                 },
                 {
                   "tagName": "mj-text",
