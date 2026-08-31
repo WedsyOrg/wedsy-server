@@ -76,6 +76,7 @@ const DecorDraftSchema = new mongoose.Schema(
     // entry may legitimately be gone; then these fields are all we have).
     sourceRead: {
       // "cache" (the panel's read, replayed) | "fresh" (A2S read it itself)
+      // | "upload" (a staff-uploaded image, read at intake — no pin, no panel)
       source: { type: String, default: "" },
       cacheId: { type: ObjectId, ref: "DecorImageRead", default: null },
       firstReadAt: { type: Date, default: null }, // when the IMAGE was first read
@@ -99,6 +100,16 @@ const DecorDraftSchema = new mongoose.Schema(
       // e.g. A2S clicked without the panel ever pricing it). Deliberately not
       // faked: an estimate computed here was never quoted to anyone.
       panelQuote: { type: Mixed, default: null },
+      // ── IMMUTABLE — THE QUOTE SALES WAS SHOWN (bulk upload) ───────────────
+      // panelQuote means "what the client was actually quoted" and an upload
+      // draft has no panel and no client, so panelQuote stays null there and
+      // the occasion-aware computed figure lives HERE instead: same shape as
+      // panelQuote, plus the staff-stated { category, occasion } inputs that
+      // produced it. It is the number sales sees and the number the approval
+      // modal pre-fills when panelQuote is null — "before" evidence in exactly
+      // panelQuote's sense, hence immutable. Never written on a Pinterest
+      // draft; exactly one of panelQuote / uploadQuote can be non-null.
+      uploadQuote: { type: Mixed, default: null },
       // ── PER-TIER LEARNING RECORD (2026-08-20) ─────────────────────────────
       // ADDITIVE, not a replacement. A draft used to publish ONE price row, so
       // one finalPrice/overridden/reason described the whole decision. It now
@@ -215,6 +226,27 @@ const DecorDraftSchema = new mongoose.Schema(
     addedBy: { type: ObjectId, ref: "Admin", default: null },
     addedAt: { type: Date, default: Date.now },
 
+    // ── Bulk-upload provenance ───────────────────────────────────────────────
+    // Present only on drafts born from POST /decor/drafts/uploads. Origin is
+    // DERIVED: upload.batchId null/absent ⇒ Pinterest/extension draft — there
+    // is deliberately no second "origin" flag to drift out of sync. category
+    // and occasion here are the record of WHAT STAFF STATED at upload; where
+    // they took effect is draft.category and pricing.uploadQuote. Kept out of
+    // sourceImage, which participates in the dedupe filters and stays
+    // Pinterest-shaped.
+    //
+    // ⚠️ occasion is ALWAYS recorded but only PRICES anything when the category
+    // it lands on is Stage — the Haldi relabel (decorDemoPrice.js, buildDemoPrice:
+    // "Only Stage flips"). A haldi occasion on a Photobooth is kept as a fact
+    // and is price-inert, by ruling. The UI mirrors this asymmetry.
+    upload: {
+      batchId: { type: ObjectId, default: null },
+      position: { type: Number, default: null }, // 0-based slot within the batch
+      originalFilename: { type: String, default: "" },
+      category: { type: String, default: "" },
+      occasion: { type: String, default: "" },
+    },
+
     // Set on approve — the published product. Also the "already in the store"
     // dedupe answer.
     publishedDecorId: { type: ObjectId, ref: "Decor", default: null },
@@ -251,6 +283,9 @@ const DecorDraftSchema = new mongoose.Schema(
 DecorDraftSchema.index({ "sourceImage.pinId": 1 }, { sparse: true });
 DecorDraftSchema.index({ "sourceImage.normalizedUrl": 1 });
 DecorDraftSchema.index({ status: 1, addedAt: -1 });
+// Batch grouping for the upload intake. Sparse: every pre-existing draft lacks
+// the subdocument entirely and has no business in this index.
+DecorDraftSchema.index({ "upload.batchId": 1 }, { sparse: true });
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THE NON-NEGOTIABLE: aiAnalysis and pricing.aiSuggested are write-once.
@@ -270,7 +305,15 @@ DecorDraftSchema.index({ status: 1, addedAt: -1 });
 // number a human quoted the client, sourceRead says which read produced it. If
 // either can be rewritten after the fact, an approval's training pair can be
 // made to look like something that never happened.
-const IMMUTABLE_PATHS = ["aiAnalysis", "pricing.aiSuggested", "pricing.panelQuote", "sourceRead"];
+// pricing.uploadQuote joined on 2026-08-31 for the same reason: it is the number
+// sales was shown for an uploaded image, and the pre-fill the approver judged.
+const IMMUTABLE_PATHS = [
+  "aiAnalysis",
+  "pricing.aiSuggested",
+  "pricing.panelQuote",
+  "pricing.uploadQuote",
+  "sourceRead",
+];
 
 const isImmutablePath = (path) =>
   IMMUTABLE_PATHS.some((p) => path === p || path.startsWith(`${p}.`));
