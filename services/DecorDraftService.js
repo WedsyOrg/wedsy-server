@@ -3,9 +3,10 @@ const DecorDraft = require("../models/DecorDraft");
 const Decor = require("../models/Decor");
 const Admin = require("../models/Admin");
 const { suggestProductCode, isCodeTaken } = require("../utils/decorCode");
-const { storeRemoteImage, toAnalysisBase64, fetchRemoteImage } = require("../utils/remoteImageToS3");
-const { analyseImage } = require("./decorVision");
+const { storeRemoteImage, storeUploadedImage, toAnalysisBase64, fetchRemoteImage } = require("../utils/remoteImageToS3");
+const { analyseImage, CATEGORY_LIST } = require("./decorVision");
 const { suggestPrice, normalizeComparable, CATEGORY_TIERS } = require("./decorPricing");
+const { OCCASIONS } = require("./decorDemoPrice");
 const { buildListingContext } = require("./decorListingContext");
 const sizeLadder = require("./decorSizeLadder");
 const { tierOf } = require("./decorPricing");
@@ -239,10 +240,15 @@ const analyseForCopy = async (imageBase64, listingContext) =>
 // Injection seam so the test suite never calls Anthropic or S3.
 const deps = {
   storeRemoteImage,
+  storeUploadedImage,
   toAnalysisBase64,
   runPricingBrain,
   priceFromAnalysis,
   analyseForCopy,
+  // Upload intake reads in DEMO mode: the demo schema carries the measurement
+  // and occasion fields the quote engine consumes, and priceFromAnalysis
+  // documents a demo read as a valid pricing input.
+  analyseForUpload: (imageBase64) => analyseImage({ imageBase64, mode: "demo" }),
   buildListingContext,
   fetchRemoteImage,
   // The copy pass is scheduled, never awaited — the response must not wait on it.
@@ -497,6 +503,195 @@ const createDraft = async ({ imageUrl, pinId, pinText, analysis, force } = {}, a
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
+// BULK UPLOAD — POST /decor/drafts/uploads. Staff bytes in, queued drafts out.
+//
+// The shape is the CACHE-HIT path inverted: one demo-mode read at create
+// settles the price, the copy is deferred to the existing copy pass. What
+// makes it different from A2S:
+//   • no pin and no panel — sourceRead.source "upload", panelQuote stays null,
+//     and the occasion-aware figure lands in pricing.uploadQuote instead;
+//   • category and occasion are STAFF STATEMENTS, honoured together (ruling:
+//     no DemoPrice-style suppression) — category via a synthetic clone of the
+//     read (Seam B, the categoryOverride precedent), occasion via the explicit
+//     parameter on panelQuoteFor (Seam A);
+//   • aiAnalysis stays what the AI actually said. The staff category reaches
+//     draft.category and the pricing clone ONLY; suggested.category keeps the
+//     vision value; a disagreement is recorded on upload.categoryDisagreement.
+//   • an AI rejection (isDecorProduct false) does not veto the draft — staff
+//     deliberately uploaded it — but it is never papered over with a price:
+//     no quote is computed, and uploadQuote says so (status "no_quote",
+//     reason "ai_rejected") where both sales and the approver will see it.
+
+const createUploadDraft = async (
+  { buffer, originalFilename, category, occasion } = {},
+  { batchId, position } = {},
+  actorId
+) => {
+  if (!buffer || !buffer.length) throw err(400, "an image file is required");
+  const cat = String(category || "").trim();
+  if (!cat) throw err(400, "category is required");
+  if (!CATEGORY_LIST.includes(cat)) {
+    throw err(400, `Unknown décor category: ${JSON.stringify(cat)}`);
+  }
+  // "" is an EXPLICIT "no occasion" — Seam A still gets null, not undefined,
+  // because staff stating none must not be overridden by the vision read's
+  // guess. (Haldi is reached as Stage + occasion haldi, never as a category:
+  // CATEGORY_LIST does not contain the demo-only Haldi entry, by design.)
+  const occ = String(occasion || "").trim().toLowerCase();
+  if (occ && !OCCASIONS.includes(occ)) {
+    throw err(400, `Unknown occasion: ${JSON.stringify(occ)} (one of ${OCCASIONS.join(", ")}, or empty for none)`);
+  }
+
+  const draftId = new mongoose.Types.ObjectId();
+  const stored = await deps.storeUploadedImage({ buffer, path: "decor-drafts", id: String(draftId) });
+
+  const b64 = await deps.toAnalysisBase64(stored.buffer);
+  const demoAnalysis = await deps.analyseForUpload(b64);
+
+  // The AI ladder — computed from the UNMODIFIED read. This is the immutable
+  // "before": what the AI said, staff statements nowhere in it.
+  const pricingBrain = await deps.priceFromAnalysis(demoAnalysis);
+  pricingBrain.analysisMode = "demo"; // the read's SHAPE; provenance is sourceRead
+
+  const inputs = { category: cat, occasion: occ || null };
+  let uploadQuote;
+  if (!demoAnalysis || demoAnalysis.isDecorProduct === false) {
+    // The AI's rejection is NOT overridden into a confident price. The draft
+    // still exists (staff asserted a product); the blank says why.
+    uploadQuote = {
+      status: "no_quote",
+      reason: "ai_rejected",
+      detail:
+        (demoAnalysis && demoAnalysis.complexity && demoAnalysis.complexity.reasoning) ||
+        "the vision model did not read this as a décor product",
+      inputs,
+    };
+  } else {
+    // ── Seam B — the synthetic clone (the categoryOverride precedent) ───────
+    // Staff said what it is: category asserted, categoryConfidence null because
+    // no model judged THIS category. isDecorProduct is NOT asserted — it is
+    // inherited from the read, and the rejected case never reaches this branch.
+    // Everything measured — size, complexity, stageMeasurements,
+    // recommendedSize — stays the AI's own reading. The clone is consumed by
+    // the quote and NEVER persisted.
+    const priced = { ...demoAnalysis, category: cat, categoryConfidence: null };
+    const staffOccasion = occ ? { value: occ, source: "staff", conflict: null } : null;
+    try {
+      const quote = await deps.panelQuoteFor(priced, { occasion: staffOccasion });
+      uploadQuote = quote
+        ? { status: "quoted", ...quote, inputs }
+        : { status: "no_quote", reason: "no_price", detail: `no priceable figure for ${cat}`, inputs };
+    } catch (e) {
+      uploadQuote = {
+        status: "no_quote",
+        reason: "quote_failed",
+        detail: String((e && e.message) || e).slice(0, 300),
+        inputs,
+      };
+      console.warn("[A2S:upload] quote failed", e && e.message);
+    }
+  }
+
+  const visionCategory = (demoAnalysis && demoAnalysis.category) || "";
+  const categoryDisagreement =
+    visionCategory && visionCategory.toLowerCase() !== cat.toLowerCase()
+      ? { vision: visionCategory, staff: cat }
+      : null;
+
+  const measurements = measurementsFromAnalysis(demoAnalysis);
+  const now = new Date();
+
+  const doc = await DecorDraft.create({
+    _id: draftId,
+    sourceImage: { url: stored.url, pinId: "", normalizedUrl: normalizeImageUrl(stored.url), pinText: "" },
+    storedImage: stored.url,
+    // IMMUTABLE — and PURELY the AI's: listing arrives via the copy pass into
+    // copyAnalysis (it cannot be patched in here), and the staff-vs-vision
+    // disagreement lives on upload.categoryDisagreement, not in this blob.
+    aiAnalysis: { listing: null, pricing: pricingBrain, categoryDisagreement: null },
+    suggested: {
+      category: visionCategory, // what the AI said — NOT the staff category
+      name: "",
+      description: "",
+      tags: [],
+      included: [],
+      attributes: {},
+      measurements,
+      priceLadder: (pricingBrain && pricingBrain.pricing) || {},
+    },
+    draft: {
+      category: cat, // what staff said — the approver's working copy starts here
+      productCode: await suggestProductCode(cat),
+      name: "",
+      description: "",
+      tags: [],
+      included: [],
+      unit: await unitFor(cat),
+      attributes: {},
+      measurements,
+      productVariation: {},
+    },
+    sourceRead: { source: "upload", cacheId: null, firstReadAt: now, usedAt: now },
+    pricing: { aiSuggested: (pricingBrain && pricingBrain.pricing) || {}, panelQuote: null, uploadQuote },
+    status: "queued",
+    copy: { status: "pending", attempts: 0 },
+    copyAnalysis: null,
+    addedBy: actorId || null,
+    addedAt: now,
+    upload: {
+      batchId,
+      position,
+      originalFilename: String(originalFilename || "").slice(0, 300),
+      category: cat,
+      occasion: occ,
+      categoryDisagreement,
+    },
+    history: [
+      {
+        action: "queued",
+        by: actorId || null,
+        at: now,
+        note:
+          uploadQuote.reason === "ai_rejected"
+            ? `uploaded as ${cat} — the AI did not read this as a décor product, so no price was computed`
+            : categoryDisagreement
+              ? `uploaded — staff said ${cat}, the AI read ${visionCategory}`
+              : "uploaded",
+      },
+    ],
+  });
+
+  deps.scheduleCopyPass(doc._id, stored.buffer);
+  return doc.toObject();
+};
+
+// The batch: mints ONE batchId, creates SEQUENTIALLY — suggestProductCode
+// treats a queued draft's code as a reservation, so each draft must be
+// persisted before the next asks for a code, or five same-category uploads
+// would all be handed the same provisional. Per-item failure does not abort
+// the batch: four good drafts and one clear error beats an all-or-nothing 500.
+const createUploadBatch = async ({ items } = {}, actorId) => {
+  if (!Array.isArray(items) || !items.length) throw err(400, "at least one image is required");
+  if (items.length > 5) throw err(400, "at most 5 images per batch");
+  const batchId = new mongoose.Types.ObjectId();
+  const results = [];
+  for (let position = 0; position < items.length; position++) {
+    try {
+      const draft = await createUploadDraft(items[position], { batchId, position }, actorId);
+      results.push({ position, status: "queued", draft });
+    } catch (e) {
+      results.push({
+        position,
+        status: "failed",
+        error: (e && e.message) || "error",
+        httpStatus: (e && e.status) || 500,
+      });
+    }
+  }
+  return { batchId: String(batchId), results };
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // THE COPY PASS — runs AFTER the reply, on the server.
 //
 // MECHANISM: an in-process deferred call (setImmediate), not a client callback.
@@ -551,7 +746,14 @@ const runCopyPass = async (draftId, { buffer = null, force = false } = {}) => {
     const visionCategory =
       (draft.aiAnalysis && draft.aiAnalysis.pricing && draft.aiAnalysis.pricing.analysis
         && draft.aiAnalysis.pricing.analysis.category) || "";
-    const listingContext = await deps.buildListingContext(visionCategory);
+    // Upload drafts scope the naming context to the STAFF category — it is the
+    // category the product will publish under. Extension drafts keep the vision
+    // category, unchanged. The disagreement check below stays AI-vs-AI either way.
+    const contextCategory =
+      draft.upload && draft.upload.batchId
+        ? (draft.draft && draft.draft.category) || visionCategory
+        : visionCategory;
+    const listingContext = await deps.buildListingContext(contextCategory);
     const copy = await deps.analyseForCopy(b64, listingContext);
 
     const listingCategory = (copy && copy.category) || "";
@@ -863,9 +1065,11 @@ const approveDraft = async (id, body = {}, actorId) => {
     category,
     name,
     unit,
-    // Stamps the published product as extension-added. A real field, not a tag:
-    // an approver editing tags cannot delete it, and GET /decor can filter on it.
-    source: "extension",
+    // Stamps the published product's origin. A real field, not a tag: an
+    // approver editing tags cannot delete it, and GET /decor can filter on it.
+    // Upload-born drafts stamp "upload" — origin is derived from
+    // upload.batchId, the same rule the queue's tabs use.
+    source: draft.upload && draft.upload.batchId ? "upload" : "extension",
     // The APPROVER, not draft.addedBy. Same meaning as on POST /decor — "the
     // person who put this product in the catalogue" — because a filter whose
     // meaning changes with the creation path is not a filter. The person who
@@ -1053,6 +1257,8 @@ const rejectDraft = async (id, { reason } = {}, actorId) => {
 
 module.exports = {
   createDraft,
+  createUploadDraft,
+  createUploadBatch,
   listDrafts,
   getDraft,
   approveDraft,

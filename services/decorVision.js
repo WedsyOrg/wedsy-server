@@ -552,6 +552,7 @@ module.exports = {
   includedFor,
   snapSize,
   SIZE_VOCAB,
+  CATEGORY_LIST, // the catalogue taxonomy — upload intake validates staff categories against it
   FULL_SCHEMA_INSTR,    // exported so the verification gate tests the REAL artefact
   MODEL,
 };

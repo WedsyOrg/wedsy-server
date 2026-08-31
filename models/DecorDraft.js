@@ -109,6 +109,12 @@ const DecorDraftSchema = new mongoose.Schema(
       // modal pre-fills when panelQuote is null — "before" evidence in exactly
       // panelQuote's sense, hence immutable. Never written on a Pinterest
       // draft; exactly one of panelQuote / uploadQuote can be non-null.
+      // ALWAYS non-null on an upload draft, and self-describing:
+      //   { status: "quoted", ...figure, inputs } — the priced case, or
+      //   { status: "no_quote", reason: "ai_rejected" | "no_price" |
+      //     "quote_failed", detail, inputs } — a blank price must SAY WHY;
+      // sales cannot act on a silent blank, and the three causes are different
+      // conversations (wrong photo vs unpriceable category vs our bug).
       uploadQuote: { type: Mixed, default: null },
       // ── PER-TIER LEARNING RECORD (2026-08-20) ─────────────────────────────
       // ADDITIVE, not a replacement. A draft used to publish ONE price row, so
@@ -245,6 +251,10 @@ const DecorDraftSchema = new mongoose.Schema(
       originalFilename: { type: String, default: "" },
       category: { type: String, default: "" },
       occasion: { type: String, default: "" },
+      // { vision, staff } when they disagree, null otherwise — the same shape as
+      // aiAnalysis.categoryDisagreement, which it cannot join: that blob is
+      // immutable AI evidence and must never carry a staff statement.
+      categoryDisagreement: { type: Mixed, default: null },
     },
 
     // Set on approve — the published product. Also the "already in the store"
