@@ -37,14 +37,21 @@
  */
 require("dotenv").config();
 
-/** Pure classifier — the suite requires this and proves each verdict. */
+/**
+ * Pure classifier — the suite requires this and proves each verdict.
+ *
+ * An "inflated" verdict carries the quote's GST MODE, because the two modes
+ * mean DIFFERENT THINGS and need different remediation — see the banner
+ * printed above the rows. Do not read the combined count as one defect.
+ */
 function classifyBooking(booking, acceptedQuote) {
   if (!acceptedQuote || !acceptedQuote.totals) return { verdict: "no_accepted_quote" };
   const grand = Math.round(Number(acceptedQuote.totals.grandTotal) || 0);
   const taxable = Math.round(Number(acceptedQuote.totals.taxable) || 0);
   const value = Math.round(Number(booking.totalValue) || 0);
+  const mode = acceptedQuote.gstMode || "exclusive";
   if (grand === taxable) return { verdict: "no_gst_on_quote", grand, taxable, value };
-  if (value === grand) return { verdict: "inflated", grand, taxable, value, delta: grand - taxable };
+  if (value === grand) return { verdict: "inflated", mode, grand, taxable, value, delta: grand - taxable };
   if (value === taxable) return { verdict: "matches_taxable", grand, taxable, value };
   return { verdict: "drifted", grand, taxable, value };
 }
@@ -78,6 +85,7 @@ async function main() {
         booking: String(b._id),
         venue: String(b.venue),
         couple: b.coupleName || "",
+        mode: c.mode,
         quoteVersion: q.version,
         gst: `${q.gstMode || "exclusive"} @ ${q.gstPercent}%`,
         totalValue: c.value,
@@ -90,17 +98,42 @@ async function main() {
     }
   }
 
+  const exclusive = inflated.filter((r) => r.mode !== "inclusive");
+  const inclusive = inflated.filter((r) => r.mode === "inclusive");
   console.log(`Bookings with an enquiry: ${bookings.length}`);
   for (const [k, v] of Object.entries(counts)) console.log(`  ${k}: ${v}`);
+  if (inflated.length) console.log(`  … of the inflated: ${exclusive.length} exclusive-mode, ${inclusive.length} inclusive-mode`);
   if (inflated.length) {
-    console.log(`\nINFLATED — totalValue carries the quote's GST (delta = the inflation):`);
-    for (const r of inflated) {
+    console.log(`
+READ THE TWO GROUPS DIFFERENTLY — they are not the same defect:
+  · EXCLUSIVE rows ARE OVER-BILLING. The quote priced ex-GST, the seam wrote
+    the GST-inclusive figure into totalValue, and every scalar consumer —
+    revenue, the schedule's spread base, the pipeline write-back — has been
+    carrying the couple's GST as venue money. Remediation may mean re-agreeing
+    money with the couple.
+  · INCLUSIVE rows are NOT over-billing. The couple agreed an ALL-IN figure;
+    the model declares totalValue GST-exclusive, so the honest stored value is
+    the ex-GST part of what was agreed. Nobody was charged too much —
+    remediation is restating the book value ex-GST, not going back to anyone.`);
+  }
+  const printRows = (rows) => {
+    for (const r of rows) {
       console.log(
         `  ${r.booking}  ${r.couple || "(no name)"}  v${r.quoteVersion} ${r.gst}  ` +
           `totalValue ${r.totalValue}  ex-GST ${r.exGst}  delta +${r.delta}  ${new Date(r.createdAt).toISOString().slice(0, 10)}`
       );
     }
-    console.log(`\nRemediation is re-agreeing money with each couple — a business decision. Nothing was changed.`);
+  };
+  if (exclusive.length) {
+    console.log(`\nEXCLUSIVE — over-billed into totalValue (delta = the couple's GST counted as venue money):`);
+    printRows(exclusive);
+  }
+  if (inclusive.length) {
+    console.log(`\nINCLUSIVE — all-in agreement vs ex-GST declaration (delta = the GST inside the agreed figure):`);
+    printRows(inclusive);
+  }
+  if (inflated.length) {
+    console.log(`\nRemediation is a business decision per group, as above. Nothing was changed.`);
   } else {
     console.log(`\nNo inflated bookings found. Nothing was changed.`);
   }

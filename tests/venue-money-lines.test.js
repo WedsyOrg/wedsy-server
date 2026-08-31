@@ -214,10 +214,14 @@ const created = { venues: [] };
 
     // ══ F. THE DEFECT-1 CLASSIFIER — provable without a database ════════════
     console.log("\n[F. the assess script tells inflated from corrected from drifted]");
-    const quoteTotals = { totals: { grandTotal: 118000, taxable: 100000 } };
+    const quoteTotals = { gstMode: "exclusive", totals: { grandTotal: 118000, taxable: 100000 } };
     eq(classifyBooking({ totalValue: 118000 }, quoteTotals).verdict, "inflated",
       "🔴 totalValue === grandTotal ≠ taxable → INFLATED (the live seam defect)");
     eq(classifyBooking({ totalValue: 118000 }, quoteTotals).delta, 18000, "…and the delta is the 18% GST");
+    eq(classifyBooking({ totalValue: 118000 }, quoteTotals).mode, "exclusive",
+      "🔴 the verdict CARRIES THE MODE — exclusive means over-billing…");
+    eq(classifyBooking({ totalValue: 50000 }, { gstMode: "inclusive", totals: { grandTotal: 50000, taxable: 47619 } }).mode,
+      "inclusive", "…inclusive means an all-in agreement vs the ex-GST declaration, NOT over-billing");
     eq(classifyBooking({ totalValue: 100000 }, quoteTotals).verdict, "matches_taxable", "the ex-GST figure reads as corrected");
     eq(classifyBooking({ totalValue: 110000 }, quoteTotals).verdict, "drifted", "neither figure → drifted (hand-edited)");
     eq(classifyBooking({ totalValue: 50000 }, { totals: { grandTotal: 50000, taxable: 50000 } }).verdict, "no_gst_on_quote",
