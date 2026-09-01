@@ -1,5 +1,6 @@
 const Decor = require("../models/Decor");
 const DecorDraft = require("../models/DecorDraft");
+const Category = require("../models/Category");
 
 // ── Server-side product-code generator ───────────────────────────────────────
 // Format (confirmed from prod after the Aug-2026 catalogue clean):
@@ -42,8 +43,16 @@ const parseCode = (raw) => {
 
 // Derive the prefix for a category from what that category ALREADY uses:
 // the most common well-formed prefix among its products wins.
+// As of 2026-09 the category's own DECLARED prefix wins first —
+// Category.codePrefix, set when the category is created/edited and normalised
+// there to lowercase letters. That is what lets a brand-new category (no coded
+// products, no FALLBACK_PREFIX entry) mint codes from its first draft instead
+// of arriving blank. Empty/absent declares nothing → today's behaviour,
+// unchanged for every pre-flag category.
 const prefixForCategory = async (category) => {
   if (!category) return null;
+  const catDoc = await Category.findOne({ name: category }, { codePrefix: 1 }).lean();
+  if (catDoc && catDoc.codePrefix) return catDoc.codePrefix;
   const docs = await Decor.find(
     { category, "productInfo.id": { $nin: [null, ""] } },
     { "productInfo.id": 1 }
