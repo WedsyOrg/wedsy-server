@@ -9,6 +9,33 @@ const { checkChargeMoney } = require("../utils/venueBookingCharges");
 const { streamQuotePdf } = require("../utils/venuePdf");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
+const { syncQuotedValue } = require("../utils/venueQuotedValue");
+const VenueEnquiry = require("../models/VenueEnquiry");
+
+/**
+ * ── THE LINES ARE THE NUMBER (founder ruling) ───────────────────────────────
+ * A saved line quote writes through to VenueEnquiry.estimatedValue — the one
+ * materialised figure the pipeline, dashboards, pricing intel and both OS
+ * projections read — via the SAME sync the rounds use. The sync's precedence
+ * (booking > latest line quote's CHARGED > latest round with an amount) makes
+ * the rounds' own calls no-ops the moment a line quote exists; the
+ * negotiation records what was said, the lines are what is billed. The
+ * activity line makes the move auditable, exactly as round-driven moves are.
+ */
+async function writeQuoteThrough(enquiryId, quote, actorId) {
+  const lead = await VenueEnquiry.findById(enquiryId);
+  if (!lead) return;
+  const sync = await syncQuotedValue(lead);
+  if (sync.changed) {
+    lead.activities.push({
+      type: "quote_changed",
+      description: `Quote updated to ₹${sync.to.toLocaleString("en-IN")} (quote v${quote.version || 1}, as lines)`,
+      actor: actorId || null,
+      timestamp: new Date(),
+    });
+    await lead.save();
+  }
+}
 
 async function resolveOwnedVenue(req, res, select = "_id") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
@@ -204,6 +231,7 @@ const createQuote = async (req, res) => {
       terms: Array.isArray(terms) ? terms : [],
       status: "draft",
     });
+    await writeQuoteThrough(enquiry, quote, req.venueOwner && (req.venueOwner.memberId || req.venueOwner.venueOwnerId));
     return res.status(201).json({ quote });
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
@@ -296,6 +324,7 @@ const updateQuote = async (req, res) => {
     }
     if (status !== undefined) quote.status = status;
     await quote.save();
+    await writeQuoteThrough(quote.enquiry, quote, req.venueOwner && (req.venueOwner.memberId || req.venueOwner.venueOwnerId));
 
     let booking = null;
     if (status === "accepted") {

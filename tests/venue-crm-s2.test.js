@@ -34,6 +34,11 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
 (async () => {
   try {
     await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
+    // The conflict sections rely on the UNIQUE VenueSpaceDate index — on a
+    // fresh test DB the build races the first insert, and a run that loses the
+    // race books over a taken date-space and fails three assertions at once.
+    // Await it, the same way venue-money-invoices awaits VenueInvoice.init().
+    await VenueSpaceDate.init();
 
     const venue = await Venue.create({
       name: `${TAG}-v`,
@@ -181,7 +186,9 @@ const call = async (fn, req) => { const res = mockRes(); await fn(req, res); ret
     const q = await VenueQuote.create({ venue: venue._id, enquiry: lead6._id, version: 1, status: "accepted", lineItems: [{ label: "hire", category: "venue_hire", qty: 1, unitPrice: 500000 }], totals: { subtotal: 500000, taxable: 500000, gst: 90000, grandTotal: 590000 } });
     const rq = await call(quotes.confirmBookingFromQuote, ownerReq(venue, { params: { quoteId: String(q._id) } }));
     ok(rq.code === 200 && rq.body.booking, "confirmBookingFromQuote still 200 + booking");
-    ok(rq.body.booking.totalValue === 590000, "quote grandTotal still drives totalValue");
+    // The seam writes the EX-GST figure since the money-lines fix (server
+    // #165): grandTotal is GST-inclusive and writing it was the live defect.
+    ok(rq.body.booking.totalValue === 500000, "quote hands the booking its ex-GST value (the money-lines seam rule)");
     const b6 = await VenueBooking.findOne({ enquiry: lead6._id }).lean();
     ok(!!b6 && (await VenueSpaceDate.countDocuments({ venue: venue._id, bookingRef: b6._id })) === 0, "quote path behaviour unchanged (no calendar rows — blocking stays wizard/convert-hold territory)");
     const rq2 = await call(quotes.confirmBookingFromQuote, ownerReq(venue, { params: { quoteId: String(q._id) } }));
