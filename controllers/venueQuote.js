@@ -29,7 +29,9 @@ async function writeQuoteThrough(enquiryId, quote, actorId) {
   if (sync.changed) {
     lead.activities.push({
       type: "quote_changed",
-      description: `Quote updated to ₹${sync.to.toLocaleString("en-IN")} (quote v${quote.version || 1}, as lines)`,
+      // "(quote vN)" — the version says which quote; the owner does not need
+      // the implementation named (founder ruling: no "as lines" in owner copy).
+      description: `Quote updated to ₹${sync.to.toLocaleString("en-IN")} (quote v${quote.version || 1})`,
       actor: actorId || null,
       timestamp: new Date(),
     });
