@@ -66,4 +66,24 @@ const ReceiveMessage = (req, res) => {
   }
 };
 
-module.exports = { VerifyWebhook, ReceiveMessage };
+// GET /instagram-agent/connected-account — the connected IG professional
+// account's own profile, for the inbox header (Meta app review requires the
+// permission to be seen doing visible work). Contract: a missing/expired token
+// or any upstream failure is a CLEAN { connected: false } with HTTP 200 —
+// never a 500 — so the UI can render "Not connected" instead of an error.
+// profilePictureUrl is re-fetched every call (short-lived CDN URL, never cached).
+const ConnectedAccount = async (req, res) => {
+  try {
+    const { fetchConnectedInstagramAccount } = require('../utils/instagram');
+    const account = await fetchConnectedInstagramAccount();
+    if (!account) {
+      return res.status(200).json({ id: null, username: null, profilePictureUrl: null, connected: false });
+    }
+    return res.status(200).json({ ...account, connected: true });
+  } catch (error) {
+    console.error('[InstagramAgent] connected-account error:', error.message);
+    return res.status(200).json({ id: null, username: null, profilePictureUrl: null, connected: false });
+  }
+};
+
+module.exports = { VerifyWebhook, ReceiveMessage, ConnectedAccount };
