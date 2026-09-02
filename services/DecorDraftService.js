@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const DecorDraft = require("../models/DecorDraft");
 const Decor = require("../models/Decor");
 const Admin = require("../models/Admin");
+const Category = require("../models/Category");
 const { suggestProductCode, isCodeTaken } = require("../utils/decorCode");
 const { storeRemoteImage, storeUploadedImage, toAnalysisBase64, fetchRemoteImage } = require("../utils/remoteImageToS3");
 const { analyseImage, CATEGORY_LIST } = require("./decorVision");
@@ -534,8 +535,27 @@ const createUploadDraft = async (
   if (truncated) throw err(413, "this file was cut off by the upload size limit — compress it and try again");
   const cat = String(category || "").trim();
   if (!cat) throw err(400, "category is required");
-  if (!CATEGORY_LIST.includes(cat)) {
+  // ── The category master + its flags (2026-09) ─────────────────────────────
+  // OR-shape, deliberately: a category is KNOWN if it has a master doc OR is
+  // in the vision vocabulary. The master only ever ADDS legitimacy — a missing
+  // or misnamed Category doc can never invalidate an upload that was valid
+  // before the flags existed.
+  const catDoc = await Category.findOne({ name: cat }).lean();
+  if (!catDoc && !CATEGORY_LIST.includes(cat)) {
     throw err(400, `Unknown décor category: ${JSON.stringify(cat)}`);
+  }
+  // `!== false`, never `=== true`: a lean read of a pre-flag doc returns
+  // undefined for the path, and undefined means "behaves as before" — priced.
+  const aiPriced = !catDoc || catDoc.aiPriced !== false;
+  // CATEGORY_LIST membership is demanded ONLY of AI-priced categories: it is
+  // the vision model's own calibrated vocabulary (prompt changes need the
+  // 12-image gate), and an unpriced upload never asks the model to classify —
+  // staff stated the category.
+  if (aiPriced && !CATEGORY_LIST.includes(cat)) {
+    throw err(
+      400,
+      `"${cat}" is AI-priced but not in the vision vocabulary — mark the category aiPriced: false, or calibrate it into CATEGORY_LIST (12-image gate)`
+    );
   }
   // "" is an EXPLICIT "no occasion" — Seam A still gets null, not undefined,
   // because staff stating none must not be overridden by the vision read's
@@ -549,50 +569,74 @@ const createUploadDraft = async (
   const draftId = new mongoose.Types.ObjectId();
   const stored = await deps.storeUploadedImage({ buffer, path: "decor-drafts", id: String(draftId) });
 
-  const b64 = await deps.toAnalysisBase64(stored.buffer);
-  const demoAnalysis = await deps.analyseForUpload(b64);
-
-  // The AI ladder — computed from the UNMODIFIED read. This is the immutable
-  // "before": what the AI said, staff statements nowhere in it.
-  const pricingBrain = await deps.priceFromAnalysis(demoAnalysis);
-  pricingBrain.analysisMode = "demo"; // the read's SHAPE; provenance is sourceRead
-
   const inputs = { category: cat, occasion: occ || null };
+  let demoAnalysis = null;
+  let pricingBrain = null;
   let uploadQuote;
-  if (!demoAnalysis || demoAnalysis.isDecorProduct === false) {
-    // The AI's rejection is NOT overridden into a confident price. The draft
-    // still exists (staff asserted a product); the blank says why.
+  if (!aiPriced) {
+    // ── NOT AI-PRICED — the branch happens BEFORE any model spend ───────────
+    // No demo read (it is the pricing read: its outputs feed priceFromAnalysis
+    // and the quote, both off — and it would force the model to classify into
+    // a vocabulary that does not contain this category, then freeze that
+    // misclassification into immutable evidence). The deferred copy pass alone
+    // supplies name/description/tags/attributes, with its context already
+    // scoped to the staff category. aiAnalysis.pricing stays null: no brain
+    // ran, and the doc-create tail below is null-tolerant throughout.
+    //
+    // A THIRD STATUS, not a fourth no_quote reason: no_quote's reasons are
+    // FAILURES and render as failures; not_priced is the working state — the
+    // approver sets the price. Still truthy, still NO figure fields, so the
+    // pinned truthiness defence holds: (panelQuote || uploadQuote).midpoint
+    // reads undefined.
     uploadQuote = {
-      status: "no_quote",
-      reason: "ai_rejected",
-      detail:
-        (demoAnalysis && demoAnalysis.complexity && demoAnalysis.complexity.reasoning) ||
-        "the vision model did not read this as a décor product",
+      status: "not_priced",
+      detail: `"${cat}" is priced by the approver — AI pricing is off for this category`,
       inputs,
     };
   } else {
-    // ── Seam B — the synthetic clone (the categoryOverride precedent) ───────
-    // Staff said what it is: category asserted, categoryConfidence null because
-    // no model judged THIS category. isDecorProduct is NOT asserted — it is
-    // inherited from the read, and the rejected case never reaches this branch.
-    // Everything measured — size, complexity, stageMeasurements,
-    // recommendedSize — stays the AI's own reading. The clone is consumed by
-    // the quote and NEVER persisted.
-    const priced = { ...demoAnalysis, category: cat, categoryConfidence: null };
-    const staffOccasion = occ ? { value: occ, source: "staff", conflict: null } : null;
-    try {
-      const quote = await deps.panelQuoteFor(priced, { occasion: staffOccasion });
-      uploadQuote = quote
-        ? { status: "quoted", ...quote, inputs }
-        : { status: "no_quote", reason: "no_price", detail: `no priceable figure for ${cat}`, inputs };
-    } catch (e) {
+    const b64 = await deps.toAnalysisBase64(stored.buffer);
+    demoAnalysis = await deps.analyseForUpload(b64);
+
+    // The AI ladder — computed from the UNMODIFIED read. This is the immutable
+    // "before": what the AI said, staff statements nowhere in it.
+    pricingBrain = await deps.priceFromAnalysis(demoAnalysis);
+    pricingBrain.analysisMode = "demo"; // the read's SHAPE; provenance is sourceRead
+
+    if (!demoAnalysis || demoAnalysis.isDecorProduct === false) {
+      // The AI's rejection is NOT overridden into a confident price. The draft
+      // still exists (staff asserted a product); the blank says why.
       uploadQuote = {
         status: "no_quote",
-        reason: "quote_failed",
-        detail: String((e && e.message) || e).slice(0, 300),
+        reason: "ai_rejected",
+        detail:
+          (demoAnalysis && demoAnalysis.complexity && demoAnalysis.complexity.reasoning) ||
+          "the vision model did not read this as a décor product",
         inputs,
       };
-      console.warn("[A2S:upload] quote failed", e && e.message);
+    } else {
+      // ── Seam B — the synthetic clone (the categoryOverride precedent) ─────
+      // Staff said what it is: category asserted, categoryConfidence null
+      // because no model judged THIS category. isDecorProduct is NOT asserted —
+      // it is inherited from the read, and the rejected case never reaches
+      // this branch. Everything measured — size, complexity, stageMeasurements,
+      // recommendedSize — stays the AI's own reading. The clone is consumed by
+      // the quote and NEVER persisted.
+      const priced = { ...demoAnalysis, category: cat, categoryConfidence: null };
+      const staffOccasion = occ ? { value: occ, source: "staff", conflict: null } : null;
+      try {
+        const quote = await deps.panelQuoteFor(priced, { occasion: staffOccasion });
+        uploadQuote = quote
+          ? { status: "quoted", ...quote, inputs }
+          : { status: "no_quote", reason: "no_price", detail: `no priceable figure for ${cat}`, inputs };
+      } catch (e) {
+        uploadQuote = {
+          status: "no_quote",
+          reason: "quote_failed",
+          detail: String((e && e.message) || e).slice(0, 300),
+          inputs,
+        };
+        console.warn("[A2S:upload] quote failed", e && e.message);
+      }
     }
   }
 
@@ -635,7 +679,14 @@ const createUploadDraft = async (
       measurements,
       productVariation: {},
     },
-    sourceRead: { source: "upload", cacheId: null, firstReadAt: now, usedAt: now },
+    // firstReadAt/usedAt mean "when the image was read" — an unpriced upload
+    // consumed no read at create, and null says so honestly.
+    sourceRead: {
+      source: "upload",
+      cacheId: null,
+      firstReadAt: aiPriced ? now : null,
+      usedAt: aiPriced ? now : null,
+    },
     pricing: { aiSuggested: (pricingBrain && pricingBrain.pricing) || {}, panelQuote: null, uploadQuote },
     status: "queued",
     copy: { status: "pending", attempts: 0 },
@@ -656,11 +707,13 @@ const createUploadDraft = async (
         by: actorId || null,
         at: now,
         note:
-          uploadQuote.reason === "ai_rejected"
-            ? `uploaded as ${cat} — the AI did not read this as a décor product, so no price was computed`
-            : categoryDisagreement
-              ? `uploaded — staff said ${cat}, the AI read ${visionCategory}`
-              : "uploaded",
+          uploadQuote.status === "not_priced"
+            ? `uploaded as ${cat} — not an AI-priced category; the approver sets the price`
+            : uploadQuote.reason === "ai_rejected"
+              ? `uploaded as ${cat} — the AI did not read this as a décor product, so no price was computed`
+              : categoryDisagreement
+                ? `uploaded — staff said ${cat}, the AI read ${visionCategory}`
+                : "uploaded",
       },
     ],
   });
@@ -770,6 +823,18 @@ const runCopyPass = async (draftId, { buffer = null, force = false } = {}) => {
     const description = (copy && copy.description) || "";
     const tags = Array.isArray(copy && copy.tags) ? copy.tags : [];
     const included = Array.isArray(copy && copy.included) ? copy.included : [];
+    // ── BLANK-COPY VISIBILITY (2026-09-02) ──────────────────────────────────
+    // A declined read (isDecorProduct false) produces empty name/description
+    // by postProcess design — the copy still lands "ready", but the approver
+    // must not meet an empty name with no explanation. Record WHY, in the
+    // model's own words where it gave them. "" whenever a name landed, so a
+    // successful retry wipes an earlier blank's reason.
+    const blankReason =
+      copy && copy.isDecorProduct === false && !name
+        ? `the vision model did not read this as a décor product${
+            copy.complexity && copy.complexity.reasoning ? ` — ${copy.complexity.reasoning}` : ""
+          }`
+        : "";
     const attributes = {
       style: copy && copy.style ? (Array.isArray(copy.style) ? copy.style : [copy.style]) : [],
       colors: (copy && copy.colors) || [],
@@ -806,12 +871,17 @@ const runCopyPass = async (draftId, { buffer = null, force = false } = {}) => {
           ...fillIfEmpty,
           "copy.status": "ready",
           "copy.lastError": "",
+          "copy.blankReason": blankReason,
           "copy.completedAt": new Date(),
           "copy.categoryDisagreement": disagreement,
         },
+        // The audit trail sees it too — a blank copy is a state worth a line.
+        ...(blankReason
+          ? { $push: { history: { action: "copy_blank", by: null, at: new Date(), note: blankReason } } }
+          : {}),
       }
     );
-    return { status: "ready" };
+    return { status: "ready", ...(blankReason ? { blankReason } : {}) };
   } catch (e) {
     await DecorDraft.updateOne(
       { _id: draftId },

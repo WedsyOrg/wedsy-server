@@ -110,9 +110,13 @@ const DecorDraftSchema = new mongoose.Schema(
       // panelQuote's sense, hence immutable. Never written on a Pinterest
       // draft; exactly one of panelQuote / uploadQuote can be non-null.
       // ALWAYS non-null on an upload draft, and self-describing:
-      //   { status: "quoted", ...figure, inputs } — the priced case, or
+      //   { status: "quoted", ...figure, inputs } — the priced case;
       //   { status: "no_quote", reason: "ai_rejected" | "no_price" |
       //     "quote_failed", detail, inputs } — a blank price must SAY WHY;
+      //   { status: "not_priced", detail, inputs } — the category is not
+      //     AI-priced (Category.aiPriced false): not a failure, the working
+      //     state "the approver sets the price". A THIRD status, never a
+      //     fourth no_quote reason — no_quote renders as failure;
       // sales cannot act on a silent blank, and the three causes are different
       // conversations (wrong photo vs unpriceable category vs our bug).
       uploadQuote: { type: Mixed, default: null },
@@ -209,6 +213,15 @@ const DecorDraftSchema = new mongoose.Schema(
       status: { type: String, enum: ["pending", "ready", "failed"], default: "ready", index: true },
       attempts: { type: Number, default: 0 },
       lastError: { type: String, default: "" },
+      // Why a READY copy is nevertheless BLANK: the full read declined the
+      // image (isDecorProduct false — e.g. a bare table shot), so postProcess
+      // returned empty name/description and there was nothing to fill.
+      // Distinct from `failed`+lastError on purpose: the pass RAN and the
+      // model judged — that is a judgement to show the approver beside the
+      // empty name, not an error to retry automatically. Cleared by any pass
+      // that lands a real name (POST /drafts/:id/copy is the retry — it
+      // force-runs on a "ready" copy already).
+      blankReason: { type: String, default: "" },
       startedAt: { type: Date, default: null },
       completedAt: { type: Date, default: null },
       // Computed by the copy pass, so it cannot live in the immutable
@@ -271,7 +284,7 @@ const DecorDraftSchema = new mongoose.Schema(
     history: {
       type: [
         {
-          action: { type: String, default: "" }, // queued | approved | rejected | re_added
+          action: { type: String, default: "" }, // queued | approved | rejected | re_added | copy_blank
           by: { type: ObjectId, ref: "Admin", default: null },
           at: { type: Date, default: Date.now },
           note: { type: String, default: "" },
