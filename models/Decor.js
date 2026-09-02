@@ -83,6 +83,16 @@ const DecorSchema = new mongoose.Schema(
         other: { type: String, default: "" },
       },
       included: { type: [String], default: [] },
+      // ── NOT the décor pricing source (ruled 2026-09-02) ──────────────────
+      // Despite the newer-looking name, this shape is NOT what prices a décor
+      // product. productTypes[] below is: Build & Bill resolves the billed tier
+      // from it (DraftEventService.js:702), the tier dropdown is built from it,
+      // and the store filters/sorts on it. This variant block is absent on
+      // 499/800 products, zero-stamped (all defaults) on ~200 more, and where
+      // both shapes exist it disagrees with productTypes by thousands of
+      // rupees. Reading a price from here puts a wrong number in front of a
+      // client. (DecorPackage has its own variant that IS priced from — that
+      // is packages, not this.)
       variant: {
         artificialFlowers: {
           costPrice: { type: Number, required: true, default: 0 },
