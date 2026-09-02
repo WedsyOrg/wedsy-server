@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const ConnectedInstagramAccount = require("../models/ConnectedInstagramAccount");
 const InstagramOAuthState = require("../models/InstagramOAuthState");
+const { adminHasPermission } = require("../middlewares/requirePermission");
 const {
   buildAuthorizeUrl,
   exchangeCodeForShortLivedToken,
@@ -202,9 +203,36 @@ const Callback = async (req, res) => {
 // Marks the row revoked rather than deleting it: the audit trail of who
 // connected what, and when, outlives the connection. A later reconnect of the
 // same account flips it back to active via the callback upsert.
+//
+// ── WHO MAY DISCONNECT WHAT ────────────────────────────────────────────────
+// The default rule is OWNERSHIP: you may disconnect an account you yourself
+// connected, and nothing else. This is the honest rule — a venue must never be
+// able to revoke another venue's inbox — and it is the rule the owner portal
+// needs, so it is written once, here, rather than invented again later.
+//
+// It is also production-critical. Revoking the live @wedsy.in row stops Kiara
+// answering DMs, and since the env fallback token is now dead there is nothing
+// to fall back on: recovery requires a human completing an OAuth round trip.
+// An unscoped Disconnect is one curious click away from that.
+//
+// FULL-SCOPE OVERRIDE. A holder of `instagram_accounts:disconnect:all` may
+// disconnect ANY row regardless of who connected it. Founder's `*:*:all`
+// satisfies this by wildcard, so no seed change is needed and no id is
+// special-cased. This exists because the live @wedsy.in row was seeded by
+// script with connectedBy: null — under ownership alone it would be
+// unreachable by everyone, including the person who must disconnect it to film
+// the "not connected → Connect → authorised" flow Meta requires.
+//
+// Expressing the override as a PERMISSION rather than a role name or an id is
+// the whole point: the owner portal inherits the same rule for free, and a
+// venue owner role simply never carries the grant.
+const DISCONNECT_ANY = "instagram_accounts:disconnect:all";
+
 const Disconnect = async (req, res) => {
   try {
     const { instagramUserId } = req.body || {};
+    const actorId = (req.auth && req.auth.user_id) || null;
+    const mayDisconnectAny = await adminHasPermission(actorId, DISCONNECT_ANY);
     const filter = instagramUserId
       ? { instagramUserId: String(instagramUserId), status: "active" }
       : { status: "active" };
@@ -220,8 +248,29 @@ const Disconnect = async (req, res) => {
       }
     }
 
+    // Ownership check, unless the caller holds the full-scope grant. Done as a
+    // read-then-write rather than folding connectedBy into the filter, so a row
+    // that exists but belongs to someone else answers 403 ("not yours") instead
+    // of 404 ("no such thing") — the latter would be a lie that sends someone
+    // hunting for a missing row.
+    const target = await ConnectedInstagramAccount.findOne(filter).lean();
+    if (!target) {
+      return res.status(404).json({ message: "No connected Instagram account found." });
+    }
+    if (!mayDisconnectAny) {
+      const connectedBy = target.connectedBy ? String(target.connectedBy) : null;
+      if (!connectedBy || !actorId || connectedBy !== String(actorId)) {
+        console.warn(
+          `[InstagramOAuth] disconnect refused: ${actorId} does not own @${target.username} (${target.instagramUserId})`
+        );
+        return res.status(403).json({
+          message: "You can only disconnect an Instagram account that you connected.",
+        });
+      }
+    }
+
     const updated = await ConnectedInstagramAccount.findOneAndUpdate(
-      filter,
+      { _id: target._id, status: "active" },
       { $set: { status: "revoked" } },
       { new: true }
     );
