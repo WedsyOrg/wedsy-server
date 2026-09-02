@@ -69,8 +69,8 @@ const ev = async (lead) => (await VenueEnquiry.findById(lead._id).lean()).estima
     eq(r.code, 201, "line quote files");
     eq(await ev(lead), 200000, "🔴 estimatedValue = CHARGED — the deposit is NOT in the pipeline figure");
     const acts = (await VenueEnquiry.findById(lead._id).lean()).activities;
-    ok(acts.some((a) => a.type === "quote_changed" && /as lines/.test(a.description)),
-      "…and the move is on the activity trail, like a round-driven move");
+    ok(acts.some((a) => a.type === "quote_changed" && /\(quote v\d+\)/.test(a.description)),
+      "…and the move is on the activity trail, naming the quote version (never the implementation)");
 
     r = await call(rounds.createRound, req({ params: { enquiryId: String(lead._id) }, body: { amount: 150000, clientResponse: "can you do 1.5?", outcome: "countered", sentVia: "call" } }));
     eq(r.code, 201, "a later round still logs — the narrative is not blocked");
