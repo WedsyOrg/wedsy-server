@@ -385,6 +385,10 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
   const pieces = [];
   for (const r of (booking.paymentSchedule || [])) {
     for (const e of (r.entries || [])) {
+      // An entry WITHOUT a paymentId (a wizard-recorded token, a legacy row)
+      // must never match — String(undefined) === String(undefined) let a
+      // nonsense id print a receipt for the wrong payment, caught live.
+      if (!e.paymentId || !paymentId) continue;
       if (String(e.paymentId) === String(paymentId) && e.status === "approved") pieces.push({ row: r, entry: e });
     }
   }

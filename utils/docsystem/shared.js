@@ -34,7 +34,9 @@ function money(n) {
   const s = hasPaise
     ? abs.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
     : Math.round(abs).toLocaleString("en-IN");
-  return `${negative ? "− " : ""}Rs. ${s}`;
+  // ASCII hyphen-minus: U+2212 is outside WinAnsi and prints as a stray
+  // quotation mark (caught on the live receipt's received-to-date line)
+  return `${negative ? "- " : ""}Rs. ${s}`;
 }
 
 /** A non-applicable money cell is an em dash in mid — never blank, never 0. */

@@ -535,7 +535,7 @@ async function renderStatement(R, d) {
     line(WORDING.totalPayable, money(d.totals.payable), { figure: true });
     if (d.totals.refundable) { R.text(WORDING.refundableHeld(d.totals.refundable), { size: TYPE.subLine, color: R.T.mid, x, width: w }); R.gap(7); }
     line("GST at 18%", money(d.totals.gst + d.totals.extrasGst), { mid: true });
-    line("Received to date", `− ${money(d.received).replace("Rs. ", "Rs. ")}`, { mid: true });
+    line("Received to date", `- ${money(d.received)}`, { mid: true });
     R.gap(3);
     line("Outstanding", money(d.outstanding), { figure: true });
   }, { x: R.margin + R.width - rightW, width: rightW, estHeight: 240 });
@@ -611,7 +611,7 @@ async function renderReceipt(R, d) {
   if (d.totals.refundable) { R.text(WORDING.refundableHeld(d.totals.refundable), { size: TYPE.subLine, color: R.T.mid, width: leftW }); R.gap(7); }
   line("GST at 18%", money(d.totals.gst + d.totals.extrasGst), { mid: true });
   line("Collectable", money(d.totals.collectable), { mid: true });
-  line("Received to date", `− ${money(d.received)}`, { mid: true });
+  line("Received to date", `- ${money(d.received)}`, { mid: true });
   R.gap(3);
   line("Outstanding", money(d.outstanding), { figure: true });
   if (d.nextDue) { R.gap(6); R.text(d.nextDue, { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 }); }

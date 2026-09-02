@@ -239,6 +239,16 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
     has(flatR3, "of which Rs. 1,43,600 to this instalment", "…and under the second");
     const rMissing = await buildVenueDocument("receipt", { venue, lead, booking, summary, paymentId: new mongoose.Types.ObjectId() }, { compress: false, language: "classic" });
     ok(rMissing === null, "an unknown payment gets no receipt (null, the endpoint 404s)");
+    // caught LIVE: entries without a paymentId (wizard tokens, legacy rows)
+    // matched String(undefined) === String(undefined) and printed the wrong
+    // payment's receipt for a nonsense id
+    const noIdBooking = booking.toObject();
+    noIdBooking.paymentSchedule[0].entries[0].paymentId = undefined;
+    const rGhost = await buildVenueDocument("receipt", { venue, lead, booking: noIdBooking, summary, paymentId: undefined }, { compress: false, language: "classic" });
+    ok(rGhost === null, "a missing paymentId never ghost-matches entries that lack one");
+    // caught LIVE: U+2212 is outside WinAnsi and printed as a quote mark
+    has(flatR1, "- Rs. ", "negative prefixes use the ASCII hyphen (WinAnsi has no minus sign)");
+    hasNot(flatR1, '"Rs.', "…and no stray quotation mark where the minus was");
 
     // ══ 8. LOGO PRESENT AND ABSENT, EVERY DOCUMENT ══════════════════════════
     console.log("\n[8. the header with a logo and without]");
