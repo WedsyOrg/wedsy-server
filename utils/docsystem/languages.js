@@ -266,7 +266,7 @@ const stationery = {
   footer(R) {
     const y = A4.h - R.T.pageMargin * MM - R.T.contentInset - 14;
     R.rule(R.margin, y, R.margin + R.width, 0.5, R.T.hairline);
-    R.text(`${footerLine(R.identity, R.meta)}   ·   ${WORDING.poweredBy}`, { size: 8.5, color: R.T.mid, x: R.margin, y: y + 6, width: R.width, align: "center", advance: false });
+    R.text(`${footerLine(R.identity, R.meta)}   ·   ${WORDING.poweredBy.toUpperCase()}`, { size: 8.5, color: R.T.mid, x: R.margin, y: y + 6, width: R.width, align: "center", advance: false });
     return y;
   },
   titleBlock(R, m) {

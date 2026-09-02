@@ -45,6 +45,21 @@ function normalise(s) {
   return s.replace(/—|\x97/g, "—").replace(/−|\x96/g, "−").replace(/\s+/g, " ");
 }
 
+/**
+ * Text split PER PAGE: with compress:false each page is one content stream,
+ * in page order — so header/footer-on-every-page is assertable per sheet.
+ */
+function pdfPagesText(buffer) {
+  const raw = buffer.toString("latin1");
+  const streams = [];
+  const re = /stream\r?\n([\s\S]*?)endstream/g;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    if (/\bTJ\b|\bTj\b/.test(m[1])) streams.push(m[1]);
+  }
+  return streams.map((body) => pdfText(Buffer.from(body, "latin1")).join(" ").replace(/\s+/g, " "));
+}
+
 /** Page count straight off the bytes. */
 function pdfPages(buffer) {
   const m = buffer.toString("latin1").match(/\/Count (\d+)/g);
@@ -52,4 +67,4 @@ function pdfPages(buffer) {
   return Math.max(...m.map((x) => Number(x.slice(7))));
 }
 
-module.exports = { pdfText, pdfFlat, pdfPages, normalise };
+module.exports = { pdfText, pdfFlat, pdfPages, pdfPagesText, normalise };
