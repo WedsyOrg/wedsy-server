@@ -11,6 +11,13 @@
  * Get detail split (non-approvers lose exactly the aiAnalysis key), and the
  * CreateUploads multipart contract.
  *
+ * Category-flags coverage (2026-09): aiPriced=false skips the pricing engine
+ * entirely (zero model spend, uploadQuote status "not_priced" — a THIRD status
+ * in the pinned truthiness loop), the OR-shape validation (master doc OR
+ * vision vocabulary; flags read `!== false` so pre-flag docs stay priced),
+ * declared codePrefix minting, and the blankReason lifecycle on a declined
+ * copy read.
+ *
  * The AI and S3 edges are stubbed via DecorDraftService.__deps. Seam A is
  * tested through the REAL panelQuoteFor with spies wrapped around
  * decorDemoPrice's exports — installed BEFORE decorReadCache destructures
@@ -48,6 +55,7 @@ const Decor = require("../models/Decor");
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
+const Category = require("../models/Category");
 
 const TAG = `a2sup-${Date.now()}`;
 let pass = 0,
@@ -118,8 +126,18 @@ DecorDraftService.__deps.storeUploadedImage = async ({ buffer, path, id }) => ({
   url: `https://s3.test/${path}/${id}.jpg`,
   buffer,
 });
-DecorDraftService.__deps.toAnalysisBase64 = async () => "FAKEB64";
-DecorDraftService.__deps.analyseForUpload = async () => JSON.parse(JSON.stringify(visionResult));
+// Spend counters: the aiPriced=false assertions need to PROVE no model-shaped
+// dep ran, not just observe an absent quote.
+let b64Calls = 0;
+let readCalls = 0;
+DecorDraftService.__deps.toAnalysisBase64 = async () => {
+  b64Calls++;
+  return "FAKEB64";
+};
+DecorDraftService.__deps.analyseForUpload = async () => {
+  readCalls++;
+  return JSON.parse(JSON.stringify(visionResult));
+};
 DecorDraftService.__deps.scheduleCopyPass = (draftId, buffer) =>
   copyScheduled.push({ draftId: String(draftId), hasBuffer: !!buffer });
 DecorDraftService.__deps.panelQuoteFor = async (analysis, opts) => {
@@ -147,17 +165,28 @@ DecorDraftService.__deps.buildListingContext = async (cat) => {
   contextCalls.push(cat);
   return { existingNames: [], attributeOptions: {} };
 };
-DecorDraftService.__deps.analyseForCopy = async () => ({
-  suggestedName: "Upload Test Name",
-  description: "d",
-  tags: ["t"],
-  included: [],
-  category: "Stage",
-  style: "Modern",
-  colors: [],
-  flowers: [],
-  fabric: [],
-});
+// Switchable: "good" is the normal listing; "declined" is a full read that set
+// isDecorProduct false (postProcess then blanks name/description) — the
+// blankReason case.
+let copyBehave = "good";
+DecorDraftService.__deps.analyseForCopy = async () =>
+  copyBehave === "declined"
+    ? {
+        isDecorProduct: false, category: null, suggestedName: "", description: "",
+        tags: [], included: [], colors: [], flowers: [], fabric: [], style: null,
+        complexity: { tier: "standard", confidence: 0.6, reasoning: "primarily a bare table" },
+      }
+    : {
+        suggestedName: "Upload Test Name",
+        description: "d",
+        tags: ["t"],
+        included: [],
+        category: "Stage",
+        style: "Modern",
+        colors: [],
+        flowers: [],
+        fabric: [],
+      };
 DecorDraftService.__deps.fetchRemoteImage = async () => ({ buffer: Buffer.from("x") });
 
 const IMG = Buffer.from(`fake-image-bytes-${TAG}`);
@@ -168,6 +197,7 @@ const draftIds = [];
 const decorIds = [];
 const adminIds = [];
 const roleIds = [];
+const categoryIds = [];
 
 (async () => {
   await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
@@ -318,18 +348,48 @@ const roleIds = [];
     ok(b4.results[0].status === "queued", "a quote failure does not lose the draft");
     DecorDraftService.__deps.panelQuoteFor.behave = null;
 
-    // ── PINNED (founder check, 2026-08-31): uploadQuote is TRUTHY on every
-    // upload draft, so no consumer may treat it as a boolean "has a price" —
-    // the branch key is `status`. The structural defence pinned here: a
-    // no_quote object carries NO figure fields, so even a naive
+    // A FOURTH blank shape joins the pinned loop below (2026-09): not_priced —
+    // Category.aiPriced false. Not a failure but the working state, and the
+    // same structural defence must hold, or a naive `.midpoint` consumer
+    // regression on unpriced drafts goes undetected.
+    const CAT_UNPRICED = `${TAG} Counters`;
+    categoryIds.push(
+      (await Category.create({
+        name: CAT_UNPRICED, order: 91, status: true,
+        asksOccasion: false, aiPriced: false, codePrefix: "uq",
+      }))._id
+    );
+    const readsBefore = readCalls, b64Before = b64Calls, quotesBefore = quoteCalls.length;
+    const bNP = await DecorDraftService.createUploadBatch(
+      { items: [{ buffer: IMG, category: CAT_UNPRICED, occasion: "" }] },
+      sales._id
+    );
+    batchIds.push(bNP.batchId);
+    const dNP = bNP.results[0].draft;
+    ok(bNP.results[0].status === "queued", "aiPriced=false: draft queued");
+    ok(readCalls === readsBefore && b64Calls === b64Before && quoteCalls.length === quotesBefore,
+      "aiPriced=false: ZERO model spend — no read, no downscale, no quote");
+    ok(dNP.pricing.uploadQuote.status === "not_priced" && !("reason" in dNP.pricing.uploadQuote),
+      "not_priced is a THIRD STATUS — never a no_quote reason");
+    ok(dNP.aiAnalysis && dNP.aiAnalysis.pricing === null, "aiAnalysis.pricing null — no brain ran");
+    ok(dNP.sourceRead.source === "upload" && dNP.sourceRead.firstReadAt === null,
+      "sourceRead: upload with null read timestamps — no read was consumed");
+    ok(dNP.draft.productCode === "uq001",
+      `declared codePrefix mints the first code (got "${dNP.draft.productCode}")`);
+
+    // ── PINNED (founder check, 2026-08-31; extended 2026-09): uploadQuote is
+    // TRUTHY on every upload draft, so no consumer may treat it as a boolean
+    // "has a price" — the branch key is `status`. The structural defence
+    // pinned here: NO blank shape carries figure fields, so even a naive
     // `(panelQuote || uploadQuote).midpoint` reads undefined, never a wrong
     // number shown to a client.
-    for (const [label, q] of [
-      ["ai_rejected", d2.pricing.uploadQuote],
-      ["no_price", b3.results[0].draft.pricing.uploadQuote],
-      ["quote_failed", q4],
+    for (const [label, q, status] of [
+      ["ai_rejected", d2.pricing.uploadQuote, "no_quote"],
+      ["no_price", b3.results[0].draft.pricing.uploadQuote, "no_quote"],
+      ["quote_failed", q4, "no_quote"],
+      ["not_priced", dNP.pricing.uploadQuote, "not_priced"],
     ]) {
-      ok(q && q.status === "no_quote"
+      ok(q && q.status === status
         && !("midpoint" in q) && !("low" in q) && !("high" in q) && !("tierPrices" in q),
         `${label}: truthy, but NO figure fields — truthiness cannot leak a price`);
     }
@@ -498,6 +558,47 @@ const roleIds = [];
     });
     ok(r.status === 400 && r.body.message === "no drafts created", "every item failed → 400");
     batchIds.push(r.body.batchId);
+
+    // ── 9. category flags: OR-shape, the !== false contract, blankReason ────
+    console.log("9. category flags");
+    // A vocabulary category uploads priced whether or not a master doc exists
+    // for it (this DB may or may not hold one — the OR-shape makes both legal).
+    const bV = await DecorDraftService.createUploadBatch(
+      { items: [{ buffer: IMG, category: "Photobooth", occasion: "" }] },
+      sales._id
+    );
+    batchIds.push(bV.batchId);
+    ok(bV.results[0].status === "queued" && bV.results[0].draft.pricing.uploadQuote.status === "quoted",
+      "vocabulary category stays valid and priced regardless of master-doc presence (OR-shape)");
+    // A PRE-FLAG master doc (raw insert — the flag paths absent entirely) must
+    // read as PRICED: `!== false`. Off-vocabulary, that means the calibration
+    // gate fires rather than not_priced silently engaging.
+    await Category.collection.insertOne({ name: `${TAG}-preflag`, order: 93, status: true });
+    categoryIds.push((await Category.findOne({ name: `${TAG}-preflag` }))._id);
+    const bPF = await DecorDraftService.createUploadBatch(
+      { items: [{ buffer: IMG, category: `${TAG}-preflag`, occasion: "" }] },
+      sales._id
+    );
+    batchIds.push(bPF.batchId);
+    ok(bPF.results[0].status === "failed" && /AI-priced but not in the vision vocabulary/.test(bPF.results[0].error),
+      "pre-flag doc (aiPriced ABSENT) treated as priced — the !== false contract, and the 400 names the fix");
+
+    // ── blankReason: a declined copy read says why the copy is blank ────────
+    copyBehave = "declined";
+    const rBlank = await DecorDraftService.runCopyPass(dNP._id, { buffer: IMG });
+    ok(rBlank.status === "ready" && /décor product/.test(rBlank.blankReason || ""),
+      "declined read → copy ready WITH blankReason in the result");
+    let dnp = await DecorDraft.findById(dNP._id).lean();
+    ok(/primarily a bare table/.test(dnp.copy.blankReason) && dnp.copy.lastError === "",
+      "blankReason carries the model's reasoning; lastError untouched — a blank is not a failure");
+    ok((dnp.history || []).some((h) => h.action === "copy_blank"), "copy_blank audit entry lands");
+    copyBehave = "good";
+    await DecorDraftService.retryCopy(String(dNP._id));
+    dnp = await DecorDraft.findById(dNP._id).lean();
+    ok(dnp.copy.blankReason === "" && dnp.draft.name === "Upload Test Name",
+      "the existing force-retry fills the name and CLEARS blankReason");
+    ok((dnp.history || []).filter((h) => h.action === "copy_blank").length === 1,
+      "the audit line survives the retry (append-only)");
   } catch (err) {
     fail++;
     console.error("UNEXPECTED", err);
@@ -511,6 +612,7 @@ const roleIds = [];
       await Decor.deleteMany({ _id: { $in: decorIds } });
       await Admin.deleteMany({ _id: { $in: adminIds } });
       await Role.deleteMany({ _id: { $in: roleIds } });
+      await Category.deleteMany({ _id: { $in: categoryIds } });
       await Department.deleteMany({ name: `${TAG}-dept` });
     } catch (e) {
       console.error("cleanup failed", e && e.message);
