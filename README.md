@@ -87,3 +87,7 @@ nodemon server.js
 ```
 
 This will start the server at http://localhost:8080 (or the port specified in your .env file, for development).
+
+## Engineering rules
+
+- **Demo and QA data goes in through the service layer, or it is not seeding, it is fabricating.** Raw collection writes skip every computation the service does (snapshots, chips, events, notifications) and the damage stays invisible until someone looks at a chip six weeks later. Seed plan looks via `PlanService.addLook`, leads via the enquiry routes, and so on. `scripts/audit-look-chips.js` is the canary for this class of bypass — a non-zero empty-chip count means something wrote around the service layer.
