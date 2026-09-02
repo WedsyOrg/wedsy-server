@@ -72,14 +72,32 @@ const ReceiveMessage = (req, res) => {
 // or any upstream failure is a CLEAN { connected: false } with HTTP 200 —
 // never a 500 — so the UI can render "Not connected" instead of an error.
 // profilePictureUrl is re-fetched every call (short-lived CDN URL, never cached).
+//
+// THE MODEL IS THE SOURCE OF TRUTH for *who* is connected: identity comes from
+// ConnectedInstagramAccount, not from .env and not from the network. Graph is
+// consulted only for the one field we are forbidden to store — the short-lived
+// profile picture URL — so an upstream blip downgrades the avatar rather than
+// blanking the header and making a live connection look dead to a reviewer.
 const ConnectedAccount = async (req, res) => {
   try {
+    const ConnectedInstagramAccount = require('../models/ConnectedInstagramAccount');
     const { fetchConnectedInstagramAccount } = require('../utils/instagram');
-    const account = await fetchConnectedInstagramAccount();
-    if (!account) {
+
+    const stored = await ConnectedInstagramAccount.findOne({ status: 'active' })
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    const live = await fetchConnectedInstagramAccount();
+
+    if (!stored && !live) {
       return res.status(200).json({ id: null, username: null, profilePictureUrl: null, connected: false });
     }
-    return res.status(200).json({ ...account, connected: true });
+    return res.status(200).json({
+      id: (stored && stored.instagramUserId) || (live && live.id) || null,
+      username: (stored && stored.username) || (live && live.username) || null,
+      profilePictureUrl: (live && live.profilePictureUrl) || null,
+      connected: true,
+    });
   } catch (error) {
     console.error('[InstagramAgent] connected-account error:', error.message);
     return res.status(200).json({ id: null, username: null, profilePictureUrl: null, connected: false });
