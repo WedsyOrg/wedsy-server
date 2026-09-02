@@ -213,6 +213,29 @@ httpServer.listen(port, function () {
     }, IST);
   }
 
+  // ── Instagram long-lived token refresh — weekly, Mondays 03:00 IST ──────
+  // Instagram Login has NO non-expiring token: a long-lived token dies after 60
+  // days and takes the whole IG inbox with it — Kiara stops answering DMs, with
+  // nothing in the logs anyone is watching. This is the job that prevents it.
+  //
+  // WEEKLY, NOT EVERY-50-DAYS. Seven days gives ~8 attempts inside the 60-day
+  // window, so a single failed run is a non-event instead of the last chance;
+  // it also keeps the token "used", which matters because a token untouched for
+  // 60 days expires no matter how often it was refreshed.
+  //
+  // 03:00 on a Monday: nobody is DMing, and a failure alert lands at the start
+  // of a working week rather than a Saturday. Safe under multiple pm2 instances
+  // — each account's rotation is one guarded updateOne, and Meta's 24-hour
+  // minimum age makes a same-day second run a no-op skip.
+  // Off-switch: IG_TOKEN_REFRESH_DISABLED=true.
+  if (process.env.IG_TOKEN_REFRESH_DISABLED !== "true") {
+    cron.schedule("0 3 * * 1", () => {
+      require("./utils/instagramTokenRefreshJob")
+        .runInstagramTokenRefresh()
+        .catch((e) => console.error("[igTokenRefresh] failed:", e.message));
+    }, IST);
+  }
+
   // Slice B4 — the daily escalation sweep (lane silence ladder + deal clock +
   // lane wake pass) — 8am IST, env-gated so staging/dev don't double-notify.
   if (process.env.ESCALATION_SWEEP === "1") {
