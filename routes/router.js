@@ -62,6 +62,9 @@ router.use("/webhook", require("./whatsappAgent"));
 router.use("/webhook", require("./instagramAgent"));
 // Authed read side of the IG agent (connected-account panel) — NOT the webhook.
 router.use("/instagram-agent", require("./instagramAgentAccount"));
+// Public privacy pages (Instagram data-deletion status). No auth, no signature —
+// a member of the public with a confirmation code. See routes/privacy.js.
+router.use("/privacy", require("./privacy"));
 router.use("/vendor-personal-lead", require("./vendor-personal-lead"));
 router.use("/vendor-personal-package", require("./vendor-personal-package"));
 router.use("/community", require("./community"));
