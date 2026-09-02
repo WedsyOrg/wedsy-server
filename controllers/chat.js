@@ -17,12 +17,30 @@ async function notifyOffline(chatId, io, isVendor) {
     const targetRoom = isVendor ? `user:${chat.user}` : `vendor:${chat.vendor}`;
     const room = io ? io.sockets.adapter.rooms.get(targetRoom) : null;
     if (room && room.size > 0) return;
+    // mua_new_chat now sends via the Meta Cloud API and its template has TWO body
+    // variables: {{1}} = the recipient's name, {{2}} = the other party's name.
+    // Both sides are loaded so the sender's name can be supplied — Meta rejects a
+    // parameter-count mismatch with 400 #132000, so neither may be omitted.
+    const [u, v] = await Promise.all([
+      User.findById(chat.user).select('phone email name').lean(),
+      Vendor.findById(chat.vendor).select('phone email name businessName').lean(),
+    ]);
+    const userName = u?.name || 'there';
+    const vendorName = v?.businessName || v?.name || 'a vendor';
     if (isVendor) {
-      const u = await User.findById(chat.user).select('phone email name').lean();
-      send('mua_new_chat', { phone: u?.phone, email: u?.email, name: u?.name });
+      send('mua_new_chat', {
+        phone: u?.phone,
+        email: u?.email,
+        name: userName,
+        variables: [userName, vendorName],
+      });
     } else {
-      const v = await Vendor.findById(chat.vendor).select('phone email name businessName').lean();
-      send('mua_new_chat', { phone: v?.phone, email: v?.email, name: v?.businessName || v?.name });
+      send('mua_new_chat', {
+        phone: v?.phone,
+        email: v?.email,
+        name: vendorName,
+        variables: [vendorName, userName],
+      });
     }
   } catch (_) {}
 }

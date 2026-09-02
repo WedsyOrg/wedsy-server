@@ -22,7 +22,12 @@ const TRIGGERS = {
   MUA_PKG_CNFRM:              { sms: { templateId: "178514" }, whatsapp: { campaign: "mua_pkg_cnfrm" }, email: { templateId: 6631081 } },
   MUA_PRSNL_PKG_REQS:         { sms: { templateId: "178509" }, whatsapp: { campaign: "mua_prsnl_pkg_req" }, email: { templateId: 6622131 } },
   MUA_PRSNL_PKG_CONFRM:       { sms: { templateId: "178497" }, whatsapp: { campaign: "mua_prsnl_pkg_cnfrm" }, email: { templateId: 6631200 } },
-  mua_new_chat:               { whatsapp: { campaign: "mua_new_chat" } },
+  // mua_new_chat: migrated off AiSensy to the Meta Cloud API (2 Sep 2026).
+  // Template "mua_new_chat" (Utility, en, APPROVED) takes TWO body variables:
+  //   {{1}} = the recipient's name, {{2}} = the other party's name.
+  // Callers MUST pass variables: [recipientName, otherPartyName] — Meta rejects
+  // a parameter-count mismatch with 400 #132000.
+  mua_new_chat:               { metaTemplate: { name: "mua_new_chat" } },
   mua_rmnd_dminus1:           { whatsapp: { campaign: "mua_rmnd_dminus1" } },
   mua_rmnd_d_day:             { whatsapp: { campaign: "mua_rmnd_d_day" } },
   mua_settlement:             { whatsapp: { campaign: "mua_settlement" }, email: { templateId: 6712689 } },
@@ -47,13 +52,19 @@ const TRIGGERS = {
   mua_cx_pmnt_rmnd_prsnl:     { whatsapp: { campaign: "mua_cx_pmnt_rmnd_prsnl" } },
   // user_signup_greet: the AiSensy campaign leg 400'd on every signup (provider
   // misconfiguration — same class as the disabled new_lead ping). Now sends via
-  // the Meta WhatsApp Cloud API directly (utils/whatsapp.js), template
-  // "user_signup_greet" with ONE body variable ({{1}} = the user's name).
-  // ⚠️ The template must exist (approved, lang en) under that name in the WABA.
-  user_signup_greet:          { metaTemplate: { name: "user_signup_greet" }, email: { templateId: 6637167 } },
+  // the Meta WhatsApp Cloud API directly (utils/whatsapp.js).
+  // ⚠️ The trigger id and the Meta template name DIFFER. The approved template in
+  // WABA 1880312775963329 is "user_signup_greet_wedsy" (Marketing, en). A template
+  // named "user_signup_greet" was never created, so this leg 400'd on every signup
+  // until 2 Sep 2026. ONE body variable ({{1}} = the user's name).
+  user_signup_greet:          { metaTemplate: { name: "user_signup_greet_wedsy" }, email: { templateId: 6637167 } },
   cust_booking_rmnd:          { sms: { templateId: "178508" }, whatsapp: { campaign: "cust_booking_rmnd" }, email: { templateId: 6637515 } },
 
   // Legacy — old DLT template IDs / AiSensy campaigns used by utils/update.js before template migration
+  // new_lead: NOT WIRED. The "New Lead" branch in utils/update.js is a deliberate
+  // no-op — new-lead alerting is internal via AdminNotificationService. A Meta
+  // template "new_lead" (Marketing, en, one body variable) was approved on
+  // 2 Sep 2026 if this is ever re-enabled, but re-enabling is a product call.
   new_lead:      { sms: { templateId: "163269", senderId: "XWEDSY" }, whatsapp: { campaign: "user_lead" } },
   event_approved:{ whatsapp: { campaign: "eventapproval_confim" } },
 };
