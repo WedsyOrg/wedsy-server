@@ -151,6 +151,8 @@ function describeMilestone(row, now = new Date()) {
     label: row.label || "Instalment",
     /** An extra added after the booking, not part of the agreed value. */
     isAdditional: Boolean(row.isAdditional),
+    /** The instalment this extra folded into (by reference; amounts never move). */
+    foldedInto: row.foldedInto || null,
     /**
      * Whether THIS row bears GST under a per_instalment booking.
      *
@@ -198,6 +200,34 @@ function describeMilestone(row, now = new Date()) {
  */
 function summarizeSchedule(booking, now = new Date()) {
   const rows = ((booking && booking.paymentSchedule) || []).map((r) => describeMilestone(r, now));
+  // ── FOLDING, DERIVED HERE AND NOWHERE ELSE (moneypost slice 4) ────────────
+  // A folded additional charge keeps its own amount; the instalment it folded
+  // into DISPLAYS the absorption. Stored figures never move — every total
+  // below is computed exactly as before — these fields exist so every surface
+  // (schedule UI, statement, PDF) says the same thing from the same sum.
+  const byId = new Map(rows.map((r) => [String(r._id), r]));
+  for (const r of rows) {
+    r.absorbed = 0;
+    r.absorbedRows = [];
+  }
+  for (const r of rows) {
+    if (r.isAdditional && r.foldedInto) {
+      const host = byId.get(String(r.foldedInto));
+      if (host) {
+        host.absorbed += r.amount;
+        host.absorbedRows.push({ _id: r._id, label: r.label, amount: r.amount });
+        r.foldedIntoLabel = host.label;
+      }
+    }
+  }
+  for (const r of rows) {
+    /** What this row COLLECTS as displayed: its own amount plus what folded in. */
+    r.displayAmount = r.amount + r.absorbed;
+    r.displayOutstanding = r.outstanding + r.absorbedRows.reduce((s2, a2) => {
+      const child = byId.get(String(a2._id));
+      return s2 + (child ? child.outstanding : 0);
+    }, 0);
+  }
   const scheduled = rows.reduce((s, r) => s + r.amount, 0);
   const received = rows.reduce((s, r) => s + r.paidAmount, 0);
   const bookingValue = round(booking && booking.totalValue);

@@ -268,7 +268,9 @@ async function buildStatementPdf({ venue, booking, summary, invoices = [], lead 
         header,
         rows: rows.map((r) => {
           const cells = [
-            ascii(`${r.label}${r.isAdditional ? "  (additional)" : ""}`),
+            // A folded charge says WHERE it went — the same derivation the
+            // schedule UI reads (summarizeSchedule), no second implementation.
+            ascii(`${r.label}${r.isAdditional ? (r.foldedIntoLabel ? `  (added in ${r.foldedIntoLabel})` : "  (additional)") : ""}`),
             r.dueDate ? docDay(r.dueDate) : "—",
             money(r.amount),
           ];

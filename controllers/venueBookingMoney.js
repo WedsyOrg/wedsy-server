@@ -245,4 +245,129 @@ const bookingLineEdit = async (req, res) => {
   }
 };
 
-module.exports = { bookingLineEdit, planAbsorb };
+// ── POST /venues/:slug/enquiries/:enquiryId/additional-billing/:rowId/fold ──
+// Body: { confirm? }. FOLDING IS BY REFERENCE (founder ruling, taken from the
+// audit's recommendation): the additional row stays the stored carrier of the
+// money; the last unpaid instalment gains a derived absorption in
+// summarizeSchedule; stored amounts never move, so the schedule invariant
+// holds by construction — and the guard is still executed below, not assumed.
+//
+// Eligibility is computed AT THE MOMENT OF THE ACT from live milestoneStatus,
+// never cached: a charge that stood alone because the last instalment was
+// cleared BECOMES foldable if a rejected payment later un-clears it — that is
+// the unambiguous rule, no third state.
+const foldAdditionalBilling = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const body = req.body || {};
+
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+    const row = booking.paymentSchedule.id(req.params.rowId);
+    if (!row || !row.isAdditional) {
+      return res.status(404).json({ message: "That additional charge is not on this booking" });
+    }
+    if (row.foldedInto) {
+      return res.status(409).json({ message: "This charge is already folded into an instalment — unfold it first.", code: "already_folded" });
+    }
+
+    // The fold target is THE LAST instalment of the agreed schedule — the one
+    // the couple has not finished paying, the number they were last told.
+    const agreedRows = booking.paymentSchedule.filter((r) => !r.isAdditional);
+    const target = agreedRows[agreedRows.length - 1];
+    if (!target) {
+      return res.status(409).json({ message: "This booking has no instalments — the charge is collected on its own.", code: "no_instalments" });
+    }
+    if (milestoneStatus(target) === "paid") {
+      return res.status(409).json({
+        message:
+          `${target.label || "The last instalment"} is already cleared — nothing can absorb this charge. ` +
+          `It stands alone and is collected separately. (If a payment on that instalment is later rejected, folding becomes available again.)`,
+        code: "last_instalment_cleared",
+      });
+    }
+
+    const targetPaid = Math.round(receivedOn(target)) || 0;
+    const targetOutstanding = Math.max(0, (Math.round(Number(target.amount)) || 0) - targetPaid);
+    const chargeAmount = Math.round(Number(row.amount)) || 0;
+    const preview = {
+      charge: { _id: row._id, label: row.label, amount: chargeAmount },
+      target: {
+        _id: target._id, label: target.label,
+        amount: Math.round(Number(target.amount)) || 0,
+        paid: targetPaid,
+        outstanding: targetOutstanding,
+        // The number the confirm dialog MUST state, part-paid included: what
+        // the instalment will collect from here once the charge rides on it.
+        newOutstanding: targetOutstanding + chargeAmount,
+        displayAmount: (Math.round(Number(target.amount)) || 0) + chargeAmount,
+      },
+    };
+    if (body.confirm !== true) return res.status(200).json({ preview: true, ...preview });
+
+    row.foldedInto = target._id;
+    // Collected together: the folded charge falls due when the instalment does.
+    if (target.dueDate) row.dueDate = target.dueDate;
+    // THE GUARD, EXECUTED — amounts did not move, and this proves it.
+    const lf = computeLineTotals(booking.lineItems, booking.gstPercent);
+    const mm = (booking.lineItems || []).length ? scheduleMismatch(booking.paymentSchedule, lf) : null;
+    if (mm) {
+      return res.status(500).json({
+        message: `Internal: the fold moved money — ${inr(mm.scheduled)} against ${inr(mm.payable)} payable. Nothing was saved.`,
+        code: "schedule_value_mismatch",
+      });
+    }
+    await booking.save();
+
+    lead.activities.push({
+      type: "additional_billing_folded",
+      description: `${row.label} — ${inr(chargeAmount)} folded into ${target.label || "the last instalment"} by ${await actorName(req)}.`,
+      actor: actorId(req),
+      timestamp: new Date(),
+    });
+    await lead.save();
+
+    const s = summarizeSchedule(booking);
+    return res.status(200).json({ preview: false, ...preview, rows: s.rows, totals: s.totals });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+// ── POST /venues/:slug/enquiries/:enquiryId/additional-billing/:rowId/unfold ─
+// The reversal of a deliberate act must exist, or a misfold is a dead-end.
+// The dueDate stays where the fold aligned it — the charge is still owed now.
+const unfoldAdditionalBilling = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const booking = await VenueBooking.findOne({ enquiry: lead._id });
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+    const row = booking.paymentSchedule.id(req.params.rowId);
+    if (!row || !row.isAdditional) {
+      return res.status(404).json({ message: "That additional charge is not on this booking" });
+    }
+    if (!row.foldedInto) {
+      return res.status(409).json({ message: "This charge is not folded into anything.", code: "not_folded" });
+    }
+    const label = row.label;
+    row.foldedInto = undefined;
+    await booking.save();
+    lead.activities.push({
+      type: "additional_billing_unfolded",
+      description: `${label} unfolded — it is collected on its own again (by ${await actorName(req)}).`,
+      actor: actorId(req),
+      timestamp: new Date(),
+    });
+    await lead.save();
+    const s = summarizeSchedule(booking);
+    return res.status(200).json({ rows: s.rows, totals: s.totals });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { bookingLineEdit, planAbsorb, foldAdditionalBilling, unfoldAdditionalBilling };

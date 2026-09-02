@@ -186,6 +186,19 @@ const VenueBookingSchema = new mongoose.Schema(
         // What it changes is the TOTAL, not the agreed value: totalValue stays
         // what was negotiated, and utils/venuePaymentStatus adds these on top.
         isAdditional: { type: Boolean, default: false },
+        /**
+         * ── FOLDED INTO AN INSTALMENT — BY REFERENCE, NEVER BY AMOUNT ─────
+         * (moneypost slice 4). When the owner folds this charge into the last
+         * unpaid instalment, THIS row stays the stored carrier of the money
+         * and the instalment's absorbed display is DERIVED in
+         * utils/venuePaymentStatus.summarizeSchedule — one place. Stored
+         * amounts never move, so Σ non-additional === payable holds by
+         * construction, and the trail survives: the couple was told
+         * Instalment 3 is ₹X, and the record still shows ₹X agreed plus what
+         * was folded in, when, by whom. Only meaningful on isAdditional rows;
+         * points at a sibling non-additional row's _id.
+         */
+        foldedInto: { type: mongoose.Schema.Types.ObjectId },
         /** Why this was added — the thing a couple queries three weeks later. */
         addedNote: { type: String, default: "" },
         /**

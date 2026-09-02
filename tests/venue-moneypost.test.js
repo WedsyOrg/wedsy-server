@@ -178,6 +178,79 @@ async function mkConfirmedBooking(lead, { schedule } = {}) {
     bCheck = await VenueBooking.findById(bk3._id).lean();
     eq(bCheck.totalValue, 600000, "…and nothing moved");
 
+    // ══ S4. EXTRAS FOLD BY REFERENCE ════════════════════════════════════════
+    const { foldAdditionalBilling, unfoldAdditionalBilling } = require("../controllers/venueBookingMoney");
+    const { summarizeSchedule } = require("../utils/venuePaymentStatus");
+    console.log("\n[S4-A. fold into the last unpaid instalment — reference, not amounts]");
+    const lead4 = await mkLead();
+    const bk4 = await mkConfirmedBooking(lead4);
+    // part-pay the last instalment so the preview must state the new outstanding
+    bk4.paymentSchedule[2].entries.push({ amount: 50000, date: new Date(), method: "cash", status: "approved", approvedAt: new Date() });
+    // an extra worth 30000
+    bk4.paymentSchedule.push({ label: "Bar tab", amount: 30000, percent: null, dueDate: new Date(), isAdditional: true });
+    await bk4.save();
+    const extraId = String(bk4.paymentSchedule[3]._id);
+    const foldReq = (rowId, body = {}) => req({ params: { enquiryId: String(lead4._id), rowId }, body });
+
+    r = await call(foldAdditionalBilling, foldReq(extraId));
+    eq(r.code, 200, "fold preview answers");
+    eq(r.body.preview, true, "…as a preview");
+    eq(r.body.target.outstanding, 200000, "target outstanding stated (250000 − 50000 part-paid)");
+    eq(r.body.target.newOutstanding, 230000, "🔴 the NEW outstanding is stated — the part-paid rule");
+    let b4 = await VenueBooking.findById(bk4._id).lean();
+    ok(!b4.paymentSchedule[3].foldedInto, "preview wrote nothing");
+
+    r = await call(foldAdditionalBilling, foldReq(extraId, { confirm: true }));
+    eq(r.code, 200, "fold confirms");
+    b4 = await VenueBooking.findById(bk4._id).lean();
+    eq(String(b4.paymentSchedule[3].foldedInto), String(b4.paymentSchedule[2]._id), "🔴 the reference points at the last instalment");
+    eq(b4.paymentSchedule[2].amount, 250000, "🔴 the instalment's STORED amount did not move");
+    eq(b4.paymentSchedule[3].amount, 30000, "🔴 the charge's stored amount did not move");
+    const sum4 = summarizeSchedule(await VenueBooking.findById(bk4._id));
+    const host = sum4.rows.find((x) => String(x._id) === String(b4.paymentSchedule[2]._id));
+    const child = sum4.rows.find((x) => String(x._id) === extraId);
+    eq(host.displayAmount, 280000, "🔴 the instalment DISPLAYS the absorption — derived in ONE place");
+    eq(host.absorbedRows.length, 1, "…and lists what folded in");
+    eq(child.foldedIntoLabel, "Instalment 3", "🔴 the charge says where it went — 'added in Instalment 3' falls out of the same reference");
+    eq(sum4.totals.additional, 30000, "totals.additional is UNCHANGED — no figure the model computes moved");
+    eq(sum4.totals.total, 580000, "…and what the couple pays is unchanged (550000 + 30000)");
+    const l4 = await VenueEnquiry.findById(lead4._id).lean();
+    ok(l4.activities.some((x) => x.type === "additional_billing_folded"), "the deliberate act is on the trail");
+
+    r = await call(foldAdditionalBilling, foldReq(extraId, { confirm: true }));
+    eq(r.code, 409, "folding an already-folded charge refuses");
+    eq(r.body.code, "already_folded", "…saying so, with the way out (unfold)");
+
+    console.log("\n[S4-B. case 2 — the last instalment is cleared; and the un-clear path]");
+    const lead5 = await mkLead();
+    const bk5 = await mkConfirmedBooking(lead5, { schedule: [
+      { label: "Token — received", amount: 100000, percent: null, dueDate: new Date(), entries: [{ amount: 100000, date: new Date(), method: "upi", status: "approved", approvedAt: new Date() }] },
+      { label: "Instalment 2", amount: 450000, percent: null, dueDate: new Date(),
+        entries: [{ amount: 450000, date: new Date(), method: "bank_transfer", status: "approved", approvedAt: new Date() }] },
+    ] });
+    bk5.paymentSchedule.push({ label: "Extra hour", amount: 20000, percent: null, dueDate: new Date(), isAdditional: true });
+    await bk5.save();
+    const extra5 = String(bk5.paymentSchedule[2]._id);
+    r = await call(foldAdditionalBilling, req({ params: { enquiryId: String(lead5._id), rowId: extra5 }, body: { confirm: true } }));
+    eq(r.code, 409, "🔴 last instalment cleared → the fold refuses");
+    eq(r.body.code, "last_instalment_cleared", "…as case 2");
+    ok(/stands alone/.test(r.body.message) && /rejected/.test(r.body.message),
+      "…the refusal says the charge stands alone AND that a rejection re-opens folding — no ambiguity");
+    // reject the instalment's payment → it un-clears → the SAME charge becomes foldable
+    const bk5b = await VenueBooking.findById(bk5._id);
+    bk5b.paymentSchedule[1].entries[0].status = "rejected";
+    await bk5b.save();
+    r = await call(foldAdditionalBilling, req({ params: { enquiryId: String(lead5._id), rowId: extra5 }, body: { confirm: true } }));
+    eq(r.code, 200, "🔴 after the un-clear, folding the SAME charge works — eligibility is live, never cached");
+
+    console.log("\n[S4-C. unfold — the reversal exists]");
+    r = await call(unfoldAdditionalBilling, req({ params: { enquiryId: String(lead5._id), rowId: extra5 } }));
+    eq(r.code, 200, "unfold answers");
+    const b5 = await VenueBooking.findById(bk5._id).lean();
+    ok(!b5.paymentSchedule[2].foldedInto, "…and the reference is gone");
+    r = await call(unfoldAdditionalBilling, req({ params: { enquiryId: String(lead5._id), rowId: extra5 } }));
+    eq(r.code, 409, "unfolding an unfolded charge refuses plainly");
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {
