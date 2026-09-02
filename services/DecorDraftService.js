@@ -823,6 +823,18 @@ const runCopyPass = async (draftId, { buffer = null, force = false } = {}) => {
     const description = (copy && copy.description) || "";
     const tags = Array.isArray(copy && copy.tags) ? copy.tags : [];
     const included = Array.isArray(copy && copy.included) ? copy.included : [];
+    // ── BLANK-COPY VISIBILITY (2026-09-02) ──────────────────────────────────
+    // A declined read (isDecorProduct false) produces empty name/description
+    // by postProcess design — the copy still lands "ready", but the approver
+    // must not meet an empty name with no explanation. Record WHY, in the
+    // model's own words where it gave them. "" whenever a name landed, so a
+    // successful retry wipes an earlier blank's reason.
+    const blankReason =
+      copy && copy.isDecorProduct === false && !name
+        ? `the vision model did not read this as a décor product${
+            copy.complexity && copy.complexity.reasoning ? ` — ${copy.complexity.reasoning}` : ""
+          }`
+        : "";
     const attributes = {
       style: copy && copy.style ? (Array.isArray(copy.style) ? copy.style : [copy.style]) : [],
       colors: (copy && copy.colors) || [],
@@ -859,12 +871,17 @@ const runCopyPass = async (draftId, { buffer = null, force = false } = {}) => {
           ...fillIfEmpty,
           "copy.status": "ready",
           "copy.lastError": "",
+          "copy.blankReason": blankReason,
           "copy.completedAt": new Date(),
           "copy.categoryDisagreement": disagreement,
         },
+        // The audit trail sees it too — a blank copy is a state worth a line.
+        ...(blankReason
+          ? { $push: { history: { action: "copy_blank", by: null, at: new Date(), note: blankReason } } }
+          : {}),
       }
     );
-    return { status: "ready" };
+    return { status: "ready", ...(blankReason ? { blankReason } : {}) };
   } catch (e) {
     await DecorDraft.updateOne(
       { _id: draftId },
