@@ -110,9 +110,13 @@ const DecorDraftSchema = new mongoose.Schema(
       // panelQuote's sense, hence immutable. Never written on a Pinterest
       // draft; exactly one of panelQuote / uploadQuote can be non-null.
       // ALWAYS non-null on an upload draft, and self-describing:
-      //   { status: "quoted", ...figure, inputs } — the priced case, or
+      //   { status: "quoted", ...figure, inputs } — the priced case;
       //   { status: "no_quote", reason: "ai_rejected" | "no_price" |
       //     "quote_failed", detail, inputs } — a blank price must SAY WHY;
+      //   { status: "not_priced", detail, inputs } — the category is not
+      //     AI-priced (Category.aiPriced false): not a failure, the working
+      //     state "the approver sets the price". A THIRD status, never a
+      //     fourth no_quote reason — no_quote renders as failure;
       // sales cannot act on a silent blank, and the three causes are different
       // conversations (wrong photo vs unpriceable category vs our bug).
       uploadQuote: { type: Mixed, default: null },
