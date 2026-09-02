@@ -80,6 +80,12 @@ function lineTaxable(line) {
   return 0;
 }
 
+/** ONE line's GST: its own taxable base, rounded to the rupee. The totals
+ * above and every document (utils/docsystem) read THIS — never a re-derivation. */
+function lineGst(li, gstPercent = 18) {
+  return Math.round((lineTaxable(li) * (Number(gstPercent) || 0)) / 100);
+}
+
 function computeLineTotals(lineItems, gstPercent = 18) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const pct = Number(gstPercent) || 0;
@@ -95,7 +101,7 @@ function computeLineTotals(lineItems, gstPercent = 18) {
     else charged += amount;
     const t = lineTaxable(li);
     taxable += t;
-    gst += Math.round((t * pct) / 100);
+    gst += lineGst(li, pct);
   }
   return { subtotal, charged, refundable, taxable, gst, grandTotal: subtotal + gst };
 }
@@ -136,6 +142,10 @@ function invoiceViewOfLines(lines, gstPercent) {
       category: "venue",
       qty: 1,
       unitPrice: Math.round(Number(li.amount) || 0),
+      // the row's own tax facts, from the same per-line derivation the
+      // totals sum — stored so documents never re-derive them
+      taxable: lineTaxable(li),
+      gst: lineGst(li, gstPercent),
     })),
     totals: { subtotal: t.subtotal, taxable: t.taxable, gst: t.gst, grandTotal: t.grandTotal },
   };
@@ -165,4 +175,4 @@ function formatINR(amount) {
   return "₹" + n.toLocaleString("en-IN");
 }
 
-module.exports = { computeTotals, computeLineTotals, lineTaxable, invoiceViewOfLines, formatINR, GST_MODES, scheduleMismatch };
+module.exports = { computeTotals, computeLineTotals, lineTaxable, lineGst, invoiceViewOfLines, formatINR, GST_MODES, scheduleMismatch };

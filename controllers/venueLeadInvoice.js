@@ -294,6 +294,9 @@ const createLeadInvoice = async (req, res) => {
           taxable += lineItems[i].unitPrice;
           gstTotal += g.gst;
         }
+        // the row keeps its own facts — the document prints, never re-derives
+        lineItems[i].taxable = g.bears ? lineItems[i].unitPrice : 0;
+        lineItems[i].gst = g.bears ? g.gst : 0;
       });
       const subtotal = lineItems.reduce((sum, li) => sum + li.unitPrice, 0);
       derivedGst = {
