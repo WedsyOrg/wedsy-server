@@ -124,12 +124,12 @@ const generateBookingConfirmation = async (req, res) => {
     }
 
     const issuedAt = new Date();
-    const built = await buildBookingConfirmationPdf({
-      venue,
-      booking,
-      lead,
-      includeCancellationPolicy: wantPolicy,
-      issuedAt,
+    const { buildVenueDocument } = require("../utils/docsystem");
+    const { loadLogoBuffer } = require("../utils/venuePdf");
+    const logoBuffer = await loadLogoBuffer((venue && venue.logo) || "");
+    const built = await buildVenueDocument("confirmation", {
+      venue, lead, booking, logoBuffer,
+      policyBlocks: wantPolicy ? policyBlocks : [],
     });
 
     // ── attach the venue's own T&C PDF, carried not re-rendered ────────────
@@ -214,7 +214,7 @@ const generateBookingConfirmation = async (req, res) => {
     return res.status(201).json({
       success: true,
       document: { _id: doc._id, version: doc.version, filename: doc.filename, note: doc.note, sizeBytes: doc.sizeBytes },
-      includedCancellationPolicy: built.includedPolicy,
+      includedCancellationPolicy: Boolean(built.data && built.data.policyLines && built.data.policyLines.length),
       attachedTerms: attached,
       tableStats: built.tableStats,
     });

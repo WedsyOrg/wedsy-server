@@ -403,6 +403,36 @@ const deleteBookingCharge = async (req, res) => {
   }
 };
 
+
+// ── GET/PUT /venues/:slug/booking-settings/document-language ────────────────
+// The document system's picker: one language, every document. Validated
+// against the same list the renderer exposes — a name the renderer does not
+// know cannot be stored.
+const { LANGUAGE_NAMES } = require("../utils/docsystem");
+const getDocumentLanguage = async (req, res) => {
+  try {
+    const venue = await Venue.findOne({ slug: req.params.slug }).select("settings.documentLanguage").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    return res.status(200).json({ documentLanguage: (venue.settings && venue.settings.documentLanguage) || "classic", options: LANGUAGE_NAMES });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+const putDocumentLanguage = async (req, res) => {
+  try {
+    const venue = await Venue.findOne({ slug: req.params.slug });
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(req.venueOwner.venueId)) return res.status(403).json({ message: "Forbidden" });
+    const pick = String((req.body || {}).documentLanguage || "");
+    if (!LANGUAGE_NAMES.includes(pick)) {
+      return res.status(400).json({ message: `documentLanguage must be one of ${LANGUAGE_NAMES.join(", ")}` });
+    }
+    venue.settings = venue.settings || {};
+    venue.settings.documentLanguage = pick;
+    venue.markModified("settings.documentLanguage");
+    await venue.save();
+    return res.status(200).json({ documentLanguage: pick });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 module.exports = {
   getBookingSettings,
   putBrief,
@@ -415,5 +445,4 @@ module.exports = {
   deleteBookingCharge,
   presentDoc,
   presentPolicy,
-  MAX_BYTES,
-};
+  MAX_BYTES, getDocumentLanguage, putDocumentLanguage };

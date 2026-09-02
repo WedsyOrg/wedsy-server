@@ -258,6 +258,7 @@ router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapab
 // bookings_money, so a member cannot even see the queue they cannot act on.
 router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/approve", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.approveLeadPayment);
 router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.rejectLeadPayment);
+router.get("/:slug/enquiries/:enquiryId/payments/:paymentId/receipt.pdf", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.receiptPdf);
 // Additional billing is money owed, so it sits behind the same capability as
 // the rest of the schedule and the same lead scope (404, never 403).
 router.post("/:slug/enquiries/:enquiryId/additional-billing", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.addAdditionalBilling);
@@ -309,6 +310,8 @@ router.delete("/:slug/terms-document", venueOwnerAuth, requireCapability("docume
 // authenticated venue user because the wizard needs it to pre-populate and a
 // member who can confirm a booking must be able to read the shapes.
 router.get("/:slug/booking-settings", venueOwnerAuth, bookingSettings.getBookingSettings);
+router.get("/:slug/booking-settings/document-language", venueOwnerAuth, bookingSettings.getDocumentLanguage);
+router.put("/:slug/booking-settings/document-language", venueOwnerAuth, requireCapability("documents"), bookingSettings.putDocumentLanguage);
 router.put("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.putBrief);
 router.delete("/:slug/booking-settings/brief", venueOwnerAuth, requireCapability("documents"), bookingSettings.deleteBrief);
 router.put("/:slug/booking-settings/cancellation-policy", venueOwnerAuth, requireCapability("documents"), bookingSettings.putCancellationPolicy);

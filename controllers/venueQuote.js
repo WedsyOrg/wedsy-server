@@ -399,14 +399,21 @@ const confirmBookingFromQuote = async (req, res) => {
 // GET /venues/:slug/quotes/:quoteId/pdf
 const quotePdf = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email logo");
+    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email logo tagline gstin pan settings");
     if (!venue) return;
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id }).lean();
     if (!quote) return res.status(404).json({ message: "Quote not found" });
     // Scoped like the other enquiry reads: never render a lead the requester
     // cannot see (or a soft-deleted one) into a PDF.
-    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry, { select: "coupleName name couplePhone", lean: true });
-    await streamQuotePdf(res, { venue, enquiry, quote });
+    const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry, { select: "coupleName name couplePhone checkIn checkOut requirements", lean: true });
+    // The document system: the venue's chosen language, every document.
+    const { buildVenueDocument } = require("../utils/docsystem");
+    const { loadLogoBuffer } = require("../utils/venuePdf");
+    const logoBuffer = await loadLogoBuffer(venue.logo);
+    const built = await buildVenueDocument("quote", { venue, lead: enquiry, quote, logoBuffer });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="quote-v${quote.version || 1}.pdf"`);
+    return res.end(built.buffer);
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 

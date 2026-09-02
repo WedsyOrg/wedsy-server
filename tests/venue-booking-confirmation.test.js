@@ -144,7 +144,10 @@ const makeTermsPdf = (pages) => new Promise((resolve) => {
     ok(t1.includes("Vegetarian kitchen only"), "…and the special requirements");
     ok(t1.includes("Advance") && t1.includes("Second instalment") && t1.includes("Balance"), "the payment schedule as a table");
     ok(t1.includes("33.34%") && t1.includes("33.33%"), "…with percentages");
-    ok(t1.includes("Rs. 4,00,000"), "…and amounts");
+    // Design-system table contract: money CELLS print bare Indian-grouped
+    // figures; "Rs." belongs to totals and prose (the balance line below
+    // still asserts the prefixed form).
+    ok(t1.includes("4,00,000"), "…and amounts");
     ok(t1.includes("Rs. 7,00,000"), "balance due comes from the S4 derivation (12L − 5L received)");
     ok(!t1.includes("₹"), "no rupee glyph — Helvetica cannot draw it");
     // The word "signature" DOES appear — in the sentence saying none is required.
@@ -155,7 +158,11 @@ const makeTermsPdf = (pages) => new Promise((resolve) => {
       "NOT signed — no signature block, no acceptance line");
     ok(/no signature is required/i.test(t1), "…and it says outright that none is needed");
     ok(/confirmation, not an agreement/i.test(t1), "…and says so explicitly");
-    ok(!t1.includes("days late") && !t1.includes("Paid"), "the couple's copy states what ARRIVED, not internal status labels");
+    // The document system's schedule contract (LANGUAGES.md §1) gives every
+    // schedule a State column — paid / part-paid / late / upcoming — so the
+    // couple's copy now names the state plainly. What stays banned is the
+    // internal phrasing ("N days late"), which is CRM furniture.
+    ok(!t1.includes("days late") && t1.includes("Paid"), "the couple's copy carries the schedule state, never CRM phrasing");
     for (const bad of ["undefined", "null", "NaN", "Invalid Date"]) ok(!t1.includes(bad), `…and never renders "${bad}"`);
 
     console.log("\n[it lands in the Documents tab, reusing #130]");

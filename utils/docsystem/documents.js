@@ -14,6 +14,19 @@ const {
 } = require("./shared");
 
 /**
+ * The ONE number a document exists for gets the language's hero treatment,
+ * read off TOKENS alone (LANGUAGES.md §3: Panel's dark is confined to the
+ * masthead, the table heads and this single cell): reverseInk when the
+ * language carries reverse tokens, tint when fills are its policy, plain
+ * otherwise. No language names are read.
+ */
+function heroCellStyle(R) {
+  if (R.T.reverseInk) return { fill: R.T.reverseInk, color: R.T.reverseText, sub: R.T.dim };
+  if (R.T.fillPolicy === "fills") return { fill: R.T.tint, color: R.T.ink, sub: R.T.mid };
+  return { fill: null, color: R.T.ink, sub: R.T.mid };
+}
+
+/**
  * One label/value row in a totals stack. Measures BOTH sides and advances by
  * the taller — the statement's closing box shipped overprinting itself
  * because a local helper advanced by a fixed 6px (walkthrough finding).
@@ -23,13 +36,18 @@ function kvRow(R, { x, width, label, value, figure = false, mid = false, gapAfte
   const labelSize = figure ? TYPE.totalLabel : TYPE.body;
   const labelFont = figure ? "Times-Roman" : "Helvetica";
   const valueFont = figure ? "Times-Roman" : "Helvetica";
+  // A FIGURE value takes the full measure right-aligned — "Rs. 14,82,500" at
+  // Times 28 must never wrap in a narrow stack (it shipped wrapping, caught
+  // on the confirmation's agreed-amount box). The label is short by contract.
+  const labelW = figure ? width * 0.42 : width * 0.55;
+  const valueW = figure ? width : width * 0.45;
   const h = Math.max(
-    R.measure(label, { font: labelFont, size: labelSize, width: width * 0.55 }),
-    R.measure(value, { font: valueFont, size, width: width * 0.45 })
+    R.measure(label, { font: labelFont, size: labelSize, width: labelW }),
+    R.measure(value, { font: valueFont, size, width: valueW })
   );
-  R.text(label, { font: labelFont, size: labelSize, color: mid ? R.T.mid : R.T.ink, x, y: R.y + (figure ? Math.max(0, (size - labelSize) * 0.6) : 0), width: width * 0.55, advance: false });
-  R.text(value, { font: valueFont, size, x: x + width * 0.45, y: R.y, width: width * 0.55, align: "right", advance: false });
-  R.y += h + (gapAfter !== undefined ? gapAfter : 7);
+  R.text(label, { font: labelFont, size: labelSize, color: mid ? R.T.mid : R.T.ink, x, y: R.y + (figure ? Math.max(0, (size - labelSize) * 0.6) : 0), width: labelW, advance: false });
+  R.text(value, { font: valueFont, size, x: figure ? x : x + width * 0.45, y: R.y, width: valueW, align: "right", advance: false });
+  R.y += h + (gapAfter !== undefined ? gapAfter : 6);
 }
 
 // ── treatment sub-lines (fixed wording shapes from the handoff) ─────────────
@@ -225,8 +243,8 @@ function factStrip(R, facts) {
 
 // ── note + signature closing row ────────────────────────────────────────────
 function closingRow(R, noteLines, signatory) {
-  R.ensure(90);
-  R.gap(SPACE.signature);
+  R.ensure(84);
+  R.gap(22);
   const y0 = R.y;
   const noteW = R.width * 0.6;
   let leftH = 0;
@@ -235,12 +253,12 @@ function closingRow(R, noteLines, signatory) {
   }
   const sx = R.margin + R.width * 0.66;
   const sw = R.width * 0.34;
-  R.rule(sx, y0 + 34, sx + sw, 0.75, R.T.ink);
+  R.rule(sx, y0 + 26, sx + sw, 0.75, R.T.ink);
   if (signatory) {
-    R.text(signatory.name, { size: TYPE.cell, x: sx, y: y0 + 40, width: sw, advance: false });
-    if (signatory.role) R.text(signatory.role, { size: TYPE.subLine, color: R.T.mid, x: sx, y: y0 + 55, width: sw, advance: false });
+    R.text(signatory.name, { size: TYPE.cell, x: sx, y: y0 + 32, width: sw, advance: false });
+    if (signatory.role) R.text(signatory.role, { size: TYPE.subLine, color: R.T.mid, x: sx, y: y0 + 47, width: sw, advance: false });
   }
-  R.y = y0 + Math.max(leftH, 70);
+  R.y = y0 + Math.max(leftH, 60);
 }
 
 // ═══ 1. QUOTE ════════════════════════════════════════════════════════════════
@@ -288,7 +306,7 @@ async function renderQuote(R, d) {
 async function renderConfirmation(R, d) {
   R.L.titleBlock(R, d.titleMeta);
   if (d.intro) {
-    R.gap(10);
+    R.gap(6);
     R.text(d.intro, { size: TYPE.body, color: R.T.mid, x: R.margin + R.width * 0.13, width: R.width * 0.74, align: "center", lineGap: 3 });
   }
   factStrip(R, d.facts);
@@ -340,8 +358,27 @@ async function renderConfirmation(R, d) {
   R.y = Math.max(R.y, rightBottom);
   R.gap(8);
   R.text("Anything added after this confirmation is an extra: it is billed as its own group and never changes the agreed amount above.", { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
+  if (d.specialRequirements) {
+    R.gap(10);
+    R.text(`Special requirements — ${d.specialRequirements}`, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
+  }
   R.sectionLabel("Payment schedule");
   scheduleTable(R, d.schedule, d.totals, { withState: true });
+  if (d.received > 0) {
+    R.gap(8);
+    R.text(
+      `Received so far: ${money(d.received)}. Balance due: ${money(d.balance)}.`,
+      { size: TYPE.fine, color: R.T.mid, lineGap: 3 }
+    );
+  }
+  if (d.policyLines && d.policyLines.length) {
+    R.sectionLabel("Cancellation policy");
+    for (const line of d.policyLines) {
+      R.ensure(30);
+      R.text(line, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
+      R.gap(5);
+    }
+  }
   closingRow(R, d.noteLines, d.signatory);
 }
 
@@ -426,12 +463,18 @@ async function renderStatement(R, d) {
   R.emphasisBlock((x, w) => {
     const cellW = w / 3;
     const y0 = R.y;
+    const heroStyle = heroCellStyle(R);
     const cell = (i, label, figure, sub, hero) => {
       const cx = x + cellW * i + (i ? 14 : 0);
       const cw = cellW - (i ? 14 : 0) - 8;
-      R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x: cx, y: y0, width: cw, advance: false });
-      R.text(figure, { font: "Times-Roman", size: hero ? R.T.heroSizes.statement : 24, x: cx, y: y0 + 14, width: cw, advance: false });
-      if (sub) R.text(sub, { size: TYPE.subLine, color: hero && d.overdueTotal ? R.T.accent : R.T.mid, x: cx, y: y0 + 14 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
+      if (hero && heroStyle.fill) {
+        R.doc.save().rect(cx - 10, y0 - 8, cw + 18, 88).fill(heroStyle.fill).restore();
+      }
+      const labelColor = hero ? heroStyle.sub : R.T.mid;
+      const figColor = hero ? heroStyle.color : R.T.ink;
+      R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: labelColor, x: cx, y: y0, width: cw, advance: false });
+      R.text(figure, { font: "Times-Roman", size: hero ? R.T.heroSizes.statement : 24, color: figColor, x: cx, y: y0 + 14, width: cw, advance: false });
+      if (sub) R.text(sub, { size: TYPE.subLine, color: hero ? (d.overdueTotal ? R.T.accent : heroStyle.sub) : R.T.mid, x: cx, y: y0 + 14 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
     };
     cell(0, "Total collectable", money(d.totals.collectable), `Agreed ${money(d.totals.charged + d.totals.refundable)} + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}`);
     cell(1, "Received to date", money(d.received), d.receivedSub);
@@ -509,9 +552,11 @@ async function renderReceipt(R, d) {
   R.emphasisBlock((x, w) => {
     const leftW = w * 0.46;
     const y0 = R.y;
-    R.text("Amount received", { size: TYPE.fieldLabel, caps: true, tracking: 0.2, color: R.T.mid, x, y: y0, width: leftW, advance: false });
-    R.text(money(d.amount), { font: "Times-Roman", size: R.T.heroSizes.receipt, x, y: y0 + 16, width: leftW, advance: false });
-    R.text(amountInWords(d.amount), { size: TYPE.subLine, color: R.T.mid, x, y: y0 + 16 + R.T.heroSizes.receipt + 6, width: leftW - 12, lineGap: 2, advance: false });
+    const heroStyle = heroCellStyle(R);
+    if (heroStyle.fill) R.doc.save().rect(x - 10, y0 - 10, leftW, 130).fill(heroStyle.fill).restore();
+    R.text("Amount received", { size: TYPE.fieldLabel, caps: true, tracking: 0.2, color: heroStyle.sub, x, y: y0, width: leftW, advance: false });
+    R.text(money(d.amount), { font: "Times-Roman", size: R.T.heroSizes.receipt, color: heroStyle.color, x, y: y0 + 16, width: leftW, advance: false });
+    R.text(amountInWords(d.amount), { size: TYPE.subLine, color: heroStyle.sub, x, y: y0 + 16 + R.T.heroSizes.receipt + 6, width: leftW - 12, lineGap: 2, advance: false });
     const fx = x + leftW + 16;
     const fw = w - leftW - 16;
     let fy = y0;

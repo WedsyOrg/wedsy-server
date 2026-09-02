@@ -104,11 +104,11 @@ const classic = {
     R.text(m.title, { font: "Times-Roman", size: R.T.titleSize, align, lineGap: 2 });
     if (m.subject) { R.gap(8); R.text(m.subject, { size: TYPE.body, color: R.T.mid, align }); }
     if (m.refs && m.refs.length) {
-      R.gap(16);
+      R.gap(12);
       const w = m.dense ? R.width : R.width * 0.66;
       const x = m.dense ? R.margin : R.margin + (R.width - w) / 2;
       R.rule(x, R.y, x + w, 0.5, R.T.hairline);
-      R.gap(11);
+      R.gap(9);
       R.text(m.refs.join("      "), { size: TYPE.reference, tracking: 0.04, color: R.T.mid, x, width: w, align });
     }
   },
@@ -285,7 +285,12 @@ const stationery = {
       R.gap(8);
     }
     R.text(m.title, { font: "Times-Roman", size: R.T.titleSize, align: "center", lineGap: 2 });
-    if (m.subject) { R.gap(6); R.text(m.subject, { font: "Times-Italic", size: 13, color: R.T.mid, align: "center" }); }
+    {
+      // "presented to" already names the client — repeating them in the
+      // subject line would say it twice on one masthead
+      const subject = m.presentedTo && m.subject && m.subject.includes(m.presentedTo) ? null : m.subject;
+      if (subject) { R.gap(6); R.text(subject, { font: "Times-Italic", size: 13, color: R.T.mid, align: "center" }); }
+    }
     if (m.refs && m.refs.length) {
       R.gap(10);
       R.text(m.refs.join("   ·   "), { size: TYPE.reference, tracking: 0.04, color: R.T.mid, align: "center" });

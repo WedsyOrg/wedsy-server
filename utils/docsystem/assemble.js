@@ -4,11 +4,71 @@
  * utils/venuePaymentStatus; nothing here computes money, it only arranges it.
  */
 const { resolveBranding } = require("../venueBranding");
+const { docDayWithWeekday } = require("../documentDate");
 const { receivedOn, milestoneStatus } = require("../venuePaymentStatus");
 const {
   DASH, money, dateProse, dateCell, dateTimeProse,
   lineFigures, documentTotals, allocateScheduleGst,
 } = require("./shared");
+
+/**
+ * ── LEGACY BOOKINGS (no lineItems) ──────────────────────────────────────────
+ * Production carries bookings that predate line quotes: their money is
+ * totalValue + gstMode/gstPercent + the schedule. The documents must not
+ * refuse them, and must not invent lines — one honest synthetic line carries
+ * the agreed value (the same shape the invoice fallback has always used),
+ * and the schedule keeps its OWN per-row GST via venuePaymentSchedule.gstOnRow
+ * (the single implementation of that rule) instead of a pro-rata allocation.
+ */
+function legacyAssembly(booking) {
+  const { gstOnRow } = require("../venuePaymentSchedule");
+  const pct = Number(booking.gstPercent) || 0;
+  const gstMode = booking.gstMode || "none";
+  const totalValue = Math.round(Number(booking.totalValue) || 0);
+  const agreed = ((booking.paymentSchedule) || []).filter((r) => !r.isAdditional);
+  const additional = ((booking.paymentSchedule) || []).filter((r) => r.isAdditional);
+  const schedule = [];
+  let gst = 0;
+  let taxable = 0;
+  for (const r of agreed) {
+    const payable = Math.round(Number(r.amount) || 0);
+    const g = gstOnRow(payable, { gstMode, gstPercent: pct, rowApplicable: Boolean(r.gstApplicable) });
+    const rowGst = g.bears ? g.gst : 0;
+    if (g.bears) taxable += payable;
+    gst += rowGst;
+    schedule.push({
+      label: r.label || "Instalment",
+      subLine: r.percent !== null && r.percent !== undefined ? `${r.percent}% of the booking value` : undefined,
+      dueDate: r.dueDate, ref: r._id, state: stateOf(r),
+      payable, gst: rowGst, collectable: payable + rowGst, refundableCarried: 0,
+    });
+  }
+  for (const r of additional) {
+    const payable = Math.round(Number(r.amount) || 0);
+    schedule.push({
+      label: r.label || "Additional charge", subLine: "Additional billing — on top of the agreed amount",
+      dueDate: r.dueDate, ref: r._id, state: stateOf(r),
+      payable, gst: 0, collectable: payable, refundableCarried: 0,
+    });
+  }
+  const extrasAmount = additional.reduce((s2, r) => s2 + Math.round(Number(r.amount) || 0), 0);
+  const scheduledAgreed = agreed.reduce((s2, r) => s2 + Math.round(Number(r.amount) || 0), 0);
+  // The schedule is the collectable truth on a legacy booking; totalValue and
+  // the schedule can legitimately disagree (the model says so), and the
+  // document's sums must be TRUE — so payable follows the rows.
+  const totals = {
+    pct, charged: scheduledAgreed, taxable, gst, refundable: 0,
+    extrasAmount, extrasGst: 0,
+    payable: scheduledAgreed + extrasAmount,
+    collectable: scheduledAgreed + extrasAmount + gst,
+  };
+  const priced = [{
+    label: `Venue booking${booking.coupleName ? ` — ${booking.coupleName}` : ""} (as agreed)`,
+    amount: scheduledAgreed, taxable, gst, lineTotal: scheduledAgreed + gst,
+    refundable: false, treatment: gstMode === "none" || gst === 0 ? "none" : taxable === scheduledAgreed ? "full" : "part",
+  }];
+  return { totals, priced, refundables: [], schedule, legacy: true };
+}
 
 function initialsOf(name) {
   return String(name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
@@ -63,7 +123,9 @@ function shapeSchedule(booking, totals, { includeAdditional = true } = {}) {
   const agreed = ((booking && booking.paymentSchedule) || []).filter((r) => !r.isAdditional);
   const additional = includeAdditional ? ((booking && booking.paymentSchedule) || []).filter((r) => r.isAdditional) : [];
   const shaped = allocateScheduleGst(agreed.map((r) => ({
-    label: r.label || "Instalment", amount: r.amount, dueDate: r.dueDate, ref: r._id,
+    label: r.label || "Instalment",
+    subLine: r.percent !== null && r.percent !== undefined ? `${r.percent}% of the booking value` : undefined,
+    amount: r.amount, dueDate: r.dueDate, ref: r._id,
     state: stateOf(r),
   })), { ...totals, extrasGst: 0 });
   for (const r of additional) {
@@ -127,35 +189,65 @@ function assembleQuote({ venue, lead, quote, logoBuffer }) {
 }
 
 // ── 2. BOOKING CONFIRMATION ─────────────────────────────────────────────────
-function assembleConfirmation({ venue, lead, booking, logoBuffer }) {
+function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks = [] }) {
   const pct = Number(booking.gstPercent) || 0;
-  const lines = (booking.lineItems || []).map((l) => lineFigures(l, pct));
-  const totals = documentTotals(booking.lineItems || [], [], pct);
-  const spaces = spacesOf(booking).map((name) => ({ name, detail: null }));
+  const isLegacy = !(booking.lineItems || []).length;
+  const legacy = isLegacy ? legacyAssembly(booking) : null;
+  const lines = isLegacy ? [] : (booking.lineItems || []).map((l) => lineFigures(l, pct));
+  const totals = isLegacy
+    ? { ...legacy.totals, extrasAmount: 0, extrasGst: 0, payable: legacy.totals.charged, collectable: legacy.totals.charged + legacy.totals.gst }
+    : documentTotals(booking.lineItems || [], [], pct);
+  // one row per EVENT DAY — the composed weekday date the couple agreed to,
+  // from the same docDayWithWeekday every document uses
+  const spaces = ((booking.days || []).length
+    ? (booking.days || []).map((day) => ({
+        name: [((day.spaces || []).join(", ")) || "Venue", day.eventType, day.guestCount ? `${day.guestCount} guests` : null].filter(Boolean).join(" — "),
+        detail: docDayWithWeekday(day.date),
+      }))
+    : spacesOf(booking).map((name) => ({ name, detail: null })));
   const firstDay = (booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn;
+  const primaryContact = ((lead && lead.contacts) || []).find((c) => c.isPrimary) || ((lead && lead.contacts) || [])[0] || null;
+  const received = ((booking.paymentSchedule || []).filter((r) => !r.isAdditional)).reduce((s2, r) => s2 + Math.round(receivedOn(r)), 0);
   return {
     identity: identityFrom(venue, logoBuffer),
     meta: { reference: `Booking ${String(booking._id).slice(-6).toUpperCase()}` },
     titleMeta: {
       eyebrow: "Booking confirmation",
       title: `Your date is held — ${dateProse(firstDay)}`,
-      subject: booking.coupleName ? `For ${booking.coupleName}` : undefined,
+      subject: booking.coupleName
+        ? `For ${booking.coupleName}${primaryContact ? ` · ${[primaryContact.name, primaryContact.phone, primaryContact.email].filter(Boolean).join(" · ")}` : ""}`
+        : undefined,
       presentedTo: booking.coupleName,
-      refs: [`Confirmed ${dateProse(booking.createdAt)}`],
+      refs: ["Booking Confirmation", `Confirmed ${dateProse(booking.createdAt)}`],
     },
     intro: "The booking amount has been received and the dates below are held exclusively. This page records the agreed amount and the plan for the balance.",
     facts: windowFacts(lead, booking, null),
     spaces,
-    priced: lines.filter((l) => !l.refundable),
-    refundables: lines.filter((l) => l.refundable),
+    priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
+    refundables: isLegacy ? [] : lines.filter((l) => l.refundable),
     totals,
     inclusions: [],
     // The confirmation documents the AGREED deal: its schedule is the plan
     // for the agreed amount alone. Extras live on the statement, which sums
     // them explicitly — the confirmation's own note says exactly that.
-    schedule: shapeSchedule(booking, totals, { includeAdditional: false }),
+    schedule: isLegacy
+      ? legacy.schedule.filter((r) => !r.subLine || !r.subLine.startsWith("Additional"))
+      : shapeSchedule(booking, totals, { includeAdditional: false }),
+    // The venue's cancellation policy, when the owner asked for it: rich-text
+    // blocks flattened to sentences. Content inside the existing closing
+    // section, not a new section — the anatomy stays fixed.
+    received,
+    balance: Math.max(0, totals.payable - received),
+    specialRequirements: booking.specialRequirements || null,
+    policyLines: (policyBlocks || []).flatMap((bk) => {
+      if (!bk) return [];
+      const own = ((bk.spans) || []).map((sp) => sp.text).join("");
+      const items = ((bk.items) || []).map((it, i) => `${i + 1}. ${((it && it.spans) || []).map((sp) => sp.text).join("")}`);
+      return [own, ...items].filter(Boolean);
+    }),
     noteLines: [
       "Each instalment is invoiced separately with GST on its taxable share; the refundable deposit is never invoiced and is returned after the event.",
+      "This is a confirmation, not an agreement — no signature is required to keep the dates held; the booking amount already did that.",
     ],
     signatory: null,
   };
@@ -224,16 +316,18 @@ function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
 // ── 4. STATEMENT OF ACCOUNT ─────────────────────────────────────────────────
 function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
   const pct = Number(booking.gstPercent) || 0;
-  const lines = (booking.lineItems || []).map((l) => lineFigures(l, pct));
+  const isLegacy = !(booking.lineItems || []).length;
+  const legacy = isLegacy ? legacyAssembly(booking) : null;
+  const lines = isLegacy ? [] : (booking.lineItems || []).map((l) => lineFigures(l, pct));
   const extras = ((booking.paymentSchedule || []).filter((r) => r.isAdditional)).map((r) => ({
     label: r.label + (r.foldedInto ? "" : ""), amount: Math.round(Number(r.amount) || 0), gst: 0,
     foldedIntoLabel: null,
   }));
-  const totals = documentTotals(booking.lineItems || [],
+  const totals = isLegacy ? legacy.totals : documentTotals(booking.lineItems || [],
     (booking.paymentSchedule || []).filter((r) => r.isAdditional).map((r) => ({ label: r.label, amount: r.amount, gstTreatment: "none" })), pct);
   const received = (summary && summary.totals && summary.totals.received) || 0;
   const outstanding = Math.max(0, totals.collectable - received);
-  const schedule = shapeSchedule(booking, totals);
+  const schedule = isLegacy ? legacy.schedule : shapeSchedule(booking, totals);
   // payment sub-rows: one per instalment a payment touched, split stated
   const paymentSubRows = [];
   for (const r of (booking.paymentSchedule || [])) {
@@ -269,8 +363,8 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
       refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateProse((booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn)}`],
     },
     bookedOn: booking.createdAt,
-    priced: lines.filter((l) => !l.refundable),
-    refundables: lines.filter((l) => l.refundable),
+    priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
+    refundables: isLegacy ? [] : lines.filter((l) => l.refundable),
     extras,
     totals,
     received, outstanding, receivedSub, overdueTotal,
@@ -285,7 +379,8 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
 // ── 5. PAYMENT RECEIPT ──────────────────────────────────────────────────────
 function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer }) {
   const pct = Number(booking.gstPercent) || 0;
-  const totals = documentTotals(booking.lineItems || [],
+  const isLegacy = !(booking.lineItems || []).length;
+  const totals = isLegacy ? legacyAssembly(booking).totals : documentTotals(booking.lineItems || [],
     (booking.paymentSchedule || []).filter((r) => r.isAdditional).map((r) => ({ label: r.label, amount: r.amount, gstTreatment: "none" })), pct);
   const pieces = [];
   for (const r of (booking.paymentSchedule || [])) {

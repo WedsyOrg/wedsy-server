@@ -767,6 +767,11 @@ const VenueSchema = new mongoose.Schema({
     // E3x: default for the per-document whiteLabel flag on new quotes/bills/
     // invoices. false keeps the co-branded render (system line + footer).
     documentsWhiteLabelDefault: { type: Boolean, default: false },
+    // ── THE DESIGN LANGUAGE (document system) ─────────────────────────────
+    // The venue picks ONE language and every document they send comes out in
+    // it — quote, confirmation, invoice, statement, receipt. No document
+    // substitutes another language silently (ruling 2).
+    documentLanguage: { type: String, enum: ["classic", "ledger", "stationery", "panel"], default: "classic" },
     // MB-CRM S0d: when true, a lead arriving with NO explicit assignee is
     // round-robined across active Sales members. Explicit assignment always
     // wins; off by default so nothing changes for venues that don't opt in.
