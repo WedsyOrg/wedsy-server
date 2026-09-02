@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const { enforceReadOnly } = require("./enforceReadOnly");
 const User = require("../models/User");
 const Admin = require("../models/Admin");
 const Vendor = require("../models/Vendor");
@@ -57,7 +58,20 @@ function CheckToken(req, res, next) {
                 isAdmin: true,
                 isVendor: false,
               };
-              next();
+              // Read-only accounts (Meta app reviewer): safe methods only.
+              // Mounted HERE rather than per-route because 100 of this repo's
+              // 108 delete routes have no permission to gate against — this is
+              // the one point every authenticated request already passes.
+              //
+              // Applied to the admin branch of ALL THREE admin-authenticating
+              // middlewares (CheckToken, CheckLogin, CheckAdminLogin) on
+              // purpose: routes/payment.js and routes/settlements.js are
+              // guarded by CheckLogin, so covering only CheckAdminLogin would
+              // leave a write bypass wide open.
+              //
+              // Opt-in by marker permission, so it is a no-op for every
+              // existing account. See middlewares/enforceReadOnly.js.
+              return enforceReadOnly(req, res, next);
             }
           })
           .catch((error) => {
@@ -211,7 +225,20 @@ function CheckLogin(req, res, next) {
                 isAdmin: true,
                 isVendor: false,
               };
-              next();
+              // Read-only accounts (Meta app reviewer): safe methods only.
+              // Mounted HERE rather than per-route because 100 of this repo's
+              // 108 delete routes have no permission to gate against — this is
+              // the one point every authenticated request already passes.
+              //
+              // Applied to the admin branch of ALL THREE admin-authenticating
+              // middlewares (CheckToken, CheckLogin, CheckAdminLogin) on
+              // purpose: routes/payment.js and routes/settlements.js are
+              // guarded by CheckLogin, so covering only CheckAdminLogin would
+              // leave a write bypass wide open.
+              //
+              // Opt-in by marker permission, so it is a no-op for every
+              // existing account. See middlewares/enforceReadOnly.js.
+              return enforceReadOnly(req, res, next);
             }
           })
           .catch((error) => {
@@ -318,7 +345,20 @@ function CheckAdminLogin(req, res, next) {
                 isAdmin: true,
                 isVendor: false,
               };
-              next();
+              // Read-only accounts (Meta app reviewer): safe methods only.
+              // Mounted HERE rather than per-route because 100 of this repo's
+              // 108 delete routes have no permission to gate against — this is
+              // the one point every authenticated request already passes.
+              //
+              // Applied to the admin branch of ALL THREE admin-authenticating
+              // middlewares (CheckToken, CheckLogin, CheckAdminLogin) on
+              // purpose: routes/payment.js and routes/settlements.js are
+              // guarded by CheckLogin, so covering only CheckAdminLogin would
+              // leave a write bypass wide open.
+              //
+              // Opt-in by marker permission, so it is a no-op for every
+              // existing account. See middlewares/enforceReadOnly.js.
+              return enforceReadOnly(req, res, next);
             }
           })
           .catch((error) => {
