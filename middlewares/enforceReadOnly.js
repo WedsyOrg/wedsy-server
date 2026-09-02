@@ -37,23 +37,113 @@ const { permissionsForAdmin } = require("./requirePermission");
 const READONLY_PERMISSION = "access:readonly:all";
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
+// ───────────────────────────────────────────────────────────────────────────
+// READ ALLOWLIST — which GETs a marker-holding account may make.
+//
+// WHY THIS EXISTS. Withholding permissions does not limit what an account can
+// READ: 275 of this repo's 361 GET routes are CheckAdminLogin only and consult
+// no permission at all. Without an allowlist a "Sales" read-only account can
+// read the full staff directory, every task in every department, and the whole
+// venue-ops surface — not because it was granted anything, but because those
+// routes never ask. Raised separately as its own issue; this fixes ONE ACCOUNT
+// and nothing else.
+//
+// WHY IT IS SAFE TO SHIP NOW, which is the reason it is worth doing rather than
+// deferring behind the general fix: it is reachable ONLY by an account holding
+// access:readonly:all. No existing role carries that marker, so the blast
+// radius of a mistake in this list is exactly one account — the reviewer's. A
+// wrong entry costs that reviewer a 403 on a page; it cannot affect a single
+// member of staff. The general fix (gating those 275 routes properly) has the
+// opposite risk profile and needs the care that deserves.
+//
+// DENY BY DEFAULT, ALLOW BY ENUMERATION. Anything not matched below is refused.
+// A denylist would silently admit every route added after it was written; this
+// fails closed on them instead. When a reviewer hits a wall, the console line
+// names the exact path, so widening the list is a one-line, evidence-led edit
+// rather than guesswork.
+//
+// SCOPE: Sales only — leads, enquiries, pipeline, chats and the Instagram
+// surface, plus the lookups those screens need to render. Deliberately absent:
+// /task, /admin (staff directory), /admin/venues, /project, /settings, /role,
+// /department, /org, /team, /cs, /payment, /settlements, /payroll, /attendance,
+// /leave, /reimbursement, /onboarding, /plan, /stats.
+// ───────────────────────────────────────────────────────────────────────────
+const READ_ALLOWLIST = [
+  // — the account's own session and identity —
+  "/auth/admin",              // GET: who am I
+  "/auth/admin/permissions",  // drives which controls the UI renders at all
+  "/me",                      // own profile / workspace switcher
+
+  // — the Instagram surface: the entire point of the review —
+  "/instagram-agent",         // connected-account panel + GET /connect
+
+  // — leads, conversations, pipeline, chats —
+  "/enquiry",
+  "/wa",                      // the agent inbox (conversations + messages)
+  "/chat",
+  "/stages",                  // pipeline columns; the board renders nothing without them
+
+  // — lookups the lead screens need to render filters and labels —
+  // Config vocabularies, not client data. Without these the Sales screens load
+  // with empty dropdowns and look broken to a reviewer.
+  "/lead-source",
+  "/lead-interest",
+  "/lead-lost-response",
+  "/event-type",
+  "/event-lost-response",
+  "/location",
+  "/custom-field",
+  "/saved-views",
+  "/tag",
+];
+
+// Prefix match on the ORIGINAL url (the app mounts its router at "/", so
+// originalUrl maps straight onto the mount table in routes/router.js). req.path
+// is relative to whichever sub-router is running and would not.
+//
+// The boundary check is what stops "/task" being admitted by an entry for
+// "/ta": a match must be the whole path or be followed by "/" or "?".
+const isAllowedRead = (originalUrl) => {
+  const path = String(originalUrl || "").split("?")[0].replace(/\/+$/, "") || "/";
+  return READ_ALLOWLIST.some((entry) => {
+    if (path === entry) return true;
+    return path.startsWith(entry + "/");
+  });
+};
+
+// Exact string match, NOT permissionSatisfies(): a wildcard grant like `*:*:all`
+// (Founder) would otherwise "satisfy" the marker and lock the founder out of the
+// entire product. The marker is a literal flag, not a capability to be inherited.
+const isReadOnly = async (admin) => {
+  const perms = await permissionsForAdmin(admin);
+  return perms.includes(READONLY_PERMISSION);
+};
+
 // Runs after req.auth is populated. Calls next() to allow, or answers 403.
 const enforceReadOnly = async (req, res, next) => {
   try {
-    // Fast path: a safe method needs no lookup at all. This also keeps the cost
-    // off the read traffic that makes up most requests — the role query below
-    // only ever runs on a write attempt.
-    if (SAFE_METHODS.has(req.method)) return next();
-
     const admin = req.auth && req.auth.user;
     if (!admin) return next(); // not our call to make — CheckAdminLogin owns auth
 
-    const perms = await permissionsForAdmin(admin);
-    // Exact string match, NOT permissionSatisfies(): a wildcard grant like
-    // `*:*:all` (Founder) would otherwise "satisfy" the marker and lock the
-    // founder out of the entire product. The marker is a literal flag, not a
-    // capability to be inherited.
-    if (!perms.includes(READONLY_PERMISSION)) return next();
+    const safe = SAFE_METHODS.has(req.method);
+
+    // One lookup, then out. Unlike the write-only version of this guard, a
+    // marker-holder's READS must be checked too, so the safe-method fast path
+    // is gone — but the cost still lands only on accounts carrying the marker,
+    // and every other account leaves on the next line.
+    if (!(await isReadOnly(admin))) return next();
+
+    if (safe) {
+      if (isAllowedRead(req.originalUrl)) return next();
+      // Named explicitly so widening the allowlist is evidence-led: whatever
+      // the reviewer could not reach is in the log, exactly as requested.
+      console.warn(
+        `[readonly] blocked READ ${req.originalUrl} for read-only admin ${admin._id} (not on allowlist)`
+      );
+      return res.status(403).json({
+        message: "This account does not have access to that area.",
+      });
+    }
 
     console.warn(
       `[readonly] blocked ${req.method} ${req.originalUrl} for read-only admin ${admin._id}`
@@ -62,11 +152,12 @@ const enforceReadOnly = async (req, res, next) => {
       message: "This account is read-only and cannot make changes.",
     });
   } catch (error) {
-    // FAIL CLOSED on a write. If we cannot prove the account may write, it may
-    // not — the opposite default would turn a database blip into a deletion.
-    console.error("[readonly] check failed — refusing the write:", error.message);
-    return res.status(403).json({ message: "This account is read-only and cannot make changes." });
+    // FAIL CLOSED. If we cannot prove what this account may do, it may do
+    // nothing — the opposite default would turn a database blip into a deletion
+    // or an unintended disclosure.
+    console.error("[readonly] check failed — refusing the request:", error.message);
+    return res.status(403).json({ message: "This account could not be verified for that action." });
   }
 };
 
-module.exports = { enforceReadOnly, READONLY_PERMISSION, SAFE_METHODS };
+module.exports = { enforceReadOnly, READONLY_PERMISSION, SAFE_METHODS, READ_ALLOWLIST, isAllowedRead };

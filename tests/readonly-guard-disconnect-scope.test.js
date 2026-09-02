@@ -43,7 +43,7 @@ const match = (doc, f) =>
 const AdminRepoStub = { findById: async (id) => db.admins[String(id)] || null };
 const RoleRepoStub = { findByIds: async (ids) => ids.map((i) => db.roles[String(i)]).filter(Boolean) };
 
-const { enforceReadOnly, READONLY_PERMISSION } = require("../middlewares/enforceReadOnly");
+const { enforceReadOnly, READONLY_PERMISSION, isAllowedRead } = require("../middlewares/enforceReadOnly");
 const oauth = require("../controllers/instagramOauth");
 
 let pass = 0, fail = 0;
@@ -113,6 +113,67 @@ console.log("\n1. READ-ONLY GUARD — the reviewer cannot write, anywhere");
   RoleRepoStub.findByIds = orig;
   eq(r.allowed, false, "a lookup FAILURE blocks the write (fail closed)");
   eq(r.code, 403, "  …with 403");
+}
+
+console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
+{
+  const reviewer = mkAdmin(["leads:view:all", READONLY_PERMISSION]);
+  const read = (url) => tryWrite(reviewer, "GET", url);
+
+  // What the reviewer MUST reach or the review fails.
+  for (const url of [
+    "/auth/admin", "/auth/admin/permissions", "/me",
+    "/instagram-agent/connected-account", "/instagram-agent/connect",
+    "/enquiry", "/enquiry/123", "/enquiry?stage=new",
+    "/wa/conversations", "/wa/conversations/abc/messages",
+    "/chat", "/stages", "/lead-source", "/saved-views",
+  ]) {
+    eq((await read(url)).allowed, true, `ALLOW  GET ${url}`);
+  }
+
+  // What it must not reach — the whole reason the allowlist exists.
+  for (const url of [
+    "/task", "/task/123",                      // all tasks, every department
+    "/admin", "/admin/", "/admin/venues/claims", // staff directory + venue ops
+    "/project", "/settings", "/role", "/department", "/org", "/team", "/cs",
+    "/payment", "/settlements/transfer", "/payroll", "/attendance", "/leave",
+    "/reimbursement", "/onboarding", "/plan", "/stats", "/my-work", "/escalations",
+    "/vendor", "/decor", "/order", "/notification",
+  ]) {
+    const r = await read(url);
+    eq(r.allowed, false, `DENY   GET ${url}`);
+    eq(r.code, 403, `  …403`);
+  }
+}
+{
+  // The boundary trap: a naive startsWith would admit /taskmaster via /task,
+  // or /enquiry-secrets via /enquiry. Pinned directly on the matcher.
+  ok(isAllowedRead("/enquiry"), "matcher: exact entry allowed");
+  ok(isAllowedRead("/enquiry/1"), "matcher: child path allowed");
+  ok(isAllowedRead("/enquiry?x=1"), "matcher: query string ignored");
+  ok(isAllowedRead("/enquiry/"), "matcher: trailing slash allowed");
+  ok(!isAllowedRead("/enquiry-secrets"), "matcher: sibling prefix NOT allowed (/enquiry-secrets)");
+  ok(!isAllowedRead("/meeting-notes"), "matcher: /meeting-notes not admitted by /me");
+  ok(!isAllowedRead("/chatter"), "matcher: /chatter not admitted by /chat");
+  ok(!isAllowedRead("/"), "matcher: bare root denied");
+  ok(!isAllowedRead(""), "matcher: empty denied");
+  ok(!isAllowedRead(undefined), "matcher: undefined denied");
+}
+{
+  // Deny-by-default means a route invented tomorrow is refused, not admitted.
+  const reviewer = mkAdmin(["leads:view:all", READONLY_PERMISSION]);
+  const r = await tryWrite(reviewer, "GET", "/some-route-added-next-year");
+  eq(r.allowed, false, "a route that did not exist when this list was written is DENIED");
+}
+{
+  // Containment: the allowlist must be invisible to everyone else.
+  const founder = mkAdmin(["*:*:all"]);
+  const sales = mkAdmin(["leads:view:own", "leads:edit:own"]);
+  const noPerms = mkAdmin([]);
+  for (const [who, a] of [["founder", founder], ["sales admin", sales], ["zero-permission admin", noPerms]]) {
+    eq((await tryWrite(a, "GET", "/task")).allowed, true, `${who} can still read /task (containment)`);
+    eq((await tryWrite(a, "GET", "/admin")).allowed, true, `${who} can still read /admin`);
+  }
 }
 
 console.log("\n2. DISCONNECT — the live @wedsy.in row must be unreachable by the reviewer");
