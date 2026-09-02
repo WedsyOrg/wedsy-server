@@ -16,6 +16,14 @@ const VenueInvoiceSchema = new mongoose.Schema(
         category: { type: String, default: "other" },
         qty: { type: Number, default: 1 },
         unitPrice: { type: Number, default: 0 },
+        // ── PER-ROW TAX FACTS (document system) ───────────────────────────
+        // Filled at creation from the SAME derivation that builds totals
+        // (gstOnRow per payment piece; lineTaxable/lineGst per quoted line),
+        // so the tax-invoice layout can print taxable/CGST/SGST per row
+        // without re-deriving. Absent on invoices raised before this field
+        // existed — those rows render an em dash and the totals still hold.
+        taxable: { type: Number, default: null },
+        gst: { type: Number, default: null },
         perDay: { type: Boolean, default: false },
         day: { type: Number, default: null },
       },

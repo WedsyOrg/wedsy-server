@@ -611,4 +611,46 @@ const removeAdditionalBilling = async (req, res) => {
   }
 };
 
-module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, addAdditionalBilling, removeAdditionalBilling, MODES };
+// ── GET /venues/:slug/enquiries/:enquiryId/payments/:paymentId/receipt.pdf ──
+/**
+ * THE PAYMENT RECEIPT (document-system ruling 3). It did not exist: an
+ * invoice on production was captioned "Payment Receipt for advance amount" —
+ * the wrong document doing the job. A receipt records money RECEIVED (a
+ * payment, spanning however many instalments it touched, the split stated
+ * under each); a tax invoice evidences a supply. Rendered in the venue's
+ * chosen design language like every other document, streamed directly — a
+ * receipt is re-derivable from the booking at any time, so nothing is stored.
+ * Only APPROVED money gets a receipt: a pending claim is not received.
+ */
+const receiptPdf = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const venue = await Venue.findOne({ _id: req.venueOwner.venueId })
+      .select("name slug address formattedAddress contact phone email logo tagline gstin pan settings")
+      .lean();
+    const booking = await VenueBooking.findOne({ enquiry: lead._id }).lean();
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+    const summary = summarizeSchedule(booking);
+    const { buildVenueDocument } = require("../utils/docsystem");
+    const { loadLogoBuffer } = require("../utils/venuePdf");
+    const logoBuffer = await loadLogoBuffer(venue.logo);
+    const built = await buildVenueDocument("receipt", {
+      venue, lead, booking, summary, paymentId: req.params.paymentId, logoBuffer,
+    });
+    if (!built) {
+      return res.status(404).json({
+        message: "That payment is not on this booking, or is not approved yet — a receipt records money received.",
+        code: "no_receiptable_payment",
+      });
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="receipt-${String(req.params.paymentId).slice(-8)}.pdf"`);
+    return res.end(built.buffer);
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, addAdditionalBilling, removeAdditionalBilling, receiptPdf, MODES };

@@ -294,6 +294,9 @@ const createLeadInvoice = async (req, res) => {
           taxable += lineItems[i].unitPrice;
           gstTotal += g.gst;
         }
+        // the row keeps its own facts — the document prints, never re-derives
+        lineItems[i].taxable = g.bears ? lineItems[i].unitPrice : 0;
+        lineItems[i].gst = g.bears ? g.gst : 0;
       });
       const subtotal = lineItems.reduce((sum, li) => sum + li.unitPrice, 0);
       derivedGst = {
@@ -395,12 +398,10 @@ const createLeadInvoice = async (req, res) => {
     try {
       // For a payment invoice the "payment" the PDF describes is the first row
       // the money landed on — the document itself lists every line.
-      rendered = await buildInvoicePdf({
-        venue,
-        booking,
-        invoice,
-        payment: milestone || (paymentPieces.length ? paymentPieces[0].row : null),
-      });
+      const { buildVenueDocument } = require("../utils/docsystem");
+      const { loadLogoBuffer } = require("../utils/venuePdf");
+      const logoBuffer = await loadLogoBuffer(resolveBranding(venue).logo);
+      rendered = await buildVenueDocument("invoice", { venue, lead, booking, invoice, logoBuffer });
     } catch (e) {
       // The invoice row exists and has consumed its number; that is correct —
       // the tax record is the thing that matters and the PDF can be re-rendered.

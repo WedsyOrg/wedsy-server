@@ -179,7 +179,13 @@ const createStatement = async (req, res) => {
 
     let rendered;
     try {
-      rendered = await buildStatementPdf({ venue, booking, summary, invoices, lead });
+      // The document system renders the venue's chosen language; gstStated
+      // keeps its meaning (the statement names GST when the lines bear any).
+      const { buildVenueDocument } = require("../utils/docsystem");
+      const { loadLogoBuffer } = require("../utils/venuePdf");
+      const logoBuffer = await loadLogoBuffer(venue.logo);
+      const built = await buildVenueDocument("statement", { venue, lead, booking, summary, logoBuffer });
+      rendered = { buffer: built.buffer, gstStated: (built.data.totals.gst + built.data.totals.extrasGst) > 0 };
     } catch (e) {
       console.error(`[venueLeadStatement] render failed for lead ${lead._id}: ${e.message}`);
       return res.status(500).json({

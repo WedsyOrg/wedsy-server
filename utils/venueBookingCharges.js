@@ -72,6 +72,16 @@ function checkChargeMoney({ amount, gstTreatment, taxableAmount, refundable }, w
   if (!GST_TREATMENTS.includes(treatment)) {
     return { ok: false, message: `${where}: GST treatment must be one of ${GST_TREATMENTS.join(", ")}` };
   }
+  // ── HELD MONEY IS NEVER TAXED ─────────────────────────────────────────────
+  // The invariant says refundable is excluded from every GST base, but until
+  // this guard nothing REFUSED a refundable line carrying a treatment — and
+  // computeLineTotals taxes by treatment, so such a line would have taxed
+  // held money. No UI can produce the combination; the API could. Closed at
+  // the one validator both quote paths share (found by the document-system
+  // build, which asserts the invariant on rendered bytes).
+  if (refundable && treatment !== "none") {
+    return { ok: false, message: `${where}: a refundable line is held, never taxed — its GST treatment must be "none"` };
+  }
 
   let taxable = 0;
   if (treatment === "part") {
