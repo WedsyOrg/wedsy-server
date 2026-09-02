@@ -60,6 +60,8 @@ router.use("/tag", require("./tag"));
 router.use("/webhook", require("./webhook"));
 router.use("/webhook", require("./whatsappAgent"));
 router.use("/webhook", require("./instagramAgent"));
+// Authed read side of the IG agent (connected-account panel) — NOT the webhook.
+router.use("/instagram-agent", require("./instagramAgentAccount"));
 router.use("/vendor-personal-lead", require("./vendor-personal-lead"));
 router.use("/vendor-personal-package", require("./vendor-personal-package"));
 router.use("/community", require("./community"));
