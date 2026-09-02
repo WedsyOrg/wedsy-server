@@ -38,6 +38,7 @@ const bookingSettings = require("../controllers/venueBookingSettings");
 const leadInvoice = require("../controllers/venueLeadInvoice");
 const leadStatement = require("../controllers/venueLeadStatement");
 const leadPayment = require("../controllers/venueLeadPayment");
+const { bookingLineEdit, foldAdditionalBilling, unfoldAdditionalBilling } = require("../controllers/venueBookingMoney");
 const bookingConfirm = require("../controllers/venueBookingConfirmation");
 const checkin = require("../controllers/venueCheckin");
 const activityFeed = require("../controllers/venueActivityFeed");
@@ -260,6 +261,9 @@ router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/reject", venueOwner
 // Additional billing is money owed, so it sits behind the same capability as
 // the rest of the schedule and the same lead scope (404, never 403).
 router.post("/:slug/enquiries/:enquiryId/additional-billing", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.addAdditionalBilling);
+router.post("/:slug/enquiries/:enquiryId/booking-line-edit", venueOwnerAuth, requireCapability("bookings_money"), bookingLineEdit);
+router.post("/:slug/enquiries/:enquiryId/additional-billing/:rowId/fold", venueOwnerAuth, requireCapability("bookings_money"), foldAdditionalBilling);
+router.post("/:slug/enquiries/:enquiryId/additional-billing/:rowId/unfold", venueOwnerAuth, requireCapability("bookings_money"), unfoldAdditionalBilling);
 router.delete("/:slug/enquiries/:enquiryId/additional-billing/:rowId", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.removeAdditionalBilling);
 
 // ── BOOKING ENGINE S3: the booking confirmation document ────────────────────

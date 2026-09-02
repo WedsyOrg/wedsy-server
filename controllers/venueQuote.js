@@ -39,6 +39,36 @@ async function writeQuoteThrough(enquiryId, quote, actorId) {
   }
 }
 
+/**
+ * ── THE QUOTE DOOR, CLOSED (moneypost slice 1) ──────────────────────────────
+ * createDraftBookingForEnquiry returns the EXISTING booking even when it has
+ * been confirmed and its payment schedule built. Accepting a fresh quote
+ * version then let applyQuoteToBooking overwrite the confirmed booking's
+ * lineItems and totalValue with NO schedule reconciliation — the PATCH-time
+ * schedule guard never fires because paymentSchedule is not in that body —
+ * silently breaking Σ schedule === payable.
+ *
+ * The rule: once a booking has money structure (any schedule row), a quote
+ * acceptance may not rewrite it. The sanctioned path is the post-booking line
+ * edit, which absorbs the difference into the unpaid instalments with the
+ * owner confirming the before/after.
+ */
+async function refuseIfBookingHasSchedule(res, enquiryId) {
+  const VenueBooking = require("../models/VenueBooking");
+  const existing = await VenueBooking.findOne({ enquiry: enquiryId }).select("paymentSchedule status").lean();
+  if (existing && (existing.paymentSchedule || []).length > 0 && existing.status !== "cancelled") {
+    res.status(409).json({
+      message:
+        "This lead's booking is already confirmed and its payment schedule is built. " +
+        "Accepting a quote cannot rewrite it — edit the booking's lines from the Money tab; " +
+        "the difference absorbs into the unpaid instalments after you confirm the change.",
+      code: "booking_has_schedule",
+    });
+    return true;
+  }
+  return false;
+}
+
 async function resolveOwnedVenue(req, res, select = "_id") {
   const venue = await Venue.findOne({ slug: req.params.slug }).select(select).lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
@@ -291,6 +321,9 @@ const updateQuote = async (req, res) => {
     if (status === "accepted" && (!effItems || effItems.length === 0)) {
       return res.status(400).json({ message: "cannot accept a quote with no line items" });
     }
+    // Refused BEFORE any write: an acceptance that half-lands (quote flipped,
+    // booking untouched) would claim a deal state the booking does not hold.
+    if (status === "accepted" && (await refuseIfBookingHasSchedule(res, quote.enquiry))) return;
 
     // ── which math, decided from the EFFECTIVE items ────────────────────────
     // A legacy quote may be upgraded to lines by sending line-shaped items; a
@@ -353,6 +386,7 @@ const confirmBookingFromQuote = async (req, res) => {
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id });
     if (!quote) return res.status(404).json({ message: "Quote not found" });
     if (quote.status !== "accepted") return res.status(409).json({ message: `Quote is ${quote.status}, not accepted` });
+    if (await refuseIfBookingHasSchedule(res, quote.enquiry)) return;
     const enquiry = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, quote.enquiry);
     if (!enquiry) return res.status(404).json({ message: "Enquiry not found for this venue" });
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
@@ -376,4 +410,4 @@ const quotePdf = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf };
+module.exports = { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf, normalizeQuoteLines };

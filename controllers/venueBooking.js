@@ -173,18 +173,18 @@ const updateBooking = async (req, res) => {
         // included, since a stored schedule carries it as a paid row — must
         // total what the lines say is collected.
         const rows = Array.isArray(req.body.paymentSchedule) ? req.body.paymentSchedule : [];
-        const scheduled = rows.filter((r) => !(r && r.isAdditional)).reduce((s, r) => s + (Math.round(Number(r && r.amount)) || 0), 0);
-        const payable = lf.charged + lf.refundable;
-        if (scheduled !== payable) {
+        const { scheduleMismatch } = require("../utils/venueMoney");
+        const mm = scheduleMismatch(rows, lf);
+        if (mm) {
           return res.status(400).json({
             message:
-              `The schedule comes to ${inr(scheduled)}, but this booking collects ${inr(payable)}` +
+              `The schedule comes to ${inr(mm.scheduled)}, but this booking collects ${inr(mm.payable)}` +
               (lf.refundable > 0 ? ` (${inr(lf.charged)} charged plus ${inr(lf.refundable)} refundable held).` : `.`),
             code: "schedule_value_mismatch",
             bookingValue: lf.charged,
             refundableHeld: lf.refundable,
-            payable,
-            scheduledAmount: scheduled,
+            payable: mm.payable,
+            scheduledAmount: mm.scheduled,
           });
         }
       }

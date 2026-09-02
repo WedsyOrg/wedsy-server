@@ -76,6 +76,12 @@ const getLeadPayments = async (req, res) => {
       overdue: s.overdue,
       overdueTotal: s.overdueTotal,
       next: s.next,
+      // The BILL, on the same fetch (moneypost slice 2): the Quote tab edits
+      // these lines post-booking and the Payments tab spreads them — one load
+      // serving both tabs, per the audit's shared-state rule.
+      lines: booking.lineItems || [],
+      gstPercent: booking.gstPercent || 0,
+      bookingStatus: booking.status,
     });
   } catch (err) {
     return res.status(500).json({ message: err.message });
