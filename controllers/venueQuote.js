@@ -410,4 +410,4 @@ const quotePdf = async (req, res) => {
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
-module.exports = { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf };
+module.exports = { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf, normalizeQuoteLines };

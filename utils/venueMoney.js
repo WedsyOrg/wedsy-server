@@ -141,10 +141,28 @@ function invoiceViewOfLines(lines, gstPercent) {
   };
 }
 
+/**
+ * ── THE LINE-BOOKING SCHEDULE INVARIANT, IN ONE PLACE ───────────────────────
+ * Σ non-additional schedule rows === charged + refundable (what the couple
+ * pays for the AGREED deal; extras ride above it as isAdditional rows).
+ * The PATCH-time guard, the post-booking line edit and the fold all enforce
+ * this through THIS function — the standing rule about two implementations
+ * of one fact.
+ *
+ * @returns {null | {scheduled:number, payable:number}} null when consistent.
+ */
+function scheduleMismatch(rows, lineFigures) {
+  const payable = (Math.round(Number(lineFigures.charged)) || 0) + (Math.round(Number(lineFigures.refundable)) || 0);
+  const scheduled = (rows || [])
+    .filter((r) => !(r && r.isAdditional))
+    .reduce((s, r) => s + (Math.round(Number(r && r.amount)) || 0), 0);
+  return scheduled === payable ? null : { scheduled, payable };
+}
+
 // Format integer rupees as "₹1,12,100" (Indian grouping).
 function formatINR(amount) {
   const n = Math.round(Number(amount) || 0);
   return "₹" + n.toLocaleString("en-IN");
 }
 
-module.exports = { computeTotals, computeLineTotals, lineTaxable, invoiceViewOfLines, formatINR, GST_MODES };
+module.exports = { computeTotals, computeLineTotals, lineTaxable, invoiceViewOfLines, formatINR, GST_MODES, scheduleMismatch };

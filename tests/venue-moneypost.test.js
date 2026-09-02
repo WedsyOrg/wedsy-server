@@ -112,6 +112,72 @@ async function mkConfirmedBooking(lead, { schedule } = {}) {
     const c5 = classifyBooking({ lineItems: LINES, gstPercent: 18, paymentSchedule: [{ amount: 100000 }] }, { totals: { charged: 999999 } });
     eq(c5.quoteFingerprint, false, "…lines matching no accepted quote = other hand");
 
+    // ══ S3. POST-BOOKING LINE EDITS, ABSORBED INTO WHAT IS UNPAID ═══════════
+    const { planAbsorb, bookingLineEdit } = require("../controllers/venueBookingMoney");
+    console.log("\n[S3-A. planAbsorb — the arithmetic, proven without a database]");
+    const rowsFx = [
+      { amount: 100000, entries: [{ amount: 100000, status: "approved", date: new Date() }] }, // token, paid
+      { amount: 200000, entries: [] },
+      { amount: 250000, entries: [] },
+      { amount: 40000, isAdditional: true, entries: [] },
+    ];
+    let pl = planAbsorb(rowsFx, 650000);
+    ok(pl.ok, "increase to 650000 plans");
+    eq(pl.rows.map((r) => r.to).join(","), "100000,244444,305556", "🔴 token frozen; open rows absorb in outstanding shares; last row settles rounding");
+    eq(pl.rows.reduce((s, r) => s + r.to, 0), 650000, "🔴 Σ lands EXACTLY on the new payable — the guard holds by construction");
+    ok(pl.rows[0].frozen, "the paid token is frozen");
+    pl = planAbsorb(rowsFx, 450000);
+    eq(pl.rows.map((r) => r.to).join(","), "100000,155556,194444", "decrease shrinks the open rows between them");
+    pl = planAbsorb([
+      rowsFx[0],
+      { amount: 200000, entries: [{ amount: 50000, status: "approved", date: new Date() }] },
+      { amount: 250000, entries: [] },
+    ], 250000);
+    eq(pl.rows.map((r) => r.to).join(","), "100000,87500,62500", "🔴 a part-paid row never shrinks below what it received (floor 50000 held: 87500 ≥ 50000)");
+    pl = planAbsorb(rowsFx, 90000);
+    eq(pl.ok, false, "below collected refuses");
+    eq(pl.code, "refund_required", "…as a refund");
+    eq(pl.collected, 100000, "…naming what was collected");
+    pl = planAbsorb([rowsFx[0]], 200000);
+    eq(pl.code, "all_instalments_cleared", "every instalment cleared → the increase has nowhere to land");
+    pl = planAbsorb([rowsFx[0]], 100000);
+    ok(pl.ok && pl.rows.every((r) => r.to === r.from), "…but an equal total is a clean no-op");
+
+    console.log("\n[S3-B. the endpoint — preview, confirm, guard, write-back]");
+    const lead3 = await mkLead();
+    const bk3 = await mkConfirmedBooking(lead3);
+    const editReq = (body) => req({ params: { enquiryId: String(lead3._id) }, body });
+    const NEW_LINES = [
+      { label: "Venue hire", amount: 600000, gstTreatment: "full" },
+      { label: "Security deposit", amount: 50000, gstTreatment: "none", refundable: true },
+    ];
+    r = await call(bookingLineEdit, editReq({ lineItems: NEW_LINES }));
+    eq(r.code, 200, "preview answers");
+    eq(r.body.preview, true, "…and is a PREVIEW");
+    eq(r.body.agreed.from, 500000, "before: agreed 500000");
+    eq(r.body.agreed.to, 600000, "after: agreed 600000");
+    ok(r.body.rows.length === 3 && r.body.rows[0].frozen, "per-instalment before/after, token frozen");
+    let bCheck = await VenueBooking.findById(bk3._id).lean();
+    eq(bCheck.totalValue, 500000, "🔴 preview wrote NOTHING");
+    r = await call(bookingLineEdit, editReq({ lineItems: NEW_LINES, confirm: true }));
+    eq(r.code, 200, "confirm applies");
+    bCheck = await VenueBooking.findById(bk3._id).lean();
+    eq(bCheck.totalValue, 600000, "🔴 totalValue follows the lines");
+    eq(bCheck.lineItems[0].amount, 600000, "lines stored");
+    eq(bCheck.paymentSchedule.filter((x) => !x.isAdditional).reduce((s2, x) => s2 + x.amount, 0), 650000,
+      "🔴 Σ non-additional rows === new payable — invariant by construction");
+    eq(bCheck.paymentSchedule[0].amount, 100000, "the paid token row is untouched");
+    const lCheck = await VenueEnquiry.findById(lead3._id).lean();
+    eq(lCheck.estimatedValue, 600000, "🔴 estimatedValue write-back follows, like confirm's");
+    ok(lCheck.activities.some((x) => x.type === "booking_lines_edited"), "…and the act is on the trail");
+
+    r = await call(bookingLineEdit, editReq({ lineItems: [{ label: "Venue hire", amount: 40000, gstTreatment: "none" }], confirm: true }));
+    eq(r.code, 409, "reducing below what was collected refuses");
+    eq(r.body.code, "refund_required", "…as the refund case");
+    ok(/collected/.test(r.body.message) && /40,000/.test(r.body.message), "…naming both figures");
+    bCheck = await VenueBooking.findById(bk3._id).lean();
+    eq(bCheck.totalValue, 600000, "…and nothing moved");
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {
