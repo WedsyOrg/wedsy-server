@@ -1,38 +1,34 @@
 /**
  * utils/docsystem/languages.js — four token sets and seven recipes.
  *
- * A language is ONE object: its twelve owned values (LANGUAGES.md §2.1) and
- * the seven recipes (§2.2). The engine and the five document builders never
- * read a colour, size or margin directly and never branch on a language name
- * — everything a language may vary is expressed here, and nothing else is.
+ * REVISED (Sep 2026 handoff revision). The governing change, quoted:
+ * "Nothing is enclosed. No panel borders, no card fills, no bordered tags,
+ * no monogram box, no framed sheet. Emphasis is a heavier horizontal rule, a
+ * larger Times figure, or white space — never an outline. The only fills in
+ * the system are Panel's two full-bleed bands and its reversed table-head
+ * row, each spanning the full measure edge to edge, so nothing floats."
  *
- * The §3 adaptations are implemented as stated rules, not exceptions:
- *   · Ledger's rail is full-height when the body is one column (invoice,
- *     receipt — via `railMode` passed by the document's declared bodyKind),
- *     masthead-height when it is not;
- *   · Stationery × statement keeps the frame and centred masthead but
- *     left-aligns section labels and drops the hero to 32 (heroSizes);
- *   · Panel's dark is confined to masthead, table heads and the single
- *     reversed cell; its totals block is the tint slab with a 3px ink edge.
+ * What that removed here: the tint token, every measured fill, the monogram
+ * box, Stationery's double accent frame (frame() is identity in all four;
+ * Stationery regains the full 14mm measure), every emphasis box (now a
+ * single top rule whose WEIGHT is the emphasis), the refundable tag (now a
+ * "Refundable —" accent lead-in between dashed rules) and the extras fill
+ * (now accent rules above and below).
+ *
+ * A language is ONE object: its owned values (§2.1) and the seven recipes
+ * (§2.2). The engine and the five documents never read a colour or an owned
+ * size directly and never branch on a language name.
+ *
+ * The §3 adaptations remain stated rules: Ledger's rail is full-height when
+ * the body is one column, masthead-height when it is not; Stationery's
+ * statement states the outstanding at display size ONCE
+ * (heroSizes.statementClosing = null); Panel's dark is two full-bleed bands
+ * and the reversed table heads — the reversed amount blocks are gone
+ * (~6% ink, was ~9%).
  */
 const { A4, MM, TYPE, SPACE, WORDING } = require("./shared");
-const { trk } = require("./engine");
 
-// ── shared header fragments (drawn identically wherever a recipe wants them) ─
-function crestMark(R, cx, topY, size = 46) {
-  const { identity } = R;
-  if (identity.logoBuffer) {
-    try {
-      R.doc.image(identity.logoBuffer, cx - size / 2, topY, { fit: [size * 2.2, size], align: "center", valign: "center" });
-      return size;
-    } catch (_) { /* fall through to the drawn monogram */ }
-  }
-  R.box(cx - size / 2, topY, size, size, { weight: 0.75, color: R.T.accent });
-  R.doc.font("Times-Roman").fontSize(19).fillColor(R.T.accent);
-  R.doc.text(identity.monogram, cx - size / 2, topY + size / 2 - 9, { width: size, align: "center", characterSpacing: trk(19, 0.08) });
-  return size;
-}
-
+// ── shared header fragments ─────────────────────────────────────────────────
 function rulePair(R, x1, x2, y) {
   R.rule(x1, y, x2, 1.5, R.T.ink);
   R.rule(x1, y + 3, x2, 0.5, R.T.ink);
@@ -51,40 +47,49 @@ function footerLine(identity, meta) {
     + (meta.reference ? ` · ${meta.reference}` : "");
 }
 
+/**
+ * The centred mark. NO monogram box anywhere: a real logo sits ABOVE the
+ * name at 46px and the name drops one size; without a logo the name alone
+ * carries the mark, one size larger. Returns the y below the mark.
+ */
+function centredMark(R, top, { noLogo, withLogo, tracking }) {
+  const { identity, margin } = R;
+  let y = top;
+  if (identity.logoBuffer) {
+    try {
+      R.doc.image(identity.logoBuffer, A4.w / 2 - 60, y, { fit: [120, 46], align: "center", valign: "center" });
+      y += 46 + 8;
+    } catch (_) { /* a bad image falls back to the name alone */ }
+  }
+  const size = identity.logoBuffer ? withLogo : noLogo;
+  R.text(identity.name, { font: "Times-Roman", size, caps: true, tracking, x: margin, y, width: R.width, align: "center", advance: false });
+  return y + size * 1.05;
+}
+
 // ═══ CLASSIC ═════════════════════════════════════════════════════════════════
 const classic = {
   name: "classic",
   tokens: {
-    ink: "#191713", mid: "#6F6A61", hairline: "#DED9CF", accent: "#8A4F32", tint: "#F4F1EA",
+    ink: "#191713", mid: "#6F6A61", hairline: "#DED9CF", accent: "#8A4F32", tint: null,
     pageMargin: 14, contentInset: 0,
-    ruleWeights: { emphasis: 3, masthead: 1.5, tableTotal: 1, rowSep: 0.75, footer: 0.5 },
-    fillPolicy: "fills",
-    titleSize: 32, heroSizes: { statement: 38, receipt: 44 }, totalFigureSize: 28,
+    ruleWeights: { emphasis: 3, masthead: 1.5, tableTotal: 1, rowSep: 0.75, footer: 0.5, emphasisTop: 0.75 },
+    fillPolicy: "rules",
+    titleSize: 32, heroSizes: { statement: 38, receipt: 44, statementClosing: 30 }, totalFigureSize: 28,
     columnHead: { size: 8.5, tracking: 0.12 },
+    nameSizes: { noLogo: 26, withLogo: 23, tracking: 0.24 },
   },
   header(R) {
     const { identity, margin } = R;
     const top = 14 * MM;
-    const cx = A4.w / 2;
     const { left, right } = registrationLines(identity);
-    let crestBottom;
-    if (identity.logoBuffer || identity.monogram) {
-      const h = identity.logoBuffer ? crestMark(R, cx, top, 46)
-        : (crestMark(R, cx, top, 46), 46);
-      R.text(identity.name, { font: "Times-Roman", size: 23, caps: true, tracking: 0.20, x: margin, y: top + 46 + 8, width: R.width, align: "center", advance: false });
-      crestBottom = top + 46 + 8 + 23 * 1.05;
-    } else {
-      // Logo absent AND no monogram: the venue name at Times 28 in its place.
-      R.text(identity.name, { font: "Times-Roman", size: 28, caps: true, tracking: 0.20, x: margin, y: top + 10, width: R.width, align: "center", advance: false });
-      crestBottom = top + 10 + 28 * 1.05;
-    }
+    let markBottom = centredMark(R, top, classic.tokens.nameSizes);
     if (identity.tagline) {
-      R.text(identity.tagline, { size: 8, caps: true, tracking: 0.30, color: R.T.mid, x: margin, y: crestBottom + 5, width: R.width, align: "center", advance: false });
-      crestBottom += 5 + 9;
+      R.text(identity.tagline, { size: 8, caps: true, tracking: 0.30, color: R.T.mid, x: margin, y: markBottom + 5, width: R.width, align: "center", advance: false });
+      markBottom += 5 + 9;
     }
     R.text(left.join("\n"), { size: 9.5, color: R.T.mid, tracking: 0.03, lineGap: 3.5, x: margin, y: top + 2, width: R.width * 0.3, advance: false });
     R.text(right.join("\n"), { size: 9.5, color: R.T.mid, lineGap: 3.5, x: margin + R.width * 0.7, y: top + 2, width: R.width * 0.3, align: "right", advance: false });
-    return rulePair(R, margin, margin + R.width, crestBottom + 12);
+    return rulePair(R, margin, margin + R.width, markBottom + 12);
   },
   footer(R) {
     const y = A4.h - 14 * MM - 22;
@@ -96,8 +101,7 @@ const classic = {
   titleBlock(R, m) {
     R.gap(8);
     // a DENSE document (the statement) left-aligns its title — the one
-    // centred-title language honours the shared anatomy rule rather than
-    // centring a five-column document's opening
+    // centred-title language honours the shared anatomy rule
     const align = m.dense ? "left" : "center";
     R.text(m.eyebrow, { size: 8.5, caps: true, tracking: 0.28, color: R.T.accent, align });
     R.gap(9);
@@ -112,7 +116,7 @@ const classic = {
       R.text(m.refs.join("      "), { size: TYPE.reference, tracking: 0.04, color: R.T.mid, x, width: w, align });
     }
   },
-  frame() { /* identity */ },
+  frame() { /* identity — in all four languages */ },
   tableHead(R, { columns, colX, colW, x, width, y }) {
     const c = R.T.columnHead;
     columns.forEach((col, i) => {
@@ -122,31 +126,30 @@ const classic = {
     R.rule(x, yy, x + width, 1, R.T.ink);
     return yy + 1;
   },
+  // NO BOX in any language: the block is set apart by ONE top rule's weight
+  // and the Times figure, never an enclosure.
   emphasisBlock(R, draw, { x, width }) {
-    const startY = R.y;
+    R.rule(x, R.y, x + width, R.T.ruleWeights.emphasisTop, R.T.ink);
     R.gap(SPACE.panelPad);
-    draw(x + SPACE.panelPad, width - SPACE.panelPad * 2);
-    R.gap(SPACE.panelPad);
-    R.box(x, startY, width, R.y - startY, { weight: 1.5, color: R.T.ink });
+    draw(x, width);
+    R.gap(4);
   },
-  groupTreatment(R, kind, draw, estHeight) {
+  groupTreatment(R, kind, draw) {
     if (kind === "refundable") {
-      const y0 = R.y;
-      R.rule(R.margin, y0, R.margin + R.width, 0.75, R.T.accent, 3);
+      R.rule(R.margin, R.y, R.margin + R.width, 0.75, R.T.accent, 3);
       R.gap(9);
-      draw({ tagFilled: false });
+      draw({});
       R.gap(9);
       R.rule(R.margin, R.y, R.margin + R.width, 0.75, R.T.accent, 3);
       R.gap(1);
     } else {
-      R.measuredBlock(
-        () => { R.gap(SPACE.panelPad); draw({ inset: 14 }); R.gap(SPACE.panelPad); },
-        (y0, h) => {
-          R.doc.save().rect(R.margin, y0, R.width, h).fill(R.T.tint);
-          R.doc.rect(R.margin, y0, 3, h).fill(R.T.accent);
-          R.doc.restore();
-        }
-      );
+      // extras: solid accent rules above and below — no fill, no left edge
+      R.rule(R.margin, R.y, R.margin + R.width, 0.75, R.T.accent);
+      R.gap(SPACE.panelPad);
+      draw({ inset: 0 });
+      R.gap(SPACE.panelPad);
+      R.rule(R.margin, R.y, R.margin + R.width, 0.75, R.T.accent);
+      R.gap(1);
     }
   },
 };
@@ -156,28 +159,27 @@ const ledger = {
   name: "ledger",
   tokens: {
     ...classic.tokens,
-    ruleWeights: { emphasis: 3, masthead: 1.5, tableTotal: 0.5, rowSep: 0.75, footer: 0.5 },
-    fillPolicy: "rules", tint: null,
-    titleSize: 40, heroSizes: { statement: 42, receipt: 44 }, totalFigureSize: 28,
+    ruleWeights: { emphasis: 3, masthead: 1.5, tableTotal: 0.5, rowSep: 0.75, footer: 0.5, emphasisTop: 3 },
+    titleSize: 40, heroSizes: { statement: 42, receipt: 44, statementClosing: 30 }, totalFigureSize: 28,
     columnHead: { size: 8, tracking: 0.18 },
+    nameSizes: { noLogo: 22, withLogo: 19, tracking: 0.13 },
   },
   header(R) {
     const { identity, margin } = R;
     const top = 14 * MM;
     const { left, right } = registrationLines(identity);
-    // left crest stacked two lines, Times 19/0.13em
-    let nameBottom;
+    // the name stacked two lines at far left — no box, the name is the mark
+    let y = top;
     if (identity.logoBuffer) {
-      crestMark(R, margin + 23, top, 46);
-      nameBottom = top + 48;
-    } else {
-      const words = identity.name.split(" ");
-      const l1 = words.slice(0, Math.ceil(words.length / 2)).join(" ");
-      const l2 = words.slice(Math.ceil(words.length / 2)).join(" ");
-      R.text(l1, { font: "Times-Roman", size: 19, caps: true, tracking: 0.13, x: margin, y: top, width: R.width * 0.34, advance: false });
-      R.text(l2 || " ", { font: "Times-Roman", size: 19, caps: true, tracking: 0.13, x: margin, y: top + 21, width: R.width * 0.34, advance: false });
-      nameBottom = top + 42;
+      try { R.doc.image(identity.logoBuffer, margin, y, { fit: [100, 40] }); y += 44; } catch (_) { /* name alone */ }
     }
+    const size = identity.logoBuffer ? ledger.tokens.nameSizes.withLogo : ledger.tokens.nameSizes.noLogo;
+    const words = identity.name.split(" ");
+    const l1 = words.slice(0, Math.ceil(words.length / 2)).join(" ");
+    const l2 = words.slice(Math.ceil(words.length / 2)).join(" ");
+    R.text(l1, { font: "Times-Roman", size, caps: true, tracking: ledger.tokens.nameSizes.tracking, x: margin, y, width: R.width * 0.34, advance: false });
+    R.text(l2 || " ", { font: "Times-Roman", size, caps: true, tracking: ledger.tokens.nameSizes.tracking, x: margin, y: y + size + 3, width: R.width * 0.34, advance: false });
+    const nameBottom = y + size * 2 + 6;
     const railX = R.margin + R.width * 0.36;
     R.vrule(railX, top, top + 44, 0.75, R.T.hairline);
     R.text(left.join(" · "), { size: 9.5, color: R.T.mid, lineGap: 3, x: railX + 14, y: top + 2, width: R.width * 0.34, advance: false });
@@ -195,7 +197,6 @@ const ledger = {
     R.text(m.title, { font: "Times-Roman", size: R.T.titleSize, width: bodyW, lineGap: 2 });
     if (m.subject) { R.gap(6); R.text(m.subject, { size: TYPE.body, color: R.T.mid, width: bodyW }); }
     const leftBottom = R.y;
-    // the 30% reference rail behind a 0.75px vertical rule
     if (m.refs && m.refs.length) {
       const rx = R.margin + R.width - railW;
       R.vrule(rx - 12, y0 + 2, y0 + 2 + m.refs.length * 16, 0.75, R.T.hairline);
@@ -216,21 +217,12 @@ const ledger = {
     return yy + 1;
   },
   emphasisBlock(R, draw, { x, width }) {
-    // no box — a 3px ink top rule and open sides
-    R.rule(x, R.y, x + width, 3, R.T.ink);
+    R.rule(x, R.y, x + width, R.T.ruleWeights.emphasisTop, R.T.ink);
     R.gap(SPACE.panelPad);
     draw(x, width);
     R.gap(4);
   },
-  groupTreatment(R, kind, draw, estHeight) {
-    if (kind === "refundable") return classic.groupTreatment(R, kind, draw, estHeight);
-    // extras: 0.75px accent left edge, NO fill (fillPolicy: rules only)
-    const y0 = R.y;
-    R.gap(SPACE.panelPad);
-    draw({ inset: 14 });
-    R.gap(SPACE.panelPad);
-    R.vrule(R.margin, y0, R.y, 0.75, R.T.accent);
-  },
+  groupTreatment: classic.groupTreatment,
 };
 
 // ═══ STATIONERY ══════════════════════════════════════════════════════════════
@@ -238,40 +230,36 @@ const stationery = {
   name: "stationery",
   tokens: {
     ...classic.tokens,
-    pageMargin: 10, contentInset: 31.5,
-    ruleWeights: { emphasis: 0.75, masthead: 0.5, tableTotal: 0.75, rowSep: 0.5, footer: 0.5 },
-    fillPolicy: "rules", tint: null,
-    titleSize: 34, heroSizes: { statement: 32, receipt: 54 }, totalFigureSize: 32, totalFigureSizeDense: 30,
-    columnHead: { size: 8, tracking: 0.20 },
+    pageMargin: 14, contentInset: 0,
+    ruleWeights: { emphasis: 0.75, masthead: 0.5, tableTotal: 0.75, rowSep: 0.5, footer: 0.5, emphasisTop: 0.75 },
+    titleSize: 34, heroSizes: { statement: 34, receipt: 54, statementClosing: null }, totalFigureSize: 32, totalFigureSizeDense: 30,
+    columnHead: { size: 8.5, tracking: 0.16 },
+    nameSizes: { noLogo: 26, withLogo: 23, tracking: 0.24 },
   },
   header(R) {
     const { identity, margin } = R;
-    const top = R.T.pageMargin * MM + R.T.contentInset;
-    const cx = A4.w / 2;
-    let y = top;
-    if (identity.logoBuffer) { crestMark(R, cx, y, 28); y += 34; }
-    else if (identity.monogram) {
-      R.box(cx - 14, y, 28, 28, { weight: 0.75, color: R.T.accent });
-      R.doc.font("Times-Roman").fontSize(12).fillColor(R.T.accent);
-      R.doc.text(identity.monogram, cx - 14, y + 9, { width: 28, align: "center", characterSpacing: trk(12, 0.08) });
-      y += 34;
+    const top = 14 * MM;
+    let y = centredMark(R, top, stationery.tokens.nameSizes);
+    if (identity.tagline) {
+      R.text(identity.tagline, { size: 8, caps: true, tracking: 0.30, color: R.T.mid, x: margin, y: y + 5, width: R.width, align: "center", advance: false });
+      y += 5 + 9;
     }
-    const nameSize = identity.logoBuffer || identity.monogram ? 23 : 28;
-    R.text(identity.name, { font: "Times-Roman", size: nameSize, caps: true, tracking: 0.20, x: margin, y, width: R.width, align: "center", advance: false });
-    y += nameSize * 1.05 + 6;
     const reg = [identity.legalName, ...(identity.addressLines || []), identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null].filter(Boolean).join(" · ");
-    R.text(reg, { size: 8, caps: true, tracking: 0.18, color: R.T.mid, x: margin, y, width: R.width, align: "center", advance: false });
-    return y + 12; // no bottom rule — the frame provides it
+    R.text(reg, { size: 8, caps: true, tracking: 0.18, color: R.T.mid, x: margin, y: y + 6, width: R.width, align: "center", advance: false });
+    const bottom = y + 6 + 12 + 8;
+    // closed by a 0.5px ink rule — the frame is gone; this rule holds the line
+    R.rule(margin, bottom, margin + R.width, 0.5, R.T.ink);
+    return bottom + 1;
   },
   footer(R) {
-    const y = A4.h - R.T.pageMargin * MM - R.T.contentInset - 14;
+    const y = A4.h - 14 * MM - 20;
     R.rule(R.margin, y, R.margin + R.width, 0.5, R.T.hairline);
     R.text(`${footerLine(R.identity, R.meta)}   ·   ${WORDING.poweredBy.toUpperCase()}`, { size: 8.5, color: R.T.mid, x: R.margin, y: y + 6, width: R.width, align: "center", advance: false });
     return y;
   },
   titleBlock(R, m) {
     R.gap(6);
-    // the eyebrow between two rules
+    // the eyebrow between two accent rules
     const w = R.width * 0.5; const x = R.margin + (R.width - w) / 2;
     const midY = R.y + 5;
     R.rule(x, midY, x + w * 0.32, 0.75, R.T.accent);
@@ -286,8 +274,7 @@ const stationery = {
     }
     R.text(m.title, { font: "Times-Roman", size: R.T.titleSize, align: "center", lineGap: 2 });
     {
-      // "presented to" already names the client — repeating them in the
-      // subject line would say it twice on one masthead
+      // "presented to" already names the client — never say it twice
       const subject = m.presentedTo && m.subject && m.subject.includes(m.presentedTo) ? null : m.subject;
       if (subject) { R.gap(6); R.text(subject, { font: "Times-Italic", size: 13, color: R.T.mid, align: "center" }); }
     }
@@ -296,14 +283,7 @@ const stationery = {
       R.text(m.refs.join("   ·   "), { size: TYPE.reference, tracking: 0.04, color: R.T.mid, align: "center" });
     }
   },
-  frame(R) {
-    // 0.75px accent border, 4px gap, second border — re-drawn on EVERY page
-    const m = R.T.pageMargin * MM;
-    R.doc.save();
-    R.doc.rect(m, m, A4.w - m * 2, A4.h - m * 2).lineWidth(0.75).strokeColor(R.T.accent).stroke();
-    R.doc.rect(m + 4.75, m + 4.75, A4.w - (m + 4.75) * 2, A4.h - (m + 4.75) * 2).lineWidth(0.75).strokeColor(R.T.accent).stroke();
-    R.doc.restore();
-  },
+  frame() { /* identity — the double accent border was removed with the boxes */ },
   tableHead(R, { columns, colX, colW, x, width, y }) {
     const c = R.T.columnHead;
     columns.forEach((col, i) => {
@@ -314,41 +294,40 @@ const stationery = {
     return yy + 1;
   },
   emphasisBlock(R, draw, { x, width }) {
-    const startY = R.y;
+    R.rule(x, R.y, x + width, R.T.ruleWeights.emphasisTop, R.T.accent);
     R.gap(SPACE.panelPad);
-    draw(x + SPACE.panelPad, width - SPACE.panelPad * 2);
-    R.gap(SPACE.panelPad);
-    R.box(x, startY, width, R.y - startY, { weight: 0.75, color: R.T.accent });
+    draw(x, width);
+    R.gap(4);
   },
-  groupTreatment(R, kind, draw, estHeight) {
-    if (kind === "refundable") return classic.groupTreatment(R, kind, draw, estHeight);
-    return ledger.groupTreatment(R, kind, draw, estHeight); // accent left edge, no fill
-  },
+  groupTreatment: classic.groupTreatment,
 };
 
 // ═══ PANEL ═══════════════════════════════════════════════════════════════════
 const panel = {
   name: "panel",
   tokens: {
-    ink: "#17150F", mid: "#6B6455", hairline: "#C9BFA8", accent: "#8A6A2F", tint: "#F1ECE0",
+    ink: "#17150F", mid: "#6B6455", hairline: "#C9BFA8", accent: "#8A6A2F", tint: null,
     reverseInk: "#17150F", reverseText: "#F4EFE2", gold: "#A08040", goldOnDark: "#D8B264", dim: "#9C937F", darkRule: "#4A4437",
+    // the footer band's fill — one of the two full-bleed bands that, with the
+    // reversed table-head rows, are the only fills left in the system
+    bandFill: "#F1ECE0",
     pageMargin: 0, contentInset: 16 * MM,
-    ruleWeights: { emphasis: 3, masthead: 1, tableTotal: 0.75, rowSep: 0.5, footer: 0.5 },
-    fillPolicy: "fills",
-    titleSize: 32, heroSizes: { statement: 38, receipt: 44 }, totalFigureSize: 28,
+    ruleWeights: { emphasis: 3, masthead: 1, tableTotal: 0.75, rowSep: 0.5, footer: 0.5, emphasisTop: 3 },
+    fillPolicy: "bands",
+    titleSize: 32, heroSizes: { statement: 38, receipt: 44, statementClosing: 30 }, totalFigureSize: 28,
     columnHead: { size: 8, tracking: 0.18 },
+    nameSizes: { noLogo: 24, withLogo: 21, tracking: 0.18 },
   },
   header(R) {
-    // full-bleed reverseInk band, 20px × 16mm padding
     const { identity } = R;
     const padX = 16 * MM;
     const bandH = 84;
     R.doc.save().rect(0, 0, A4.w, bandH).fill(R.T.reverseInk).restore();
     if (identity.logoBuffer) {
       try { R.doc.image(identity.logoBuffer, padX, 20, { fit: [100, 44] }); } catch (_) { /* text fallback below */ }
-      R.text(identity.name, { font: "Times-Roman", size: 16, caps: true, tracking: 0.16, color: R.T.reverseText, x: padX + 112, y: 30, width: R.width * 0.5, advance: false });
+      R.text(identity.name, { font: "Times-Roman", size: panel.tokens.nameSizes.withLogo, caps: true, tracking: panel.tokens.nameSizes.tracking, color: R.T.reverseText, x: padX + 112, y: 30, width: R.width * 0.5, advance: false });
     } else {
-      R.text(identity.name, { font: "Times-Roman", size: identity.monogram ? 21 : 24, caps: true, tracking: 0.18, color: R.T.reverseText, x: padX, y: 24, width: R.width * 0.6, advance: false });
+      R.text(identity.name, { font: "Times-Roman", size: panel.tokens.nameSizes.noLogo, caps: true, tracking: panel.tokens.nameSizes.tracking, color: R.T.reverseText, x: padX, y: 24, width: R.width * 0.6, advance: false });
       if (identity.tagline) R.text(identity.tagline, { size: 8, caps: true, tracking: 0.30, color: R.T.gold, x: padX, y: 52, width: R.width * 0.6, advance: false });
     }
     const { left, right } = registrationLines(identity);
@@ -358,7 +337,7 @@ const panel = {
   footer(R) {
     const bandH = 34;
     const y = A4.h - bandH;
-    R.doc.save().rect(0, y, A4.w, bandH).fill(R.T.tint).restore();
+    R.doc.save().rect(0, y, A4.w, bandH).fill(panel.tokens.bandFill).restore();
     R.text(footerLine(R.identity, R.meta), { size: 9.5, color: R.T.mid, x: 16 * MM, y: y + 11, width: R.width * 0.72, advance: false });
     R.text(WORDING.poweredBy, { size: 8, caps: true, tracking: 0.22, color: R.T.mid, x: A4.w - 16 * MM - R.width * 0.4, y: y + 12, width: R.width * 0.4, align: "right", advance: false });
     return y;
@@ -382,6 +361,7 @@ const panel = {
   },
   frame() { /* the bands are the frame */ },
   tableHead(R, { columns, colX, colW, x, width, y }) {
+    // the one fill left inside the measure: a full-measure reversed band
     const c = R.T.columnHead;
     const h = c.size + 12;
     R.doc.save().rect(x, y, width, h).fill(R.T.reverseInk).restore();
@@ -391,37 +371,14 @@ const panel = {
     });
     return y + h + 2;
   },
-  // emphasisBlock assigned below — the tint slab with a 3px ink left edge
-  // (§3: the reversed block is reserved for the one number a document
-  // exists for), painted via measuredBlock so the slab is never short.
-  emphasisBlock: null,
-  groupTreatment(R, kind, draw, estHeight) {
-    if (kind === "refundable") {
-      const y0 = R.y;
-      R.rule(R.margin, y0, R.margin + R.width, 0.75, R.T.accent, 3);
-      R.gap(9);
-      draw({ tagFilled: true });
-      R.gap(9);
-      R.rule(R.margin, R.y, R.margin + R.width, 0.75, R.T.accent, 3);
-      R.gap(1);
-    } else {
-      return classic.groupTreatment.call(this, R, kind, draw, estHeight);
-    }
+  // the reversed amount blocks are GONE: a 3px ink rule and the Times figure
+  emphasisBlock(R, draw, { x, width }) {
+    R.rule(x, R.y, x + width, R.T.ruleWeights.emphasisTop, R.T.ink);
+    R.gap(SPACE.panelPad);
+    draw(x, width);
+    R.gap(4);
   },
-};
-
-// Panel's emphasisBlock must paint its slab BEFORE the content. Replace with
-// a measured two-pass: estimate via a dry layout is overkill — draw the slab
-// after by saving the region is wrong. Simplest correct: draw fill first
-// using the estHeight the caller supplies through R.emphasisBlock's ensure.
-panel.emphasisBlock = function emphasisBlock(R, draw, { x, width }) {
-  R.measuredBlock(
-    () => { R.gap(SPACE.panelPad); draw(x + SPACE.panelPad + 4, width - SPACE.panelPad * 2 - 4); R.gap(SPACE.panelPad); },
-    (y0, h) => {
-      R.doc.save().rect(x, y0, width, h).fill(panel.tokens.tint).restore();
-      R.doc.save().rect(x, y0, 3, h).fill(panel.tokens.ink).restore();
-    }
-  );
+  groupTreatment: classic.groupTreatment,
 };
 
 const LANGUAGES = { classic, ledger, stationery, panel };
