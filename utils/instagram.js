@@ -159,7 +159,17 @@ const sendInstagramDM = async (recipientId, message) => {
           })
         }
       );
-      if (!response.ok) throw new Error(`Instagram API error: ${response.status}`);
+      if (!response.ok) {
+        // Surface Meta's actual error body instead of a bare status. A 400 here
+        // is almost always diagnosable ONLY from the body — e.g. the standard
+        // access limitation (the app may message only users with a role on it
+        // until instagram_business_manage_messages is approved), an expired
+        // 24-hour window, or an unknown recipient id. Without this, every
+        // distinct cause logs the same useless "Instagram API error: 400".
+        // Mirrors the same fix already in utils/whatsapp.js.
+        const errBody = await response.text().catch(() => '');
+        throw new Error(`Instagram API error: ${response.status} ${errBody.slice(0, 300)}`);
+      }
       return await response.json();
     } catch (error) {
       attempt++;
@@ -237,7 +247,13 @@ const fetchConnectedInstagramAccount = async () => {
         `${IG_GRAPH_BASE_URL}/me?fields=user_id,username,profile_picture_url`,
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      if (!response.ok) throw new Error(`Instagram API error: ${response.status}`);
+      if (!response.ok) {
+        // Same reasoning as sendInstagramDM: an expired or revoked token and a
+        // malformed request both surface as a bare 400 otherwise, and this is
+        // the call behind the connected-account panel.
+        const errBody = await response.text().catch(() => '');
+        throw new Error(`Instagram API error: ${response.status} ${errBody.slice(0, 300)}`);
+      }
       const data = await response.json();
       if (!data || !data.username) throw new Error('Instagram API error: no username in /me response');
       return {
