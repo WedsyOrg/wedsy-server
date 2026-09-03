@@ -136,6 +136,7 @@ console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
     "/enquiry/123", "/lead-tasks?leadId=123", "/lead-tasks/abc",
     "/event", "/event/abc", "/event-mandatory-question",
     "/color", "/plan/themes",
+    "/admin/enquiries/abc/venue-journey",  // exact pattern, NOT the /admin prefix
     "/decor/drafts", "/decor/recently-used", "/decor/abc/analysis", "/decor-package/abc",
     // chats + lookups
     "/chat", "/stages", "/lead-source", "/saved-views", "/custom-field",
@@ -154,7 +155,6 @@ console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
     // Deliberate refusals that will look like bugs — pinned so nobody "fixes"
     // them by widening the list.
     "/admin", "/admin?assignable=true",       // staff directory: blocked by decision
-    "/admin/enquiries/abc/venue-journey",     // lives under /admin, stays blocked
     "/attendance", "/attendance/heartbeat",   // only /attendance/me is allowed
     "/settings",                              // only /settings/public is allowed
     "/plan/internal/1/snapshots",             // only /plan/themes is allowed
@@ -182,6 +182,31 @@ console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
     "matcher: /plan/themes allowed WITHOUT opening /plan");
   ok(!isAllowedRead("/settings/publicSecrets"),
     "matcher: /settings/publicSecrets not admitted by /settings/public");
+
+  // ── The venue-journey pattern must NEVER widen into the staff directory ──
+  // This entry is the single path admitted under /admin, and it is exactly the
+  // kind that gets loosened by accident later. Every assertion below is here to
+  // make that loosening fail loudly rather than ship.
+  ok(isAllowedRead("/admin/enquiries/6a12/venue-journey"),
+    "venue-journey: the real path is admitted");
+  ok(isAllowedRead("/admin/enquiries/abc-123/venue-journey?x=1"),
+    "venue-journey: query string ignored");
+  ok(!isAllowedRead("/admin"),
+    "venue-journey entry does NOT admit /admin (staff directory)");
+  ok(!isAllowedRead("/admin?assignable=true"),
+    "venue-journey entry does NOT admit /admin?assignable=true");
+  ok(!isAllowedRead("/admin/"),
+    "venue-journey entry does NOT admit /admin/");
+  ok(!isAllowedRead("/admin/venues/claims"),
+    "venue-journey entry does NOT admit the venue-ops surface");
+  ok(!isAllowedRead("/admin/enquiries"),
+    "venue-journey entry does NOT admit /admin/enquiries");
+  ok(!isAllowedRead("/admin/enquiries/x/venue-journey/extra"),
+    "venue-journey is EXACT — nothing may follow it");
+  ok(!isAllowedRead("/admin/enquiries/a/b/venue-journey"),
+    "venue-journey wildcard is ONE segment — it cannot span a slash");
+  ok(!isAllowedRead("/admin/venue-conversations/x/messages"),
+    "the sibling venue-conversations read stays blocked");
   ok(!isAllowedRead("/"), "matcher: bare root denied");
   ok(!isAllowedRead(""), "matcher: empty denied");
   ok(!isAllowedRead(undefined), "matcher: undefined denied");

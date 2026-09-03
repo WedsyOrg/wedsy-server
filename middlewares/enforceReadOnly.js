@@ -74,7 +74,10 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 //   GET /admin (and /admin?assignable=true) — the STAFF DIRECTORY. It stays
 //   blocked by explicit decision. The consequence is that the assignment
 //   dropdown on a lead renders empty, which is acceptable precisely because
-//   this account cannot assign anything anyway.
+//   this account cannot assign anything anyway. Note that
+//   /admin/enquiries/:id/venue-journey IS admitted, by exact pattern rather
+//   than by prefix — see READ_ALLOWLIST_PATTERNS. Admitting one path under
+//   /admin does not admit /admin.
 //
 //   POST /attendance/heartbeat — a write, refused by the method rule above, and
 //   the frontend polls it, so it will keep appearing in the logs. That noise is
@@ -137,6 +140,27 @@ const READ_ALLOWLIST = [
   "/tag",
 ];
 
+// EXACT PATH PATTERNS — for routes that must be admitted individually, without
+// their prefix coming with them.
+//
+// Only one entry, and the reason is specific. GET /admin/enquiries/:id/
+// venue-journey is enquiry-scoped data this account can already read; it is
+// caught only because it happens to live under /admin, and the result is a dead
+// panel on the main lead screen — the reviewer's first impression.
+//
+// It CANNOT be expressed in the prefix list above: an entry of "/admin" would
+// hand over the staff directory, which is refused by explicit decision, and the
+// variable id sits in the MIDDLE of the path so no prefix reaches past it.
+// Hence an anchored pattern: the whole path must match, the id segment cannot
+// contain a slash, and nothing may follow.
+//
+// If you add to this list, anchor it (^…$) and keep the wildcard to [^/]+. An
+// unanchored or greedy pattern here is exactly how "/admin/enquiries/:id/
+// venue-journey" quietly becomes "/admin".
+const READ_ALLOWLIST_PATTERNS = [
+  /^\/admin\/enquiries\/[^/]+\/venue-journey$/,
+];
+
 // Prefix match on the ORIGINAL url (the app mounts its router at "/", so
 // originalUrl maps straight onto the mount table in routes/router.js). req.path
 // is relative to whichever sub-router is running and would not.
@@ -145,10 +169,8 @@ const READ_ALLOWLIST = [
 // "/ta": a match must be the whole path or be followed by "/" or "?".
 const isAllowedRead = (originalUrl) => {
   const path = String(originalUrl || "").split("?")[0].replace(/\/+$/, "") || "/";
-  return READ_ALLOWLIST.some((entry) => {
-    if (path === entry) return true;
-    return path.startsWith(entry + "/");
-  });
+  if (READ_ALLOWLIST.some((entry) => path === entry || path.startsWith(entry + "/"))) return true;
+  return READ_ALLOWLIST_PATTERNS.some((re) => re.test(path));
 };
 
 // Exact string match, NOT permissionSatisfies(): a wildcard grant like `*:*:all`
@@ -200,4 +222,4 @@ const enforceReadOnly = async (req, res, next) => {
   }
 };
 
-module.exports = { enforceReadOnly, READONLY_PERMISSION, SAFE_METHODS, READ_ALLOWLIST, isAllowedRead };
+module.exports = { enforceReadOnly, READONLY_PERMISSION, SAFE_METHODS, READ_ALLOWLIST, READ_ALLOWLIST_PATTERNS, isAllowedRead };
