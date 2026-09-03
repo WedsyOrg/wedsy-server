@@ -120,13 +120,26 @@ console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
   const reviewer = mkAdmin(["leads:view:all", READONLY_PERMISSION]);
   const read = (url) => tryWrite(reviewer, "GET", url);
 
-  // What the reviewer MUST reach or the review fails.
+  // What the reviewer MUST reach or the review fails. Every entry here is a
+  // route the CRM frontend actually calls on one of the five screens a reviewer
+  // walks — read out of its authedFetch call sites, not guessed.
   for (const url of [
+    // app shell — a failure here breaks every screen, not one
     "/auth/admin", "/auth/admin/permissions", "/me",
+    "/settings/public", "/admin-notifications", "/attendance/me",
+    // Instagram panel + thread
     "/instagram-agent/connected-account", "/instagram-agent/connect",
-    "/enquiry", "/enquiry/123", "/enquiry?stage=new",
     "/wa/conversations", "/wa/conversations/abc/messages",
-    "/chat", "/stages", "/lead-source", "/saved-views",
+    // leads list
+    "/enquiry", "/enquiry?stage=new", "/enquiry/lifecycle-counts",
+    // lead DETAIL — without these a lead lists but will not open
+    "/enquiry/123", "/lead-tasks?leadId=123", "/lead-tasks/abc",
+    "/event", "/event/abc", "/event-mandatory-question",
+    "/color", "/plan/themes",
+    "/admin/enquiries/abc/venue-journey",  // exact pattern, NOT the /admin prefix
+    "/decor/drafts", "/decor/recently-used", "/decor/abc/analysis", "/decor-package/abc",
+    // chats + lookups
+    "/chat", "/stages", "/lead-source", "/saved-views", "/custom-field",
   ]) {
     eq((await read(url)).allowed, true, `ALLOW  GET ${url}`);
   }
@@ -137,8 +150,14 @@ console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
     "/admin", "/admin/", "/admin/venues/claims", // staff directory + venue ops
     "/project", "/settings", "/role", "/department", "/org", "/team", "/cs",
     "/payment", "/settlements/transfer", "/payroll", "/attendance", "/leave",
-    "/reimbursement", "/onboarding", "/plan", "/stats", "/my-work", "/escalations",
-    "/vendor", "/decor", "/order", "/notification",
+    "/reimbursement", "/onboarding", "/stats", "/my-work", "/escalations",
+    "/vendor", "/order", "/notification", "/quote-requests",
+    // Deliberate refusals that will look like bugs — pinned so nobody "fixes"
+    // them by widening the list.
+    "/admin", "/admin?assignable=true",       // staff directory: blocked by decision
+    "/attendance", "/attendance/heartbeat",   // only /attendance/me is allowed
+    "/settings",                              // only /settings/public is allowed
+    "/plan/internal/1/snapshots",             // only /plan/themes is allowed
   ]) {
     const r = await read(url);
     eq(r.allowed, false, `DENY   GET ${url}`);
@@ -155,6 +174,39 @@ console.log("\n1b. READ ALLOWLIST — deny by default, Sales only");
   ok(!isAllowedRead("/enquiry-secrets"), "matcher: sibling prefix NOT allowed (/enquiry-secrets)");
   ok(!isAllowedRead("/meeting-notes"), "matcher: /meeting-notes not admitted by /me");
   ok(!isAllowedRead("/chatter"), "matcher: /chatter not admitted by /chat");
+  ok(isAllowedRead("/settings/public") && !isAllowedRead("/settings"),
+    "matcher: /settings/public allowed WITHOUT opening /settings");
+  ok(isAllowedRead("/attendance/me") && !isAllowedRead("/attendance"),
+    "matcher: /attendance/me allowed WITHOUT opening /attendance");
+  ok(isAllowedRead("/plan/themes") && !isAllowedRead("/plan/internal/1/snapshots"),
+    "matcher: /plan/themes allowed WITHOUT opening /plan");
+  ok(!isAllowedRead("/settings/publicSecrets"),
+    "matcher: /settings/publicSecrets not admitted by /settings/public");
+
+  // ── The venue-journey pattern must NEVER widen into the staff directory ──
+  // This entry is the single path admitted under /admin, and it is exactly the
+  // kind that gets loosened by accident later. Every assertion below is here to
+  // make that loosening fail loudly rather than ship.
+  ok(isAllowedRead("/admin/enquiries/6a12/venue-journey"),
+    "venue-journey: the real path is admitted");
+  ok(isAllowedRead("/admin/enquiries/abc-123/venue-journey?x=1"),
+    "venue-journey: query string ignored");
+  ok(!isAllowedRead("/admin"),
+    "venue-journey entry does NOT admit /admin (staff directory)");
+  ok(!isAllowedRead("/admin?assignable=true"),
+    "venue-journey entry does NOT admit /admin?assignable=true");
+  ok(!isAllowedRead("/admin/"),
+    "venue-journey entry does NOT admit /admin/");
+  ok(!isAllowedRead("/admin/venues/claims"),
+    "venue-journey entry does NOT admit the venue-ops surface");
+  ok(!isAllowedRead("/admin/enquiries"),
+    "venue-journey entry does NOT admit /admin/enquiries");
+  ok(!isAllowedRead("/admin/enquiries/x/venue-journey/extra"),
+    "venue-journey is EXACT — nothing may follow it");
+  ok(!isAllowedRead("/admin/enquiries/a/b/venue-journey"),
+    "venue-journey wildcard is ONE segment — it cannot span a slash");
+  ok(!isAllowedRead("/admin/venue-conversations/x/messages"),
+    "the sibling venue-conversations read stays blocked");
   ok(!isAllowedRead("/"), "matcher: bare root denied");
   ok(!isAllowedRead(""), "matcher: empty denied");
   ok(!isAllowedRead(undefined), "matcher: undefined denied");

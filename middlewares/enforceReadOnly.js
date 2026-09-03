@@ -67,6 +67,24 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // /task, /admin (staff directory), /admin/venues, /project, /settings, /role,
 // /department, /org, /team, /cs, /payment, /settlements, /payroll, /attendance,
 // /leave, /reimbursement, /onboarding, /plan, /stats.
+//
+// TWO REFUSALS THAT ARE DELIBERATE AND WILL LOOK LIKE BUGS. Do not "fix" either
+// by adding it here:
+//
+//   GET /admin (and /admin?assignable=true) — the STAFF DIRECTORY. It stays
+//   blocked by explicit decision. The consequence is that the assignment
+//   dropdown on a lead renders empty, which is acceptable precisely because
+//   this account cannot assign anything anyway. Note that
+//   /admin/enquiries/:id/venue-journey IS admitted, by exact pattern rather
+//   than by prefix — see READ_ALLOWLIST_PATTERNS. Admitting one path under
+//   /admin does not admit /admin.
+//
+//   POST /attendance/heartbeat — a write, refused by the method rule above, and
+//   the frontend polls it, so it will keep appearing in the logs. That noise is
+//   the correct behaviour of a read-only account, not a defect. If it matters,
+//   the frontend stops polling it for this role; the guard does not soften.
+//   Note /attendance/me IS allowed — own attendance, read-only — while the rest
+//   of /attendance is not: the entry is the exact path, not the prefix.
 // ───────────────────────────────────────────────────────────────────────────
 const READ_ALLOWLIST = [
   // — the account's own session and identity —
@@ -77,11 +95,36 @@ const READ_ALLOWLIST = [
   // — the Instagram surface: the entire point of the review —
   "/instagram-agent",         // connected-account panel + GET /connect
 
+  // — app shell —
+  // Read by every screen before anything renders. Denying these does not hide
+  // data, it produces a visibly broken product — which is a worse outcome in
+  // front of a reviewer than any data question this allowlist exists to answer.
+  "/settings/public",         // public config; NOT /settings, which stays denied
+  "/admin-notifications",     // the bell; self-scoped to the caller (listMine)
+  "/attendance/me",           // own attendance only — the shell reads it on load
+
   // — leads, conversations, pipeline, chats —
   "/enquiry",
+  "/lead-tasks",              // lead DETAIL calls this; without it a lead cannot be opened
   "/wa",                      // the agent inbox (conversations + messages)
   "/chat",
   "/stages",                  // pipeline columns; the board renders nothing without them
+
+  // — the lead DETAIL screen —
+  // Every entry below is a route the CRM's lead-detail page actually calls
+  // (read out of the frontend's authedFetch call sites, not guessed). Without
+  // them a lead lists but will not open, which is the most visible possible
+  // failure in front of a reviewer.
+  "/event",                   // lead events; /event/:id is the detail panel
+  "/event-mandatory-question",
+  "/color",                   // décor pickers embedded in lead detail
+  "/plan/themes",             // planner theme catalogue (NOT /plan/internal/*)
+  // Décor catalogue and drafts. Store-side data rather than Sales, admitted
+  // deliberately: it is product catalogue, not client PII, and the lead-detail
+  // planner renders broken without it. Reads only — the method rule above still
+  // refuses every décor write.
+  "/decor",
+  "/decor-package",
 
   // — lookups the lead screens need to render filters and labels —
   // Config vocabularies, not client data. Without these the Sales screens load
@@ -97,6 +140,27 @@ const READ_ALLOWLIST = [
   "/tag",
 ];
 
+// EXACT PATH PATTERNS — for routes that must be admitted individually, without
+// their prefix coming with them.
+//
+// Only one entry, and the reason is specific. GET /admin/enquiries/:id/
+// venue-journey is enquiry-scoped data this account can already read; it is
+// caught only because it happens to live under /admin, and the result is a dead
+// panel on the main lead screen — the reviewer's first impression.
+//
+// It CANNOT be expressed in the prefix list above: an entry of "/admin" would
+// hand over the staff directory, which is refused by explicit decision, and the
+// variable id sits in the MIDDLE of the path so no prefix reaches past it.
+// Hence an anchored pattern: the whole path must match, the id segment cannot
+// contain a slash, and nothing may follow.
+//
+// If you add to this list, anchor it (^…$) and keep the wildcard to [^/]+. An
+// unanchored or greedy pattern here is exactly how "/admin/enquiries/:id/
+// venue-journey" quietly becomes "/admin".
+const READ_ALLOWLIST_PATTERNS = [
+  /^\/admin\/enquiries\/[^/]+\/venue-journey$/,
+];
+
 // Prefix match on the ORIGINAL url (the app mounts its router at "/", so
 // originalUrl maps straight onto the mount table in routes/router.js). req.path
 // is relative to whichever sub-router is running and would not.
@@ -105,10 +169,8 @@ const READ_ALLOWLIST = [
 // "/ta": a match must be the whole path or be followed by "/" or "?".
 const isAllowedRead = (originalUrl) => {
   const path = String(originalUrl || "").split("?")[0].replace(/\/+$/, "") || "/";
-  return READ_ALLOWLIST.some((entry) => {
-    if (path === entry) return true;
-    return path.startsWith(entry + "/");
-  });
+  if (READ_ALLOWLIST.some((entry) => path === entry || path.startsWith(entry + "/"))) return true;
+  return READ_ALLOWLIST_PATTERNS.some((re) => re.test(path));
 };
 
 // Exact string match, NOT permissionSatisfies(): a wildcard grant like `*:*:all`
@@ -160,4 +222,4 @@ const enforceReadOnly = async (req, res, next) => {
   }
 };
 
-module.exports = { enforceReadOnly, READONLY_PERMISSION, SAFE_METHODS, READ_ALLOWLIST, isAllowedRead };
+module.exports = { enforceReadOnly, READONLY_PERMISSION, SAFE_METHODS, READ_ALLOWLIST, READ_ALLOWLIST_PATTERNS, isAllowedRead };
