@@ -11,7 +11,7 @@
  *   • empty-content: retried ONCE (2 attempts, not 3), then extractorFailed
  *   • WA final failure → needsHumanQualification flag + AdminNotification
  *   • IG final failure → AdminNotification with the handle, NO lead created
- *   • user_signup_greet → Meta Cloud API template payload (1 body param);
+ *   • user_signup_greet → Meta template "user_signup_greet_wedsy" (1 body param);
  *     empty-variables template sends NO components (the 400 #132000 fix)
  */
 require("dotenv").config();
@@ -162,8 +162,13 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     mock.metaCalls.length = 0;
     NotificationService.send("user_signup_greet", { phone: "+911234567890", name: "Asha", variables: ["Asha"] });
     await sleep(400); // fire-and-forget settles
-    const greet = mock.metaCalls.find((c) => c.body?.template?.name === "user_signup_greet");
-    ok(!!greet, "user_signup_greet now sends via the Meta Cloud API (not AiSensy)");
+    // The trigger id is "user_signup_greet"; the APPROVED Meta template is named
+    // "user_signup_greet_wedsy". Asserting the template name specifically —
+    // sending the trigger id as the template name 400s (it does not exist).
+    const greet = mock.metaCalls.find((c) => c.body?.template?.name === "user_signup_greet_wedsy");
+    ok(!!greet, "user_signup_greet sends via Meta as template user_signup_greet_wedsy");
+    ok(!mock.metaCalls.some((c) => c.body?.template?.name === "user_signup_greet"),
+      "never sends the trigger id as a template name (no such template on Meta)");
     ok(greet && greet.body.template.components.length === 1 &&
        greet.body.template.components[0].type === "body" &&
        greet.body.template.components[0].parameters[0].text === "Asha",
