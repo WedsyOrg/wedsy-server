@@ -67,6 +67,21 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 // /task, /admin (staff directory), /admin/venues, /project, /settings, /role,
 // /department, /org, /team, /cs, /payment, /settlements, /payroll, /attendance,
 // /leave, /reimbursement, /onboarding, /plan, /stats.
+//
+// TWO REFUSALS THAT ARE DELIBERATE AND WILL LOOK LIKE BUGS. Do not "fix" either
+// by adding it here:
+//
+//   GET /admin (and /admin?assignable=true) — the STAFF DIRECTORY. It stays
+//   blocked by explicit decision. The consequence is that the assignment
+//   dropdown on a lead renders empty, which is acceptable precisely because
+//   this account cannot assign anything anyway.
+//
+//   POST /attendance/heartbeat — a write, refused by the method rule above, and
+//   the frontend polls it, so it will keep appearing in the logs. That noise is
+//   the correct behaviour of a read-only account, not a defect. If it matters,
+//   the frontend stops polling it for this role; the guard does not soften.
+//   Note /attendance/me IS allowed — own attendance, read-only — while the rest
+//   of /attendance is not: the entry is the exact path, not the prefix.
 // ───────────────────────────────────────────────────────────────────────────
 const READ_ALLOWLIST = [
   // — the account's own session and identity —
@@ -77,11 +92,36 @@ const READ_ALLOWLIST = [
   // — the Instagram surface: the entire point of the review —
   "/instagram-agent",         // connected-account panel + GET /connect
 
+  // — app shell —
+  // Read by every screen before anything renders. Denying these does not hide
+  // data, it produces a visibly broken product — which is a worse outcome in
+  // front of a reviewer than any data question this allowlist exists to answer.
+  "/settings/public",         // public config; NOT /settings, which stays denied
+  "/admin-notifications",     // the bell; self-scoped to the caller (listMine)
+  "/attendance/me",           // own attendance only — the shell reads it on load
+
   // — leads, conversations, pipeline, chats —
   "/enquiry",
+  "/lead-tasks",              // lead DETAIL calls this; without it a lead cannot be opened
   "/wa",                      // the agent inbox (conversations + messages)
   "/chat",
   "/stages",                  // pipeline columns; the board renders nothing without them
+
+  // — the lead DETAIL screen —
+  // Every entry below is a route the CRM's lead-detail page actually calls
+  // (read out of the frontend's authedFetch call sites, not guessed). Without
+  // them a lead lists but will not open, which is the most visible possible
+  // failure in front of a reviewer.
+  "/event",                   // lead events; /event/:id is the detail panel
+  "/event-mandatory-question",
+  "/color",                   // décor pickers embedded in lead detail
+  "/plan/themes",             // planner theme catalogue (NOT /plan/internal/*)
+  // Décor catalogue and drafts. Store-side data rather than Sales, admitted
+  // deliberately: it is product catalogue, not client PII, and the lead-detail
+  // planner renders broken without it. Reads only — the method rule above still
+  // refuses every décor write.
+  "/decor",
+  "/decor-package",
 
   // — lookups the lead screens need to render filters and labels —
   // Config vocabularies, not client data. Without these the Sales screens load
