@@ -7,7 +7,7 @@
  *
  * WHAT THIS SEEDS
  *   1. Role "Review Auditor" — exactly two permissions:
- *        leads:view:own      read the inbox and the Sales surface, OWN scope
+ *        leads:view:all      read the inbox and the Sales surface, ALL leads
  *        access:readonly:all the marker middlewares/enforceReadOnly.js keys on
  *   2. The admin meta-review@wedsy.in, carrying that role.
  *
@@ -15,13 +15,17 @@
  * that runs the reviewer's inbox is empty — safe and honest, just not yet
  * illustrative.
  *
- * WHY "own" SCOPE, AND WHY IT IS THE PRIVACY MECHANISM.
- * WAConversationService.listInbox intersects the caller's scope filter with the
- * conversation's linked lead, so `leads:view:own` resolves to
- * { assignedTo: <this admin> }. Nothing is assigned to this account, so it sees
- * nothing — and once the demo data lands it will see exactly that and no more.
- * Real client conversations are invisible by construction rather than by a
- * redaction layer, which is the whole reason this shape was chosen.
+ * SCOPE IS "all" — A DELIBERATE, RECORDED DECISION (2026-09-03, Rohaan).
+ * An earlier revision used leads:view:own plus seeded demo leads, so the
+ * reviewer saw only invented conversations. That was rejected: a reviewer must
+ * see genuine leads and conversations or the product reads as staged, and a
+ * staged-looking product is itself a review risk.
+ *
+ * THE COST IS REAL AND WAS ACCEPTED KNOWINGLY. leads:view:all means an external
+ * reviewer can read real client conversations — names, phone numbers, wedding
+ * dates, budgets — belonging to couples who did not consent to that. Do not
+ * quietly widen this further, and do not treat it as a precedent for other
+ * external accounts.
  *
  * THE ACCOUNT IS SAFE THE MOMENT IT EXISTS, which is the point of seeding it
  * before the demo data rather than after. It carries access:readonly:all, so
@@ -47,7 +51,7 @@ const CONFIRM = process.argv.includes("--confirm");
 const RESET_PASSWORD = process.argv.includes("--reset-password");
 
 const ROLE_NAME = "Review Auditor";
-const ROLE_PERMISSIONS = ["leads:view:own", "access:readonly:all"];
+const ROLE_PERMISSIONS = ["leads:view:all", "access:readonly:all"];
 const DEPARTMENT_NAME = "Sales";
 const EMAIL = "meta-review@wedsy.in";
 const DISPLAY_NAME = "Meta App Review";
@@ -86,12 +90,27 @@ const line = (s = "") => console.log(s);
     // ── 2. Role ─────────────────────────────────────────────────────────────
     let role = await Role.findOne({ name: ROLE_NAME, deletedAt: null });
     if (role) {
-      const missing = ROLE_PERMISSIONS.filter((p) => !(role.permissions || []).includes(p));
-      line(`[seed] role "${ROLE_NAME}" exists${missing.length ? ` — missing: ${missing.join(", ")}` : " with the right permissions"}`);
-      if (missing.length && CONFIRM) {
-        role.permissions = [...new Set([...(role.permissions || []), ...ROLE_PERMISSIONS])];
-        await role.save();
-        line(`[seed]   + granted ${missing.join(", ")}`);
+      // RECONCILE TO THE EXACT SET, not a union. The earlier version only added
+      // what was missing, which would leave a superseded grant (leads:view:own)
+      // sitting alongside its replacement (leads:view:all) forever. Harmless for
+      // scope resolution — the broadest grant wins — but a role's permission
+      // list is read by humans deciding what an account can do, and one that
+      // accumulates dead entries stops being trustworthy for that.
+      const current = [...(role.permissions || [])].sort();
+      const desired = [...ROLE_PERMISSIONS].sort();
+      const add = desired.filter((p) => !current.includes(p));
+      const drop = current.filter((p) => !desired.includes(p));
+      if (!add.length && !drop.length) {
+        line(`[seed] role "${ROLE_NAME}" exists with exactly the right permissions`);
+      } else {
+        line(`[seed] role "${ROLE_NAME}" exists — reconciling permissions`);
+        add.forEach((p) => line(`[seed]   + ${p}`));
+        drop.forEach((p) => line(`[seed]   - ${p}`));
+        if (CONFIRM) {
+          role.permissions = [...ROLE_PERMISSIONS];
+          await role.save();
+          line(`[seed]   applied`);
+        }
       }
     } else {
       line(`[seed] role "${ROLE_NAME}" will be CREATED with: ${ROLE_PERMISSIONS.join(", ")}`);

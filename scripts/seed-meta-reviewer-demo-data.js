@@ -36,14 +36,60 @@
  * Requires: the account from scripts/seed-meta-reviewer.js.
  *
  * Usage:
- *   node scripts/seed-meta-reviewer-demo-data.js            # dry run
- *   node scripts/seed-meta-reviewer-demo-data.js --confirm  # seed
+ *   node scripts/seed-meta-reviewer-demo-data.js                     # dry run
+ *   node scripts/seed-meta-reviewer-demo-data.js --confirm           # seed
+ *   node scripts/seed-meta-reviewer-demo-data.js --remove            # dry run the reversal
+ *   node scripts/seed-meta-reviewer-demo-data.js --remove --confirm  # delete what it created
  */
 require("dotenv").config();
 const mongoose = require("mongoose");
 
 const CONFIRM = process.argv.includes("--confirm");
+const REMOVE = process.argv.includes("--remove");
 const EMAIL = "meta-review@wedsy.in";
+
+// ── REVERSAL ────────────────────────────────────────────────────────────────
+// --remove deletes exactly what --confirm created, keyed on WHAT THE SEED
+// RECORDED, never on names. Two independent markers, both written by this
+// script and by nothing else:
+//
+//   Enquiry.additionalInfo.demoSeed === true
+//   Enquiry.additionalInfo.instagramId  starting "demo_ig_"
+//   WAConversation.phone / WAAgentMessage.phone  starting "demo_ig_"
+//
+// A lead must carry BOTH Enquiry markers to be touched. Matching on a name
+// like "Priya Raghavan" would be indefensible against a production database —
+// a real client could share it.
+//
+// THE CHILD ROWS ARE THE PART THAT IS EASY TO GET WRONG. Creating these leads
+// went through the real service layer, so it fired real side effects:
+// LeadIntakeService.afterCreate ran auto-assignment and notifyNewLead (an
+// AdminNotification to whichever real admin the round-robin picked), and
+// LeadOwnershipService.reassignOwner ran on top. Deleting only the Enquiry
+// would strand those rows pointing at an id that no longer resolves.
+//
+// So rather than guess which collections were written, this sweeps EVERY model
+// that references Enquiry and reports per-collection counts. The dry run prints
+// what it would delete, collection by collection, and deletes nothing.
+const DEMO_IG_PREFIX = "demo_ig_";
+const LEAD_MARKER = {
+  "additionalInfo.demoSeed": true,
+  "additionalInfo.instagramId": new RegExp("^" + DEMO_IG_PREFIX),
+};
+
+// Every model carrying a lead reference, with the field that holds it. Derived
+// from `grep -rn 'ref: "Enquiry"' models/` — kept explicit so a new model that
+// starts referencing leads is a visible omission here rather than a silent one.
+const LEAD_CHILDREN = [
+  ["Onboarding", "leadId"], ["LaneEntry", "leadId"], ["LeadTask", "leadId"],
+  ["PlanSnapshot", "leadId"], ["LeadPlan", "leadId"], ["Event", "leadId"],
+  ["LeadTeamMember", "leadId"], ["QuoteRequest", "leadId"], ["EscalationMark", "leadId"],
+  ["LeadActivityEvent", "leadId"], ["LeadPayment", "leadId"], ["VenueLeadAssist", "enquiry"],
+  ["DealDiscount", "leadId"], ["AdminNotification", "leadId"], ["LeadChatMessage", "leadId"],
+  ["PaymentMilestone", "leadId"], ["CalendarEvent", "leadId"], ["Project", "leadId"],
+  ["LeadStep", "leadId"], ["LeadInternalEvent", "leadId"], ["MoreOptionsRequest", "leadId"],
+  ["PaymentReminder", "leadId"], ["Followup", "leadId"], ["LeadLane", "leadId"],
+];
 
 // Demo conversations. Deliberately ordinary wedding enquiries: the reviewer has
 // to believe this is a working product, and invented names keep real clients
@@ -109,6 +155,62 @@ const line = (s = "") => console.log(s);
   const WAAgentMessageRepository = require("../repositories/WAAgentMessageRepository");
 
   try {
+    // ── --remove ────────────────────────────────────────────────────────────
+    if (REMOVE) {
+      const Enquiry_ = require("../models/Enquiry");
+      const WAConversation = require("../models/WAConversation");
+      const WAAgentMessage = require("../models/WAAgentMessage");
+
+      const leads = await Enquiry_.find(LEAD_MARKER, { _id: 1, name: 1, phone: 1, additionalInfo: 1 }).lean();
+      line(`[remove] leads carrying BOTH seed markers: ${leads.length}`);
+      for (const l of leads) {
+        line(`           ${l._id}  ${l.name}  (${l.additionalInfo && l.additionalInfo.instagramId})`);
+      }
+      if (!leads.length) {
+        line("[remove] nothing to remove — the markers match no rows here.");
+        return;
+      }
+      const leadIds = leads.map((l) => l._id);
+
+      // Count everything BEFORE deleting anything, so the dry run and the real
+      // run print the same ledger and a surprise shows up before a write.
+      const plan = [];
+      for (const [modelName, field] of LEAD_CHILDREN) {
+        let Model;
+        try { Model = require(`../models/${modelName}`); } catch (_) { continue; }
+        const n = await Model.countDocuments({ [field]: { $in: leadIds } });
+        if (n) plan.push({ label: `${modelName}.${field}`, n, Model, filter: { [field]: { $in: leadIds } } });
+      }
+      const convFilter = { phone: new RegExp("^" + DEMO_IG_PREFIX) };
+      const msgFilter = { phone: new RegExp("^" + DEMO_IG_PREFIX) };
+      const nConv = await WAConversation.countDocuments(convFilter);
+      const nMsg = await WAAgentMessage.countDocuments(msgFilter);
+      if (nConv) plan.push({ label: "WAConversation.phone(demo_ig_)", n: nConv, Model: WAConversation, filter: convFilter });
+      if (nMsg) plan.push({ label: "WAAgentMessage.phone(demo_ig_)", n: nMsg, Model: WAAgentMessage, filter: msgFilter });
+
+      line();
+      line("[remove] rows that would be deleted:");
+      for (const p of plan) line(`           ${String(p.n).padStart(4)}  ${p.label}`);
+      line(`           ${String(leads.length).padStart(4)}  Enquiry (the demo leads themselves)`);
+
+      if (!CONFIRM) {
+        line();
+        line("[remove] DRY RUN — nothing deleted. Re-run with --remove --confirm.");
+        return;
+      }
+
+      line();
+      for (const p of plan) {
+        const r = await p.Model.deleteMany(p.filter);
+        line(`  - ${p.label}: ${r.deletedCount} deleted`);
+      }
+      const r = await Enquiry_.deleteMany({ _id: { $in: leadIds } });
+      line(`  - Enquiry: ${r.deletedCount} deleted`);
+      line();
+      line("[remove] done.");
+      return;
+    }
+
     const admin = await Admin.findOne({ email: EMAIL }).lean();
     if (!admin) {
       console.error(`[demo] ${EMAIL} not found — run scripts/seed-meta-reviewer.js first.`);
@@ -154,12 +256,17 @@ const line = (s = "") => console.log(s);
         skipTargetValidation: true,
       });
 
-      // Customer turns through recordInbound (the live IG path's own call);
-      // Kiara's turns through the message repository, exactly as
-      // InstagramAgentService writes an assistant reply. Never sendText.
+      // MIRROR THE LIVE PATH EXACTLY. InstagramAgentService.receiveMessage does
+      // TWO things for a customer turn: saveMessage(..., 'user', ...) to persist
+      // the message, THEN recordInbound(...) to update conversation state. An
+      // earlier version of this script called only recordInbound, which updates
+      // the preview and counters but persists nothing — so the customer's half
+      // of every thread was silently dropped and the inbox rendered Kiara
+      // talking to herself. Keep both calls, in this order.
       let conversation = null;
       for (const [role, text] of thread.messages) {
         if (role === "user") {
+          await WAAgentMessageRepository.saveMessage(thread.igsid, "user", text);
           conversation = await WAConversationService.recordInbound(thread.igsid, text, "instagram");
         } else {
           await WAAgentMessageRepository.saveMessage(thread.igsid, "assistant", text);
