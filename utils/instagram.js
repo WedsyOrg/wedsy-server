@@ -119,7 +119,33 @@ const resolveAccessToken = async (instagramUserId = null) => {
   return process.env.INSTAGRAM_AGENT_PAGE_ACCESS_TOKEN || null;
 };
 
-const sendInstagramDM = async (recipientId, message) => {
+// ───────────────────────────────────────────────────────────────────────────
+// TWO SEND FUNCTIONS, AND THE SPLIT IS DELIBERATE.
+//
+// Meta's HUMAN AGENT tag lets a HUMAN reply to a customer-initiated thread for
+// 7 days, past the normal 24-hour window. Attaching it to an AUTOMATED reply is
+// a policy violation on the app that Instagram messaging, the OAuth connect
+// flow and app review all depend on.
+//
+// Kiara's replies reach the network through sendInstagramDM (see
+// InstagramAgentService.js — the automated path). Human replies reach it
+// through sendInstagramHumanAgentDM, and only from
+// WAConversationService.sendText, which refuses unless a human has explicitly
+// taken the conversation over (mode === "human", a 409 otherwise).
+//
+// The tag is therefore set INSIDE the human-agent function and nowhere else.
+// There is deliberately NO tag option on sendInstagramDM: an option is a thing
+// a caller can pass by mistake, and the mistake here is a policy breach on a
+// shared app. Two functions make it impossible rather than unlikely.
+//
+// If you are adding a third caller: automated or scheduled sends use
+// sendInstagramDM. Only a message a person typed, in a thread they took over,
+// may use the human-agent one.
+// ───────────────────────────────────────────────────────────────────────────
+
+// Shared transport for both. NOT exported: the extra envelope fields are
+// supplied by the two wrappers below, never by a caller.
+const postInstagramMessage = async (recipientId, message, envelope, label) => {
   const MAX_RETRIES = 2;
   let attempt = 0;
 
@@ -155,7 +181,9 @@ const sendInstagramDM = async (recipientId, message) => {
           },
           body: JSON.stringify({
             recipient: { id: recipientId },
-            message: { text: message }
+            message: { text: message },
+            // {} for an ordinary send; messaging_type + tag for a human agent.
+            ...envelope,
           })
         }
       );
@@ -186,13 +214,36 @@ const sendInstagramDM = async (recipientId, message) => {
         } catch (logErr) {
           console.error('[Instagram] Failed to log failure:', sanitizeError(logErr, token));
         }
-        console.error(`[Instagram] Failed after ${attempt} attempts:`, safe);
+        console.error(`[Instagram] ${label} failed after ${attempt} attempts:`, safe);
         return null;
       }
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
   }
 };
+
+// AUTOMATED sends (Kiara). No tag, ever — this is the path an agent reply takes,
+// and a message tag on an automated reply is a policy violation. Only valid
+// inside the 24-hour window; Meta rejects it outside, which is correct.
+const sendInstagramDM = async (recipientId, message) =>
+  postInstagramMessage(recipientId, message, {}, 'agent DM');
+
+// HUMAN AGENT sends. Carries messaging_type: "MESSAGE_TAG" + tag: "HUMAN_AGENT",
+// which is what permits a reply up to 7 days after the customer's last message.
+//
+// THE TAG IS A CLAIM ABOUT WHO IS TYPING. It asserts to Meta that a person, not
+// software, is answering. The claim is kept true structurally rather than by
+// convention: the only caller is WAConversationService.sendText, which throws
+// 409 unless a human has taken the conversation over, and that gate is what
+// makes the tag correct by construction. Do not call this from anywhere that
+// cannot make the same guarantee.
+const sendInstagramHumanAgentDM = async (recipientId, message) =>
+  postInstagramMessage(
+    recipientId,
+    message,
+    { messaging_type: 'MESSAGE_TAG', tag: 'HUMAN_AGENT' },
+    'human-agent DM'
+  );
 
 // Fetch an Instagram user's display name/username via the Graph API. The IG
 // message webhook carries only the scoped user id (no name), unlike WhatsApp —
@@ -483,6 +534,7 @@ const refreshLongLivedToken = async (currentToken, { logParams = null } = {}) =>
 
 module.exports = {
   sendInstagramDM,
+  sendInstagramHumanAgentDM,
   fetchInstagramProfile,
   fetchConnectedInstagramAccount,
   // OAuth + refresh
