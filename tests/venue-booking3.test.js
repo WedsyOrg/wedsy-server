@@ -157,6 +157,42 @@ const confirmBody = (date, extras = {}) => ({
     r = await call(bookings.confirmBookingFromLead, req({ params: { enquiryId: String(leadClash._id) }, body: confirmBody("2027-03-11") }));
     eq(r.code, 200, "🔴 an overlapping confirm still goes through — a warning, never a block");
 
+    // ══ 5. THE TURNAROUND DAY — shared boundary, not a date clash ═══════════
+    // windowDays claims every venue-day inclusive, so back-to-back events
+    // share the turnaround date. Found by DRIVING the wizard: two
+    // entire-window bookings on the same space 409'd on that date even though
+    // the overlap check had said "you can still confirm". The boundary day is
+    // now forgiven (row stays with the event that owns it); interior date
+    // clashes still refuse.
+    console.log("\n[5. the turnaround day]");
+    const IST = (s) => new Date(`${s}+05:30`);
+    const leadT1 = await mkLead({ checkIn: IST("2027-06-10T16:00:00"), checkOut: IST("2027-06-12T11:00:00") });
+    r = await call(bookings.confirmBookingFromLead, req({ params: { enquiryId: String(leadT1._id) }, body: confirmBody("2027-06-10") }));
+    eq(r.code, 200, "first event confirms (window 10→12 June)");
+    const t1Booking = await VenueBooking.findOne({ enquiry: leadT1._id }).lean();
+    eq(await VenueSpaceDate.countDocuments({ venue: venue._id, bookingRef: t1Booking._id, state: "booked" }), 3, "…claiming 10, 11, 12 June");
+
+    const leadT2 = await mkLead({ checkIn: IST("2027-06-12T09:00:00"), checkOut: IST("2027-06-14T11:00:00") });
+    r = await call(bookings.confirmBookingFromLead, req({ params: { enquiryId: String(leadT2._id) }, body: confirmBody("2027-06-13") }));
+    eq(r.code, 200, "🔴 the next event checks in ON the turnaround day — confirm goes through (the drive found this 409ing)");
+    const t2Booking = await VenueBooking.findOne({ enquiry: leadT2._id }).lean();
+    eq(t2Booking.status, "confirmed", "…and it is confirmed");
+    eq(await VenueSpaceDate.countDocuments({ venue: venue._id, bookingRef: t2Booking._id, state: "booked" }), 2, "🔴 it claims only 13 and 14 June — the boundary day is not re-claimed");
+    const boundaryRows = await VenueSpaceDate.find({ venue: venue._id, date: new Date("2027-06-12T00:00:00.000Z"), state: "booked" }).lean();
+    ok(boundaryRows.length === 1 && String(boundaryRows[0].bookingRef) === String(t1Booking._id),
+      "🔴 12 June stays owned by the event that checks out that morning");
+
+    const leadT3 = await mkLead({ checkIn: IST("2027-06-11T10:00:00"), checkOut: IST("2027-06-13T10:00:00") });
+    r = await call(bookings.confirmBookingFromLead, req({ params: { enquiryId: String(leadT3._id) }, body: confirmBody("2027-06-13") }));
+    eq(r.code, 409, "🔴 an INTERIOR date clash (11 June is mid-event for the first booking) still refuses");
+    ok(!(await VenueBooking.findOne({ enquiry: leadT3._id })), "…and the refused draft does not survive");
+
+    const leadT4 = await mkLead({ checkIn: IST("2027-06-08T10:00:00"), checkOut: IST("2027-06-10T11:00:00") });
+    r = await call(bookings.confirmBookingFromLead, req({ params: { enquiryId: String(leadT4._id) }, body: confirmBody("2027-06-08") }));
+    eq(r.code, 200, "🔴 the mirror: an event ENDING the morning the first begins also confirms");
+    const t4Booking = await VenueBooking.findOne({ enquiry: leadT4._id }).lean();
+    eq(await VenueSpaceDate.countDocuments({ venue: venue._id, bookingRef: t4Booking._id, state: "booked" }), 2, "…claiming only 8 and 9 June — 10 June stays with the event that starts that day");
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {

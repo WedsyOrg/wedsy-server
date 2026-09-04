@@ -986,9 +986,62 @@ const confirmBookingFromLead = async (req, res) => {
     for (const [key, t] of targetPairs) {
       if (!coveredKeys.has(key)) inserts.push({ venue: venue._id, space: t.space, date: t.day, state: "booked", bookingRef: booking._id, batchRef });
     }
-    if (inserts.length) {
+    // ── BOOKING 3: the turnaround day is shared, not contested ─────────────
+    // windowDays claims every venue-day of [checkIn, checkOut] inclusive, so
+    // the day one event checks out is also the day the next checks in — and
+    // the {venue, space, date} unique index can hold only one owner for it.
+    // Wedding resorts run one event at a time; back-to-back windows are the
+    // normal business. A conflicting row is therefore FORGIVEN when it is
+    // purely that boundary: the row belongs to another CONFIRMED, windowed
+    // booking whose check-out day is this booking's check-in day (or the
+    // mirror). The calendar row stays with the booking that already owns it —
+    // this booking simply doesn't claim that day. Whether the TIMES actually
+    // clear each other is the overlap warning's job (overlapCheck): the
+    // founder ruled it warns and the owner proceeds. Everything else —
+    // interior days, holds, owner blocks — still refuses exactly as before.
+    let rowsToInsert = inserts;
+    if (inserts.length && enquiry.checkIn && enquiry.checkOut) {
+      const days = windowDays(enquiry.checkIn, enquiry.checkOut);
+      const firstDay = days[0].getTime();
+      const lastDay = days[days.length - 1].getTime();
+      const conflictRows = await VenueSpaceDate.find({
+        venue: venue._id,
+        $or: inserts.map((i) => ({ space: i.space, date: i.date })),
+      }).select("space date state bookingRef").lean();
+      if (conflictRows.length) {
+        const refIds = [...new Set(conflictRows.filter((r) => r.bookingRef).map((r) => String(r.bookingRef)))];
+        const refBookings = await VenueBooking.find({ _id: { $in: refIds } }).select("checkIn checkOut status").lean();
+        const byId = new Map(refBookings.map((b) => [String(b._id), b]));
+        const forgiven = new Set();
+        let allForgiven = true;
+        for (const r of conflictRows) {
+          const t = new Date(r.date).getTime();
+          const other = r.bookingRef ? byId.get(String(r.bookingRef)) : null;
+          const otherDays = other && other.checkIn && other.checkOut ? windowDays(other.checkIn, other.checkOut) : [];
+          const ok =
+            r.state === "booked" &&
+            other &&
+            other.status === "confirmed" &&
+            otherDays.length > 0 &&
+            ((t === firstDay && otherDays[otherDays.length - 1].getTime() === t) ||
+              (t === lastDay && otherDays[0].getTime() === t));
+          if (ok) {
+            forgiven.add(`${r.space}|${t}`);
+          } else {
+            allForgiven = false;
+            break;
+          }
+        }
+        if (allForgiven) {
+          rowsToInsert = inserts.filter((i) => !forgiven.has(`${i.space}|${i.date.getTime()}`));
+        }
+        // Not all forgiven → leave rowsToInsert untouched and let insertMany
+        // hit the unique index: one refusal path, one rollback path.
+      }
+    }
+    if (rowsToInsert.length) {
       try {
-        await VenueSpaceDate.insertMany(inserts, { ordered: true });
+        await VenueSpaceDate.insertMany(rowsToInsert, { ordered: true });
       } catch (e) {
         // Roll back everything this request did to the calendar, then 409.
         await VenueSpaceDate.deleteMany({ batchRef });
@@ -1306,7 +1359,7 @@ const confirmBookingFromLead = async (req, res) => {
     await seedRunsheetForBooking(booking);
 
     // ── the lead graduates ──
-    const blockedCount = converted + inserts.length;
+    const blockedCount = converted + rowsToInsert.length;
     const summary =
       `BOOKED — ${blocks.length} function(s), ${blockedCount} date-space(s) blocked on the calendar.` +
       (token > 0 ? ` Token ₹${token.toLocaleString("en-IN")}${tokenModeLabel ? ` (${tokenModeLabel})` : ""}.` : "") +
