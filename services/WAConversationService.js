@@ -500,10 +500,36 @@ const sendText = async (conversationId, text, actorId, scopeFilter = {}) => {
     //
     // Either branch is a human send — the mode !== "human" check above already
     // threw 409 — so the claim is true wherever it is made.
-    const { sendInstagramDM, sendInstagramHumanAgentDM } = require("../utils/instagram");
-    sent = windowOpen
-      ? await sendInstagramDM(conversation.phone, clean)
-      : await sendInstagramHumanAgentDM(conversation.phone, clean);
+    const { sendInstagramDM, sendInstagramHumanAgentDM, HUMAN_AGENT_NOT_APPROVED } =
+      require("../utils/instagram");
+    if (windowOpen) {
+      sent = await sendInstagramDM(conversation.phone, clean);
+    } else {
+      // The human-agent send THROWS on failure so the reason survives. Without
+      // this the UI says "try again" for a refusal that retrying cannot fix —
+      // Meta gates the Human Agent tag behind App Review, and until that is
+      // approved every attempt returns the same 403.
+      try {
+        sent = await sendInstagramHumanAgentDM(conversation.phone, clean);
+      } catch (err) {
+        if (err && err.code === HUMAN_AGENT_NOT_APPROVED) {
+          throw httpError(
+            422,
+            "Instagram has not yet approved Wedsy's Human Agent access, so replies outside the 24-hour window cannot be delivered. This is pending Meta App Review — retrying will not help.",
+            {
+              // A named code and a boolean, NOT Meta's body. The client branches
+              // on `code`; `retryable: false` is what suppresses the retry
+              // button. Nothing from the upstream response travels with it.
+              code: HUMAN_AGENT_NOT_APPROVED,
+              retryable: false,
+              instagramPermissionRequired: true,
+            }
+          );
+        }
+        // Any other failure keeps the existing transient contract below.
+        sent = null;
+      }
+    }
   } else {
     sent = await sendWhatsAppText(conversation.phone, clean, process.env.WHATSAPP_AGENT_PHONE_NUMBER_ID);
   }

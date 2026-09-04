@@ -155,6 +155,77 @@ const resolveAccessToken = async (instagramUserId = null) => {
 };
 
 // ───────────────────────────────────────────────────────────────────────────
+// FAILURE CLASSIFICATION — which failures are worth asking Meta about twice.
+//
+// This replaces a `status >= 400 && status < 500` range rule. Ranges hide their
+// members: that one silently made 429 permanent (a rate limit is the textbook
+// TRANSIENT failure) while making 403 retryable on the send path, which is how
+// a Human Agent permission refusal cost three identical round trips.
+//
+// So every class is named, and classifyFailure is TOTAL — it returns a verdict
+// for every input including no status at all. The single most common production
+// failure, a timeout / ECONNRESET / DNS blip, carries NO status code, so a rule
+// written only over numbers decides it by accident. Here it is decided on
+// purpose: NO STATUS MEANS RETRYABLE, because the request may never have
+// reached Meta.
+//
+// The fallbacks are stated rather than implied: an unlisted 4xx is permanent
+// (a client error will not fix itself by being repeated), an unlisted 5xx is
+// retryable, and anything else is permanent so an odd response cannot become a
+// hammer.
+const PERMANENT_STATUSES = new Set([
+  400, // malformed request — identical retry gets an identical refusal
+  401, // unauthenticated — the token will not become valid in 2 seconds
+  403, // unauthorised / not approved — e.g. the Human Agent gate
+  404, // unknown recipient or endpoint
+]);
+const RETRYABLE_STATUSES = new Set([
+  408, // request timeout
+  429, // rate limited — retry, but only with backoff (see retryAfterMs)
+  500, 502, 503, 504, // Meta's problem, not ours
+]);
+
+const classifyFailure = (status) => {
+  // No status: transport-level (timeout, ECONNRESET, DNS, aborted). The request
+  // may never have been seen by Meta, so it is worth asking again.
+  if (status === undefined || status === null || status === 0) return 'retryable';
+  if (PERMANENT_STATUSES.has(status)) return 'permanent';
+  if (RETRYABLE_STATUSES.has(status)) return 'retryable';
+  if (status >= 500 && status < 600) return 'retryable';
+  if (status >= 400 && status < 500) return 'permanent';
+  return 'permanent';
+};
+
+// The named reason a human-agent send was refused for want of App Review.
+// Callers key off THIS, never off Meta's English, which Meta may reword.
+const HUMAN_AGENT_NOT_APPROVED = 'HUMAN_AGENT_NOT_APPROVED';
+
+// Meta's error `type` for this refusal. Matching is on TYPE + HTTP STATUS only.
+//
+// The numeric code/subcode is deliberately NOT matched: the production pm2 line
+// is truncated mid-key ("code" with the value cut off) and ssh to EC2 is
+// permission-gated here, so no complete body was available. Matching a code
+// nobody has read would be guessing. Tighten this to (type, code, subcode) once
+// a full body is in hand — the tests assert the constants, so the change is
+// one place and visible.
+const IG_API_EXCEPTION = 'IGApiException';
+
+// A send failure, carrying enough structure for a caller to decide what to tell
+// a human. `body` is NEVER attached — only these scalars, so nothing from
+// Meta's response can ride out to a client. See sanitizeError.
+class InstagramSendError extends Error {
+  constructor({ message, status, metaType, permissionRequired, retryable }) {
+    super(message);
+    this.name = 'InstagramSendError';
+    this.status = status;
+    this.metaType = metaType || null;
+    this.permissionRequired = !!permissionRequired;
+    this.retryable = !!retryable;
+    this.code = permissionRequired ? HUMAN_AGENT_NOT_APPROVED : null;
+  }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // TWO SEND FUNCTIONS, AND THE SPLIT IS DELIBERATE.
 //
 // Meta's HUMAN AGENT tag lets a HUMAN reply to a customer-initiated thread for
@@ -180,8 +251,8 @@ const resolveAccessToken = async (instagramUserId = null) => {
 
 // Shared transport for both. NOT exported: the extra envelope fields are
 // supplied by the two wrappers below, never by a caller.
-const postInstagramMessage = async (recipientId, message, envelope, label) => {
-  const MAX_RETRIES = 2;
+const postInstagramMessage = async (recipientId, message, envelope, label, { throwOnFailure = false, maxRetries = 2 } = {}) => {
+  const MAX_RETRIES = maxRetries;
   let attempt = 0;
 
   const token = await resolveAccessToken();
@@ -237,13 +308,41 @@ const postInstagramMessage = async (recipientId, message, envelope, label) => {
         // leading fragment of a live token reaches the log in plaintext.
         // Redacting the FULL body first means the exact rule sees the whole
         // token, and only redacted text is ever truncated.
-        const errBody = redactSecrets(await response.text().catch(() => ''), token);
-        throw new Error(`Instagram API error: ${response.status} ${errBody.slice(0, 300)}`);
+        const raw = await response.text().catch(() => '');
+        // Parse the STRUCTURED fields before redacting. type/code are small
+        // scalars a caller can branch on; the free text is redacted separately
+        // and is the only part that ever reaches a log. Nothing from `raw`
+        // leaves this block un-redacted.
+        let metaType = null;
+        try {
+          const parsed = JSON.parse(raw);
+          metaType = (parsed && parsed.error && parsed.error.type) || null;
+        } catch (_) { /* non-JSON body — status alone classifies it */ }
+        const errBody = redactSecrets(raw, token);
+        const err = new Error(`Instagram API error: ${response.status} ${errBody.slice(0, 300)}`);
+        err.status = response.status;
+        err.metaType = metaType;
+        // Meta's own backoff, when it sends one. Retrying a 429 on our own
+        // 2-second cadence just produces three rate limits instead of one.
+        const retryAfter = Number(response.headers && response.headers.get
+          ? response.headers.get('retry-after')
+          : null);
+        err.retryAfterMs = Number.isFinite(retryAfter) && retryAfter > 0
+          ? Math.min(retryAfter * 1000, 60000)
+          : null;
+        throw err;
       }
       return await response.json();
     } catch (error) {
       attempt++;
-      if (attempt > MAX_RETRIES) {
+      // A permission or malformed-request refusal cannot change between
+      // identical attempts. Giving up NOW is the whole fix: three round trips
+      // against a 403 is three chances to be rate-limited for no reason, and it
+      // delays the human being told the truth by four seconds of backoff.
+      const verdict = classifyFailure(error && error.status);
+      const giveUp = verdict === 'permanent' || attempt > MAX_RETRIES;
+
+      if (giveUp) {
         const safe = sanitizeError(error, token);
         try {
           await NotificationFailureLog.create({
@@ -256,13 +355,54 @@ const postInstagramMessage = async (recipientId, message, envelope, label) => {
         } catch (logErr) {
           console.error('[Instagram] Failed to log failure:', sanitizeError(logErr, token));
         }
-        console.error(`[Instagram] ${label} failed after ${attempt} attempts:`, safe);
+        console.error(
+          `[Instagram] ${label} failed after ${attempt} attempt(s) [${verdict}]:`,
+          safe
+        );
+        if (throwOnFailure) {
+          const permissionRequired =
+            error && error.status === 403 && error.metaType === IG_API_EXCEPTION;
+          throw new InstagramSendError({
+            // sanitizeError output only — never Meta's raw body.
+            message: safe,
+            status: error && error.status,
+            metaType: error && error.metaType,
+            permissionRequired,
+            retryable: verdict === 'retryable',
+          });
+        }
         return null;
       }
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Meta's Retry-After when offered, our own cadence otherwise.
+      const backoff = (error && error.retryAfterMs) || 2000;
+      await new Promise(resolve => setTimeout(resolve, backoff));
     }
   }
 };
+
+// ── RETRY ASYMMETRY BETWEEN THE TWO PATHS — deliberate, and temporary ──────
+// The automated path retries transient failures; the human path does not. The
+// two are not the same trade because the harm is not the same shape.
+//
+// A retry here is a BLIND RE-POST: nothing distinguishes "Meta never saw this"
+// from "Meta delivered it and we lost the receipt". A transport failure after
+// delivery therefore sends the message again — measured at up to three
+// identical DMs from one send, while WAAgentMessage records a single row, so
+// the customer sees three and the transcript shows one. See the idempotency
+// issue for the full measurement.
+//
+//   KIARA (automated): retries stay. A dropped reply means a lead is never
+//   answered and nobody notices — there is no human watching to try again. A
+//   duplicate is the lesser harm.
+//
+//   HUMAN: no retries, any failure class, one attempt. A person is sitting
+//   there. They can press send again knowingly, which is strictly better than
+//   us pressing it for them and maybe delivering three copies of a
+//   salesperson's message to a lead.
+//
+// THIS FLIPS BACK once the send path has an idempotency key: with one, a retry
+// is safe and the human path should retry like any other. Until then the
+// asymmetry is the mitigation.
 
 // AUTOMATED sends (Kiara). No tag, ever — this is the path an agent reply takes,
 // and a message tag on an automated reply is a policy violation. Only valid
@@ -284,7 +424,17 @@ const sendInstagramHumanAgentDM = async (recipientId, message) =>
     recipientId,
     message,
     { messaging_type: 'MESSAGE_TAG', tag: 'HUMAN_AGENT' },
-    'human-agent DM'
+    'human-agent DM',
+    // THROWS, unlike sendInstagramDM. Its single caller (sendText) has a human
+    // waiting for an answer and must be able to say WHY — "not approved yet" is
+    // a different thing from "try again". The automated path keeps returning
+    // null: Kiara has nobody to tell, and changing that contract would ripple.
+    //
+    // maxRetries: 0 — ONE attempt, every failure class, transient included. See
+    // the retry-asymmetry note above: a blind re-POST can deliver a
+    // salesperson's message to a lead twice or three times, and the person who
+    // sent it is right there and can decide for themselves.
+    { throwOnFailure: true, maxRetries: 0 }
   );
 
 // Fetch an Instagram user's display name/username via the Graph API. The IG
@@ -580,6 +730,10 @@ const refreshLongLivedToken = async (currentToken, { logParams = null } = {}) =>
 module.exports = {
   sendInstagramDM,
   sendInstagramHumanAgentDM,
+  classifyFailure,
+  HUMAN_AGENT_NOT_APPROVED,
+  IG_API_EXCEPTION,
+  InstagramSendError,
   fetchInstagramProfile,
   fetchConnectedInstagramAccount,
   // OAuth + refresh
