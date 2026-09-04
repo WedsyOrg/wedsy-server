@@ -18,6 +18,7 @@ const { buildVenueDocument, LANGUAGE_NAMES } = require("../utils/docsystem");
 const { computeLineTotals } = require("../utils/venueMoney");
 const { summarizeSchedule } = require("../utils/venuePaymentStatus");
 const { pdfFlat, pdfPagesText, normalise } = require("./docsystem-helpers");
+const { money } = require("../utils/docsystem/shared");
 
 const TAG = `docsys-${Date.now()}`;
 let pass = 0, fail = 0;
@@ -148,7 +149,16 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       has(pagesQ[i], "ARANYA ESTATE", `header on page ${i + 1}`);
       has(pagesQ[i], "POWERED BY WEDSY", `footer on page ${i + 1}`);
     }
-    if (pagesQ.length > 1) has(pagesQ[1], "LINE TOTAL", "the column head repeats on the overflow page");
+    // the revised header is shorter, so the fixture quote may no longer split
+    // ITS TABLE across the boundary — force a split with thirty lines and
+    // assert the head repeats where the table actually continues
+    {
+      const thirty = mkQuote(Array.from({ length: 30 }, (_, i) => ({ label: `Line ${i + 1} — service`, amount: 10000 + i, gstTreatment: i % 3 === 0 ? "full" : "none" })));
+      const q30 = await buildVenueDocument("quote", { venue, lead, quote: thirty }, { compress: false, language: "classic" });
+      const pages30 = pdfPagesText(q30.buffer);
+      ok(pages30.length >= 2, `thirty lines force a split (${pages30.length}p)`);
+      has(pages30[1], "LINE TOTAL", "the column head repeats on the overflow page");
+    }
 
     // ══ 4. CONFIRMATION ═════════════════════════════════════════════════════
     console.log("\n[4. confirmation: spaces, rooms, schedule]");
@@ -260,6 +270,49 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       const flatNo = pdfFlat(without.buffer);
       has(flatNo, "ARANYA ESTATE", `${type}: no logo → the venue name carries the crest`);
     }
+
+    // ══ 8b. NOTHING IS ENCLOSED — proven on the operators, not the intent ═══
+    console.log("\n[8b. the governing rule: no rectangles outside Panel's bands]");
+    // With compress:false a filled rectangle is a literal `re` op closed by
+    // `f`, and a stroked box is `re` closed by `S`. The revision's rule says
+    // the ONLY fills are Panel's two full-bleed bands and its reversed table
+    // heads, and NOTHING is outlined — so the rule-only languages must carry
+    // ZERO rect ops, and Panel must carry zero STROKED rects. (No-logo builds
+    // only: a logo image brings its own transform furniture.)
+    // a rect op is four numbers then `re` — anchored so hex text (whose
+    // digits include a–f) can never false-match
+    const rectFill = /(?:^|[\s])(?:[\d.]+ ){4}re\s*\n?\s*f[\s\n]/;
+    const rectStroke = /(?:^|[\s])(?:[\d.]+ ){4}re\s*\n?\s*S[\s\n]/;
+    for (const language of LANGUAGE_NAMES) {
+      for (const type of ["quote", "confirmation", "invoice", "statement", "receipt"]) {
+        const inputs = { venue, lead, booking, quote, summary, paymentId: P2, invoice: mkInvoice(`E ${language} ${type}`, 400000, 320000, 57600) };
+        const built = await buildVenueDocument(type, inputs, { compress: false, language });
+        const raw = built.buffer.toString("latin1");
+        if (language === "panel") {
+          ok(!rectStroke.test(raw), `panel × ${type}: no stroked rectangle anywhere`);
+        } else {
+          ok(!rectFill.test(raw) && !rectStroke.test(raw), `${language} × ${type}: zero rectangle ops — nothing filled, nothing boxed`);
+        }
+      }
+    }
+
+    // ══ 8c. THE REVISED STATEMENT CLOSING ═══════════════════════════════════
+    console.log("\n[8c. the closing reconciliation, full measure]");
+    const stC = await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" });
+    const flatC2 = pdfFlat(stC.buffer);
+    has(flatC2, "How the outstanding figure is arrived at", "the retitled closing block");
+    has(flatC2, "Charged — agreed lines", "…charged step");
+    has(flatC2, "Extras added since booking", "…extras step");
+    has(flatC2, "Refundable deposit held", "…refundable step");
+    has(flatC2, "GST at 18% — on the taxable", "…GST states its basis inline");
+    has(flatC2, "Received to date —", "…received states its basis inline");
+    {
+      const outStr = require("./docsystem-helpers").normalise(pdfFlat(stC.buffer));
+      const val = money(1904450 - summary.totals.received).replace("Rs. ", "Rs. ");
+      const count = outStr.split(val).length - 1;
+      ok(count === 2, `Outstanding appears exactly twice (${val} × ${count}) — the position line and the closing row`);
+    }
+    has(flatC2, "REFUNDABLE —", "the refundable lead-in replaces the tag (rendered caps)");
 
     // ══ 9. EVERY DOCUMENT IN EVERY LANGUAGE ═════════════════════════════════
     console.log("\n[9. twenty layouts, fixed wording everywhere]");

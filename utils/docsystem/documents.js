@@ -14,28 +14,15 @@ const {
 } = require("./shared");
 
 /**
- * The ONE number a document exists for gets the language's hero treatment,
- * read off TOKENS alone (LANGUAGES.md §3: Panel's dark is confined to the
- * masthead, the table heads and this single cell): reverseInk when the
- * language carries reverse tokens, tint when fills are its policy, plain
- * otherwise. No language names are read.
- */
-function heroCellStyle(R) {
-  if (R.T.reverseInk) return { fill: R.T.reverseInk, color: R.T.reverseText, sub: R.T.dim };
-  if (R.T.fillPolicy === "fills") return { fill: R.T.tint, color: R.T.ink, sub: R.T.mid };
-  return { fill: null, color: R.T.ink, sub: R.T.mid };
-}
-
-/**
  * One label/value row in a totals stack. Measures BOTH sides and advances by
  * the taller — the statement's closing box shipped overprinting itself
  * because a local helper advanced by a fixed 6px (walkthrough finding).
  */
-function kvRow(R, { x, width, label, value, figure = false, mid = false, gapAfter }) {
-  const size = figure ? R.T.totalFigureSize : TYPE.body;
+function kvRow(R, { x, width, label, value, figure = false, mid = false, gapAfter, figureSize, bold = false }) {
+  const size = figure ? (figureSize || R.T.totalFigureSize) : TYPE.body;
   const labelSize = figure ? TYPE.totalLabel : TYPE.body;
   const labelFont = figure ? "Times-Roman" : "Helvetica";
-  const valueFont = figure ? "Times-Roman" : "Helvetica";
+  const valueFont = figure ? "Times-Roman" : bold ? "Helvetica-Bold" : "Helvetica";
   // A FIGURE value takes the full measure right-aligned — "Rs. 14,82,500" at
   // Times 28 must never wrap in a narrow stack (it shipped wrapping, caught
   // on the confirmation's agreed-amount box). The label is short by contract.
@@ -122,21 +109,18 @@ function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
 function refundableBand(R, refundables) {
   if (!refundables.length) return;
   R.gap(10);
-  R.refundableBand(({ tagFilled }) => {
+  // No tag, no border, no fill (the revision's governing rule): the word
+  // "Refundable —" is an accent lead-in to the description, and the band is
+  // marked by the dashed accent rules the groupTreatment draws.
+  R.refundableBand(() => {
     for (const l of refundables) {
       const y0 = R.y;
-      const tagW = 76;
-      if (tagFilled) {
-        R.doc.save().rect(R.margin, y0 - 1, tagW, 14).fill(R.T.accent).restore();
-        R.text(WORDING.refundableTag, { size: 8, caps: true, tracking: 0.14, color: "#FFFFFF", x: R.margin + 4, y: y0 + 2, width: tagW - 8, align: "center", advance: false });
-      } else {
-        R.box(R.margin, y0 - 1, tagW, 14, { weight: 0.75, color: R.T.accent });
-        R.text(WORDING.refundableTag, { size: 8, caps: true, tracking: 0.14, color: R.T.accent, x: R.margin + 4, y: y0 + 2, width: tagW - 8, align: "center", advance: false });
-      }
-      R.text(l.label, { size: TYPE.cell, x: R.margin + tagW + 10, y: y0, width: R.width - tagW - 10 - 120, advance: false });
+      const leadIn = "Refundable — ";
+      R.text(leadIn, { size: 8.5, caps: true, tracking: 0.16, color: R.T.accent, x: R.margin, y: y0 + 2, width: 96, advance: false });
+      R.text(l.label, { size: TYPE.cell, x: R.margin + 96, y: y0, width: R.width - 96 - 120, advance: false });
       R.text(money(l.amount).replace("Rs. ", ""), { size: TYPE.cell, x: R.margin + R.width - 120, y: y0, width: 120, align: "right", advance: false });
       R.gap(16);
-      R.text(treatmentSubLine(l), { size: TYPE.subLine, color: R.T.mid, x: R.margin + tagW + 10, width: R.width - tagW - 10 });
+      R.text(treatmentSubLine(l), { size: TYPE.subLine, color: R.T.mid, x: R.margin + 96, width: R.width - 96 });
     }
   }, 40 * refundables.length);
 }
@@ -276,22 +260,13 @@ async function renderQuote(R, d) {
   const leftW = R.width - rightW - 18;
   let leftBottom = y0;
   if (d.inclusions && d.inclusions.length) {
-    R.measuredBlock(
-      () => {
-        R.gap(SPACE.panelPad);
-        R.text("What the price includes", { font: "Times-Italic", size: 13, x: R.margin + 14, width: leftW - 28 });
-        R.gap(6);
-        for (const inc of d.inclusions) {
-          R.text(`—  ${inc}`, { size: TYPE.fine, color: R.T.mid, lineGap: 2, x: R.margin + 14, width: leftW - 28 });
-          R.gap(3);
-        }
-        R.gap(SPACE.panelPad - 3);
-      },
-      (yy, h) => {
-        if (R.T.fillPolicy === "fills") R.doc.save().rect(R.margin, yy, leftW, h).fill(R.T.tint).restore();
-        else R.box(R.margin, yy, leftW, h, { weight: 0.75, color: R.T.hairline });
-      }
-    );
+    // plain — nothing is enclosed: a small-caps label and the list
+    R.text("What the price includes", { size: 8.5, caps: true, tracking: 0.2, color: R.T.mid, x: R.margin, width: leftW });
+    R.gap(8);
+    for (const inc of d.inclusions) {
+      R.text(inc, { size: TYPE.cell, lineGap: 4, x: R.margin, width: leftW });
+      R.gap(3);
+    }
     leftBottom = R.y;
   }
   R.y = y0;
@@ -338,22 +313,12 @@ async function renderConfirmation(R, d) {
   R.y = leftAfterSpaces;
   if (d.inclusions && d.inclusions.length) {
     R.gap(12);
-    R.measuredBlock(
-      () => {
-        R.gap(SPACE.panelPad);
-        R.text("Included in the agreed amount", { font: "Times-Italic", size: 13, x: R.margin + 14, width: leftW - 28 });
-        R.gap(6);
-        for (const inc of d.inclusions) {
-          R.text(`—  ${inc}`, { size: TYPE.fine, color: R.T.mid, lineGap: 2, x: R.margin + 14, width: leftW - 28 });
-          R.gap(3);
-        }
-        R.gap(SPACE.panelPad - 3);
-      },
-      (yy, h) => {
-        if (R.T.fillPolicy === "fills") R.doc.save().rect(R.margin, yy, leftW, h).fill(R.T.tint).restore();
-        else R.box(R.margin, yy, leftW, h, { weight: 0.75, color: R.T.hairline });
-      }
-    );
+    R.text("Included in the agreed amount", { size: 8.5, caps: true, tracking: 0.2, color: R.T.mid, x: R.margin, width: leftW });
+    R.gap(8);
+    for (const inc of d.inclusions) {
+      R.text(inc, { size: TYPE.cell, lineGap: 4, x: R.margin, width: leftW });
+      R.gap(3);
+    }
   }
   R.y = Math.max(R.y, rightBottom);
   R.gap(8);
@@ -459,30 +424,30 @@ async function renderStatement(R, d) {
   R.L.titleBlock(R, { ...d.titleMeta, dense: true });
   // top band: collectable / received / OUTSTANDING (the hero)
   R.gap(14);
-  R.ensure(110);
-  R.emphasisBlock((x, w) => {
-    const cellW = w / 3;
+  R.ensure(120);
+  {
+    // the position line: 0.75px ink rules above and below, open sides —
+    // nothing enclosed, no dividers, no fills; the hero is the Times figure
+    const x = R.margin, w = R.width;
+    R.rule(x, R.y, x + w, 0.75, R.T.ink);
+    R.gap(14);
     const y0 = R.y;
-    const heroStyle = heroCellStyle(R);
+    const widths = [0.34, 0.30, 0.36];
+    let cx = x;
     const cell = (i, label, figure, sub, hero) => {
-      const cx = x + cellW * i + (i ? 14 : 0);
-      const cw = cellW - (i ? 14 : 0) - 8;
-      if (hero && heroStyle.fill) {
-        R.doc.save().rect(cx - 10, y0 - 8, cw + 18, 88).fill(heroStyle.fill).restore();
-      }
-      const labelColor = hero ? heroStyle.sub : R.T.mid;
-      const figColor = hero ? heroStyle.color : R.T.ink;
-      R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: labelColor, x: cx, y: y0, width: cw, advance: false });
-      R.text(figure, { font: "Times-Roman", size: hero ? R.T.heroSizes.statement : 24, color: figColor, x: cx, y: y0 + 14, width: cw, advance: false });
-      if (sub) R.text(sub, { size: TYPE.subLine, color: hero ? (d.overdueTotal ? R.T.accent : heroStyle.sub) : R.T.mid, x: cx, y: y0 + 14 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
+      const cw = w * widths[i] - 14;
+      R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: hero ? R.T.ink : R.T.mid, x: cx, y: y0, width: cw, advance: false });
+      R.text(figure, { font: "Times-Roman", size: hero ? R.T.heroSizes.statement : 24, x: cx, y: y0 + 13, width: cw, advance: false });
+      if (sub) R.text(sub, { size: TYPE.subLine, color: hero && d.overdueTotal ? R.T.accent : R.T.mid, x: cx, y: y0 + 13 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
+      cx += w * widths[i];
     };
-    cell(0, "Total collectable", money(d.totals.collectable), `Agreed ${money(d.totals.charged + d.totals.refundable)} + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}`);
+    cell(0, "Total collectable", money(d.totals.collectable), `Agreed ${money(d.totals.charged + d.totals.refundable + d.totals.gst)} + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}`);
     cell(1, "Received to date", money(d.received), d.receivedSub);
     cell(2, "Outstanding", money(d.outstanding), d.overdueTotal ? `${money(d.overdueTotal)} of this is overdue` : "Nothing overdue", true);
-    R.vrule(x + cellW, y0 - 4, y0 + 72, 0.75, R.T.hairline);
-    R.vrule(x + cellW * 2, y0 - 4, y0 + 72, 1.5, R.T.ink);
-    R.y = y0 + 84;
-  }, { estHeight: 110 });
+    R.y = y0 + Math.max(R.T.heroSizes.statement, 24) + 34;
+    R.rule(x, R.y, x + w, 0.75, R.T.ink);
+    R.gap(2);
+  }
   R.sectionLabel(`The agreed lines — fixed at booking, ${dateProse(d.bookedOn)}`);
   R.text("Unchanged since the booking was confirmed", { size: TYPE.subLine, color: R.T.mid });
   R.gap(8);
@@ -510,70 +475,85 @@ async function renderStatement(R, d) {
   }
   R.sectionLabel("Schedule & payments received");
   scheduleTable(R, d.schedule, d.totals, { withState: true, payments: d.paymentSubRows });
-  // closing two-column row
+  // ── THE CLOSING RECONCILIATION — full measure, never beside the notes ──
+  // "How the outstanding figure is arrived at": one hairline row per step,
+  // the GST and Received rows stating their basis inline. Outstanding is at
+  // display size here and at the position line — exactly twice per document
+  // (Stationery states it once: heroSizes.statementClosing is null there and
+  // the row's figure stays at body weight).
   R.gap(SPACE.block);
-  R.ensure(250);
-  const y0 = R.y;
-  const rightW = R.width * 0.42;
-  const leftW = R.width - rightW - 18;
-  R.text(WORDING.gstSentence(d.totals.taxable, d.totals.gst), { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
-  if (d.totals.extrasGst) {
-    R.gap(5);
-    R.text(WORDING.gstSentence(Math.round(d.totals.extrasGst / 0.18), d.totals.extrasGst, "the extras"), { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
-  }
-  R.gap(5);
-  R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
-  if (d.contactLine) { R.gap(8); R.text(d.contactLine, { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 }); }
-  const leftBottom = R.y;
-  R.y = y0;
+  R.ensure(260);
+  R.text("How the outstanding figure is arrived at", { font: "Times-Italic", size: 15 });
+  R.gap(9);
   R.emphasisBlock((x, w) => {
-    const line = (label, value, opts = {}) => kvRow(R, { x, width: w, label, value, ...opts });
-    line("Charged", money(d.totals.charged), { mid: true });
-    if (d.totals.extrasAmount) line("Extras", money(d.totals.extrasAmount), { mid: true });
-    if (d.totals.refundable) line("Refundable held", money(d.totals.refundable), { mid: true });
-    R.gap(3);
-    line(WORDING.totalPayable, money(d.totals.payable), { figure: true });
-    if (d.totals.refundable) { R.text(WORDING.refundableHeld(d.totals.refundable), { size: TYPE.subLine, color: R.T.mid, x, width: w }); R.gap(7); }
-    line("GST at 18%", money(d.totals.gst + d.totals.extrasGst), { mid: true });
-    line("Received to date", `- ${money(d.received)}`, { mid: true });
-    R.gap(3);
-    line("Outstanding", money(d.outstanding), { figure: true });
-  }, { x: R.margin + R.width - rightW, width: rightW, estHeight: 240 });
-  R.y = Math.max(R.y, leftBottom);
-  closingRow(R, d.noteLines, d.signatory);
+    const step = (label, value, opts = {}) => {
+      kvRow(R, { x, width: w, label, value, ...opts });
+      if (!opts.noRule) { R.rule(x, R.y - 3, x + w, 0.5, R.T.hairline); R.gap(3); }
+    };
+    step("Charged — agreed lines", money(d.totals.charged));
+    if (d.totals.extrasAmount) step("Extras added since booking", money(d.totals.extrasAmount));
+    if (d.totals.refundable) step("Refundable deposit held", money(d.totals.refundable));
+    kvRow(R, { x, width: w, label: WORDING.totalPayable, value: money(d.totals.payable), figure: true, figureSize: 26, gapAfter: 3 });
+    if (d.totals.refundable) {
+      R.text(WORDING.refundableHeld(d.totals.refundable), { size: TYPE.subLine, color: R.T.mid, x, width: w });
+      R.gap(7);
+    }
+    R.rule(x, R.y - 3, x + w, 0.5, R.T.hairline); R.gap(3);
+    step(`GST at ${d.totals.pct}% — on the taxable ${money(d.totals.taxable + Math.round(d.totals.extrasGst / 0.18))} of the lines and extras`, money(d.totals.gst + d.totals.extrasGst));
+    step(`Received to date — ${d.receivedSub}`, `- ${money(d.received)}`);
+    kvRow(R, {
+      x, width: w, label: "Outstanding", value: money(d.outstanding),
+      figure: Boolean(R.T.heroSizes.statementClosing),
+      figureSize: R.T.heroSizes.statementClosing || undefined,
+      bold: !R.T.heroSizes.statementClosing,
+      gapAfter: 2,
+    });
+  }, { estHeight: 250 });
+  // the notes sit below, behind a 0.5px rule, at 74% measure
+  R.gap(12);
+  R.rule(R.margin, R.y, R.margin + R.width * 0.74, 0.5, R.T.hairline);
+  R.gap(8);
+  for (const n of [WORDING.neverInvoiced, ...(d.noteLines || [])].filter(Boolean)) {
+    R.ensure(30);
+    R.text(n, { size: TYPE.fine, color: R.T.mid, lineGap: 3, width: R.width * 0.74 });
+    R.gap(5);
+  }
 }
 
 // ═══ 5. PAYMENT RECEIPT ══════════════════════════════════════════════════════
 async function renderReceipt(R, d) {
   R.L.titleBlock(R, d.titleMeta);
   R.gap(14);
-  R.ensure(150);
-  // the 1.5px box split 46/54: amount on tint left, facts right
-  R.emphasisBlock((x, w) => {
-    const leftW = w * 0.46;
+  R.ensure(170);
+  {
+    // 0.75px ink rules above and below — nothing enclosed, no fill, no
+    // divider: the amount at the hero size IS the emphasis
+    const x = R.margin, w = R.width;
+    R.rule(x, R.y, x + w, 0.75, R.T.ink);
+    R.gap(SPACE.block);
     const y0 = R.y;
-    const heroStyle = heroCellStyle(R);
-    if (heroStyle.fill) R.doc.save().rect(x - 10, y0 - 10, leftW, 130).fill(heroStyle.fill).restore();
-    R.text("Amount received", { size: TYPE.fieldLabel, caps: true, tracking: 0.2, color: heroStyle.sub, x, y: y0, width: leftW, advance: false });
-    R.text(money(d.amount), { font: "Times-Roman", size: R.T.heroSizes.receipt, color: heroStyle.color, x, y: y0 + 16, width: leftW, advance: false });
-    R.text(amountInWords(d.amount), { size: TYPE.subLine, color: heroStyle.sub, x, y: y0 + 16 + R.T.heroSizes.receipt + 6, width: leftW - 12, lineGap: 2, advance: false });
-    const fx = x + leftW + 16;
-    const fw = w - leftW - 16;
+    const leftW = w * 0.46;
+    R.text("Amount received", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.ink, x, y: y0, width: leftW, advance: false });
+    R.text(money(d.amount), { font: "Times-Roman", size: R.T.heroSizes.receipt, x, y: y0 + 14, width: leftW, advance: false });
+    R.text(amountInWords(d.amount), { size: 11.5, color: R.T.mid, x, y: y0 + 14 + R.T.heroSizes.receipt + 6, width: leftW - 12, lineGap: 3, advance: false });
+    const fx = x + leftW + 20;
+    const fw = w - leftW - 20;
     let fy = y0;
     const fact = (label, value) => {
       if (!value) return;
-      R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x: fx, y: fy, width: fw, advance: false });
-      const h = R.text(value, { size: TYPE.cell, x: fx, y: fy + 11, width: fw, advance: false });
-      fy += 11 + h + 8;
+      R.text(label, { size: 12, color: R.T.mid, x: fx, y: fy, width: fw * 0.4, advance: false });
+      const h = R.text(value, { size: 12, x: fx + fw * 0.4, y: fy, width: fw * 0.6, align: "right", advance: false });
+      fy += Math.max(h, 13) + 6;
     };
     fact("Received on", dateProse(d.receivedOn));
     fact("Mode", d.mode);
     fact("Bank reference", d.reference);
     fact("From", d.from);
     fact("Credited to", d.creditedTo);
-    R.vrule(x + leftW + 8, y0, Math.max(fy - 4, y0 + 100), 0.75, R.T.hairline);
-    R.y = Math.max(y0 + 16 + R.T.heroSizes.receipt + 40, fy);
-  }, { estHeight: 160 });
+    R.y = Math.max(y0 + 14 + R.T.heroSizes.receipt + 34, fy) + 8;
+    R.rule(x, R.y, x + w, 0.75, R.T.ink);
+    R.gap(2);
+  }
   R.sectionLabel("What this payment was towards");
   const columns = [
     { key: "applied", label: "Applied to", width: 0.46 },
@@ -617,21 +597,16 @@ async function renderReceipt(R, d) {
   if (d.nextDue) { R.gap(6); R.text(d.nextDue, { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 }); }
   const leftBottom = R.y;
   R.y = y0;
-  R.measuredBlock(
-    () => {
-      R.gap(SPACE.panelPad);
-      R.text("A receipt, not a tax invoice", { font: "Times-Italic", size: 13, x: R.margin + R.width - rightW + 12, width: rightW - 24 });
-      R.gap(6);
-      R.text("This document records money received. Tax invoices are raised per instalment with GST on its taxable share.", { size: TYPE.fine, color: R.T.mid, lineGap: 3, x: R.margin + R.width - rightW + 12, width: rightW - 24 });
-      R.gap(6);
-      R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, lineGap: 3, x: R.margin + R.width - rightW + 12, width: rightW - 24 });
-      R.gap(SPACE.panelPad);
-    },
-    (yy, h) => {
-      if (R.T.fillPolicy === "fills") R.doc.save().rect(R.margin + R.width - rightW, yy, rightW, h).fill(R.T.tint).restore();
-      else R.box(R.margin + R.width - rightW, yy, rightW, h, { weight: 0.75, color: R.T.hairline });
-    }
-  );
+  {
+    const nx = R.margin + R.width - rightW;
+    R.rule(nx, R.y, nx + rightW, 0.5, R.T.hairline);
+    R.gap(9);
+    R.text("A receipt, not a tax invoice", { font: "Times-Italic", size: 13, x: nx, width: rightW, advance: false });
+    R.gap(20);
+    R.text("This document records money received. Tax invoices are raised per instalment with GST on its taxable share.", { size: TYPE.fine, color: R.T.mid, lineGap: 3, x: nx, width: rightW });
+    R.gap(6);
+    R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, lineGap: 3, x: nx, width: rightW });
+  }
   R.y = Math.max(R.y, leftBottom);
   closingRow(R, d.noteLines || [], d.signatory);
 }
