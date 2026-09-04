@@ -93,17 +93,37 @@ function identityFrom(venue, logoBuffer) {
   };
 }
 
+/**
+ * ── THE ROOMS LINE (BOOKING 3) ──────────────────────────────────────────────
+ * Printed ONLY from the booking's recorded allocation. When the rooms step
+ * was skipped the documents say NOTHING about rooms — never zero, and never
+ * the enquiry's ask (that is a request, not what the couple gets).
+ */
+function roomsLineOf(booking) {
+  const alloc = booking && booking.roomsAllocation;
+  if (!alloc || !(alloc.items || []).length) return null;
+  if (alloc.mode === "all") {
+    const total = alloc.items.reduce((s2, it) => s2 + it.count, 0);
+    return `All rooms (${total})`;
+  }
+  return alloc.items
+    .map((it) => (it.count === it.total ? `all ${it.total} ${it.name}` : `${it.count} of ${it.total} ${it.name}`))
+    .join(" · ");
+}
+
 function windowFacts(lead, booking, venueSpaces) {
   const checkIn = (booking && booking.checkIn) || (lead && lead.checkIn);
   const checkOut = (booking && booking.checkOut) || (lead && lead.checkOut);
   const hours = checkIn && checkOut ? Math.round((new Date(checkOut) - new Date(checkIn)) / 36e5) : null;
   const spaceNames = venueSpaces && venueSpaces.length ? venueSpaces.join(", ") : null;
-  const rooms = (lead && lead.requirements && lead.requirements.roomsNeeded) || (booking && booking.roomsRequired) || 0;
+  const rooms = roomsLineOf(booking);
   return [
     { label: "Check-in", value: dateTimeProse(checkIn) },
     { label: "Check-out", value: dateTimeProse(checkOut) },
     { label: "Total hours", value: hours ? `${hours} hours` : DASH },
-    { label: "Spaces & rooms", value: [spaceNames, rooms ? `${rooms} rooms` : null].filter(Boolean).join(" · ") || DASH },
+    rooms
+      ? { label: "Spaces & rooms", value: [spaceNames, rooms].filter(Boolean).join(" · ") }
+      : { label: "Spaces", value: spaceNames || DASH },
   ];
 }
 
@@ -144,7 +164,7 @@ function stateOf(row) {
 }
 
 // ── 1. QUOTE ────────────────────────────────────────────────────────────────
-function assembleQuote({ venue, lead, quote, logoBuffer }) {
+function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
   const pct = Number(quote.gstPercent) || 0;
   const lines = (quote.lineItems || []).map((l) => lineFigures(l, pct));
   const totals = documentTotals(quote.lineItems || [], [], pct);
@@ -174,7 +194,7 @@ function assembleQuote({ venue, lead, quote, logoBuffer }) {
         heldUntil ? `Held until ${dateProse(heldUntil)}` : null,
       ].filter(Boolean),
     },
-    facts: windowFacts(lead, null, null),
+    facts: windowFacts(lead, booking || null, booking ? spacesOf(booking) : null),
     priced: lines.filter((l) => !l.refundable),
     refundables: lines.filter((l) => l.refundable),
     totals,
@@ -221,7 +241,7 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
       refs: ["Booking Confirmation", `Confirmed ${dateProse(booking.createdAt)}`],
     },
     intro: "The booking amount has been received and the dates below are held exclusively. This page records the agreed amount and the plan for the balance.",
-    facts: windowFacts(lead, booking, null),
+    facts: windowFacts(lead, booking, spacesOf(booking)),
     spaces,
     priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
     refundables: isLegacy ? [] : lines.filter((l) => l.refundable),

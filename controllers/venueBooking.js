@@ -85,6 +85,66 @@ async function createDraftBookingForEnquiry(venueId, enquiry, ownerId) {
   }
 }
 
+// ── GET /venues/:slug/room-categories ───────────────────────────────────────
+// The wizard's rooms step: each category with its ceiling, so the owner sees
+// what "all rooms" means and what a count may not exceed.
+const getRoomCategories = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res, "_id rooms roomTypes");
+    if (!venue) return;
+    const { roomCategories } = require("../utils/venueRoomCategories");
+    return res.status(200).json({ categories: roomCategories(venue) });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── GET /venues/:slug/enquiries/:enquiryId/overlap-check ────────────────────
+/**
+ * BOOKING 3: one event at a time means a new event's CHECK-IN must not
+ * precede an existing event's CHECK-OUT. TIME-level, deliberately — the
+ * {venue, space, date} contention model is DATE-level and cannot express a
+ * same-day turnaround, which is legitimate here. The two COEXIST: this guard
+ * is PROPERTY-WIDE (the whole resort is one event); the space calendar stays
+ * date-level for blocking specific spaces. Do not unify them.
+ *
+ * A WARNING, NEVER A BLOCK (founder ruling): the response names the existing
+ * event and its check-out; the owner reads it and proceeds if they mean to.
+ * CONFIRMED bookings only — holds do not exist in this model. No minimum
+ * turnaround gap — owners manage that themselves.
+ */
+const overlapCheck = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res, "_id");
+    if (!venue) return;
+    const newIn = new Date(String(req.query.checkIn || ""));
+    const newOut = new Date(String(req.query.checkOut || ""));
+    if (Number.isNaN(newIn.getTime()) || Number.isNaN(newOut.getTime())) {
+      return res.status(400).json({ message: "checkIn and checkOut are required (ISO datetimes)" });
+    }
+    const others = await VenueBooking.find({
+      venue: venue._id,
+      status: "confirmed",
+      enquiry: { $ne: req.params.enquiryId },
+      checkIn: { $lt: newOut },
+      checkOut: { $gt: newIn },
+    }).select("coupleName checkIn checkOut").lean();
+    const fmt = (d) => {
+      const dt = new Date(d);
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const hh = String(dt.getHours()).padStart(2, "0");
+      const mm = String(dt.getMinutes()).padStart(2, "0");
+      return `${dt.getDate()} ${months[dt.getMonth()]} ${dt.getFullYear()}, ${hh}:${mm}`;
+    };
+    const overlaps = others.map((b) => ({
+      bookingId: b._id, coupleName: b.coupleName, checkIn: b.checkIn, checkOut: b.checkOut,
+      message:
+        `${b.coupleName || "An existing event"} runs until ${fmt(b.checkOut)} — this event's check-in ` +
+        `(${fmt(newIn)}) starts before they leave. Move this check-in after ${fmt(b.checkOut)}, ` +
+        `or shift their check-out, if the property cannot host both. You can still confirm.`,
+    }));
+    return res.status(200).json({ overlaps });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 const listBookings = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
@@ -646,6 +706,15 @@ const confirmBookingFromLead = async (req, res) => {
     const totalV = optNumber(body.totalValue, "totalValue");
     if (!totalV.ok) return res.status(400).json({ message: totalV.message });
 
+    // ── ROOMS PER CATEGORY (BOOKING 3) ──────────────────────────────────────
+    // A RECORD, not a reservation (founder ruling: one event at a time, rooms
+    // come with the event — no availability question, no hold, no block).
+    // Validated here with the other body checks so a bad count refuses before
+    // the calendar is touched. Absent = the step was skipped = nothing stored.
+    const { checkRoomsAllocation } = require("../utils/venueRoomCategories");
+    const roomsAllocV = checkRoomsAllocation(body.roomsAllocation, venue);
+    if (!roomsAllocV.ok) return res.status(400).json({ message: roomsAllocV.message, code: "rooms_allocation_invalid" });
+
     // ── A LINE BOOKING KNOWS ITS OWN VALUE (money lines S3) ─────────────────
     // A draft made from a LINE quote carries the quote's lines, and its value
     // is DERIVED from them — charged (revenue) plus the refundable held. The
@@ -917,9 +986,62 @@ const confirmBookingFromLead = async (req, res) => {
     for (const [key, t] of targetPairs) {
       if (!coveredKeys.has(key)) inserts.push({ venue: venue._id, space: t.space, date: t.day, state: "booked", bookingRef: booking._id, batchRef });
     }
-    if (inserts.length) {
+    // ── BOOKING 3: the turnaround day is shared, not contested ─────────────
+    // windowDays claims every venue-day of [checkIn, checkOut] inclusive, so
+    // the day one event checks out is also the day the next checks in — and
+    // the {venue, space, date} unique index can hold only one owner for it.
+    // Wedding resorts run one event at a time; back-to-back windows are the
+    // normal business. A conflicting row is therefore FORGIVEN when it is
+    // purely that boundary: the row belongs to another CONFIRMED, windowed
+    // booking whose check-out day is this booking's check-in day (or the
+    // mirror). The calendar row stays with the booking that already owns it —
+    // this booking simply doesn't claim that day. Whether the TIMES actually
+    // clear each other is the overlap warning's job (overlapCheck): the
+    // founder ruled it warns and the owner proceeds. Everything else —
+    // interior days, holds, owner blocks — still refuses exactly as before.
+    let rowsToInsert = inserts;
+    if (inserts.length && enquiry.checkIn && enquiry.checkOut) {
+      const days = windowDays(enquiry.checkIn, enquiry.checkOut);
+      const firstDay = days[0].getTime();
+      const lastDay = days[days.length - 1].getTime();
+      const conflictRows = await VenueSpaceDate.find({
+        venue: venue._id,
+        $or: inserts.map((i) => ({ space: i.space, date: i.date })),
+      }).select("space date state bookingRef").lean();
+      if (conflictRows.length) {
+        const refIds = [...new Set(conflictRows.filter((r) => r.bookingRef).map((r) => String(r.bookingRef)))];
+        const refBookings = await VenueBooking.find({ _id: { $in: refIds } }).select("checkIn checkOut status").lean();
+        const byId = new Map(refBookings.map((b) => [String(b._id), b]));
+        const forgiven = new Set();
+        let allForgiven = true;
+        for (const r of conflictRows) {
+          const t = new Date(r.date).getTime();
+          const other = r.bookingRef ? byId.get(String(r.bookingRef)) : null;
+          const otherDays = other && other.checkIn && other.checkOut ? windowDays(other.checkIn, other.checkOut) : [];
+          const ok =
+            r.state === "booked" &&
+            other &&
+            other.status === "confirmed" &&
+            otherDays.length > 0 &&
+            ((t === firstDay && otherDays[otherDays.length - 1].getTime() === t) ||
+              (t === lastDay && otherDays[0].getTime() === t));
+          if (ok) {
+            forgiven.add(`${r.space}|${t}`);
+          } else {
+            allForgiven = false;
+            break;
+          }
+        }
+        if (allForgiven) {
+          rowsToInsert = inserts.filter((i) => !forgiven.has(`${i.space}|${i.date.getTime()}`));
+        }
+        // Not all forgiven → leave rowsToInsert untouched and let insertMany
+        // hit the unique index: one refusal path, one rollback path.
+      }
+    }
+    if (rowsToInsert.length) {
       try {
-        await VenueSpaceDate.insertMany(inserts, { ordered: true });
+        await VenueSpaceDate.insertMany(rowsToInsert, { ordered: true });
       } catch (e) {
         // Roll back everything this request did to the calendar, then 409.
         await VenueSpaceDate.deleteMany({ batchRef });
@@ -1023,6 +1145,10 @@ const confirmBookingFromLead = async (req, res) => {
       // window would silently claim a day the couple never bought.
       booking.checkOut = endOfVenueDay(new Date(last));
     }
+    // The rooms record, snapshotted (names + ceilings) at this moment — the
+    // documents print from it, and a later type rename must not rewrite what
+    // the couple was told. null (skipped) stores nothing.
+    if (roomsAllocV.value) booking.roomsAllocation = roomsAllocV.value;
     // ── THE ROOMS LINE ─────────────────────────────────────────────────────
     // Quoted HERE: after the window exists (nights come from it) and before
     // totalValue is written below, so the rooms money is part of the value the
@@ -1233,7 +1359,7 @@ const confirmBookingFromLead = async (req, res) => {
     await seedRunsheetForBooking(booking);
 
     // ── the lead graduates ──
-    const blockedCount = converted + inserts.length;
+    const blockedCount = converted + rowsToInsert.length;
     const summary =
       `BOOKED — ${blocks.length} function(s), ${blockedCount} date-space(s) blocked on the calendar.` +
       (token > 0 ? ` Token ₹${token.toLocaleString("en-IN")}${tokenModeLabel ? ` (${tokenModeLabel})` : ""}.` : "") +
@@ -1288,5 +1414,7 @@ module.exports = {
   createBooking,
   updateBooking,
   confirmBookingFromLead,
+  getRoomCategories,
+  overlapCheck,
   updateBookingWindow,
 };

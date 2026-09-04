@@ -165,7 +165,10 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
     const conf = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
     const flatC = pdfFlat(conf.buffer);
     has(flatC, "Estate Lawn, Banyan Courtyard", "spaces allocated");
-    has(flatC, "18 rooms", "rooms on the fact strip");
+    // BOOKING 3 ruling: documents print rooms ONLY from the booking's
+    // recorded allocation — never the enquiry's ask, never zero. This
+    // fixture booking records nothing, so the fact strip says nothing.
+    hasNot(flatC, "18 rooms", "the enquiry's rooms ASK is not printed — only a recorded allocation is");
     has(flatC, "Booking amount — token", "the schedule's rows");
     has(flatC, "Sums exactly to total payable", "…and its proof row");
     has(flatC, "Rs. 14,82,500", "the agreed payable");

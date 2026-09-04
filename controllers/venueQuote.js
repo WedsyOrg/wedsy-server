@@ -410,7 +410,10 @@ const quotePdf = async (req, res) => {
     const { buildVenueDocument } = require("../utils/docsystem");
     const { loadLogoBuffer } = require("../utils/venuePdf");
     const logoBuffer = await loadLogoBuffer(venue.logo);
-    const built = await buildVenueDocument("quote", { venue, lead: enquiry, quote, logoBuffer });
+    // a booked lead's quote also prints the rooms RECORD off its booking
+    const bookingForDoc = enquiry ? await require("../models/VenueBooking").findOne({ enquiry: enquiry._id })
+      .select("roomsAllocation checkIn checkOut days").lean() : null;
+    const built = await buildVenueDocument("quote", { venue, lead: enquiry, quote, booking: bookingForDoc, logoBuffer });
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `inline; filename="quote-v${quote.version || 1}.pdf"`);
     return res.end(built.buffer);
