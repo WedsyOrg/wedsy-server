@@ -204,6 +204,41 @@ console.log("\n1. TOKEN LEAK — a forced failure must persist no fragment of th
   ok(ig.redactSecrets("Instagram API error: 404").includes("404"), "ordinary status codes survive redaction");
 }
 
+{
+  // ── TRUNCATION (regression, PR #188) ────────────────────────────────────
+  // #188 began logging up to 300 chars of Meta's error body. Slicing a raw body
+  // can CUT a token so that fewer than TOKEN_SHAPED's 32 characters survive:
+  // the fragment then matches neither the exact-secret rule (not the whole
+  // token) nor the shape rule (too short), and a leading fragment of a LIVE
+  // token reached NotificationFailureLog and the console in plaintext.
+  //
+  // Two fixes, both pinned here: the call sites redact BEFORE truncating, and
+  // redactSecrets now also catches fragments of a known secret. Either alone
+  // would close the reported case; both together mean a future truncation
+  // anywhere cannot reopen it.
+  reset();
+  process.env.INSTAGRAM_AGENT_PAGE_ACCESS_TOKEN = LIVE_TOKEN;
+
+  // Every fragment length across the shape-rule boundary.
+  for (const k of [8, 12, 16, 20, 24, 28, 31, 32, 40]) {
+    const prefix = '{"error":{"message":"';
+    const pad = 300 - prefix.length - 1 - k;
+    const body = prefix + "x".repeat(pad) + " " + LIVE_TOKEN + '","type":"OAuthException"}}';
+    const truncated = body.slice(0, 300);
+    // Proof the input really is dangerous, so the assertion cannot pass vacuously.
+    ok(CONTAINS_WINDOW(truncated, LIVE_TOKEN) !== null || k < 12,
+      `  (k=${k}) raw truncated body genuinely carries a token fragment`);
+    assertNoLeak(ig.redactSecrets(truncated, LIVE_TOKEN), LIVE_TOKEN,
+      `truncated body with ${k} surviving token chars leaks nothing`);
+  }
+
+  // The diagnostics #188 exists to preserve must still come through.
+  const diag = ig.redactSecrets('{"error":{"message":"(#10) Application does not have permission","code":10}}');
+  ok(/does not have permission/.test(diag), "Meta's error text survives redaction (#188's purpose is intact)");
+  ok(/"code":10/.test(diag), "…and its error code");
+  delete process.env.INSTAGRAM_AGENT_PAGE_ACCESS_TOKEN;
+}
+
 console.log("\n2. AUTHORIZE URL — Instagram Login, not Facebook Login");
 {
   reset();
