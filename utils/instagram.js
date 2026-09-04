@@ -38,6 +38,35 @@ const REDACTED = '[redacted]';
 // ~150+ chars) and the 32-char hex app secret both match; ordinary words,
 // numeric ids and HTTP status codes do not.
 const TOKEN_SHAPED = /[A-Za-z0-9_-]{32,}/g;
+// A run this long agreeing with a known secret is that secret, truncated. Set
+// to match the standard the leak tests assert (no 12-character window of a
+// credential may survive), so the two cannot drift apart.
+const FRAGMENT_MIN = 12;
+
+// Redact any leading-or-inner fragment of `secret` that appears in `text`,
+// extending each match as far as it keeps agreeing with the secret. Cheap: it
+// only scans when a FRAGMENT_MIN-length window of the secret is actually
+// present, which for ordinary log text is never.
+const redactFragments = (text, secret) => {
+  if (!secret || secret.length < FRAGMENT_MIN) return text;
+  let out = text;
+  for (let start = 0; start + FRAGMENT_MIN <= secret.length; start++) {
+    const probe = secret.slice(start, start + FRAGMENT_MIN);
+    let idx = out.indexOf(probe);
+    while (idx !== -1) {
+      // Extend the match rightwards for as long as it tracks the secret.
+      let len = FRAGMENT_MIN;
+      while (
+        start + len < secret.length &&
+        idx + len < out.length &&
+        out[idx + len] === secret[start + len]
+      ) len++;
+      out = out.slice(0, idx) + REDACTED + out.slice(idx + len);
+      idx = out.indexOf(probe, idx + REDACTED.length);
+    }
+  }
+  return out;
+};
 
 const redactSecrets = (input, extraSecrets = []) => {
   let text = typeof input === 'string' ? input : String(input == null ? '' : input);
@@ -54,6 +83,12 @@ const redactSecrets = (input, extraSecrets = []) => {
     text = text.split(secret).join(REDACTED);
     const encoded = encodeURIComponent(secret);
     if (encoded !== secret) text = text.split(encoded).join(REDACTED);
+    // 1b. TRUNCATED FRAGMENTS of a known secret. A caller that slices a message
+    //     containing a token can leave a partial one behind: too short for the
+    //     shape rule below, not equal to the secret so the exact rule misses it.
+    //     Anything that agrees with a known secret for FRAGMENT_MIN characters
+    //     is treated as that secret and redacted along its whole matching run.
+    text = redactFragments(text, secret);
   }
 
   // 2. Every query string, whole. This is the one that actually catches
@@ -167,7 +202,14 @@ const sendInstagramDM = async (recipientId, message) => {
         // 24-hour window, or an unknown recipient id. Without this, every
         // distinct cause logs the same useless "Instagram API error: 400".
         // Mirrors the same fix already in utils/whatsapp.js.
-        const errBody = await response.text().catch(() => '');
+        // REDACT BEFORE TRUNCATING — the order matters and is the whole fix.
+        // Slicing first can CUT a token so that fewer than TOKEN_SHAPED's 32
+        // characters survive: the fragment then matches neither the exact-secret
+        // rule (it is not the whole token) nor the shape rule (too short), and a
+        // leading fragment of a live token reaches the log in plaintext.
+        // Redacting the FULL body first means the exact rule sees the whole
+        // token, and only redacted text is ever truncated.
+        const errBody = redactSecrets(await response.text().catch(() => ''), token);
         throw new Error(`Instagram API error: ${response.status} ${errBody.slice(0, 300)}`);
       }
       return await response.json();
@@ -251,7 +293,10 @@ const fetchConnectedInstagramAccount = async () => {
         // Same reasoning as sendInstagramDM: an expired or revoked token and a
         // malformed request both surface as a bare 400 otherwise, and this is
         // the call behind the connected-account panel.
-        const errBody = await response.text().catch(() => '');
+        // Redact BEFORE truncating — see the note in sendInstagramDM. Slicing a
+        // raw body can leave a sub-32-character token fragment that both
+        // redaction rules miss.
+        const errBody = redactSecrets(await response.text().catch(() => ''), token);
         throw new Error(`Instagram API error: ${response.status} ${errBody.slice(0, 300)}`);
       }
       const data = await response.json();
