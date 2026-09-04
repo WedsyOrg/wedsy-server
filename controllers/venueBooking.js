@@ -85,6 +85,66 @@ async function createDraftBookingForEnquiry(venueId, enquiry, ownerId) {
   }
 }
 
+// ── GET /venues/:slug/room-categories ───────────────────────────────────────
+// The wizard's rooms step: each category with its ceiling, so the owner sees
+// what "all rooms" means and what a count may not exceed.
+const getRoomCategories = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res, "_id rooms roomTypes");
+    if (!venue) return;
+    const { roomCategories } = require("../utils/venueRoomCategories");
+    return res.status(200).json({ categories: roomCategories(venue) });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
+// ── GET /venues/:slug/enquiries/:enquiryId/overlap-check ────────────────────
+/**
+ * BOOKING 3: one event at a time means a new event's CHECK-IN must not
+ * precede an existing event's CHECK-OUT. TIME-level, deliberately — the
+ * {venue, space, date} contention model is DATE-level and cannot express a
+ * same-day turnaround, which is legitimate here. The two COEXIST: this guard
+ * is PROPERTY-WIDE (the whole resort is one event); the space calendar stays
+ * date-level for blocking specific spaces. Do not unify them.
+ *
+ * A WARNING, NEVER A BLOCK (founder ruling): the response names the existing
+ * event and its check-out; the owner reads it and proceeds if they mean to.
+ * CONFIRMED bookings only — holds do not exist in this model. No minimum
+ * turnaround gap — owners manage that themselves.
+ */
+const overlapCheck = async (req, res) => {
+  try {
+    const venue = await resolveOwnedVenue(req, res, "_id");
+    if (!venue) return;
+    const newIn = new Date(String(req.query.checkIn || ""));
+    const newOut = new Date(String(req.query.checkOut || ""));
+    if (Number.isNaN(newIn.getTime()) || Number.isNaN(newOut.getTime())) {
+      return res.status(400).json({ message: "checkIn and checkOut are required (ISO datetimes)" });
+    }
+    const others = await VenueBooking.find({
+      venue: venue._id,
+      status: "confirmed",
+      enquiry: { $ne: req.params.enquiryId },
+      checkIn: { $lt: newOut },
+      checkOut: { $gt: newIn },
+    }).select("coupleName checkIn checkOut").lean();
+    const fmt = (d) => {
+      const dt = new Date(d);
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const hh = String(dt.getHours()).padStart(2, "0");
+      const mm = String(dt.getMinutes()).padStart(2, "0");
+      return `${dt.getDate()} ${months[dt.getMonth()]} ${dt.getFullYear()}, ${hh}:${mm}`;
+    };
+    const overlaps = others.map((b) => ({
+      bookingId: b._id, coupleName: b.coupleName, checkIn: b.checkIn, checkOut: b.checkOut,
+      message:
+        `${b.coupleName || "An existing event"} runs until ${fmt(b.checkOut)} — this event's check-in ` +
+        `(${fmt(newIn)}) starts before they leave. Move this check-in after ${fmt(b.checkOut)}, ` +
+        `or shift their check-out, if the property cannot host both. You can still confirm.`,
+    }));
+    return res.status(200).json({ overlaps });
+  } catch (err) { return res.status(500).json({ message: err.message }); }
+};
+
 const listBookings = async (req, res) => {
   try {
     const venue = await resolveOwnedVenue(req, res);
@@ -646,6 +706,15 @@ const confirmBookingFromLead = async (req, res) => {
     const totalV = optNumber(body.totalValue, "totalValue");
     if (!totalV.ok) return res.status(400).json({ message: totalV.message });
 
+    // ── ROOMS PER CATEGORY (BOOKING 3) ──────────────────────────────────────
+    // A RECORD, not a reservation (founder ruling: one event at a time, rooms
+    // come with the event — no availability question, no hold, no block).
+    // Validated here with the other body checks so a bad count refuses before
+    // the calendar is touched. Absent = the step was skipped = nothing stored.
+    const { checkRoomsAllocation } = require("../utils/venueRoomCategories");
+    const roomsAllocV = checkRoomsAllocation(body.roomsAllocation, venue);
+    if (!roomsAllocV.ok) return res.status(400).json({ message: roomsAllocV.message, code: "rooms_allocation_invalid" });
+
     // ── A LINE BOOKING KNOWS ITS OWN VALUE (money lines S3) ─────────────────
     // A draft made from a LINE quote carries the quote's lines, and its value
     // is DERIVED from them — charged (revenue) plus the refundable held. The
@@ -1023,6 +1092,10 @@ const confirmBookingFromLead = async (req, res) => {
       // window would silently claim a day the couple never bought.
       booking.checkOut = endOfVenueDay(new Date(last));
     }
+    // The rooms record, snapshotted (names + ceilings) at this moment — the
+    // documents print from it, and a later type rename must not rewrite what
+    // the couple was told. null (skipped) stores nothing.
+    if (roomsAllocV.value) booking.roomsAllocation = roomsAllocV.value;
     // ── THE ROOMS LINE ─────────────────────────────────────────────────────
     // Quoted HERE: after the window exists (nights come from it) and before
     // totalValue is written below, so the rooms money is part of the value the
@@ -1288,5 +1361,7 @@ module.exports = {
   createBooking,
   updateBooking,
   confirmBookingFromLead,
+  getRoomCategories,
+  overlapCheck,
   updateBookingWindow,
 };

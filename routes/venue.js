@@ -17,7 +17,7 @@ const { getDay } = require("../controllers/venueCrmDay");
 const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
-const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, previewRoomsQuote, updateBookingWindow, previewCancellation, cancelBooking } = require("../controllers/venueBooking");
+const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, previewRoomsQuote, updateBookingWindow, previewCancellation, cancelBooking, getRoomCategories, overlapCheck } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
@@ -124,6 +124,8 @@ router.post("/:slug/enquiries/:enquiryId/quick-log", venueOwnerAuth, requireCapa
 // read a price they cannot act on.
 router.get("/:slug/enquiries/:enquiryId/rooms-quote", venueOwnerAuth, requireCapability("bookings_money"), previewRoomsQuote);
 router.post("/:slug/enquiries/:enquiryId/confirm-booking", venueOwnerAuth, requireCapability("bookings_money"), confirmBookingFromLead);
+router.get("/:slug/room-categories", venueOwnerAuth, getRoomCategories);
+router.get("/:slug/enquiries/:enquiryId/overlap-check", venueOwnerAuth, requireCapability("bookings_money"), overlapCheck);
 
 // ── MB-CRM S4: CRM dashboard overview (my-day, real alerts, proof) ──
 router.get("/:slug/crm/overview", venueOwnerAuth, getCrmOverview);

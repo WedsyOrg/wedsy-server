@@ -246,6 +246,33 @@ const VenueBookingSchema = new mongoose.Schema(
     // still reflected.
     roomsRequired: { type: Number, default: 0 },
 
+    // ══ ROOMS ALLOCATED TO THIS EVENT (BOOKING 3) ═════════════════════════
+    // Founder ruling: these venues run ONE EVENT AT A TIME; rooms come WITH
+    // the event and are never held, blocked or availability-checked. This is
+    // a RECORD of how many rooms of each category the couple gets — not a
+    // reservation, and deliberately NOT wired to the held-nights path.
+    //
+    // Snapshotted at confirm (names and per-category totals copied from the
+    // venue's room types at that moment), because the documents print from
+    // it and a later rename must not rewrite what the couple was told.
+    // ABSENT when the step was skipped — the documents then say nothing
+    // about rooms rather than saying zero.
+    roomsAllocation: {
+      type: new mongoose.Schema({
+        /** "all" — every room; "counts" — the per-category numbers below. */
+        mode: { type: String, enum: ["all", "counts"], required: true },
+        items: [{
+          typeRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+          name: { type: String, required: true },
+          count: { type: Number, required: true, min: 0 },
+          /** The category's total at the time — the ceiling the owner saw. */
+          total: { type: Number, required: true, min: 0 },
+        }],
+        recordedAt: { type: Date, default: Date.now },
+      }, { _id: false }),
+      default: null,
+    },
+
     // ══ THE ROOMS LINE ON THIS BOOKING ═══════════════════════════════════
     // ROOMS 5. What the rooms cost on THIS deal, quoted at confirmation from
     // utils/venueRoomsPolicy.quoteRooms and then FROZEN.
