@@ -220,12 +220,25 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
-      // ── SEQ-3c (additive) — the intern-filled DISCOVERY event date. This is
-      // the ONLY date the discovery gate reads (the ad-form/Kiara month band is
-      // excluded). An exact date AND/OR a part-of-day; either alone is enough,
-      // both allowed. No migration (empty defaults).
+      // ── The intern-filled DISCOVERY event date. eventDate is the ONLY date
+      // the discovery gate reads — the ad-form / Kiara month BAND is excluded
+      // deliberately, because a fuzzy band must never satisfy a gate.
+      //
+      // THE GATE IS eventDate AND servicesRequired, BOTH REQUIRED. See
+      // services/DiscoveryService.js, which is the single source of truth.
+      //
+      // eventDatePart is RETIRED FROM THE GATE. This comment previously read
+      // "an exact date AND/OR a part-of-day; either alone is enough" — that was
+      // the pre-SEQ-3c rule, which DiscoveryService replaced. The stale wording
+      // outlived the change and a frontend adapter was built against it once, so
+      // if you are about to rely on it: read DiscoveryService, not this comment.
+      // The field is still written and carried for display; part-of-day now
+      // lives per-function in the Event store.
+      //
+      // Name does NOT gate either (DiscoveryService computes hasName for display
+      // only), which is why it never appears in discovery.missing.
       eventDate: { type: String, default: "" }, // exact date, e.g. "2026-12-20"
-      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" },
+      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" }, // carried, NOT gating
       // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
       // Multi-select from the services.available master list.
       servicesRequired: { type: [String], default: [] },
