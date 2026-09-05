@@ -160,6 +160,35 @@ const iso = (d) => new Date(d).toISOString().slice(0, 10);
       ok(token.amount + rows.reduce((s, r) => s + r.amount, 0) === 1000000, "token + rows = the booking value");
     }
 
+    // ── FOUND BY DRIVING (wizard audit): the confirm loop DROPPED the
+    // per-row GST flag — the wizard sent gstApplicable, the model has the
+    // field, the PATCH path preserves it, and a per_instalment booking
+    // confirmed through the wizard stored every row false. The owner watched
+    // "+ GST Rs. 3,600 = collectable Rs. 3,53,600" and the system committed a
+    // schedule carrying none. The screen and the write must agree.
+    console.log("\n[the per-row GST tick survives the confirm]");
+    const leadG = await makeLead(9);
+    const rG = await call(vb.confirmBookingFromLead, confirmReq(leadG, {
+      functions: [{ date: nextDate(), name: "wedding", pax: 100 }],
+      totalValue: 350000,
+      paymentSchedule: [
+        { label: "Advance", amount: 165000, percent: 50 },
+        { label: "Balance", amount: 165000, percent: 50 },
+        { label: "GST Slab", amount: 20000, gstApplicable: true },
+      ],
+      gstMode: "per_instalment", gstPercent: 18,
+    }));
+    ok(rG.code === 200 || rG.code === 201, `a per_instalment schedule confirms (got ${rG.code} ${rG.body && rG.body.message ? rG.body.message : ""})`);
+    const bG = await VenueBooking.findOne({ enquiry: leadG._id });
+    created.bookings.push(bG && bG._id);
+    if (bG) {
+      const rowsG = bG.paymentSchedule.filter((r) => !/^Token/.test(r.label));
+      ok(rowsG.find((r) => r.label === "GST Slab")?.gstApplicable === true,
+        "🔴 the ticked row is stored gstApplicable:true — what the owner saw is what was committed");
+      ok(rowsG.filter((r) => r.label !== "GST Slab").every((r) => !r.gstApplicable),
+        "…and the unticked rows stay false");
+    }
+
     console.log("\n[a mixed schedule that does not add up is refused, with the arithmetic]");
     const lead2 = await makeLead(2);
     const r2 = await call(vb.confirmBookingFromLead, confirmReq(lead2, {

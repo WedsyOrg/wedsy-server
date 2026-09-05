@@ -778,6 +778,13 @@ const confirmBookingFromLead = async (req, res) => {
         amount: aV.value || 0,
         dueDate: dV.value || undefined,
         percent: pV.value === undefined ? null : pV.value,
+        // ── FOUND BY DRIVING (wizard audit): this loop DROPPED the per-row
+        // GST flag. The wizard sent it, the model has the field, and the
+        // schedule PATCH path preserves it — but a per_instalment booking
+        // confirmed through the wizard stored every row gstApplicable:false,
+        // so the owner watched "+ GST Rs. 3,600" and the system committed a
+        // schedule that carries none. The screen and the write must agree.
+        gstApplicable: Boolean(row.gstApplicable),
       });
     }
 
