@@ -39,6 +39,22 @@ const WAConversationSchema = new mongoose.Schema(
     lastMessagePreview: { type: String, default: "" },
     unreadCount: { type: Number, default: 0 },
     status: { type: String, enum: ["active", "closed"], default: "active" },
+    // ── When it closed, and when a customer brought it back ──────────────────
+    // Without these, "closed then reopened" is unmeasurable after the fact — and
+    // not being able to see that pattern is how 27 threads accumulated 154
+    // unanswered customer messages before anyone noticed.
+    //
+    // closedAt   — stamped by KiaraCrmSyncService when a classification closes it.
+    // reopenedAt — stamped by upsertOnInbound when a customer message reopens it.
+    //
+    // reopenedAt is ALSO load-bearing, not just diagnostic: it is how the
+    // classifier knows it has already been contradicted once and must escalate
+    // rather than silently close again. See applyExtraction.
+    //
+    // Together they give the silent interval — how long a customer waited with
+    // nobody able to see them.
+    closedAt: { type: Date, default: null },
+    reopenedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

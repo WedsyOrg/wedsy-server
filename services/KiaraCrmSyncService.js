@@ -107,6 +107,50 @@ const applyExtraction = async (conversation, extraction) => {
       });
     }
 
+    // ── HAS A CUSTOMER ALREADY CONTRADICTED THIS CLASSIFICATION? ─────────────
+    // A thread the customer reopened AFTER we closed it is evidence the
+    // classification was wrong: a genuine vendor does not come back asking to
+    // book. Closing it again would start a silent oscillation — close, customer
+    // returns, reopen, close — that nobody can see and that ends with a real
+    // customer classified away.
+    //
+    // So the classifier gets ONE close. Once inbound has reopened a thread, it
+    // may no longer close it: it escalates to a human instead, because the
+    // machine has now contradicted itself and that is a decision a person should
+    // make. needsHuman is deliberate reuse — it already sorts to the top of the
+    // inbox and feeds the dashboard mission card, so unlike a new flag it has
+    // readers on day one.
+    //
+    // Cost, accepted knowingly: a genuinely persistent vendor lands in
+    // needsHuman once and someone dismisses it. Cheap. Silently losing a
+    // customer is not.
+    const reopenedSinceClose =
+      conversation.reopenedAt &&
+      (!conversation.closedAt || new Date(conversation.reopenedAt) > new Date(conversation.closedAt));
+
+    if (classification && NOT_A_LEAD[classification] && reopenedSinceClose) {
+      conversation = await WAConversationRepository.updateFieldsById(conversation._id, {
+        needsHuman: true,
+        needsHumanAt: new Date(),
+        needsHumanReason: `Classified "${classification}" but the customer has messaged again since this was closed — needs a human decision`,
+      });
+      // Only when a lead exists: LeadInternalEvent requires leadId, and an
+      // unlinked thread (the common case for a fresh Instagram DM, and the tier
+      // with no owner bell either) would otherwise log a validation error on
+      // every message. Same guard the close path below uses. The escalation
+      // itself does NOT depend on this — needsHuman is already set above, so an
+      // unlinked thread still surfaces.
+      if (conversation.enquiryId) {
+        await LeadInternalEventService.record({
+          leadId: conversation.enquiryId,
+          type: evType(conversation, "classified"),
+          actorId: null,
+          payload: { classification, action: "reclose_suppressed_escalated_to_human" },
+        });
+      }
+      return conversation;
+    }
+
     if (classification && NOT_A_LEAD[classification] && conversation.status !== "closed") {
       if (classification === "vendor") {
         const firstMsg = await WAAgentMessage.findOne({
@@ -126,6 +170,10 @@ const applyExtraction = async (conversation, extraction) => {
       }
       conversation = await WAConversationRepository.updateFieldsById(conversation._id, {
         status: "closed",
+        // Stamped so a later reopen has something to be "since". Without it the
+        // silent interval is unrecoverable and the guard above has nothing to
+        // compare against.
+        closedAt: new Date(),
         needsHuman: false,
         needsHumanReason: "",
         needsHumanAt: null,
