@@ -1,14 +1,20 @@
-// Reserving rooms as a COUNT at confirmation, and keeping that guarantee
-// through allotment, window moves and cancellation.
-// Run: node tests/venue-rooms-reserve.test.js
+// HOLDS OFF — confirming writes NO VenueRoomNight rows and never refuses on
+// availability. Run: node tests/venue-rooms-reserve.test.js
 //
-// ── THE BUG THIS EXISTS FOR ─────────────────────────────────────────────────
-//   roomsNeeded: 20  →  shortfall: 20  →  nothing reserved
-// A lead could need 20 rooms, the booking could confirm, and not one night was
-// held until somebody opened the PMS and allotted named rooms by hand. Two
-// overlapping weddings could each be promised 20 of 25 rooms and nothing
-// objected, because VenueRoomNight's unique {room, night} index had nothing to
-// collide on.
+// ── THIS SUITE ONCE PINNED THE OPPOSITE ─────────────────────────────────────
+// Until the founder's HOLDS OFF ruling (Sep 2026, following BOOKING 3 and
+// ROOMS INVENTORY ONLY) this file asserted that confirming a lead with
+// roomsNeeded RESERVED that many rooms as held VenueRoomNight rows and 409'd
+// rooms_short when inventory ran short. These venues run one event at a time
+// and rooms are NEVER HELD, so the sections below are deliberate INVERSIONS
+// of the old [A], [B], [C] and [E] — not a regression. The old behaviour is
+// behind utils/venueRoomNights.heldRoomsPolicy.NEVER_HELD, and section
+// [CONTROL] flips it to prove the machinery still works and that these
+// zero-row assertions could actually fail.
+//
+// What did NOT invert: [D] the allotment double-booking guard (the {room,
+// night} unique index still protects named allotments) and [F] the drain on
+// cancellation — legacy held rows from before the ruling must still empty out.
 //
 // ── ON WHICH PATH THESE TAKE ────────────────────────────────────────────────
 // Everything goes through the controller a real caller hits —
@@ -28,6 +34,7 @@ const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 
 const bookings = require("../controllers/venueBooking");
 const allotments = require("../controllers/venueAllotment");
+const { heldRoomsPolicy } = require("../utils/venueRoomNights");
 
 const TAG = `rr-${Date.now()}`;
 let pass = 0, fail = 0;
@@ -50,7 +57,7 @@ async function newLead(roomsNeeded, checkIn, checkOut) {
   return VenueEnquiry.create({
     venueId: venue._id,
     coupleName: `${TAG} couple`,
-    couplePhone: `9${Date.now()}`.slice(0, 10),
+    couplePhone: `9${Date.now()}${Math.floor(Math.random() * 999)}`.slice(0, 10),
     stage: "negotiating",
     checkIn: new Date(checkIn),
     checkOut: new Date(checkOut),
@@ -73,132 +80,116 @@ async function confirm(lead, extraBody = {}, spaceIdx = 0) {
 }
 
 const heldFor = (bookingId) => VenueRoomNight.countDocuments({ booking: bookingId, allotment: null });
-const allottedFor = (bookingId) => VenueRoomNight.countDocuments({ booking: bookingId, allotment: { $ne: null } });
 const totalFor = (bookingId) => VenueRoomNight.countDocuments({ booking: bookingId });
 
 (async () => {
   try {
     await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
+    await VenueSpaceDate.init();
+    await VenueRoomNight.init(); // fresh-DB unique-index race (venue-crm-s2 lesson)
     venue = await Venue.create({
       name: `${TAG}-v`, slug: `${TAG}-v`,
-      // TWO spaces, so an overlapping booking can be tested against ROOM
-      // capacity without first colliding on the space calendar.
       spaces: [{ name: "Lawn", isBookable: true }, { name: "Hall", isBookable: true }],
       rooms: Array.from({ length: ROOMS }, (_, i) => ({ name: `Room ${i + 1}`, isActive: true })),
     });
     owner = await VenueOwner.create({ venueId: venue._id, name: "Owner", phone: `${TAG}o`.slice(0, 14), isActive: true });
 
-    // ── [A] the reservation itself ──
-    console.log("\n[A. confirming reserves the COUNT, not a to-do]");
+    // ── [A] INVERTED: confirming reserves NOTHING ──
+    console.log("\n[A. confirm records the ask and holds nothing]");
     const l1 = await newLead(20, "2035-09-30T10:00:00Z", "2035-10-02T10:00:00Z");
     const r1 = await confirm(l1);
     ok(r1.code === 200, `confirm succeeds (got ${r1.code}: ${r1.body && r1.body.message})`);
     const b1 = await VenueBooking.findOne({ enquiry: l1._id }).lean();
-    // 2 nights (30 Sep, 1 Oct) × 20 rooms
-    ok(await heldFor(b1._id) === 40, `20 rooms × 2 nights are HELD (got ${await heldFor(b1._id)})`);
-    ok(await allottedFor(b1._id) === 0, "…and none of them is allotted to a guest yet");
-    const distinctRooms = (await VenueRoomNight.distinct("room", { booking: b1._id })).length;
-    ok(distinctRooms === 20, "…across 20 DISTINCT rooms — a count, held as real rooms");
+    ok(await totalFor(b1._id) === 0, `🔴 ZERO VenueRoomNight rows written (got ${await totalFor(b1._id)}) — was "20 rooms × 2 nights are HELD"`);
+    ok(b1.roomsRequired === 20, "…while roomsRequired keeps the ask as a RECORD on the booking");
 
-    // the held rows are real rooms of this venue, not synthetic slots
-    const roomIds = new Set((venue.rooms || []).map((r) => String(r._id)));
-    const held = await VenueRoomNight.find({ booking: b1._id }).select("room").lean();
-    ok(held.every((h) => roomIds.has(String(h.room))),
-      "THE REPRESENTATION: every held row names a REAL room, so a named allotment collides on the same index key");
-
-    // ── [B] the second wedding is warned, with numbers ──
-    console.log("\n[B. insufficient inventory refuses FIRST, names the numbers]");
+    // ── [B] INVERTED: no availability refusal, ever ──
+    console.log("\n[B. an overlapping wedding is never refused on rooms]");
     const l2 = await newLead(10, "2035-09-30T10:00:00Z", "2035-10-02T10:00:00Z");
     const r2 = await confirm(l2, {}, 1);
-    ok(r2.code === 409, `an overlapping booking needing 10 of the 5 remaining is refused (got ${r2.code})`);
-    ok(r2.body.code === "rooms_short", "…with a machine-readable code");
-    ok(r2.body.available === 5 && r2.body.needed === 10 && r2.body.total === ROOMS,
-      `…and the arithmetic: 5 of 25 free, 10 needed (got available=${r2.body.available})`);
-    ok(/already held on/.test(r2.body.message) && /30 Sep/.test(r2.body.message),
-      `…naming the tightest DATE: "${r2.body.message.slice(0, 90)}…"`);
-    ok(r2.body.acknowledgeWith === "acknowledgeRoomShortfall", "…and how to proceed deliberately");
-    ok(await VenueBooking.findOne({ enquiry: l2._id }) === null,
-      "NOTHING was written — the refusal is not a half-applied booking");
-    ok(await VenueSpaceDate.countDocuments({ bookingRef: { $exists: true }, date: new Date("2035-09-30T00:00:00Z"), venue: venue._id }) === 1,
-      "…and the calendar still shows only the FIRST booking's block — the space row was rolled back too");
-
-    // ── [C] warn and allow ──
-    console.log("\n[C. …then allows it, deliberately]");
-    const r2b = await confirm(l2, { acknowledgeRoomShortfall: true }, 1);
-    ok(r2b.code === 200, `with the acknowledgement it confirms (got ${r2b.code}: ${r2b.body && r2b.body.message})`);
+    ok(r2.code === 200, `🔴 the overlap confirms clean (got ${r2.code}${r2.body && r2.body.message ? `: ${r2.body.message}` : ""}) — was 409 rooms_short`);
     const b2 = await VenueBooking.findOne({ enquiry: l2._id }).lean();
-    ok(await heldFor(b2._id) === 10, `it takes the 5 rooms that WERE free, across 2 nights (got ${await heldFor(b2._id)})`);
-    ok(await VenueRoomNight.countDocuments({ venue: venue._id, night: new Date("2035-09-30T00:00:00Z") }) === ROOMS,
-      "and the venue is now exactly full on 30 Sept — 25 of 25, never 26");
+    ok(b2 && b2.status === "confirmed" && await totalFor(b2._id) === 0, "…confirmed, and still zero rows");
 
-    // ── [D] allotment SWAPS, it does not double-claim ──
-    console.log("\n[D. allotting 20 does not become 40]");
-    const before = await totalFor(b1._id);
-    const firstRooms = await VenueRoomNight.distinct("room", { booking: b1._id });
-    const bulk = firstRooms.slice(0, 20).map((roomId, i) => ({
-      room: String(roomId),
-      guestName: `Guest ${i + 1}`,
-      checkInAt: "2035-09-30T10:00:00Z",
-      checkOutAt: "2035-10-02T10:00:00Z",
-    }));
-    const rA = await call(allotments.createAllotments, req({
-      params: { bookingId: String(b1._id) },
-      body: { allotments: bulk },
-    }));
-    ok(rA.code === 201, `20 allotments are created (got ${rA.code}: ${rA.body && rA.body.message})`);
-    const after = await totalFor(b1._id);
-    ok(after === before && after === 40,
-      `THE PROOF: total held nights did not grow — ${before} before, ${after} after (never 80)`);
-    ok(await allottedFor(b1._id) === 40, "…every night now carries a guest");
-    ok(await heldFor(b1._id) === 0, "…and none is left unassigned");
+    const lBig = await newLead(100, "2035-11-01T10:00:00Z", "2035-11-03T10:00:00Z");
+    const rBig = await confirm(lBig);
+    ok(rBig.code === 200, `🔴 needing 100 of ${ROOMS} rooms confirms clean (got ${rBig.code}) — the question is not asked`);
 
-    // ── [E] a window move carries the rooms ──
-    console.log("\n[E. moving the window re-derives the nights]");
-    const l3 = await newLead(5, "2036-03-10T10:00:00Z", "2036-03-12T10:00:00Z");
-    await confirm(l3);
-    const b3 = await VenueBooking.findOne({ enquiry: l3._id }).lean();
-    ok(await heldFor(b3._id) === 10, "5 rooms × 2 nights held");
+    await Venue.updateOne({ _id: venue._id }, { $set: { "rooms.$[].isActive": false } });
+    venue = await Venue.findById(venue._id);
+    const lDead = await newLead(5, "2035-11-10T10:00:00Z", "2035-11-12T10:00:00Z");
+    const rDead = await confirm(lDead);
+    ok(rDead.code === 200, `🔴 every room deactivated: still confirms clean (got ${rDead.code})`);
+    await Venue.updateOne({ _id: venue._id }, { $set: { "rooms.$[].isActive": true } });
+    venue = await Venue.findById(venue._id);
+
+    // ── [C] INVERTED: a window move claims nothing and cannot 409 on rooms ──
+    console.log("\n[C. moving the window asks no availability question]");
     const mv = await call(bookings.updateBookingWindow, req({
-      params: { bookingId: String(b3._id) },
-      body: { checkIn: "2036-03-14T10:00:00Z", checkOut: "2036-03-16T10:00:00Z" },
+      params: { bookingId: String(b1._id) },
+      body: { checkIn: "2035-10-05T10:00:00Z", checkOut: "2035-10-07T10:00:00Z" },
     }));
-    ok(mv.code === 200, `the window moves (got ${mv.code}: ${mv.body && mv.body.message})`);
-    ok(await heldFor(b3._id) === 10, "…still 10 nights — the rooms moved WITH the window");
-    const onOld = await VenueRoomNight.countDocuments({ booking: b3._id, night: new Date("2036-03-10T00:00:00Z") });
-    const onNew = await VenueRoomNight.countDocuments({ booking: b3._id, night: new Date("2036-03-14T00:00:00Z") });
-    ok(onOld === 0, "…the old nights were RELEASED");
-    ok(onNew === 5, "…and the new nights are held");
+    ok(mv.code === 200, `🔴 the window moves (got ${mv.code}: ${mv.body && mv.body.message}) — door 2, rederiveRoomNights, is gated too`);
+    ok(await totalFor(b1._id) === 0, "…and still zero rows after the move — nothing was re-derived");
 
-    // a shrink releases the tail
-    const sh = await call(bookings.updateBookingWindow, req({
-      params: { bookingId: String(b3._id) },
-      body: { checkIn: "2036-03-14T10:00:00Z", checkOut: "2036-03-15T10:00:00Z" },
+    // ── [D] NOT inverted: the allotment double-booking guard still stands ──
+    console.log("\n[D. named allotments still collide on {room, night}]");
+    const roomId = String(venue.rooms[0]._id);
+    const mk = (guest) => call(allotments.createAllotments, req({
+      params: { bookingId: String(b1._id) },
+      body: { allotments: [{ room: roomId, guestName: guest, checkInAt: "2035-10-05T10:00:00Z", checkOutAt: "2035-10-07T10:00:00Z" }] },
     }));
-    ok(sh.code === 200, "the window shrinks to one night");
-    ok(await heldFor(b3._id) === 5, `…and drops to 5 nights (got ${await heldFor(b3._id)})`);
+    const dA = await mk("Guest One");
+    ok(dA.code === 201, `an allotment on a booking with no held rows inserts fresh (got ${dA.code}: ${dA.body && dA.body.message})`);
+    ok(await totalFor(b1._id) === 2, "…claiming its 2 nights the pre-holds way");
+    const dB = await mk("Guest Two");
+    ok(dB.code !== 201 && await totalFor(b1._id) === 2,
+      `🔴 the SAME room for the same nights is refused (got ${dB.code}) — the unique index still guards guests`);
 
-    // ── [F] release on cancellation ──
-    console.log("\n[F. cancelling gives the rooms back — it did not, before this]");
-    ok(await totalFor(b1._id) === 40, "the first booking still holds its 40 nights");
+    // ── [F] NOT inverted: the drains keep running on legacy rows ──
+    console.log("\n[F. cancel still empties legacy held rows from before the ruling]");
+    const legacyNights = [new Date("2035-10-05T00:00:00Z"), new Date("2035-10-06T00:00:00Z")];
+    await VenueRoomNight.insertMany(
+      legacyNights.flatMap((night) => [1, 2].map((i) => ({
+        venue: venue._id, room: venue.rooms[i]._id, night, booking: b1._id, allotment: null,
+      })))
+    );
+    ok(await totalFor(b1._id) === 6, "fixture: 4 legacy held rows seeded beside the allotment's 2");
     const cx = await call(bookings.updateBooking, req({
       params: { bookingId: String(b1._id) },
       body: { status: "cancelled" },
     }));
-    ok(cx.code === 200, "the booking is cancelled through the ordinary PATCH");
-    ok(await totalFor(b1._id) === 0, `EVERY night is released (got ${await totalFor(b1._id)})`);
-    ok(cx.body.roomsReleased === 40, `…and the response says how many (got ${cx.body.roomsReleased})`);
-    const stillThere = await VenueRoomAllotment.countDocuments({ booking: b1._id });
-    ok(stillThere === 20, "…while the allotment RECORDS survive — the stay is off, the history is not rewritten");
-    ok(await VenueRoomAllotment.countDocuments({ booking: b1._id, status: "cancelled" }) === 20,
-      "…marked cancelled");
-    ok(await VenueRoomNight.countDocuments({ venue: venue._id, night: new Date("2035-09-30T00:00:00Z") }) === 5,
-      "and the venue has its rooms back — only the second booking's 5 remain on 30 Sept");
+    ok(cx.code === 200, "the booking cancels through the ordinary PATCH");
+    ok(await totalFor(b1._id) === 0, `🔴 EVERY night drains — legacy holds and allotted alike (got ${await totalFor(b1._id)})`);
+    ok(cx.body.roomsReleased === 6, `…and the response counts them (got ${cx.body.roomsReleased})`);
+    ok(await VenueRoomAllotment.countDocuments({ booking: b1._id, status: "cancelled" }) === 1,
+      "…while the allotment RECORD survives, marked cancelled");
+
+    // ── [CONTROL] the switch off = the old behaviour, byte for byte ──
+    console.log("\n[CONTROL. with NEVER_HELD off, confirm reserves and refuses — the fixture could fail]");
+    heldRoomsPolicy.NEVER_HELD = false;
+    try {
+      const c1 = await newLead(20, "2036-09-30T10:00:00Z", "2036-10-02T10:00:00Z");
+      const rc1 = await confirm(c1);
+      ok(rc1.code === 200, `switch off: confirm succeeds (got ${rc1.code}: ${rc1.body && rc1.body.message})`);
+      const cb1 = await VenueBooking.findOne({ enquiry: c1._id }).lean();
+      ok(await heldFor(cb1._id) === 40, `🔴 switch off: 20 rooms × 2 nights ARE held (got ${await heldFor(cb1._id)}) — the machinery is intact for Phase 2`);
+      const c2 = await newLead(10, "2036-09-30T10:00:00Z", "2036-10-02T10:00:00Z");
+      const rc2 = await confirm(c2, {}, 1);
+      ok(rc2.code === 409 && rc2.body.code === "rooms_short",
+        `🔴 switch off: the overlap 409s rooms_short again (got ${rc2.code}/${rc2.body && rc2.body.code}) — so [A]/[B] above could not pass vacuously`);
+      ok(rc2.body.available === 5 && rc2.body.needed === 10, "…with the old arithmetic intact");
+    } finally {
+      heldRoomsPolicy.NEVER_HELD = true;
+    }
+    ok(heldRoomsPolicy.NEVER_HELD === true, "the switch is back on after the control");
 
     console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   } catch (e) {
     console.error("FATAL", e);
     fail++;
   } finally {
+    heldRoomsPolicy.NEVER_HELD = true;
     if (venue) {
       const leads = await VenueEnquiry.find({ venueId: venue._id }).select("_id").lean();
       const ids = leads.map((l) => l._id);

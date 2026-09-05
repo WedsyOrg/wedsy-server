@@ -58,7 +58,7 @@ const mongoose = require("mongoose");
 const VenueSpaceDate = require("../models/VenueSpaceDate");
 const VenueHold = require("../models/VenueHold");
 const { venueDateKey, addVenueDays } = require("./venueTime");
-const { rederiveRoomNights } = require("./venueRoomNights");
+const { rederiveRoomNights, heldRoomsPolicy } = require("./venueRoomNights");
 
 /** Every venue-calendar day the window covers, inclusive of both ends. */
 function windowDays(checkIn, checkOut) {
@@ -317,10 +317,15 @@ async function applyWindowChange({ venue, enquiry, booking, checkIn, checkOut, a
   //     otherwise a booking keeps holding nights it no longer needs while the
   //     nights it DOES need sit unreserved, which is the original gap wearing
   //     a different hat.
+  // ── HOLDS OFF (founder ruling): rooms are NEVER HELD ─────────────────────
+  // Door 2 of 2 (door 1 is confirm's reserveRoomNights). Without this gate a
+  // window edit would CREATE holds that confirm never made and 409 on them —
+  // the availability question returning through a side door. Existing legacy
+  // rows are untouched here; the cancel/delete drains still clear them.
   const roomsNeeded =
     (enquiry.requirements && enquiry.requirements.roomsNeeded) || booking.roomsRequired || 0;
   let rooms = null;
-  if (roomsNeeded > 0) {
+  if (!heldRoomsPolicy.NEVER_HELD && roomsNeeded > 0) {
     rooms = await rederiveRoomNights({ venue, booking, checkIn, checkOut, needed: roomsNeeded });
     if (!rooms.ok) {
       // The calendar above already committed. Put it back before refusing, so
