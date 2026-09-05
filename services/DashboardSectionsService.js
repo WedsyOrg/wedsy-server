@@ -11,6 +11,9 @@
 //   wins                       — last 5 won in scope. NO amounts.
 //   rescue                     — the existing snooze-aware rescue read,
 //                                exposed for manager+ (replaces the Rescue tab).
+//   noFurtherAction            — leads flagged as having nowhere to go, oldest
+//                                first. A WORKLIST, never a scorecard — see the
+//                                note at the section.
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
@@ -159,6 +162,84 @@ const buildWorkspaceSections = async (adminId, scope, scopeFilter = {}) => {
         name: l.name,
         channel: (c && c.channel) || sourceChannelOf(l.source, l.marketingSource),
         since: (c && c.needsHumanAt) || null,
+      };
+    }),
+  };
+
+  // ── noFurtherAction — leads saved with nothing captured and nowhere to go ──
+  //
+  // WHY THIS EXISTS AT ALL. setNoFurtherAction has flagged these leads since
+  // SEQ-3b, and until now the ONLY reader was the lead detail page — visible
+  // solely to someone who had already opened that lead, i.e. the one person who
+  // did not need telling. With the discovery guards removed, a lead can be
+  // qualified and a call ended with nothing captured, so this flag stopped
+  // being belt-and-braces and became the primary way anyone notices.
+  //
+  // ── THIS IS A WORKLIST, NOT A SCORECARD ───────────────────────────────────
+  // The distinction is load-bearing and the payload enforces it rather than
+  // trusting anyone to remember:
+  //
+  //   • rows are LEADS TO ACT ON, each carrying what it needs ("a next step").
+  //   • there is NO per-person aggregation here and none may be added. Group
+  //     these by owner and count them and you have rebuilt the intern metric
+  //     that was deliberately hidden on 5 Sep for changing meaning overnight.
+  //   • `count` is the length of the queue — how much work is waiting — not a
+  //     tally of anyone's failures. It is a property of the list, never of a
+  //     person.
+  //   • copy rendering this must be action-shaped: "needs a next step", never
+  //     "N incomplete". Same fact, opposite object. If it ever reads as a
+  //     score it becomes the thing we just took away.
+  //
+  // Scoped, ungated: an intern sees THEIR leads and a manager sees the team's,
+  // exactly like awaitingHumanQualification above. The intern is the person who
+  // can clear one of these in seconds by scheduling a follow-up, so withholding
+  // it from them would remove the fastest fix while keeping the problem.
+  const nfaFilter = {
+    $and: [{ "noFurtherAction.flagged": true, ...ACTIVE }, scopeFilter, visibility],
+  };
+  // countDocuments rather than the precedent's docs.length: 9 live leads today
+  // was measured with the discovery guards still ON, so treat it as a floor.
+  // The count stays exact while the find never pulls more than 20 rows.
+  const nfaCount = await Enquiry.countDocuments(nfaFilter);
+  const nfaDocs = await Enquiry.find(nfaFilter, {
+    name: 1,
+    assignedTo: 1,
+    "noFurtherAction.flaggedAt": 1,
+    "noFurtherAction.flaggedReason": 1,
+  })
+    // OLDEST FIRST — deliberately the opposite of awaitingHumanQualification's
+    // createdAt:-1. Here the age IS the signal: a lead flagged a month ago is
+    // the one nobody is coming back to, and newest-first would bury exactly the
+    // rows that need attention.
+    .sort({ "noFurtherAction.flaggedAt": 1 })
+    .limit(20)
+    .lean();
+
+  const nfaOwnerIds = [
+    ...new Set(nfaDocs.map((l) => l.assignedTo).filter(Boolean).map(String)),
+  ];
+  const nfaOwners = nfaOwnerIds.length
+    ? await Admin.find({ _id: { $in: nfaOwnerIds } }, { name: 1 }).lean()
+    : [];
+  const nfaOwnerById = new Map(nfaOwners.map((o) => [String(o._id), o.name]));
+
+  sections.noFurtherAction = {
+    count: nfaCount,
+    rows: nfaDocs.map((l) => {
+      const at = (l.noFurtherAction && l.noFurtherAction.flaggedAt) || null;
+      return {
+        leadId: String(l._id),
+        name: l.name,
+        since: at,
+        // null, never 0, when the flag predates the timestamp — an unknown age
+        // must not render as "flagged today".
+        ageDays: at ? Math.floor((now - new Date(at)) / 86400000) : null,
+        // ACTION-SHAPED, not failure-shaped. The stored flaggedReason describes
+        // what went wrong ("Saved without a next step…"); this says what the
+        // lead needs, which is the thing the reader can actually do.
+        needs: "a next step",
+        ownerId: l.assignedTo ? String(l.assignedTo) : null,
+        ownerName: l.assignedTo ? nfaOwnerById.get(String(l.assignedTo)) || null : null,
       };
     }),
   };
