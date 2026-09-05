@@ -79,6 +79,25 @@ const metricsFor = async (intern, from, now, goldenCfg) => {
 
   // Incomplete discovery: their qualified/credited leads missing any of the
   // canonical 7 discovery fields.
+  //
+  // ⚠ UN-BASELINED — DO NOT SURFACE THIS TO INTERNS (Rohaan, 5 Sep 2026).
+  //
+  // This number is about to rise, and NOT because anyone's work got worse. The
+  // discovery guards were removed on purpose: an intern can now qualify a lead
+  // and end a call without filling everything in, because the judgement is
+  // theirs to make. Leads that previously could not exist now can, and every
+  // one of them lands in this count.
+  //
+  // So the metric changed meaning overnight while its name stayed the same.
+  // Judging anyone on it — a scorecard, a review, a leaderboard — would mark
+  // them down for using a freedom they were just handed, which is the fastest
+  // way to teach a team not to trust a change.
+  //
+  // It is still COMPUTED and still available to whoever looks at aggregate
+  // data; only the intern-facing surface is withheld. Before showing it to an
+  // intern again it needs re-baselining (a new normal measured after the
+  // guards came off) or relabelling — that is a management decision, not an
+  // engineering one. See the matching note on InternMetricsCard in wedsy-crm.
   const discoveryLeads = await Enquiry.find(
     {
       $or: [{ qualifiedBy: intern._id }, { assignedTo: intern._id }],
