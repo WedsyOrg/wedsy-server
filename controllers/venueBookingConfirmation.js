@@ -19,6 +19,7 @@
 const mongoose = require("mongoose");
 const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
+const { computeLineTotals } = require("../utils/venueMoney");
 const VenueLeadDocument = require("../models/VenueLeadDocument");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
@@ -68,17 +69,32 @@ const getConfirmationOptions = async (req, res) => {
     const owned = await resolveOwnedLead(req, res);
     if (!owned) return;
     const { venue, lead } = owned;
-    const booking = await VenueBooking.findOne({ enquiry: lead._id }).select("_id totalValue paymentSchedule days lineItems").lean();
+    const booking = await VenueBooking.findOne({ enquiry: lead._id }).select("_id totalValue paymentSchedule days lineItems gstPercent").lean();
     const policyBlocks = (venue.cancellationPolicy && venue.cancellationPolicy.blocks) || [];
     // Held money, stated beside the value so the dialog can say what the
     // document will say: payable includes the deposit, revenue does not.
     const refundable = ((booking && booking.lineItems) || [])
       .filter((li) => li && li.refundable)
       .reduce((s, li) => s + (Math.round(Number(li.amount)) || 0), 0);
+    // ── THE LINE-BOOKING FLAG, AND ITS GST, STATED ─────────────────────────
+    // Ruling A: a line booking's GST belongs to its lines and gstMode is
+    // forced "none" at confirm — but the wizard could not TELL a line booking
+    // apart, so it offered an editable GST model the server would refuse at
+    // the last click. hasLines lets the wizard show the honest shape instead:
+    // GST stated from the lines, read-only. The figures come from
+    // computeLineTotals — the one derivation every document reads — never a
+    // re-derivation here.
+    const lines = (booking && booking.lineItems) || [];
+    const hasLines = lines.length > 0;
+    const lineTotals = hasLines ? computeLineTotals(lines, booking.gstPercent) : null;
     return res.status(200).json({
       hasBooking: Boolean(booking),
       bookingValue: booking ? Number(booking.totalValue) || 0 : 0,
       refundableHeld: refundable,
+      hasLines,
+      lineGst: lineTotals ? lineTotals.gst : 0,
+      lineTaxable: lineTotals ? lineTotals.taxable : 0,
+      lineGstPercent: hasLines ? (Number(booking.gstPercent) || 0) : 0,
       payable: (booking ? Number(booking.totalValue) || 0 : 0) + refundable,
       scheduleRows: booking ? (booking.paymentSchedule || []).length : 0,
       hasCancellationPolicy: policyBlocks.length > 0,
