@@ -23,7 +23,7 @@ const { windowDays, applyWindowChange } = require("../utils/venueEventWindow");
 const { resolveScopedBooking } = require("../utils/venueBookingScope");
 const { PAYMENT_MODES, normaliseMode, modeLabel } = require("../utils/venuePaymentMode");
 const { mergeClientIntoContacts } = require("../utils/venueClientContact");
-const { reserveRoomNights, rederiveRoomNights, releaseRoomNights } = require("../utils/venueRoomNights");
+const { reserveRoomNights, rederiveRoomNights, releaseRoomNights, heldRoomsPolicy } = require("../utils/venueRoomNights");
 const { derivePhase, describeCancellation } = require("../utils/venueBookingPhase");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const { cleanStr } = require("../utils/venueInput");
@@ -1310,9 +1310,16 @@ const confirmBookingFromLead = async (req, res) => {
     // The window is the booking's own, assigned above from the lead. Not
     // re-derived: ONE DATE made that the single source and re-deriving it here
     // would be a second opinion about the same fact.
+    // ── HOLDS OFF (founder ruling): rooms are NEVER HELD ───────────────────
+    // Door 1 of 2 (door 2 is applyWindowChange's rederive). The block below is
+    // not reached while heldRoomsPolicy.NEVER_HELD holds: confirm records the
+    // couple's rooms (BOOKING 3's roomsAllocation + roomsRequired below) and
+    // asks no availability question — no reservation, no 409 rooms_short, no
+    // acknowledgeRoomShortfall. The machinery stays; see the policy's header
+    // in utils/venueRoomNights.
     const roomsNeeded = (enquiry.requirements && enquiry.requirements.roomsNeeded) || 0;
     let roomsReservation = null;
-    if (roomsNeeded > 0 && booking.checkIn && booking.checkOut) {
+    if (!heldRoomsPolicy.NEVER_HELD && roomsNeeded > 0 && booking.checkIn && booking.checkOut) {
       const reservation = await reserveRoomNights({
         venue,
         booking,

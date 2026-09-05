@@ -35,6 +35,32 @@
  */
 const mongoose = require("mongoose");
 const VenueRoomNight = require("../models/VenueRoomNight");
+
+/**
+ * ── THE SWITCH: ROOMS ARE NEVER HELD (HOLDS OFF) ────────────────────────────
+ * Founder ruling, following BOOKING 3 and ROOMS INVENTORY ONLY: these venues
+ * run one event at a time and rooms are NEVER HELD — so the portal must not
+ * refuse a booking on an availability question that no longer exists. With
+ * every explaining surface hidden behind ROOMS_INVENTORY_ONLY (wedsy-venue),
+ * a 409 rooms_short was a wall with nowhere to look.
+ *
+ * This gates the TWO doors that ask the question — reserveRoomNights in
+ * confirmBookingFromLead, and rederiveRoomNights in applyWindowChange. Both
+ * or neither: gating only confirm lets the question return through a window
+ * edit, which would CREATE holds confirm never made and refuse on them.
+ *
+ * NOT CALLED, NOT DELETED. The machinery below is correct for a hotel and
+ * Phase 2 may want it, so nothing here is removed or unexported. Every DRAIN
+ * path keeps running unconditionally — cancel releases, the ROOMS 7
+ * delete/deactivate guards and sweep, the allotment swap's fallback — so
+ * legacy rows written before this ruling still empty out.
+ *
+ * A mutable property rather than a const so the suite can flip it and prove
+ * the control: with NEVER_HELD false, confirm must still reserve and still
+ * refuse — otherwise the "writes nothing" assertions pass vacuously.
+ * Phase 2: set NEVER_HELD false and both doors reopen.
+ */
+const heldRoomsPolicy = { NEVER_HELD: true };
 const { isOutOfOrderAcross } = require("./venueOutOfOrder");
 const VenueRoomAllotment = require("../models/VenueRoomAllotment");
 
@@ -406,6 +432,7 @@ async function releaseRoomNights(bookingId) {
 }
 
 module.exports = {
+  heldRoomsPolicy,
   heldNightsForRoom,
   releaseHeldNightsForRoom,
   nightKeys,
