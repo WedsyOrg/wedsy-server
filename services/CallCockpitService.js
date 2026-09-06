@@ -7,6 +7,11 @@ const { assignableFilter } = require("../utils/assignable");
 const CALL_OUTCOMES = ["", "qualified", "busy", "unknown", "disqualified"];
 const CALL_PURPOSES = ["", "discovery", "follow_up"];
 const FOLLOW_UP_TYPES = ["meet", "call", "visit"];
+// The gap recorded when a qualified call ends with no future next step. The
+// wording is the cockpit's own (CallCockpit.tsx missingItems()), so a
+// server-recorded gap and a UI-recorded one read identically on the lead and
+// in "Saved with gaps: …". Change both together or they will drift apart.
+const MISSING_NEXT_STEP_GAP = "a locked next step";
 // Attempt cadence (Lifecycle Slice C): day offsets from the FIRST unanswered
 // attempt. Runtime values come from SettingsService (cadence.*) which defaults
 // to exactly these constants.
@@ -489,9 +494,12 @@ const updateQualification = async (enquiryId, body = {}, actorId) => {
   return updated;
 };
 
-// POST /enquiry/:_id/call-complete — server-side mirror of the UI gate:
-// a qualified lead CANNOT be saved as complete without a future follow-up locked.
-// An explicit incomplete=true bypasses, with the acknowledged gaps recorded on the lead.
+// POST /enquiry/:_id/call-complete — the save NEVER refuses.
+// This was once the server-side mirror of a UI gate that has since been removed:
+// a qualified lead could not be saved without a future follow-up locked. It now
+// records that gap instead of rejecting the call. See the note inside.
+// An explicit incomplete=true still lets the caller record its OWN gaps, which
+// are kept verbatim — the cockpit computes a fuller list than this service can.
 const completeCall = async (enquiryId, { incomplete, gaps } = {}, actorId) => {
   assertValidId(enquiryId);
 
@@ -500,24 +508,48 @@ const completeCall = async (enquiryId, { incomplete, gaps } = {}, actorId) => {
     throw httpError(404, "Enquiry not found");
   }
 
-  const isIncomplete = incomplete === true;
-  if (isIncomplete) {
+  const explicitlyIncomplete = incomplete === true;
+  if (explicitlyIncomplete) {
+    // A malformed payload is still refused. That is validation, not a
+    // discovery guard — the caller sent something the schema cannot store.
     if (
       gaps !== undefined &&
       (!Array.isArray(gaps) || gaps.some((g) => typeof g !== "string"))
     ) {
       throw httpError(400, "Invalid gaps (expected an array of strings)");
     }
-  } else if (enquiry.qualified && !hasFutureFollowUp(enquiry)) {
-    throw httpError(
-      400,
-      "Cannot complete: a qualified call must end with a future follow-up locked. Lock the next step, or save with incomplete=true to record the gap."
-    );
   }
+
+  // ── THE CALL ALWAYS SAVES (Rohaan, 5 Sep 2026) ────────────────────────────
+  // This used to throw 400 when a qualified lead had no future follow-up,
+  // and it was the ONLY server-side hard stop on the intern. It fired at the
+  // worst possible moment — after they had qualified the lead and were trying
+  // to end the call — and with the UI guards removed an intern reaches it in
+  // one click.
+  //
+  // REMOVE REFUSALS, KEEP MEASUREMENTS. The gap is not ignored; it is RECORDED,
+  // down the same callCompletion.status/gaps path an explicit incomplete=true
+  // has always taken. Nothing new is invented — the refusal simply takes the
+  // road the code already had. The lead now says what is missing instead of the
+  // server saying no.
+  //
+  // hasFutureFollowUp is deliberately kept: it stopped being a gate and became
+  // the thing that decides WHICH gap gets written.
+  const missingNextStep = !!enquiry.qualified && !hasFutureFollowUp(enquiry);
+  const isIncomplete = explicitlyIncomplete || missingNextStep;
+
+  // A caller who declared its own gaps keeps them verbatim — the cockpit
+  // computes the full list (event details, venue, email, next step) and knows
+  // more than we do here. We only supply a gap when nobody else did.
+  const recordedGaps = explicitlyIncomplete
+    ? gaps || []
+    : missingNextStep
+      ? [MISSING_NEXT_STEP_GAP]
+      : [];
 
   const updated = await EnquiryRepository.updateFieldsById(enquiryId, {
     "callCompletion.status": isIncomplete ? "incomplete" : "complete",
-    "callCompletion.gaps": isIncomplete ? gaps || [] : [],
+    "callCompletion.gaps": recordedGaps,
     "callCompletion.completedAt": new Date(),
     "callCompletion.completedBy": actorId || null,
   });
@@ -526,7 +558,7 @@ const completeCall = async (enquiryId, { incomplete, gaps } = {}, actorId) => {
     leadId: enquiryId,
     type: "call_completed",
     actorId,
-    payload: { incomplete: isIncomplete, gaps: isIncomplete ? gaps || [] : [] },
+    payload: { incomplete: isIncomplete, gaps: recordedGaps },
   });
 
   // SEQ-3b — the save is NEVER blocked (Slice 1). But a save that leaves the lead

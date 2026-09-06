@@ -220,12 +220,25 @@ const EnquirySchema = new mongoose.Schema(
       emailNotWilling: { type: Boolean, default: false },
       whatsappSameNumber: { type: Boolean, default: true },
       whatsappNumber: { type: String, default: "" },
-      // ── SEQ-3c (additive) — the intern-filled DISCOVERY event date. This is
-      // the ONLY date the discovery gate reads (the ad-form/Kiara month band is
-      // excluded). An exact date AND/OR a part-of-day; either alone is enough,
-      // both allowed. No migration (empty defaults).
+      // ── The intern-filled DISCOVERY event date. eventDate is the ONLY date
+      // the discovery gate reads — the ad-form / Kiara month BAND is excluded
+      // deliberately, because a fuzzy band must never satisfy a gate.
+      //
+      // THE GATE IS eventDate AND servicesRequired, BOTH REQUIRED. See
+      // services/DiscoveryService.js, which is the single source of truth.
+      //
+      // eventDatePart is RETIRED FROM THE GATE. This comment previously read
+      // "an exact date AND/OR a part-of-day; either alone is enough" — that was
+      // the pre-SEQ-3c rule, which DiscoveryService replaced. The stale wording
+      // outlived the change and a frontend adapter was built against it once, so
+      // if you are about to rely on it: read DiscoveryService, not this comment.
+      // The field is still written and carried for display; part-of-day now
+      // lives per-function in the Event store.
+      //
+      // Name does NOT gate either (DiscoveryService computes hasName for display
+      // only), which is why it never appears in discovery.missing.
       eventDate: { type: String, default: "" }, // exact date, e.g. "2026-12-20"
-      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" },
+      eventDatePart: { type: String, enum: ["", "morning", "afternoon", "evening"], default: "" }, // carried, NOT gating
       // ── MB6 Slice 6 (additive) — Cockpit v2 qualification fields ─────────
       // Multi-select from the services.available master list.
       servicesRequired: { type: [String], default: [] },
@@ -392,5 +405,29 @@ EnquirySchema.index({ phone: 1 }, { unique: true });
 // MB9c-fix — the lead list's default + sort is newest-created-first; index it
 // (with _id as the stable paging tiebreaker).
 EnquirySchema.index({ createdAt: -1, _id: -1 });
+
+// ── The noFurtherAction worklist (dashboard section) ────────────────────────
+// PARTIAL, so it indexes only the flagged leads. The flag resolves properly in
+// practice (29 ever-flagged against 9 live on production), so this index stays
+// roughly the size of the live queue rather than the collection. The query
+// filters on `flagged: true` literally, which is what makes a partial index
+// eligible to serve it.
+//
+// COMPOUND with flaggedAt so the section's oldest-first sort is served by the
+// index; a flag-only index would still leave an in-memory SORT stage.
+//
+// Declared here (not in a migration script) DELIBERATELY, unlike the partial
+// UNIQUE index on Decor.productInfo.id. That one is script-only because a
+// unique build can fail on existing duplicates and must never be triggered
+// implicitly by a restart. This one is non-unique — it cannot fail on data,
+// concurrent builds from multiple pm2 workers are idempotent for an identical
+// spec, and at ~1k documents the build is sub-second.
+EnquirySchema.index(
+  { "noFurtherAction.flagged": 1, "noFurtherAction.flaggedAt": 1 },
+  {
+    partialFilterExpression: { "noFurtherAction.flagged": true },
+    name: "noFurtherAction_flagged_flaggedAt",
+  }
+);
 
 module.exports = mongoose.model("Enquiry", EnquirySchema);
