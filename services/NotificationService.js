@@ -1,4 +1,5 @@
 const axios = require("axios");
+const NotificationFailureLog = require("../models/NotificationFailureLog");
 const { Client: MailjetClient } = require("node-mailjet");
 
 // ─── Trigger config ───────────────────────────────────────────────────────────
@@ -200,10 +201,37 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
     const channels = ["sms", "whatsapp", "metaTemplate", "email"].filter((c) => config[c]);
     results.forEach((result, i) => {
       if (result.status === "rejected") {
+        const channel = channels[i];
+        const detail = result.reason?.message || String(result.reason);
         console.error(
-          `[NotificationService] ${channels[i]} failed for trigger "${triggerId}":`,
-          result.reason?.message || result.reason
+          `[NotificationService] ${channel} failed for trigger "${triggerId}":`,
+          detail
         );
+
+        // WHY THIS EXISTS: until now a rejected leg died on that console.error
+        // and nothing else. That is how 28 live triggers went on calling a
+        // CANCELLED AiSensy account for weeks without anyone noticing — the
+        // sends failed silently, with no row anywhere to count. The metaTemplate
+        // leg already self-logs inside utils/whatsapp.js; sms, whatsapp and
+        // email did not. Now every failed leg leaves a trace.
+        //
+        // Fire-safe by design: a logging failure must never break a send, so
+        // this is deliberately not awaited and swallows its own errors.
+        const SERVICE_BY_CHANNEL = { sms: "SMS", whatsapp: "WhatsApp", email: "Email" };
+        const service = SERVICE_BY_CHANNEL[channel];
+        if (service) {
+          NotificationFailureLog.create({
+            service,
+            template: triggerId,
+            phone: phone || null,
+            email: email || null,
+            error: detail.slice(0, 500),
+            attempts: 1,
+            createdAt: new Date(),
+          }).catch((logErr) => {
+            console.error("[NotificationService] failure-log write failed:", logErr?.message);
+          });
+        }
       }
     });
   });

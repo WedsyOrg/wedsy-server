@@ -39,18 +39,29 @@ const SendInternationalOTP = async (req, res) => {
     const otp = Math.floor(10000 + Math.random() * 90000);
     const saved = await new OTP({ phone: fullPhone, otp }).save();
 
-    await axios({
-      method: "post",
-      url: process.env.AISENSY_API_URL,
-      headers: { "Content-Type": "application/json" },
-      data: {
-        apiKey: process.env.AISENSY_API_KEY_V2,
-        campaignName: "otp_verification",
-        destination: fullPhone,
-        userName: "User",
-        templateParams: [otp.toString()],
-      },
-    });
+    // AiSensy is CANCELLED. This call could never succeed, and because it is
+    // awaited inside the try, every international OTP request returned
+    // HTTP 400 "Failed to send OTP" — signup was not degraded, it was dead.
+    //
+    // The domestic path (utils/otp.js) already sends this same "otp_verification"
+    // template through the Meta Cloud API, so no new template was needed. The
+    // button parameter mirrors that call site exactly: the template carries a
+    // URL button that must be given the code as its variable.
+    //
+    // Digits only: utils/whatsapp.js passes `phone` straight to Meta as `to`,
+    // and countryCode arrives with or without a leading "+" depending on caller.
+    const sent = await sendWhatsApp(
+      String(fullPhone).replace(/\D/g, ""),
+      "otp_verification",
+      [otp.toString()],
+      { sub_type: "url", index: 0, parameters: [{ type: "text", text: otp.toString() }] }
+    );
+
+    // sendWhatsApp retries twice, writes a NotificationFailureLog and resolves
+    // null on final failure — it never throws. So the failure must be checked.
+    if (!sent) {
+      return res.status(400).send({ message: "Failed to send OTP" });
+    }
 
     return res.status(200).send({
       message: "OTP sent on WhatsApp",
