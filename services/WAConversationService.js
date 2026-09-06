@@ -298,7 +298,13 @@ const listInbox = async ({ mode, needsHuman, status, enquiryId, page = 1, limit 
       }
       filter.enquiryId = requestedEnquiryId;
     } else {
-      filter.enquiryId = { $in: inScopeIds };
+      // #191 — unowned conversations belong to everyone in scope, not to
+      // nobody. `enquiryId: null` matches no $in, so an unlinked thread used to
+      // be invisible to every scoped caller: they were not hitting a 403 they
+      // could report, the conversation simply was not there. That is the read
+      // half of the same bug getScoped had, and the two must move together —
+      // fixing only getScoped would make threads takeable but still unfindable.
+      filter.$or = [{ enquiryId: { $in: inScopeIds } }, { enquiryId: null }];
     }
   }
   const [rows, total] = await Promise.all([
@@ -350,11 +356,27 @@ const getScoped = async (conversationId, scopeFilter = {}) => {
   if (!conversation) throw httpError(404, "Conversation not found");
   const unscoped = Object.keys(scopeFilter).length === 0;
   if (!unscoped) {
-    if (!conversation.enquiryId) throw httpError(403, "Out of your scope");
-    const lead = await Enquiry.findOne({
-      $and: [{ _id: conversation.enquiryId }, scopeFilter],
-    }).lean();
-    if (!lead) throw httpError(403, "Out of your scope");
+    // ── AN UNOWNED CONVERSATION IS NOT "OUT OF YOUR SCOPE" (#191) ───────────
+    // A conversation with no linked lead has no owner, so there is no scope to
+    // be outside of. This used to throw 403 — and a fresh Instagram DM has no
+    // lead until a phone number is captured, so a rep on leads:view:own or
+    // :team could neither open nor take over precisely the threads where a
+    // human is most needed. Founders are on :all, which resolves to an empty
+    // scopeFilter and skipped this branch entirely, which is why it went
+    // unreported.
+    //
+    // Everywhere else in this codebase unassigned work is a TRIAGE QUEUE —
+    // visible to the team, claimable by whoever gets there. This was the odd
+    // one out in reading "no owner" as "someone else's".
+    //
+    // Scoping on OWNED threads is unchanged: another rep's linked conversation
+    // is still refused, and a test pins that.
+    if (conversation.enquiryId) {
+      const lead = await Enquiry.findOne({
+        $and: [{ _id: conversation.enquiryId }, scopeFilter],
+      }).lean();
+      if (!lead) throw httpError(403, "Out of your scope");
+    }
   }
   return conversation;
 };
