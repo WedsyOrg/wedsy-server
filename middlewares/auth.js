@@ -1,5 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { enforceReadOnly } = require("./enforceReadOnly");
+const { auditDestructive } = require("./auditDestructive");
 const User = require("../models/User");
 const Admin = require("../models/Admin");
 const Vendor = require("../models/Vendor");
@@ -71,7 +72,11 @@ function CheckToken(req, res, next) {
               //
               // Opt-in by marker permission, so it is a no-op for every
               // existing account. See middlewares/enforceReadOnly.js.
-              return enforceReadOnly(req, res, next);
+              // Audit destructive requests at the same chokepoint the
+              // read-only guard uses: one place, every authenticated route,
+              // no per-route retrofit. Registers a response hook and returns
+              // immediately — it never delays or fails the request.
+              return auditDestructive(req, res, () => enforceReadOnly(req, res, next));
             }
           })
           .catch((error) => {
@@ -238,7 +243,11 @@ function CheckLogin(req, res, next) {
               //
               // Opt-in by marker permission, so it is a no-op for every
               // existing account. See middlewares/enforceReadOnly.js.
-              return enforceReadOnly(req, res, next);
+              // Audit destructive requests at the same chokepoint the
+              // read-only guard uses: one place, every authenticated route,
+              // no per-route retrofit. Registers a response hook and returns
+              // immediately — it never delays or fails the request.
+              return auditDestructive(req, res, () => enforceReadOnly(req, res, next));
             }
           })
           .catch((error) => {
@@ -358,7 +367,11 @@ function CheckAdminLogin(req, res, next) {
               //
               // Opt-in by marker permission, so it is a no-op for every
               // existing account. See middlewares/enforceReadOnly.js.
-              return enforceReadOnly(req, res, next);
+              // Audit destructive requests at the same chokepoint the
+              // read-only guard uses: one place, every authenticated route,
+              // no per-route retrofit. Registers a response hook and returns
+              // immediately — it never delays or fails the request.
+              return auditDestructive(req, res, () => enforceReadOnly(req, res, next));
             }
           })
           .catch((error) => {
