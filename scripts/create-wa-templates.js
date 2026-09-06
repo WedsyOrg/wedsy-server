@@ -22,6 +22,11 @@
  * skipping keeps the output readable when only a few failed last time.
  */
 
+// The credentials live in .env on EC2, exactly as server.js expects them.
+// A standalone script gets no dotenv for free, so it must ask for it — without
+// this, META_WA_ACCESS_TOKEN reads as undefined and the script stops.
+require("dotenv").config();
+
 const GRAPH = process.env.META_GRAPH_BASE_URL || "https://graph.facebook.com/v19.0";
 const WABA_ID = process.env.META_WA_WABA_ID;
 const TOKEN = process.env.META_WA_ACCESS_TOKEN;
@@ -126,7 +131,7 @@ const TEMPLATES = [
   //   [0] name  [1] total  [2] received  [3] due
   // Get this wrong and every send fails with #132000.
   { name: "cx_pmnt_rmnd_prsnl",
-    body: "Hi {{1}}, a payment update for your Wedsy booking. Total: {{2}}. Received: {{3}}. Balance due: {{4}}. Please complete the balance to confirm your booking.",
+    body: "Hi {{1}}, a payment update for your Wedsy booking. Total: \u20b9{{2}}. Received: \u20b9{{3}}. Balance due: \u20b9{{4}}. Please complete the balance to confirm your booking.",
     example: ["Priya", "25000", "10000", "15000"] },
 ];
 
