@@ -1265,6 +1265,12 @@ const confirmBookingFromLead = async (req, res) => {
         // migration would have to convert something written after it ran.
         entries: [
           {
+            // GST-FIRST (drive finding): the token is the booking's FIRST
+            // payment and consumes the taxed stream first — so it must be
+            // invoiceable like any payment. Without a paymentId it could
+            // never carry its tax invoice and the stream's documents would
+            // permanently under-cover the lines' GST.
+            paymentId: new mongoose.Types.ObjectId(),
             amount: token,
             date: tokenReceivedAt,
             method: tokenMode,

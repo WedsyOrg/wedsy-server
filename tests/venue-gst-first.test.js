@@ -276,6 +276,31 @@ const raise = (lead, paymentId) =>
     const invOld = await VenueInvoice.findById(r.body.invoice._id).lean();
     ok(!invOld.stream, "🔴 …with stream null — the old model is byte-for-byte untouched");
 
+    // ══ H. THE TOKEN IS THE FIRST PAYMENT — invoiceable, stream-first ═══════
+    console.log("\n[H. the token consumes the taxed stream first and carries its own tax invoice]");
+    const H = await bookLead(
+      [{ label: "Venue rental", amount: 10000, gstTreatment: "full" }],
+      [{ label: "Instalment 1", amount: 7800 }],
+      { tokenAmount: 4000 }
+    );
+    const bkH = await VenueBooking.findById(H.bookingId).lean();
+    const tokenRowH = bkH.paymentSchedule.find((row) => /token/i.test(row.label || ""));
+    ok(tokenRowH && tokenRowH.entries[0] && tokenRowH.entries[0].paymentId,
+      "🔴 the confirm-built token entry carries a paymentId — it is a payment, so it is invoiceable (drive finding)");
+    r = await raise(H.lead, tokenRowH.entries[0].paymentId);
+    eq(r.code, 201, "raising the TOKEN's invoice succeeds");
+    ok(!r.body.secondInvoice && r.body.invoice.stream === "taxed", "…a tax invoice — the token fills the taxed stream first");
+    eq(r.body.invoice.totals.grandTotal, 4000, "…covering the token exactly");
+    eq(r.body.invoice.totals.taxable, 3390, "…taxable 3,390 grossed down @18");
+    const pH = await pay(H.lead, 7800);
+    r = await raise(H.lead, pH);
+    eq(r.code, 201, "the closing payment invoices");
+    eq(r.body.invoice.totals.taxable, 6610, "🔴 closing reconciliation continues FROM the token's invoice: 10,000 − 3,390");
+    eq(r.body.invoice.totals.gst, 1190, "…GST 1,190");
+    const tiH = await VenueInvoice.find({ enquiry: H.lead._id, stream: "taxed" }).lean();
+    eq(tiH.reduce((s2, i) => s2 + i.totals.taxable, 0), 10000, "🔴 token + payment invoices sum to the lines' full taxable");
+    eq(tiH.reduce((s2, i) => s2 + i.totals.gst, 0), 1800, "…and the full GST");
+
     // ══ G. THE INDEX GUARANTEE ══════════════════════════════════════════════
     console.log("\n[G. one payment, one invoice per stream — the database says so]");
     const dupe = new VenueInvoice({
