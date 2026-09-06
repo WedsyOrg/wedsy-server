@@ -95,6 +95,9 @@ const present = (inv) => ({
   forMilestoneId: inv.forMilestoneId || null,
   /** Set when this invoice was raised against a PAYMENT rather than a plan row. */
   forPaymentId: inv.forPaymentId || null,
+  /** GST-first: which half of a split payment this covers — "taxed",
+   *  "untaxed", or null on invoices raised outside that model. */
+  stream: inv.stream || null,
   leadDocument: inv.leadDocument || null,
   createdAt: inv.createdAt,
 });
@@ -126,6 +129,235 @@ const listLeadInvoices = async (req, res) => {
 // ── POST /venues/:slug/enquiries/:enquiryId/invoices ────────────────────────
 // Body: { gst?: boolean, gstMode?: "exclusive"|"inclusive", gstPercent?: number,
 //         milestoneId?: <paymentSchedule subdoc id>, note?: string }
+
+/**
+ * ── GST-FIRST: ONE PAYMENT, UP TO TWO INVOICES ──────────────────────────────
+ * Founder ruling (wizard2). On a booking whose schedule includes the GST,
+ * every payment fills the TAXED stream first (each line's taxable base plus
+ * its GST), then the UNTAXED stream (everything else, deposits included) —
+ * always, not a setting. Each payment produces:
+ *
+ *   · a TAX invoice for what landed on the taxed stream — the amount is
+ *     grossed down at the booking's one rate (a Rs. 5,000 payment against an
+ *     18% stream invoices taxable 4,237 + GST 763), because a part payment
+ *     issues a PART tax invoice: the money arrived and the supply happened.
+ *   · an ORDINARY invoice for the rest — no GSTIN block, no tax columns.
+ *
+ * WHERE THE STREAM POSITION COMES FROM: the tax invoices themselves. What
+ * this payment puts on the taxed stream is the stream minus what tax
+ * invoices already cover — never a re-walk of payment history — so
+ * out-of-order approvals can never double-tax a rupee: the ledger of issued
+ * documents IS the position. The payment that CLOSES the stream derives its
+ * taxable/GST by subtraction from the lines' own totals, so the issued tax
+ * invoices sum EXACTLY to the lines' taxable and GST, never a rupee off.
+ *
+ * One number each from the same gapless allocator; each half is raisable
+ * exactly once ({enquiry, null, paymentId, stream} unique).
+ */
+async function createGstFirstSplitInvoices({ req, res, venue, lead, booking, paymentPieces, forPaymentId, body }) {
+  const { computeLineTotals, lineStreams } = require("../utils/venueMoney");
+  const totalsAll = computeLineTotals(booking.lineItems, booking.gstPercent);
+  const streams = lineStreams(totalsAll);
+  const pct = Number(booking.gstPercent) || 0;
+  const amount = paymentPieces.reduce((sum, x) => sum + (Math.round(Number(x.entry.amount)) || 0), 0);
+  const pieceLabels = [...new Set(paymentPieces.map((x) => x.row.label || "Instalment"))].join(" + ");
+  if (amount <= 0) {
+    return res.status(400).json({ message: "That payment has no amount to invoice.", code: "nothing_to_invoice" });
+  }
+
+  // the ledger: what the taxed stream already has documents for
+  const coveredAgg = await VenueInvoice.aggregate([
+    { $match: { enquiry: lead._id, stream: "taxed" } },
+    { $group: { _id: null, grand: { $sum: "$totals.grandTotal" }, taxable: { $sum: "$totals.taxable" } } },
+  ]);
+  const taxedCovered = coveredAgg.length ? Math.round(coveredAgg[0].grand) : 0;
+  const taxableCovered = coveredAgg.length ? Math.round(coveredAgg[0].taxable) : 0;
+
+  // ── WHAT THIS PAYMENT STILL NEEDS DOCUMENTS FOR ─────────────────────────
+  // The stream position must be computed ONCE per payment. A re-raise cannot
+  // re-derive it from the (now further advanced) ledger — that is how a
+  // Rs. 5,000 payment whose tax invoice already stands would grow a second,
+  // ordinary Rs. 5,000: the same money documented twice. So any existing
+  // invoice for this payment fixes what remains: covered in full → 409; a
+  // half-raised split (a crash between the two allocations) → only the
+  // missing remainder is raised, never a recomputation of the whole.
+  const existing = await VenueInvoice.find({ enquiry: lead._id, forMilestoneId: null, forPaymentId })
+    .select("invoiceNumber stream totals _id").lean();
+  const legacySingle = existing.find((i) => !i.stream);
+  if (legacySingle) {
+    return res.status(409).json({
+      message: `${legacySingle.invoiceNumber} already covers that payment.`,
+      code: "invoice_exists", invoiceNumber: legacySingle.invoiceNumber, invoiceId: legacySingle._id,
+    });
+  }
+  const taxedExisting = existing.find((i) => i.stream === "taxed");
+  const untaxedExisting = existing.find((i) => i.stream === "untaxed");
+  const coveredForPayment = existing.reduce((sum, i) => sum + Math.round((i.totals && i.totals.grandTotal) || 0), 0);
+  if (coveredForPayment >= amount) {
+    const names = existing.map((i) => i.invoiceNumber).join(" and ");
+    return res.status(409).json({
+      message: `${names || "An invoice"} already cover${existing.length === 1 ? "s" : ""} that payment.`,
+      code: "invoice_exists",
+      invoiceNumber: existing[0] && existing[0].invoiceNumber,
+      invoiceId: existing[0] && existing[0]._id,
+    });
+  }
+  let taxedHere;
+  let untaxedHere;
+  if (taxedExisting || untaxedExisting) {
+    // resume the half-raised split: the remainder goes to the missing half
+    const remainder = amount - coveredForPayment;
+    if (taxedExisting) { taxedHere = 0; untaxedHere = remainder; }
+    else { taxedHere = Math.max(0, Math.min(remainder, streams.taxed - taxedCovered)); untaxedHere = remainder - taxedHere; }
+  } else {
+    taxedHere = Math.max(0, Math.min(amount, streams.taxed - taxedCovered));
+    untaxedHere = amount - taxedHere;
+  }
+  const wantTaxed = taxedHere > 0 && !taxedExisting;
+  const wantUntaxed = untaxedHere > 0 && !untaxedExisting;
+  if (!wantTaxed && !wantUntaxed) {
+    const names = existing.map((i) => i.invoiceNumber).join(" and ");
+    return res.status(409).json({
+      message: `${names || "An invoice"} already cover${existing.length === 1 ? "s" : ""} that payment.`,
+      code: "invoice_exists",
+      invoiceNumber: existing[0] && existing[0].invoiceNumber,
+      invoiceId: existing[0] && existing[0]._id,
+    });
+  }
+
+  const brand = resolveBranding(venue);
+  if (wantTaxed && !brand.hasGstin) {
+    return res.status(400).json({
+      message: "This payment lands on the taxed stream, but no GSTIN is set. Add it in Settings → Billing & tax.",
+      code: "no_gstin",
+    });
+  }
+
+  const billedTo = billedToSnapshot(lead.contacts, booking);
+  const closesStream = taxedCovered + taxedHere === streams.taxed;
+  const raised = [];
+  try {
+    if (wantTaxed) {
+      // gross down at the one rate; the closing payment reconciles by
+      // subtraction so the stream's documents sum exactly to the lines
+      const taxable = closesStream
+        ? totalsAll.taxable - taxableCovered
+        : Math.round((taxedHere * 100) / (100 + pct));
+      const gst = taxedHere - taxable;
+      const inv = await allocateInvoice(venue, {
+        booking: booking._id, enquiry: lead._id,
+        forMilestoneId: null, forPaymentId, stream: "taxed",
+        kind: "final",
+        lineItems: [{ label: `Payment received — ${pieceLabels}`, category: "payment", qty: 1, unitPrice: taxable, taxable, gst }],
+        gstPercent: pct, gstMode: "exclusive", discount: 0,
+        totals: { subtotal: taxable, taxable, gst, grandTotal: taxedHere },
+        whiteLabel: brand.whiteLabel, billedTo,
+      });
+      raised.push(inv);
+    }
+    if (wantUntaxed) {
+      const inv = await allocateInvoice(venue, {
+        booking: booking._id, enquiry: lead._id,
+        forMilestoneId: null, forPaymentId, stream: "untaxed",
+        kind: "final",
+        lineItems: [{ label: `Payment received — ${pieceLabels}`, category: "payment", qty: 1, unitPrice: untaxedHere, taxable: 0, gst: 0 }],
+        gstPercent: 0, gstMode: "none", discount: 0,
+        totals: { subtotal: untaxedHere, taxable: 0, gst: 0, grandTotal: untaxedHere },
+        whiteLabel: brand.whiteLabel, billedTo,
+      });
+      raised.push(inv);
+    }
+  } catch (e) {
+    if (!isMilestoneCollision(e)) throw e;
+    const winner = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId: null, forPaymentId })
+      .select("invoiceNumber _id").lean();
+    return res.status(409).json({
+      message: winner ? `${winner.invoiceNumber} already covers that payment.` : "An invoice for that payment was raised a moment ago.",
+      code: "invoice_exists",
+      invoiceNumber: winner ? winner.invoiceNumber : undefined,
+      invoiceId: winner ? winner._id : undefined,
+    });
+  }
+
+  // render + file each half in the Documents tab; the invoice rows are the
+  // tax records and survive a failed render exactly as on the single path
+  const docs = [];
+  const note = cleanStr(body.note).slice(0, MAX_NOTE);
+  for (const inv of raised) {
+    let rendered;
+    try {
+      const { buildVenueDocument } = require("../utils/docsystem");
+      const { loadLogoBuffer } = require("../utils/venuePdf");
+      const logoBuffer = await loadLogoBuffer(resolveBranding(venue).logo);
+      rendered = await buildVenueDocument("invoice", { venue, lead, booking, invoice: inv, logoBuffer });
+    } catch (e) {
+      console.error(`[venueLeadInvoice] render failed for ${inv.invoiceNumber}: ${e.message}`);
+      return res.status(500).json({
+        message: `Invoice ${inv.invoiceNumber} was recorded but its PDF could not be produced. Please report this.`,
+        code: "render_failed", invoiceNumber: inv.invoiceNumber,
+      });
+    }
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let url;
+    try {
+      url = await uploadBufferToS3({
+        buffer: rendered.buffer,
+        key: `venues/${venue._id}/invoices/${stamp}.pdf`,
+        contentType: "application/pdf",
+      });
+    } catch (e) {
+      console.error(`[venueLeadInvoice] S3 upload failed for ${inv.invoiceNumber}: ${e.message}`);
+      return res.status(502).json({
+        message: `Invoice ${inv.invoiceNumber} was recorded but could not be stored. Please report this.`,
+        code: "storage_failed", invoiceNumber: inv.invoiceNumber,
+      });
+    }
+    const doc = await insertNextVersion(
+      {
+        venue: venue._id, enquiry: lead._id, kind: "invoice",
+        note: note || (inv.stream === "taxed"
+          ? `${inv.invoiceNumber} (tax invoice — GST ${pct}%)`
+          : `${inv.invoiceNumber} (no GST)`),
+        url, sizeBytes: rendered.buffer.length, contentType: "application/pdf",
+        source: { url: "", filename: "", sizeBytes: null }, sourceVerified: false,
+        generatedBy: actorId(req), generatedByName: await actorName(req),
+      },
+      () => ({ filename: `invoice-${inv.invoiceNumber.replace(/[^a-zA-Z0-9-]/g, "")}.pdf` })
+    );
+    await VenueInvoice.updateOne({ _id: inv._id }, { $set: { leadDocument: doc._id } });
+    inv.leadDocument = doc._id;
+    docs.push(doc);
+  }
+
+  lead.activities.push({
+    type: "invoice_raised",
+    description:
+      raised.length === 2
+        ? `Invoices ${raised[0].invoiceNumber} (tax) and ${raised[1].invoiceNumber} raised for a payment of ${amount} — taxed stream ${taxedHere}, untaxed ${untaxedHere}`
+        : `Invoice ${raised[0].invoiceNumber}${raised[0].stream === "taxed" ? " (tax)" : " (no GST)"} raised for a payment of ${amount}`,
+    actor: actorId(req),
+    timestamp: new Date(),
+  });
+  await lead.save();
+
+  return res.status(201).json({
+    success: true,
+    invoice: present(raised[0]),
+    document: docs[0] ? { _id: docs[0]._id, version: docs[0].version, filename: docs[0].filename, note: docs[0].note } : null,
+    ...(raised[1] ? { secondInvoice: present(raised[1]) } : {}),
+    ...(docs[1] ? { secondDocument: { _id: docs[1]._id, version: docs[1].version, filename: docs[1].filename, note: docs[1].note } } : {}),
+    split: {
+      payment: amount,
+      taxed: taxedHere,
+      untaxed: untaxedHere,
+      taxedStream: streams.taxed,
+      taxedCoveredBefore: taxedCovered,
+      streamClosed: closesStream,
+    },
+    downloadPath: docs[0] ? `/venues/${venue.slug}/enquiries/${lead._id}/documents/${docs[0]._id}/download` : undefined,
+  });
+}
+
 const createLeadInvoice = async (req, res) => {
   try {
     const owned = await resolveOwnedLead(req, res);
@@ -181,6 +413,12 @@ const createLeadInvoice = async (req, res) => {
       }
       paymentPieces = live;
       forPaymentId = new mongoose.Types.ObjectId(String(body.paymentId));
+      // ── GST-FIRST: the split path owns payment invoices on new-model
+      // bookings. Everything below (the instalment-decides derivation, the
+      // single-invoice key) is the OLD model and keeps serving old bookings.
+      if (booking.scheduleIncludesGst) {
+        return createGstFirstSplitInvoices({ req, res, venue, lead, booking, paymentPieces, forPaymentId, body });
+      }
     } else if (body.milestoneId) {
       if (!mongoose.isValidObjectId(body.milestoneId)) {
         return res.status(400).json({ message: "milestoneId is not valid" });

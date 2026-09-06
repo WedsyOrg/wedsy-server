@@ -40,11 +40,14 @@ const daysAhead = (n) => new Date(Date.now() + n * 86400000);
     await VenueInvoice.init();
 
     const idx = await VenueInvoice.collection.indexes();
-    const three = idx.find((i) => i.name === "enquiry_1_forMilestoneId_1_forPaymentId_1");
-    ok(!!three, "the three-key unique index exists");
-    ok(!!three && three.unique === true, "…and it is unique");
+    // GST-first (wizard2) added `stream` as the FOURTH key so one payment can
+    // carry a tax invoice and an ordinary invoice; the three-key index is the
+    // one the migration drops (scripts/migrate-invoice-stream-index.js).
+    const four = idx.find((i) => i.name === "enquiry_1_forMilestoneId_1_forPaymentId_1_stream_1");
+    ok(!!four, "the four-key unique index exists");
+    ok(!!four && four.unique === true, "…and it is unique");
     ok(
-      !!three && JSON.stringify(three.partialFilterExpression) === JSON.stringify({ enquiry: { $type: "objectId" } }),
+      !!four && JSON.stringify(four.partialFilterExpression) === JSON.stringify({ enquiry: { $type: "objectId" } }),
       "…partial-filtered to lead invoices only, so booking-level paths are unaffected"
     );
     ok(!idx.find((i) => i.name === "enquiry_1_forMilestoneId_1"), "and the old two-key index is NOT created by the schema");

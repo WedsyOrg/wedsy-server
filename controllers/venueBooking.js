@@ -234,7 +234,7 @@ const updateBooking = async (req, res) => {
         // total what the lines say is collected.
         const rows = Array.isArray(req.body.paymentSchedule) ? req.body.paymentSchedule : [];
         const { scheduleMismatch } = require("../utils/venueMoney");
-        const mm = scheduleMismatch(rows, lf);
+        const mm = scheduleMismatch(rows, lf, { includesGst: Boolean(booking.scheduleIncludesGst) });
         if (mm) {
           return res.status(400).json({
             message:
@@ -768,7 +768,13 @@ const confirmBookingFromLead = async (req, res) => {
           : undefined;
     const hasLines = bookingLines.length > 0;
     const lineFigures = hasLines ? computeLineTotals(bookingLines, linesGstPercent) : null;
-    const payableFromLines = hasLines ? lineFigures.charged + lineFigures.refundable : 0;
+    // GST-FIRST (wizard2): a line booking's schedule is set on the WHOLE
+    // collectable — charged + refundable + GST — because the tax invoices are
+    // cut from payments as they arrive (taxed stream first). The old ex-GST
+    // base survives only on bookings confirmed before this model.
+    const payableFromLines = hasLines
+      ? lineFigures.charged + lineFigures.refundable + lineFigures.gst
+      : 0;
 
     // RULING C: a caller-stated totalValue that DISAGREES with the lines is
     // refused, with both numbers — being told beats being overridden, in
@@ -925,9 +931,9 @@ const confirmBookingFromLead = async (req, res) => {
           message:
             `The advance and the instalments come to ${inr(tokenNow + scheduled)}, but this booking collects ${inr(payableFromLines)}` +
             ` — ${inr(lineFigures.charged)} charged` +
-            (lineFigures.refundable > 0
-              ? ` plus ${inr(lineFigures.refundable)} refundable held. The schedule must collect the deposit too — add it as a row.`
-              : `.`),
+            (lineFigures.gst > 0 ? ` + ${inr(lineFigures.gst)} GST` : ``) +
+            (lineFigures.refundable > 0 ? ` + ${inr(lineFigures.refundable)} refundable held` : ``) +
+            `. The schedule collects all of it — GST included, the tax invoices are cut from the payments.`,
           code: "schedule_value_mismatch",
           bookingValue: lineFigures.charged,
           refundableHeld: lineFigures.refundable,
@@ -1233,6 +1239,13 @@ const confirmBookingFromLead = async (req, res) => {
     }
 
     const token = tokenV.value || 0;
+    // FIX 6 (wizard2): the token was often paid before it was entered — the
+    // wizard sends the date it was RECEIVED (defaulting to today on screen),
+    // and both the row and its paid entry carry that date, not the moment
+    // someone finally typed it in.
+    const tokenDateV = optDate(body.tokenDate, "tokenDate");
+    if (!tokenDateV.ok) { await undoEverything(); return res.status(400).json({ message: tokenDateV.message }); }
+    const tokenReceivedAt = tokenDateV.value ? new Date(tokenDateV.value) : new Date();
     const rows = [];
     if (token > 0) {
       // The token is money already in hand, so it is recorded as a PAID row
@@ -1243,7 +1256,7 @@ const confirmBookingFromLead = async (req, res) => {
       // saying nothing.
       rows.push({
         label: `Token — received${tokenModeLabel ? ` (${tokenModeLabel})` : ""}`,
-        dueDate: new Date(),
+        dueDate: tokenReceivedAt,
         amount: token,
         percent: null,
         // Written as an ENTRY, not a scalar: the token is the booking's first
@@ -1252,8 +1265,14 @@ const confirmBookingFromLead = async (req, res) => {
         // migration would have to convert something written after it ran.
         entries: [
           {
+            // GST-FIRST (drive finding): the token is the booking's FIRST
+            // payment and consumes the taxed stream first — so it must be
+            // invoiceable like any payment. Without a paymentId it could
+            // never carry its tax invoice and the stream's documents would
+            // permanently under-cover the lines' GST.
+            paymentId: new mongoose.Types.ObjectId(),
             amount: token,
-            date: new Date(),
+            date: tokenReceivedAt,
             method: tokenMode,
             methodOther: tokenMode === "other" ? modeOtherV.value || "" : "",
             reference: refV.value || "",
@@ -1289,7 +1308,14 @@ const confirmBookingFromLead = async (req, res) => {
     // its LINES, never from the schedule — token + rows includes the
     // refundable held, and deriving the value from it would write the deposit
     // into revenue. Re-asserted here so a drifted draft cannot survive confirm.
-    if (hasLines) booking.totalValue = lineFigures.charged;
+    if (hasLines) {
+      booking.totalValue = lineFigures.charged;
+      // GST-FIRST era marker: this schedule was validated against the whole
+      // collectable (GST inside), so every later guard, absorb and document
+      // must read it that way. Set exactly here — where the booking's money
+      // facts are written — never inferred later from the numbers.
+      booking.scheduleIncludesGst = true;
+    }
     else if (totalV.value !== undefined) booking.totalValue = totalV.value;
     else if (computedTotal > 0) booking.totalValue = computedTotal;
 

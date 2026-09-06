@@ -11,9 +11,10 @@
 //   · confirm with quoteId applies the quote through applyQuoteToBooking —
 //     the SAME seam acceptance uses — so the booking gets the lines
 //     snapshotted, totalValue = CHARGED, gstPercent copied, gstMode "none".
-//   · the schedule is validated against the named quote's payable
-//     (charged + refundable): the guard that has shipped broken twice runs
-//     against the quote the wizard showed, not against nothing.
+//   · the schedule is validated against the named quote's COLLECTABLE
+//     (charged + refundable + GST — GST-first, wizard2: the schedule carries
+//     the GST inside and the tax invoices are cut from payments): the guard
+//     that has shipped broken twice runs against the quote the wizard showed.
 //   · a draft that ALREADY carries lines (accepted earlier) wins over a
 //     stale wizard id — the accepted write is the standing truth.
 //   · refusals: an id not on this lead is 404 quote_not_found; a legacy
@@ -80,15 +81,16 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
       { label: "Venue rental", amount: 500000, gstTreatment: "full" },
       { label: "Security deposit", amount: 25000, gstTreatment: "none", refundable: true },
     ]);
-    // charged 5,00,000 + refundable 25,000 = payable 5,25,000; token 50,000
-    // → the rows cover the 4,75,000 balance. Exactly what the wizard sends.
+    // GST-FIRST: charged 5,00,000 + GST 90,000 + refundable 25,000 =
+    // collectable 6,15,000; token 50,000 → the rows cover the 5,65,000
+    // balance. Exactly what the wizard sends.
     let r = await confirmLead(lead, {
       functions: fn(nextDate()),
       quoteId: String(quote._id),
       tokenAmount: 50000,
       paymentSchedule: [
         { label: "Advance", amount: 200000, dueDate: "2095-01-01" },
-        { label: "Balance", amount: 275000, dueDate: "2095-02-01" },
+        { label: "Balance", amount: 365000, dueDate: "2095-02-01" },
       ],
     });
     eq(r.code, 200, "🔴 confirm with quoteId succeeds — the quote step's save is a road, not a dead end");
@@ -109,9 +111,11 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
     ok(stored[0].entries && stored[0].entries.length === 1 && stored[0].entries[0].amount === 50000 && stored[0].entries[0].status === "approved",
       "…and it carries the approved paid entry — the token is money received, not money due");
     eq(stored[1].amount, 200000, "🔴 row 1 stored byte-equal to the payload (2,00,000)");
-    eq(stored[2].amount, 275000, "🔴 row 2 stored byte-equal to the payload (2,75,000)");
-    eq(stored[1].amount + stored[2].amount + stored[0].amount, 525000,
-      "…and token + rows collect exactly the payable the quote states");
+    eq(stored[2].amount, 365000, "🔴 row 2 stored byte-equal to the payload (3,65,000)");
+    eq(stored[1].amount + stored[2].amount + stored[0].amount, 615000,
+      "…and token + rows collect exactly the collectable — GST inside (6,15,000)");
+    ok(bk.scheduleIncludesGst === true,
+      "🔴 the booking carries the GST-first era marker — every later guard reads the right base");
 
     // ══ B. THE GUARD RUNS AGAINST THE NAMED QUOTE ══════════════════════════
     console.log("\n[B. the schedule is validated against the quote's payable]");
@@ -124,13 +128,13 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
       functions: fn(nextDate()),
       quoteId: String(quote._id),
       tokenAmount: 50000,
-      // covers charged alone — the deposit silently never collected
-      paymentSchedule: [{ label: "Balance", amount: 450000 }],
+      // covers the OLD ex-GST payable — under GST-first that is short by the GST
+      paymentSchedule: [{ label: "Balance", amount: 475000 }],
     });
-    eq(r.code, 400, "🔴 a schedule short of the payable is refused");
+    eq(r.code, 400, "🔴 a schedule short of the collectable is refused");
     eq(r.body.code, "schedule_value_mismatch", "…as schedule_value_mismatch");
-    eq(r.body.payable, 525000, "…naming the payable the lines derive (5,25,000)");
-    ok(/deposit/.test(r.body.message || ""), "…and the message says to add the deposit row");
+    eq(r.body.payable, 615000, "…naming the collectable the lines derive (6,15,000 — GST inside)");
+    ok(/GST/.test(r.body.message || ""), "…and the message names the GST the schedule must collect");
     ok(!(await VenueBooking.exists({ enquiry: lead._id, status: { $ne: "draft" } })),
       "…and no confirmed booking exists — refused before the calendar");
 
@@ -140,7 +144,7 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
       quoteId: String(quote._id),
       gstMode: "per_instalment",
       tokenAmount: 50000,
-      paymentSchedule: [{ label: "Balance", amount: 475000 }],
+      paymentSchedule: [{ label: "Balance", amount: 565000 }],
     });
     eq(r.code, 400, "a booking-level gstMode alongside quoteId is refused");
     eq(r.body.code, "line_booking_gst", "…as line_booking_gst — the wizard no longer even renders the control");
@@ -151,7 +155,7 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
       quoteId: String(quote._id),
       totalValue: 999999,
       tokenAmount: 50000,
-      paymentSchedule: [{ label: "Balance", amount: 475000 }],
+      paymentSchedule: [{ label: "Balance", amount: 565000 }],
     });
     eq(r.code, 400, "a stated total disagreeing with the named quote's lines is refused");
     eq(r.body.code, "total_is_derived_from_lines", "…as total_is_derived_from_lines");
@@ -193,9 +197,9 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
     r = await confirmLead(lead, {
       functions: fn(nextDate()),
       quoteId: String(stale._id),
-      paymentSchedule: [{ label: "Full", amount: 300000 }],
+      paymentSchedule: [{ label: "Full", amount: 354000 }],
     });
-    eq(r.code, 200, "confirm succeeds — the schedule matches the DRAFT's lines, which stand");
+    eq(r.code, 200, "confirm succeeds — the schedule matches the DRAFT's lines (with their GST), which stand");
     bk = await VenueBooking.findById(r.body.booking._id).lean();
     eq(bk.totalValue, 300000, "🔴 the accepted quote's 3,00,000 stands; the stale 9,99,000 id changed nothing");
     eq(bk.lineItems.length, 1, "…one line, the accepted one");
@@ -205,25 +209,26 @@ async function lineQuote(lead, lineItems, gstPercent = 18) {
     console.log("\n[E. the wizard's real shape: token + percent rows against payable − token]");
     lead = await mkLead();
     quote = await lineQuote(lead, [{ label: "Venue rental", amount: 350000, gstTreatment: "full" }]);
-    // Rohaan's exact example: Rs. 50,000 token on Rs. 3,50,000 — the rows
-    // split the 3,00,000 balance 50/50. The wizard DISPLAYS 14.29/42.86/42.86
-    // as shares of the payable; what it SENDS is the engine's remainder
-    // percents, and the identity between the two is pinned UI-side (S6).
+    // GST-first spelling of Rohaan's example: Rs. 3,50,000 full-GST @18 →
+    // collectable Rs. 4,13,000; Rs. 50,000 token → the rows split the
+    // 3,63,000 balance 50/50. The wizard DISPLAYS shares of the collectable;
+    // what it SENDS is the engine's remainder percents (identity pinned
+    // UI-side, S6).
     r = await confirmLead(lead, {
       functions: fn(nextDate()),
       quoteId: String(quote._id),
       tokenAmount: 50000,
       paymentSchedule: [
-        { label: "Second", percent: 50, amount: 150000 },
-        { label: "Final", percent: 50, amount: 150000 },
+        { label: "Second", percent: 50, amount: 181500 },
+        { label: "Final", percent: 50, amount: 181500 },
       ],
     });
     eq(r.code, 200, "🔴 the token + 50/50 shape confirms against the quote's payable");
     bk = await VenueBooking.findById(r.body.booking._id).lean();
     const rows = (bk.paymentSchedule || []).filter((row) => !/token/i.test(row.label || ""));
     eq(rows.length, 2, "two instalment rows behind the Token row");
-    ok(rows.every((row) => row.amount === 150000),
-      "🔴 each stored at 1,50,000 — exactly the 42.86% of payable the screen showed");
+    ok(rows.every((row) => row.amount === 181500),
+      "🔴 each stored at 1,81,500 — exactly the split of the collectable the screen showed");
 
     console.log(`\n${fail ? "✗" : "✓"} ${pass} passed, ${fail} failed`);
   } catch (err) {

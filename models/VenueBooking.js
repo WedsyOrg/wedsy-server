@@ -234,6 +234,14 @@ const VenueBookingSchema = new mongoose.Schema(
     // An enum rather than a pair of booleans on purpose: "whole" and
     // "per_instalment" cannot both be in force, so double-taxing is not a state
     // this document can hold.
+    // ── GST-FIRST (wizard2) ─────────────────────────────────────────────
+    // True on bookings confirmed under the new model: the payment schedule
+    // includes the lines' GST (rows sum to charged + refundable + GST), and
+    // per-payment invoices are cut by stream — tax invoice for what lands on
+    // the taxed stream, ordinary invoice for the rest. False on everything
+    // older: their schedules were written ex-GST and every guard must keep
+    // checking the total they were written with.
+    scheduleIncludesGst: { type: Boolean, default: false },
     gstMode: { type: String, enum: ["none", "whole", "per_instalment"], default: "none" },
     gstPercent: { type: Number, default: 0, min: 0, max: 100 },
     specialRequirements: { type: String, default: "" },

@@ -166,7 +166,11 @@ const bookingLineEdit = async (req, res) => {
 
     const oldLf = computeLineTotals(booking.lineItems, booking.gstPercent);
     const newLf = computeLineTotals(norm.lines, pct);
-    const newPayable = newLf.charged + newLf.refundable;
+    // GST-FIRST: a wizard2 booking's schedule includes the GST, so a bill
+    // edit absorbs the GST movement too — the instalments keep collecting the
+    // whole collectable. Older bookings absorb ex-GST, exactly as written.
+    const gstIn = Boolean(booking.scheduleIncludesGst);
+    const newPayable = newLf.charged + newLf.refundable + (gstIn ? newLf.gst : 0);
 
     const plan = planAbsorb(booking.paymentSchedule || [], newPayable);
     if (!plan.ok && plan.code === "refund_required") {
@@ -196,7 +200,7 @@ const bookingLineEdit = async (req, res) => {
     });
     const preview = {
       agreed: { from: oldLf.charged, to: newLf.charged },
-      payable: { from: oldLf.charged + oldLf.refundable, to: newPayable },
+      payable: { from: oldLf.charged + oldLf.refundable + (gstIn ? oldLf.gst : 0), to: newPayable },
       refundable: { from: oldLf.refundable, to: newLf.refundable },
       rows: rowView,
     };
@@ -216,7 +220,7 @@ const bookingLineEdit = async (req, res) => {
     // THE GUARD, EXECUTED IN THIS PATH — the same function the PATCH guard
     // runs. If the construction above ever failed to land exactly, this
     // refuses before anything is saved rather than storing the drift.
-    const mm = scheduleMismatch(booking.paymentSchedule, newLf);
+    const mm = scheduleMismatch(booking.paymentSchedule, newLf, { includesGst: gstIn });
     if (mm) {
       return res.status(500).json({
         message: `Internal: the absorbed schedule comes to ${inr(mm.scheduled)} against ${inr(mm.payable)} payable — nothing was saved.`,
@@ -312,7 +316,9 @@ const foldAdditionalBilling = async (req, res) => {
     if (target.dueDate) row.dueDate = target.dueDate;
     // THE GUARD, EXECUTED — amounts did not move, and this proves it.
     const lf = computeLineTotals(booking.lineItems, booking.gstPercent);
-    const mm = (booking.lineItems || []).length ? scheduleMismatch(booking.paymentSchedule, lf) : null;
+    const mm = (booking.lineItems || []).length
+      ? scheduleMismatch(booking.paymentSchedule, lf, { includesGst: Boolean(booking.scheduleIncludesGst) })
+      : null;
     if (mm) {
       return res.status(500).json({
         message: `Internal: the fold moved money — ${inr(mm.scheduled)} against ${inr(mm.payable)} payable. Nothing was saved.`,

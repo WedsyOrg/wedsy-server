@@ -204,14 +204,14 @@ async function acceptQuote(quoteBody) {
     });
     eq(r.code, 400, "🔴 GATELESS: amounts-only with no stated total is checked anyway — lines are the truth");
     eq(r.body.code, "schedule_value_mismatch", "…same code as ever");
-    ok(/refundable held/.test(r.body.message) && /add it as a row/.test(r.body.message),
-      `…and the message says what to add: "${r.body.message}"`);
-    eq(r.body.payable, 525000, "…naming the payable: charged + refundable");
+    ok(/refundable held/.test(r.body.message) && /GST/.test(r.body.message),
+      `…and the message names the GST and the held money the schedule must collect: "${r.body.message}"`);
+    eq(r.body.payable, 615000, "…naming the collectable: charged + GST + refundable (GST-first)");
 
     // Ruling A at the door: booking-level GST modes are refused on line bookings.
     r = await confirmLead(lineLead, {
       functions: fn(nextDate()), gstMode: "whole", gstPercent: 18,
-      paymentSchedule: [{ label: "Full", amount: 525000 }],
+      paymentSchedule: [{ label: "Full", amount: 615000 }],
     });
     eq(r.code, 400, "a booking-level GST mode is refused on a line booking");
     eq(r.body.code, "line_booking_gst", "…with its own code");
@@ -222,8 +222,8 @@ async function acceptQuote(quoteBody) {
       functions: fn(nextDate()), tokenAmount: 25000, totalValue: 500000, gstMode: "none", gstPercent: 0,
       paymentSchedule: [
         { label: "Security deposit", amount: 25000 },
-        { label: "A", percent: 50, amount: 237500 },
-        { label: "B", percent: 50, amount: 237500 },
+        { label: "A", percent: 50, amount: 282500 },
+        { label: "B", percent: 50, amount: 282500 },
       ],
     });
     eq(r.code, 200, "🔴 the wizard echoing the derived value is a no-op, not an error — and the deposit rides as a fixed row");
@@ -241,7 +241,7 @@ async function acceptQuote(quoteBody) {
     eq(r.code, 400, "PATCH schedule that forgets the deposit is refused");
     r = await call(bookings.updateBooking, req({
       params: { bookingId: bkId },
-      body: { paymentSchedule: [{ label: "Full", amount: 525000 }, { label: "Bar tab", amount: 10000, isAdditional: true }] },
+      body: { paymentSchedule: [{ label: "Full", amount: 615000 }, { label: "Bar tab", amount: 10000, isAdditional: true }] },
     }));
     eq(r.code, 200, "🔴 …but additional billing stays the sanctioned money above the value — excluded from the equality");
 
