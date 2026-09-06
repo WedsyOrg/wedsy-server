@@ -1039,20 +1039,13 @@ const UpdateLead = async (req, res) => {
     });
 };
 
-const Delete = (req, res) => {
-  const { leadIds } = req.body;
-  Enquiry.deleteMany({ _id: { $in: leadIds } })
-    .then((result) => {
-      if (!result) {
-        res.status(404).send();
-      } else {
-        res.send({ message: "success" });
-      }
-    })
-    .catch((error) => {
-      respondCatch(res, error);
-    });
-};
+// The bulk hard-delete that lived here is GONE (6 Sep 2026). It ran
+// Enquiry.deleteMany() on ids taken straight from the request body, behind
+// CheckAdminLogin with no permission and no audit trail, orphaning the 25
+// collections that reference a lead. Its route is removed too; use the soft
+// POST /enquiry/bulk-archive, which is gated on leads:delete:all. Deliberately
+// not left as an unrouted export — an exported hard delete is a loaded gun for
+// the next person adding a router line.
 
 // EXTENSION: enrich the single-lead GET response with:
 // - paymentStats (existing behaviour)
@@ -1670,7 +1663,6 @@ module.exports = {
   Get,
   Update,
   UpdateLead,
-  Delete,
   CreateUser,
   AddConversation,
   GetNoteStream,
