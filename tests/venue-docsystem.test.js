@@ -237,6 +237,41 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
     }
     ok(lv.totals.taxable === 1077500 && lv.totals.gst === 193950, "the mixed invoice's stored per-line derivation matches the fixture");
 
+    // ── GST-FIRST (wizard2): the ORDINARY invoice is a recipe variation ─────
+    // A payment's untaxed half renders with NO GST-register fact anywhere:
+    // no venue GSTIN/PAN, no state code, no place of supply, no SAC, no
+    // reverse-charge line, no B2C fallback, no tax columns. The tax half
+    // keeps every one of them. Asserted on the rendered stream, both ways.
+    console.log("\n[6b. GST-first split: the ordinary invoice carries no GST register facts]");
+    const taxHalf = await buildVenueDocument("invoice", { venue, lead, booking, invoice: {
+      invoiceNumber: `${TAG}-TAXH`, kind: "final", gstMode: "exclusive", gstPercent: 18, createdAt: new Date(),
+      stream: "taxed", billedTo: { name: lead.coupleName, gstin: "" },
+      lineItems: [{ label: "Payment received — Advance", qty: 1, unitPrice: 4237, taxable: 4237, gst: 763 }],
+      totals: { subtotal: 4237, taxable: 4237, gst: 763, grandTotal: 5000 },
+    } }, { compress: false, language: "classic" });
+    const flatTax = pdfFlat(taxHalf.buffer);
+    // (the eyebrow itself renders letter-spaced by the language and is not
+    // greppable as one token; the register facts below are the assertion)
+    has(flatTax, "GSTIN", "the taxed half carries GSTIN facts");
+    has(flatTax, "unregistered (B2C)", "…with the B2C fallback when the client has none");
+    has(flatTax, "CGST 9%", "…and the CGST column");
+    has(flatTax, "Place of supply", "…and the place of supply");
+    const plainHalf = await buildVenueDocument("invoice", { venue, lead, booking, invoice: {
+      invoiceNumber: `${TAG}-ORDH`, kind: "final", gstMode: "none", gstPercent: 0, createdAt: new Date(),
+      stream: "untaxed", billedTo: { name: lead.coupleName, gstin: "" },
+      lineItems: [{ label: "Payment received — Balance", qty: 1, unitPrice: 50000, taxable: 0, gst: 0 }],
+      totals: { subtotal: 50000, taxable: 0, gst: 0, grandTotal: 50000 },
+    } }, { compress: false, language: "classic" });
+    const flatOrd = pdfFlat(plainHalf.buffer);
+    hasNot(flatOrd, "GSTIN", "ORDINARY: no GSTIN anywhere — not the venue's, not a B2C line");
+    hasNot(flatOrd, "CGST", "…no CGST column");
+    hasNot(flatOrd, "SGST", "…no SGST column");
+    hasNot(flatOrd, "Taxable value", "…no taxable column");
+    hasNot(flatOrd, "Place of supply", "…no place of supply");
+    hasNot(flatOrd, "SAC 996334", "…no SAC");
+    hasNot(flatOrd, "Reverse charge", "…no reverse-charge line");
+    has(flatOrd, "Rs. 50,000", "…and the amount still reads plainly");
+
     // ══ 7. RECEIPT: one instalment, and one spanning two ════════════════════
     console.log("\n[7. receipt: single and spanning]");
     const r1 = await buildVenueDocument("receipt", { venue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" });
