@@ -200,7 +200,8 @@ const AddNote = async (req, res) => {
     const updated = await LeadLifecycleService.addNote(
       req.params._id,
       (req.body || {}).text,
-      req.auth.user_id
+      req.auth.user_id,
+      { mentions: (req.body || {}).mentions }
     );
     res.status(201).json(updated);
   } catch (error) {

@@ -242,13 +242,9 @@ const addNote = async (leadId, stepId, authorId, { body, mentions } = {}) => {
   // 3) @tags → the existing chat_mention notification (so a tagged teammate is
   // pinged via the lead chat even if they never open the step).
   if (ments.length) {
-    const lead = await Enquiry.findById(leadId, { name: 1 }).lean();
-    await AdminNotificationService.notify(ments, {
-      type: "chat_mention",
-      title: `${authorName} mentioned you on ${lead ? lead.name : "a lead"}`,
-      message: text.slice(0, 160),
-      leadId,
-      payload: { messageId: chatMsg ? String(chatMsg._id) : null, stepId: String(step._id) },
+    await require("./MentionNotifyService").notifyMentions(leadId, authorId, ments, text, {
+      messageId: chatMsg ? String(chatMsg._id) : null,
+      stepId: String(step._id),
     });
   }
 
