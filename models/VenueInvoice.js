@@ -125,6 +125,14 @@ VenueInvoiceSchema.add({
   // forMilestoneId is kept, not replaced: invoices raised before S6 are keyed
   // that way and are immutable tax records. Both live in one index below.
   forPaymentId: { type: mongoose.Schema.Types.ObjectId, default: null },
+  // ── GST-FIRST (wizard2): WHICH STREAM THIS INVOICE COVERS ─────────────────
+  // A payment on a GST-first booking produces UP TO TWO invoices — a TAX
+  // invoice for what landed on the taxed stream (taxable + GST, GSTINs on),
+  // and an ORDINARY invoice for the rest (no GSTIN block, no tax columns).
+  // `stream` says which half this document is; null on every invoice raised
+  // outside that model. It joins the uniqueness key below so the two halves
+  // of one payment can coexist while each half stays raisable exactly once.
+  stream: { type: String, enum: ["taxed", "untaxed", null], default: null },
 });
 
 /**
@@ -154,6 +162,9 @@ const FROZEN_PATHS = [
   "totals",
   "kind",
   "forMilestoneId",
+  // the stream is financial classification — which register this document
+  // belongs to — and must never flip after issue
+  "stream",
 ];
 
 /** One sentence, whichever door the write came through. */
@@ -300,8 +311,13 @@ VenueInvoiceSchema.index({ venue: 1, invoiceNumber: 1 }, { unique: true });
 // why the old index must be DROPPED rather than left alongside — see
 // scripts/migrate-invoice-payment-index.js. Until it is dropped, raising a
 // payment invoice on a lead that already has a booking-level one will 409.
+// GST-FIRST: `stream` joins the key. Every pre-existing document indexes as
+// {e, m, p, null} — pairs that were unique stay unique — and the two halves
+// of one payment differ in the fourth key. The old THREE-key index must be
+// DROPPED (scripts/migrate-invoice-stream-index.js): until it is, the second
+// half of a split raises a duplicate under the old key and 409s.
 VenueInvoiceSchema.index(
-  { enquiry: 1, forMilestoneId: 1, forPaymentId: 1 },
+  { enquiry: 1, forMilestoneId: 1, forPaymentId: 1, stream: 1 },
   { unique: true, partialFilterExpression: { enquiry: { $type: "objectId" } } }
 );
 

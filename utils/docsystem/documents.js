@@ -352,21 +352,32 @@ async function renderInvoice(R, d) {
   R.L.titleBlock(R, d.titleMeta);
   factStrip(R, d.facts); // billed to / supply / against
   R.sectionLabel("Invoiced lines");
-  const columns = [
-    { key: "particulars", label: "Particulars", width: 0.40 },
-    { key: "amount", label: "Amount", width: 0.12, numeric: true },
-    { key: "taxable", label: "Taxable value", width: 0.13, numeric: true },
-    { key: "cgst", label: `CGST ${d.sum.pctHalf}%`, width: 0.11, numeric: true },
-    { key: "sgst", label: `SGST ${d.sum.pctHalf}%`, width: 0.11, numeric: true },
-    { key: "total", label: "Total", width: 0.13, numeric: true },
-  ];
+  // THE ORDINARY INVOICE (GST-first): same anatomy, NO tax columns — the
+  // taxed/untaxed split exists precisely so this document never mentions the
+  // GST register. Three columns; the tax-invoice shape keeps all six.
+  const columns = d.plain
+    ? [
+        { key: "particulars", label: "Particulars", width: 0.60 },
+        { key: "amount", label: "Amount", width: 0.20, numeric: true },
+        { key: "total", label: "Total", width: 0.20, numeric: true },
+      ]
+    : [
+        { key: "particulars", label: "Particulars", width: 0.40 },
+        { key: "amount", label: "Amount", width: 0.12, numeric: true },
+        { key: "taxable", label: "Taxable value", width: 0.13, numeric: true },
+        { key: "cgst", label: `CGST ${d.sum.pctHalf}%`, width: 0.11, numeric: true },
+        { key: "sgst", label: `SGST ${d.sum.pctHalf}%`, width: 0.11, numeric: true },
+        { key: "total", label: "Total", width: 0.13, numeric: true },
+      ];
   const rows = d.items.map((it, i) => ({
     cells: {
       particulars: { text: it.label, subLine: it.subLine },
       amount: money(it.amount).replace("Rs. ", ""),
-      taxable: it.taxable ? money(it.taxable).replace("Rs. ", "") : DASH,
-      cgst: it.gst ? money(it.cgst).replace("Rs. ", "") : DASH,
-      sgst: it.gst ? money(it.sgst).replace("Rs. ", "") : DASH,
+      ...(d.plain ? {} : {
+        taxable: it.taxable ? money(it.taxable).replace("Rs. ", "") : DASH,
+        cgst: it.gst ? money(it.cgst).replace("Rs. ", "") : DASH,
+        sgst: it.gst ? money(it.sgst).replace("Rs. ", "") : DASH,
+      }),
       total: money(it.total).replace("Rs. ", ""),
     },
     lastData: i === d.items.length - 1,
@@ -376,9 +387,11 @@ async function renderInvoice(R, d) {
     cells: {
       particulars: { text: "Invoice total", bold: true },
       amount: { text: money(d.sum.amount).replace("Rs. ", ""), bold: true },
-      taxable: { text: money(d.sum.taxable).replace("Rs. ", ""), bold: true },
-      cgst: { text: money(d.sum.cgst).replace("Rs. ", ""), bold: true },
-      sgst: { text: money(d.sum.sgst).replace("Rs. ", ""), bold: true },
+      ...(d.plain ? {} : {
+        taxable: { text: money(d.sum.taxable).replace("Rs. ", ""), bold: true },
+        cgst: { text: money(d.sum.cgst).replace("Rs. ", ""), bold: true },
+        sgst: { text: money(d.sum.sgst).replace("Rs. ", ""), bold: true },
+      }),
       total: { text: money(d.sum.total).replace("Rs. ", ""), bold: true },
     },
   });
@@ -389,8 +402,10 @@ async function renderInvoice(R, d) {
   const rightW = R.width * 0.42;
   const leftW = R.width - rightW - 18;
   // left: tax working + fixed notes + words
-  R.text(WORDING.gstSentence(d.sum.taxable, d.sum.cgst + d.sum.sgst, "this invoice's lines"), { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
-  R.gap(8);
+  if (!d.plain) {
+    R.text(WORDING.gstSentence(d.sum.taxable, d.sum.cgst + d.sum.sgst, "this invoice's lines"), { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
+    R.gap(8);
+  }
   R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
   R.gap(10);
   R.text("Amount in words", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, width: leftW });
@@ -400,10 +415,12 @@ async function renderInvoice(R, d) {
   R.y = y0;
   R.emphasisBlock((x, w) => {
     const line = (label, value, mid) => kvRow(R, { x, width: w, label, value, mid, gapAfter: 4 });
-    line("Taxable value", money(d.sum.taxable), true);
-    if (d.sum.nonTaxable) line("Non-taxable recoveries", money(d.sum.nonTaxable), true);
-    line(`CGST ${d.sum.pctHalf}% + SGST ${d.sum.pctHalf}%`, money(d.sum.cgst + d.sum.sgst), true);
-    R.gap(4);
+    if (!d.plain) {
+      line("Taxable value", money(d.sum.taxable), true);
+      if (d.sum.nonTaxable) line("Non-taxable recoveries", money(d.sum.nonTaxable), true);
+      line(`CGST ${d.sum.pctHalf}% + SGST ${d.sum.pctHalf}%`, money(d.sum.cgst + d.sum.sgst), true);
+      R.gap(4);
+    }
     kvRow(R, { x, width: w, label: "Amount due", value: money(d.sum.total), figure: true, gapAfter: 4 });
     if (d.dueDate) R.text(`Due ${dateProse(d.dueDate)}`, { size: TYPE.subLine, color: R.T.mid, x, width: w });
     if (d.remit) {

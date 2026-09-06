@@ -325,10 +325,19 @@ function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
   };
   const billed = inv.billedTo || {};
   const identity = identityFrom(venue, logoBuffer);
-  identity.stateLine = "State code 29 · Karnataka";
   const isTax = inv.gstMode !== "none" && (Number(t.gst) || 0) > 0;
+  // ── THE ORDINARY INVOICE IS A RECIPE VARIATION, NOT A DOCUMENT ───────────
+  // Founder ruling (GST-first): a non-GST invoice carries NO GSTINs — not the
+  // venue's, not the client's, no B2C fallback line — and no tax columns.
+  // That is the entire reason the taxed/untaxed split exists, so the plain
+  // shape strips every GST-register fact: registration lines, state code,
+  // place of supply, SAC, reverse-charge. The layout is otherwise the same
+  // tax-invoice anatomy.
+  if (isTax) identity.stateLine = "State code 29 · Karnataka";
+  else { identity.gstin = ""; identity.pan = ""; }
   return {
     identity,
+    plain: !isTax,
     meta: { reference: inv.invoiceNumber },
     titleMeta: {
       eyebrow: isTax ? "Tax invoice" : "Invoice",
@@ -338,13 +347,25 @@ function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
       refs: [
         `Invoice ${inv.invoiceNumber}`,
         `Issued ${dateProse(inv.createdAt || new Date())}`,
-        "Place of supply — Karnataka (29)",
-      ],
+        isTax ? "Place of supply — Karnataka (29)" : null,
+      ].filter(Boolean),
     },
     facts: [
-      { label: "Billed to", value: [billed.name || (booking && booking.coupleName), billed.gstin ? `GSTIN ${billed.gstin}` : "GSTIN — unregistered (B2C)"].filter(Boolean).join("\n") },
-      { label: "Supply", value: ["Venue & event services", "SAC 996334"].join("\n") },
-      { label: "Against", value: [`Booking ${booking ? String(booking._id).slice(-6).toUpperCase() : DASH}`, "Reverse charge — not applicable"].join("\n") },
+      {
+        label: "Billed to",
+        value: [
+          billed.name || (booking && booking.coupleName),
+          isTax ? (billed.gstin ? `GSTIN ${billed.gstin}` : "GSTIN — unregistered (B2C)") : null,
+        ].filter(Boolean).join("\n"),
+      },
+      { label: "Supply", value: isTax ? ["Venue & event services", "SAC 996334"].join("\n") : "Venue & event services" },
+      {
+        label: "Against",
+        value: [
+          `Booking ${booking ? String(booking._id).slice(-6).toUpperCase() : DASH}`,
+          isTax ? "Reverse charge — not applicable" : null,
+        ].filter(Boolean).join("\n"),
+      },
     ],
     items, sum,
     dueDate: inv.dueDate || null,
