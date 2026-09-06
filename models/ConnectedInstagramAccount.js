@@ -56,7 +56,14 @@ const ConnectedInstagramAccountSchema = new mongoose.Schema(
     connectedBy: { type: ObjectId, default: null },
     connectedByType: {
       type: String,
-      enum: ["admin", "venueOwner", "venueMember"],
+      // `null` is IN the enum deliberately, matching WAConversation.classification.
+      // Mongoose validates the default against the enum, so an enum that omits
+      // null while defaulting to null makes Model.create() throw on every row
+      // that does not set this field — which is most of them. The live paths
+      // (the OAuth callback upsert and the seed script) use findOneAndUpdate
+      // without runValidators and so never hit it, which is why this sat
+      // unnoticed since the tenancy amendment.
+      enum: ["admin", "venueOwner", "venueMember", null],
       default: null,
     },
   },
