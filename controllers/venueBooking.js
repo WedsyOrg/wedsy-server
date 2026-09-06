@@ -727,9 +727,47 @@ const confirmBookingFromLead = async (req, res) => {
     const draftForLines = await VenueBooking.findOne({ venue: venue._id, enquiry: enquiry._id })
       .select("lineItems gstPercent")
       .lean();
-    const bookingLines = (draftForLines && draftForLines.lineItems) || [];
+    // ── WIZARD QUOTE STEP: THE QUOTE ARRIVES WITH THE CONFIRM ──────────────
+    // The wizard now edits the SAME VenueQuote the Money tab edits and names
+    // it here by id. Until now lines reached a draft only through the quote
+    // ACCEPTANCE path; a wizard-built quote had no road onto the booking, so
+    // confirm would have treated a freshly quoted booking as legacy. The
+    // named quote is validated (this venue, this enquiry, line-mode) and its
+    // lines drive the money exactly as accepted-quote lines do; it is applied
+    // to the draft after creation below. A draft that ALREADY carries lines
+    // (quote accepted earlier) wins — the id must then match or be absent.
+    let confirmQuote = null;
+    if (body.quoteId !== undefined && body.quoteId !== null && body.quoteId !== "") {
+      if (!mongoose.isValidObjectId(body.quoteId)) {
+        return res.status(400).json({ message: "quoteId is not a valid id" });
+      }
+      const VenueQuote = require("../models/VenueQuote");
+      confirmQuote = await VenueQuote.findOne({ _id: body.quoteId, venue: venue._id, enquiry: enquiry._id }).lean();
+      if (!confirmQuote) {
+        return res.status(404).json({ message: "That quote is not on this lead.", code: "quote_not_found" });
+      }
+      // the SAME line-mode predicate the quote controller stores by — a
+      // second spelling here is how the two ends drift
+      const { storedLineMode } = require("./venueQuote");
+      if (!storedLineMode(confirmQuote)) {
+        return res.status(400).json({
+          message: "That quote is not a line quote — the wizard's quote step always writes lines.",
+          code: "quote_not_line_mode",
+        });
+      }
+    }
+    const bookingLines =
+      (draftForLines && draftForLines.lineItems && draftForLines.lineItems.length
+        ? draftForLines.lineItems
+        : (confirmQuote && confirmQuote.lineItems) || []) || [];
+    const linesGstPercent =
+      draftForLines && draftForLines.lineItems && draftForLines.lineItems.length
+        ? draftForLines.gstPercent
+        : confirmQuote
+          ? confirmQuote.gstPercent
+          : undefined;
     const hasLines = bookingLines.length > 0;
-    const lineFigures = hasLines ? computeLineTotals(bookingLines, draftForLines.gstPercent) : null;
+    const lineFigures = hasLines ? computeLineTotals(bookingLines, linesGstPercent) : null;
     const payableFromLines = hasLines ? lineFigures.charged + lineFigures.refundable : 0;
 
     // RULING C: a caller-stated totalValue that DISAGREES with the lines is
@@ -924,6 +962,16 @@ const confirmBookingFromLead = async (req, res) => {
     // must not survive.
     const draftPreExisted = Boolean(await VenueBooking.exists({ enquiry: enquiry._id }));
     const booking = await createDraftBookingForEnquiry(venue._id, enquiry, req.venueOwner.venueOwnerId);
+    // The wizard's quote becomes the booking's bill — the SAME mapping the
+    // acceptance path uses (applyQuoteToBooking: lines snapshotted, totalValue
+    // = charged, gstPercent copied, gstMode forced "none" per Ruling A). Only
+    // when the draft doesn't already carry lines: an accepted quote's write
+    // wins over a stale id from a long-open wizard.
+    if (confirmQuote && !(booking.lineItems && booking.lineItems.length)) {
+      const { applyQuoteToBooking } = require("./venueQuote");
+      applyQuoteToBooking(booking, confirmQuote);
+      await booking.save();
+    }
 
     /**
      * Undo the draft when a refusal means the booking should not exist.
