@@ -248,7 +248,16 @@ function summarizeSchedule(booking, now = new Date()) {
   const refundable = ((booking && booking.lineItems) || [])
     .filter((li) => li && li.refundable)
     .reduce((s2, li) => s2 + round(li.amount), 0);
-  const owed = bookingValue + additional + refundable;
+  // ── GST-FIRST (wizard2): the GST is INSIDE the schedule ──────────────────
+  // A booking confirmed under the new model collects charged + refundable +
+  // GST through its instalments, so what the couple owes includes the lines'
+  // GST — derived from the lines every time, same as the refundable, never a
+  // stored scalar. Older bookings keep the ex-GST owed they were written with
+  // (their GST was never in the schedule), read off the era marker.
+  const gstOwed = booking && booking.scheduleIncludesGst
+    ? require("./venueMoney").computeLineTotals(booking.lineItems || [], booking.gstPercent).gst
+    : 0;
+  const owed = bookingValue + additional + refundable + gstOwed;
   const overdue = rows.filter((r) => r.isOverdue && r.outstanding > 0);
   const next = rows
     .filter((r) => r.outstanding > 0 && r.dueDate)
@@ -272,6 +281,9 @@ function summarizeSchedule(booking, now = new Date()) {
       charged: bookingValue + additional,
       /** Held and returned. Inside `total`, never inside `charged`. */
       refundable,
+      /** GST-first bookings: the lines' GST, collected through the schedule.
+       *  Zero on older bookings. Inside `total`, never inside `charged`. */
+      gst: gstOwed,
       /** Charged + refundable held — everything the couple pays. */
       total: owed,
       scheduled,

@@ -276,6 +276,15 @@ const raise = (lead, paymentId) =>
     const invOld = await VenueInvoice.findById(r.body.invoice._id).lean();
     ok(!invOld.stream, "🔴 …with stream null — the old model is byte-for-byte untouched");
 
+    // ══ I. WHAT THE COUPLE OWES INCLUDES THE GST (payments summary) ═════════
+    console.log("\n[I. the payments summary owes the collectable, not the ex-GST value]");
+    r = await call(payments.getLeadPayments, req({ params: { enquiryId: String(A.lead._id) } }));
+    eq(r.body.totals.total, 111800, "🔴 total owed = charged + held + GST — the schedule matches it");
+    eq(r.body.totals.gst, 1800, "…with the GST stated as its own figure");
+    ok(r.body.totals.scheduleMatchesValue === true,
+      "🔴 the 'schedule does not add up' warning is GONE for a GST-first booking (drive finding)");
+    eq(r.body.totals.charged, 100000, "…while charged (revenue) stays ex-GST, ex-deposit");
+
     // ══ H. THE TOKEN IS THE FIRST PAYMENT — invoiceable, stream-first ═══════
     console.log("\n[H. the token consumes the taxed stream first and carries its own tax invoice]");
     const H = await bookLead(
