@@ -161,12 +161,40 @@ function invoiceViewOfLines(lines, gstPercent) {
  *
  * @returns {null | {scheduled:number, payable:number}} null when consistent.
  */
-function scheduleMismatch(rows, lineFigures) {
-  const payable = (Math.round(Number(lineFigures.charged)) || 0) + (Math.round(Number(lineFigures.refundable)) || 0);
+function scheduleMismatch(rows, lineFigures, opts = {}) {
+  // GST-FIRST (wizard2): a booking confirmed under the new model carries its
+  // GST INSIDE the schedule — the instalments collect the whole collectable
+  // (charged + refundable + GST), because payments fill the taxed stream
+  // first and the tax invoices are cut from what arrives. Pass
+  // { includesGst: booking.scheduleIncludesGst } so the guard checks the
+  // right total for each era; older bookings keep the ex-GST base they were
+  // written with.
+  const payable =
+    (Math.round(Number(lineFigures.charged)) || 0) +
+    (Math.round(Number(lineFigures.refundable)) || 0) +
+    (opts.includesGst ? Math.round(Number(lineFigures.gst)) || 0 : 0);
   const scheduled = (rows || [])
     .filter((r) => !(r && r.isAdditional))
     .reduce((s, r) => s + (Math.round(Number(r && r.amount)) || 0), 0);
   return scheduled === payable ? null : { scheduled, payable };
+}
+
+/**
+ * ── GST-FIRST: THE TWO STREAMS (founder ruling, wizard2) ────────────────────
+ * Every line quote splits into:
+ *   TAXED   = each line's taxable base PLUS its GST  (taxable + gst)
+ *   UNTAXED = everything else, refundable deposits included
+ * They sum to the collectable (grandTotal). The split exists for INVOICING —
+ * tax invoices carry GSTINs, ordinary invoices carry none — never for
+ * scheduling: there is ONE schedule, set on the whole collectable. Payments
+ * fill the taxed stream first, always; not a setting, not an owner choice.
+ */
+function lineStreams(lineFigures) {
+  const taxable = Math.round(Number(lineFigures.taxable)) || 0;
+  const gst = Math.round(Number(lineFigures.gst)) || 0;
+  const subtotal = Math.round(Number(lineFigures.subtotal)) || 0;
+  const taxed = taxable + gst;
+  return { taxed, untaxed: subtotal - taxable, collectable: subtotal + gst };
 }
 
 // Format integer rupees as "₹1,12,100" (Indian grouping).
@@ -175,4 +203,4 @@ function formatINR(amount) {
   return "₹" + n.toLocaleString("en-IN");
 }
 
-module.exports = { computeTotals, computeLineTotals, lineTaxable, lineGst, invoiceViewOfLines, formatINR, GST_MODES, scheduleMismatch };
+module.exports = { computeTotals, computeLineTotals, lineTaxable, lineGst, invoiceViewOfLines, formatINR, GST_MODES, scheduleMismatch, lineStreams };

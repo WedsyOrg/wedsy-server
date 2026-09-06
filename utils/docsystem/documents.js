@@ -273,7 +273,7 @@ async function renderQuote(R, d) {
   totalsStack(R, d.totals, R.margin + R.width - rightW, rightW);
   R.y = Math.max(R.y, leftBottom);
   R.sectionLabel("Booking amount & instalment plan");
-  scheduleTable(R, d.schedule, d.totals);
+  scheduleTable(R, d.schedule, d.scheduleTotals || d.totals);
   closingRow(R, d.noteLines, d.signatory);
 }
 
@@ -328,7 +328,7 @@ async function renderConfirmation(R, d) {
     R.text(`Special requirements — ${d.specialRequirements}`, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
   }
   R.sectionLabel("Payment schedule");
-  scheduleTable(R, d.schedule, d.totals, { withState: true });
+  scheduleTable(R, d.schedule, d.scheduleTotals || d.totals, { withState: true });
   if (d.received > 0) {
     R.gap(8);
     R.text(
@@ -474,7 +474,7 @@ async function renderStatement(R, d) {
     }, 60 + d.extras.length * 20);
   }
   R.sectionLabel("Schedule & payments received");
-  scheduleTable(R, d.schedule, d.totals, { withState: true, payments: d.paymentSubRows });
+  scheduleTable(R, d.schedule, d.scheduleTotals || d.totals, { withState: true, payments: d.paymentSubRows });
   // ── THE CLOSING RECONCILIATION — full measure, never beside the notes ──
   // "How the outstanding figure is arrived at": one hairline row per step,
   // the GST and Received rows stating their basis inline. Outstanding is at

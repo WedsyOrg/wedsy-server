@@ -139,15 +139,35 @@ function spacesOf(booking) {
  * payable-with-extras EXACTLY, which the total row claims and the renderer
  * asserts before drawing.
  */
+/**
+ * The totals the schedule TABLE is asserted against. On a GST-first booking
+ * the rows carry their GST inside, so the table's truth is the collectable
+ * (charged + refundable + GST), printed with an empty GST column; on every
+ * older booking it is the ex-GST payable with the GST spread on top, exactly
+ * as those schedules were written. The document's other blocks keep the real
+ * totals — this shape exists only for the table and its assertion.
+ */
+function scheduleTotalsFor(booking, totals, { includeAdditional = true } = {}) {
+  if (!(booking && booking.scheduleIncludesGst)) return totals;
+  const payable = totals.charged + totals.refundable + totals.gst + (includeAdditional ? totals.extrasAmount : 0);
+  return { ...totals, payable, gst: 0, extrasGst: 0, collectable: payable };
+}
+
 function shapeSchedule(booking, totals, { includeAdditional = true } = {}) {
   const agreed = ((booking && booking.paymentSchedule) || []).filter((r) => !r.isAdditional);
   const additional = includeAdditional ? ((booking && booking.paymentSchedule) || []).filter((r) => r.isAdditional) : [];
+  // GST-FIRST (wizard2): on a booking whose schedule includes the GST, the
+  // rows ARE the collectable — spreading the lines' GST over them again
+  // would print every instalment inflated by its share a second time. The
+  // allocator runs with zero GST so the refundable carry still annotates,
+  // and each row's collectable equals its stored amount.
+  const gstInside = Boolean(booking && booking.scheduleIncludesGst);
   const shaped = allocateScheduleGst(agreed.map((r) => ({
     label: r.label || "Instalment",
     subLine: r.percent !== null && r.percent !== undefined ? `${r.percent}% of the booking value` : undefined,
     amount: r.amount, dueDate: r.dueDate, ref: r._id,
     state: stateOf(r),
-  })), { ...totals, extrasGst: 0 });
+  })), gstInside ? { ...totals, gst: 0, extrasGst: 0 } : { ...totals, extrasGst: 0 });
   for (const r of additional) {
     const payable = Math.round(Number(r.amount) || 0);
     shaped.push({
@@ -253,11 +273,12 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
     schedule: isLegacy
       ? legacy.schedule.filter((r) => !r.subLine || !r.subLine.startsWith("Additional"))
       : shapeSchedule(booking, totals, { includeAdditional: false }),
+    scheduleTotals: scheduleTotalsFor(isLegacy ? null : booking, totals, { includeAdditional: false }),
     // The venue's cancellation policy, when the owner asked for it: rich-text
     // blocks flattened to sentences. Content inside the existing closing
     // section, not a new section — the anatomy stays fixed.
     received,
-    balance: Math.max(0, totals.payable - received),
+    balance: Math.max(0, scheduleTotalsFor(isLegacy ? null : booking, totals, { includeAdditional: false }).payable - received),
     specialRequirements: booking.specialRequirements || null,
     policyLines: (policyBlocks || []).flatMap((bk) => {
       if (!bk) return [];
@@ -348,6 +369,7 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
   const received = (summary && summary.totals && summary.totals.received) || 0;
   const outstanding = Math.max(0, totals.collectable - received);
   const schedule = isLegacy ? legacy.schedule : shapeSchedule(booking, totals);
+  const scheduleTotals = scheduleTotalsFor(isLegacy ? null : booking, totals);
   // payment sub-rows: one per instalment a payment touched, split stated
   const paymentSubRows = [];
   for (const r of (booking.paymentSchedule || [])) {
@@ -388,6 +410,7 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
     extras,
     totals,
     received, outstanding, receivedSub, overdueTotal,
+    scheduleTotals,
     schedule,
     paymentSubRows,
     contactLine: null,
