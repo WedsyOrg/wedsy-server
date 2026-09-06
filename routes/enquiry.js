@@ -29,7 +29,21 @@ router.get(
   enquiry.LifecycleCounts
 );
 router.put("/", CheckAdminLogin, enquiry.Update);
-router.delete("/", CheckAdminLogin, enquiry.Delete);
+// ── THERE IS DELIBERATELY NO DELETE ON THE COLLECTION ROOT ─────────────────
+// DELETE /enquiry used to take { leadIds } from the request body and run
+// Enquiry.deleteMany({ _id: { $in: leadIds } }) behind CheckAdminLogin alone:
+// no permission, no cap on the array, no audit row. 25 models reference
+// Enquiry, so the children were orphaned rather than cascaded — the lead
+// vanished and its payments did not.
+//
+// REMOVED, not gated. A gated hard delete is still unrecoverable data loss for
+// whoever holds the grant, and the safe path already existed 100 lines below:
+// POST /enquiry/bulk-archive, a SOFT delete gated on leads:delete:all. Nothing
+// called the hard one — the CRM's bulk delete already posts to bulk-archive.
+//
+// If you are here to add a bulk delete: use bulk-archive. If you need a genuine
+// hard delete, it needs a product decision about cascade and retention first,
+// not a route.
 // Lifecycle (Slice A): role-aware dashboard. Literal path — MUST stay above /:_id.
 router.get(
   "/dashboard",
