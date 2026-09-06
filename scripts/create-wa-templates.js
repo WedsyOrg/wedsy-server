@@ -87,7 +87,7 @@ const TEMPLATES = [
     example: ["Glow Studio"] },
 
   { name: "eventtool_link",
-    body: "Your Wedsy event planner is ready. You can open it here: {{1}}",
+    body: "Your Wedsy event planner is ready. You can open it here: {{1}} — open that link to view and manage your event.",
     example: ["https://www.wedsy.in/event/"] },
 
   // ── Customer-facing ──────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ const TEMPLATES = [
     example: ["Priya"] },
 
   { name: "cx_artist_detail",
-    body: "Your Wedsy artist for the upcoming booking is {{1}}. You can reach them on {{2}}.",
+    body: "Your Wedsy artist for the upcoming booking is {{1}}. You can reach them on {{2}} to confirm timing or address.",
     example: ["Glow Studio", "+91 98765 43210"] },
 
   { name: "cust_booking_rmnd",
@@ -130,6 +130,14 @@ const TEMPLATES = [
   // Variable ORDER is load-bearing and comes from utils/update.js:
   //   [0] name  [1] total  [2] received  [3] due
   // Get this wrong and every send fails with #132000.
+  // Kiara's first touch on a form lead. There is no 24-hour window for someone
+  // who has never messaged us on WhatsApp, so the conversation can only be
+  // opened with a template; once they reply, the window opens and Kiara talks
+  // normally. Requires the enquiry form to state that we will make contact on
+  // WhatsApp — that statement is the opt-in Meta requires.
+  { name: "lead_kiara_intro",
+    body: "Hey! This is Kiara from Wedsy. You've just dropped in an enquiry. Please tell me what can I help you with?" },
+
   { name: "cx_pmnt_rmnd_prsnl",
     body: "Hi {{1}}, a payment update for your Wedsy booking. Total: \u20b9{{2}}. Received: \u20b9{{3}}. Balance due: \u20b9{{4}}. Please complete the balance to confirm your booking.",
     example: ["Priya", "25000", "10000", "15000"] },
