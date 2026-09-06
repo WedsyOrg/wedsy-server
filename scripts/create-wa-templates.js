@@ -167,6 +167,28 @@ function validate(t) {
     return `placeholders ${JSON.stringify(uniqueSorted)} do not match ${expected.length} example value(s)`;
   }
   if (/^\s|\s$/.test(t.body)) return "body has leading or trailing whitespace";
+
+  // ── META: a body may not START or END on a variable ────────────────────────
+  // error_subcode 2388299 — "Variables can't be at the start or end of the
+  // template." Two of the 22 this validator passed were rejected live by exactly
+  // this rule, which is the defect: a validator that accepts input Meta
+  // publishes a rule against is not validating. It printed "22 templates
+  // validated" and 2 of them could never have been created.
+  //
+  // TRAILING PUNCTUATION IS NOT TRAILING TEXT. cx_artist_detail ended
+  // "...on {{2}}." and was still rejected, so the check strips trailing
+  // punctuation before deciding what the last token is.
+  const trimmed = t.body.trim();
+  if (/^\{\{\d+\}\}/.test(trimmed)) {
+    return "body starts with a variable — Meta rejects this (error_subcode 2388299)";
+  }
+  // `}` and `]` are deliberately NOT in this class. Including `}` ate the
+  // closing braces of {{2}} itself, leaving "{{2", and the rule silently never
+  // fired — caught by unit-checking the regex rather than trusting it.
+  const withoutTrailingPunct = trimmed.replace(/[\s.,!?;:\-–—)"'’”]+$/u, "");
+  if (/\{\{\d+\}\}$/.test(withoutTrailingPunct)) {
+    return "body ends with a variable — Meta rejects this, and trailing punctuation does not count as text (error_subcode 2388299)";
+  }
   if (t.body.length > 1024) return "body exceeds 1024 characters";
   if (!/^[a-z0-9_]+$/.test(t.name)) return "name must be lowercase letters, digits and underscores only";
   return null;
