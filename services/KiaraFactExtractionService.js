@@ -59,6 +59,34 @@ const historyFor = async (conversationPhone) => {
 };
 
 // The trigger entry point. leadId + the conversation key (phone/igsid).
+// Merge model-inferred facts into a lead's existing raw answers, and report
+// WHICH keys the merge actually wrote.
+//
+// The merge itself is unchanged and deliberately fill-only-empty: the extractor
+// is guessing from a chat transcript and must never overwrite an answer that is
+// already recorded. (The ad-form webhook is the opposite case — a form the
+// couple typed IS authoritative for its keys, see controllers/webhook.js.)
+//
+// WHAT IS NEW is writtenKeys. The service already stamped factsExtractedAt —
+// "the extractor ran" — but nothing recorded what it produced, so downstream
+// there was no way to tell a machine inference from an answer a human gave.
+// writtenKeys is exactly the keys this run merged in: never a key that was
+// already present, and never a field outside ANSWER_KEYS.
+//
+// Pure and exported so provenance is testable without calling the model.
+const mergeExtractedFacts = (existingAnswers = {}, facts = {}) => {
+  const merged = { ...(existingAnswers || {}) };
+  const writtenKeys = [];
+  for (const k of ANSWER_KEYS) {
+    const v = facts && facts[k];
+    if (v && String(v).trim() && !merged[k]) {
+      merged[k] = String(v).slice(0, 2000);
+      writtenKeys.push(k);
+    }
+  }
+  return { merged, writtenKeys };
+};
+
 const extractFactsForLead = async (leadId, conversationPhone) => {
   try {
     const lead = await Enquiry.findById(leadId);
@@ -94,18 +122,17 @@ const extractFactsForLead = async (leadId, conversationPhone) => {
 
     // Write to additionalInfo.adFormAnswers (fill-only-empty), plus the guard.
     const ai = lead.additionalInfo || {};
-    const existing = ai.adFormAnswers || {};
-    const merged = { ...existing };
-    for (const k of ANSWER_KEYS) {
-      const v = facts && facts[k];
-      if (v && String(v).trim() && !merged[k]) merged[k] = String(v).slice(0, 2000);
-    }
+    const { merged, writtenKeys } = mergeExtractedFacts(ai.adFormAnswers, facts);
     // Whitelisted update (save fragility class): writing ONE mixed field must
     // never be blocked by an unrelated dirty legacy field on the Enquiry doc.
     const nextAdditionalInfo = {
       ...ai,
       adFormAnswers: merged,
       factsExtractedAt: new Date(),
+      // WHICH keys this run wrote, not just that it ran. Additive: leads
+      // extracted before this shipped simply have no factsExtractedKeys, and
+      // absent is honestly "unknown" rather than a wrong empty list.
+      factsExtractedKeys: writtenKeys,
       ...(facts && facts.summary ? { kiaraFactSummary: String(facts.summary).slice(0, 1000) } : {}),
     };
     await Enquiry.findByIdAndUpdate(
@@ -120,4 +147,4 @@ const extractFactsForLead = async (leadId, conversationPhone) => {
   }
 };
 
-module.exports = { extractFactsForLead, MODEL, SYSTEM_PROMPT, ANSWER_KEYS };
+module.exports = { extractFactsForLead, mergeExtractedFacts, MODEL, SYSTEM_PROMPT, ANSWER_KEYS };
