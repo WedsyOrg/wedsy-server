@@ -497,7 +497,7 @@ const Update = (req, res) => {
               references: { vendor: _id },
             });
             if (profileVerified === true || profileVerified === 'true') {
-              send('mua_account_verify_success', { phone: result.phone, email: result.email, name: result.businessName || result.name });
+              send('mua_account_verify_success', { phone: result.phone, email: result.email, name: result.businessName || result.name, variables: [result.businessName || result.name] });
               send('mua_app_install', { email: result.email, name: result.businessName || result.name });
             }
             res.status(200).send({ message: "success" });

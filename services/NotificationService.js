@@ -8,49 +8,49 @@ const { Client: MailjetClient } = require("node-mailjet");
 // send() fires all channels in parallel; callers do not need to await.
 const TRIGGERS = {
   otp_std:                    { sms: { templateId: "178506" }, email: { templateId: 6647480 } },
-  event_link:                 { sms: { templateId: "178493" }, whatsapp: { campaign: "eventtool_link" } },
+  event_link:                 { sms: { templateId: "178493" }, metaTemplate: { name: "eventtool_link" } },
   user_event_create:          { whatsapp: { campaign: "user_event_create" }, email: { templateId: 6647516 } },
   event_Reciept:              { sms: { templateId: "178505", senderId: "XWEDSY" }, whatsapp: { campaign: "et_reciept" }, email: { templateId: 664758 } },
   event_pmnt_rmnd:            { sms: { templateId: "178507" }, whatsapp: { campaign: "et_pymnt_rmnd" }, email: { templateId: 6637087 } },
   et_inv:                     { sms: { templateId: "178496", senderId: "XWEDSY" }, whatsapp: { campaign: "et_invoice" }, email: { templateId: 6637124 } },
   mua_account_create_success: { email: { templateId: 6615723 } },
-  mua_account_verify_success: { whatsapp: { campaign: "mua_account_verify_success" }, email: { templateId: 6663019 } },
+  mua_account_verify_success: { metaTemplate: { name: "mua_account_verify_success" }, email: { templateId: 6663019 } },
   mua_app_install:            { email: { templateId: 6663277 } },
-  MUA_BID_REQS:               { sms: { templateId: "178495" }, whatsapp: { campaign: "mua_bid_req" }, email: { templateId: 6621748 } },
-  mua_bid_accept:             { sms: { templateId: "178502" }, whatsapp: { campaign: "mua_bid_accept" }, email: { templateId: 6629142 } },
-  MUA_BID_CONFRM:             { sms: { templateId: "178510" }, whatsapp: { campaign: "mua_bid_cnfrm" }, email: { templateId: 6622160 } },
-  MUA_PKG_REQS:               { sms: { templateId: "178513", senderId: "XWEDSY" }, whatsapp: { campaign: "mua_pkg_req" }, email: { templateId: 6622127 } },
-  MUA_PKG_CNFRM:              { sms: { templateId: "178514" }, whatsapp: { campaign: "mua_pkg_cnfrm" }, email: { templateId: 6631081 } },
-  MUA_PRSNL_PKG_REQS:         { sms: { templateId: "178509" }, whatsapp: { campaign: "mua_prsnl_pkg_req" }, email: { templateId: 6622131 } },
-  MUA_PRSNL_PKG_CONFRM:       { sms: { templateId: "178497" }, whatsapp: { campaign: "mua_prsnl_pkg_cnfrm" }, email: { templateId: 6631200 } },
+  MUA_BID_REQS:               { sms: { templateId: "178495" }, metaTemplate: { name: "mua_bid_req" }, email: { templateId: 6621748 } },
+  mua_bid_accept:             { sms: { templateId: "178502" }, metaTemplate: { name: "mua_bid_accept" }, email: { templateId: 6629142 } },
+  MUA_BID_CONFRM:             { sms: { templateId: "178510" }, metaTemplate: { name: "mua_bid_cnfrm" }, email: { templateId: 6622160 } },
+  MUA_PKG_REQS:               { sms: { templateId: "178513", senderId: "XWEDSY" }, metaTemplate: { name: "mua_pkg_req" }, email: { templateId: 6622127 } },
+  MUA_PKG_CNFRM:              { sms: { templateId: "178514" }, metaTemplate: { name: "mua_pkg_cnfrm" }, email: { templateId: 6631081 } },
+  MUA_PRSNL_PKG_REQS:         { sms: { templateId: "178509" }, metaTemplate: { name: "mua_prsnl_pkg_req" }, email: { templateId: 6622131 } },
+  MUA_PRSNL_PKG_CONFRM:       { sms: { templateId: "178497" }, metaTemplate: { name: "mua_prsnl_pkg_cnfrm" }, email: { templateId: 6631200 } },
   // mua_new_chat: migrated off AiSensy to the Meta Cloud API (2 Sep 2026).
   // Template "mua_new_chat" (Utility, en, APPROVED) takes TWO body variables:
   //   {{1}} = the recipient's name, {{2}} = the other party's name.
   // Callers MUST pass variables: [recipientName, otherPartyName] — Meta rejects
   // a parameter-count mismatch with 400 #132000.
   mua_new_chat:               { metaTemplate: { name: "mua_new_chat" } },
-  mua_rmnd_dminus1:           { whatsapp: { campaign: "mua_rmnd_dminus1" } },
-  mua_rmnd_d_day:             { whatsapp: { campaign: "mua_rmnd_d_day" } },
-  mua_settlement:             { whatsapp: { campaign: "mua_settlement" }, email: { templateId: 6712689 } },
-  Community_new_topic:        { whatsapp: { campaign: "Community_new_topic" }, email: { templateId: 6663336 } },
+  mua_rmnd_dminus1:           { metaTemplate: { name: "mua_rmnd_dminus1" } },
+  mua_rmnd_d_day:             { metaTemplate: { name: "mua_rmnd_d_day" } },
+  mua_settlement:             { metaTemplate: { name: "mua_settlement" }, email: { templateId: 6712689 } },
+  Community_new_topic:        { email: { templateId: 6663336 } },
   Community_new_reply:        { email: { templateId: 6663362 } },
-  mua_bday:                   { whatsapp: { campaign: "mua_bday" }, email: { templateId: 6713649 } },
+  mua_bday:                   { email: { templateId: 6713649 } },
   mua_task_reminder:          { whatsapp: { campaign: "mua_task_reminder" } },
-  cust_bidreqs_send:          { sms: { templateId: "178498" }, whatsapp: { campaign: "cust_bidreq_send" }, email: { templateId: 6636091 } },
+  cust_bidreqs_send:          { sms: { templateId: "178498" }, metaTemplate: { name: "cust_bidreq_send" }, email: { templateId: 6636091 } },
   cust_bid_recieve:           { sms: { templateId: "178512" }, whatsapp: { campaign: "cx_bid_recieve" }, email: { templateId: 6636371 } },
   cx_custoffer_bid:           { sms: { templateId: "178511" }, whatsapp: { campaign: "cx_custoffer_bid" }, email: { templateId: 6636185 } },
-  cx_bid_cnfrm:               { sms: { templateId: "178501" }, whatsapp: { campaign: "cx_bid_cnfrm" }, email: { templateId: 6636379 } },
-  cx_prslpkg_req_send:        { whatsapp: { campaign: "cx_prslpkg_req_send" }, email: { templateId: 6631683 } },
-  cust_prslpkg_accpt:         { sms: { templateId: "178499" }, whatsapp: { campaign: "cust_prslpkg_accept" }, email: { templateId: 6636038 } },
-  cust_prslpkg_dcln:          { sms: { templateId: "178503" }, whatsapp: { campaign: "cust_prslpkg_reject" }, email: { templateId: 6647374 } },
-  cx_pkg_cnfrm:               { sms: { templateId: "178494" }, whatsapp: { campaign: "cx_pkg_cnfrm" }, email: { templateId: 6636798 } },
+  cx_bid_cnfrm:               { sms: { templateId: "178501" }, metaTemplate: { name: "cx_bid_cnfrm" }, email: { templateId: 6636379 } },
+  cx_prslpkg_req_send:        { metaTemplate: { name: "cx_prslpkg_req_send" }, email: { templateId: 6631683 } },
+  cust_prslpkg_accpt:         { sms: { templateId: "178499" }, metaTemplate: { name: "cust_prslpkg_accept" }, email: { templateId: 6636038 } },
+  cust_prslpkg_dcln:          { sms: { templateId: "178503" }, metaTemplate: { name: "cust_prslpkg_reject" }, email: { templateId: 6647374 } },
+  cx_pkg_cnfrm:               { sms: { templateId: "178494" }, metaTemplate: { name: "cx_pkg_cnfrm" }, email: { templateId: 6636798 } },
   cust_wedsy_pkg_refund:      { whatsapp: { campaign: "cust_wedsy_pkg_refund" }, email: { templateId: 6649243 } },
   cx_prsnl_pkg_cnfrm:         { sms: { templateId: "178500" }, whatsapp: { campaign: "cx_prsnl_pkg_cnfrm" }, email: { templateId: 6636905 } },
-  cust_artist_detail:         { sms: { templateId: "178504" }, whatsapp: { campaign: "cx_artist_detail" }, email: { templateId: 6636835 } },
-  cx_mua_review:              { whatsapp: { campaign: "cx_mua_review" }, email: { templateId: 6637036 } },
+  cust_artist_detail:         { sms: { templateId: "178504" }, metaTemplate: { name: "cx_artist_detail" }, email: { templateId: 6636835 } },
+  cx_mua_review:              { email: { templateId: 6637036 } },
   mua_review_app:             { whatsapp: { campaign: "mua_review_app" } },
   cx_pkg_review:              { whatsapp: { campaign: "cx_pkg_review" } },
-  mua_cx_pmnt_rmnd_prsnl:     { whatsapp: { campaign: "mua_cx_pmnt_rmnd_prsnl" } },
+  mua_cx_pmnt_rmnd_prsnl:     { metaTemplate: { name: "cx_pmnt_rmnd_prsnl" } },
   // user_signup_greet: the AiSensy campaign leg 400'd on every signup (provider
   // misconfiguration — same class as the disabled new_lead ping). Now sends via
   // the Meta WhatsApp Cloud API directly (utils/whatsapp.js).
@@ -59,7 +59,7 @@ const TRIGGERS = {
   // named "user_signup_greet" was never created, so this leg 400'd on every signup
   // until 2 Sep 2026. ONE body variable ({{1}} = the user's name).
   user_signup_greet:          { metaTemplate: { name: "user_signup_greet_wedsy" }, email: { templateId: 6637167 } },
-  cust_booking_rmnd:          { sms: { templateId: "178508" }, whatsapp: { campaign: "cust_booking_rmnd" }, email: { templateId: 6637515 } },
+  cust_booking_rmnd:          { sms: { templateId: "178508" }, metaTemplate: { name: "cust_booking_rmnd" }, email: { templateId: 6637515 } },
 
   // Legacy — old DLT template IDs / AiSensy campaigns used by utils/update.js before template migration
   // new_lead: NOT WIRED. The "New Lead" branch in utils/update.js is a deliberate
@@ -67,7 +67,7 @@ const TRIGGERS = {
   // template "new_lead" (Marketing, en, one body variable) was approved on
   // 2 Sep 2026 if this is ever re-enabled, but re-enabling is a product call.
   new_lead:      { sms: { templateId: "163269", senderId: "XWEDSY" }, whatsapp: { campaign: "user_lead" } },
-  event_approved:{ whatsapp: { campaign: "eventapproval_confim" } },
+  event_approved:{ metaTemplate: { name: "event_approval_confirm" } },
 };
 
 // ─── Channel senders ──────────────────────────────────────────────────────────
