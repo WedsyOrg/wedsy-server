@@ -43,7 +43,7 @@ const remindVendorDMinus1 = async () => {
     const orders = await getOrdersByEventDate(tomorrow);
     orders.forEach((order) => {
       const v = order.vendor;
-      if (v) send("mua_rmnd_dminus1", { phone: v.phone, email: v.email, name: v.businessName || v.name });
+      if (v) send("mua_rmnd_dminus1", { phone: v.phone, email: v.email, name: v.businessName || v.name, variables: [v.businessName || v.name] });
     });
     console.log(`[remindVendorDMinus1] ${orders.length} orders for ${tomorrow}`);
   } catch (err) {
@@ -57,7 +57,7 @@ const remindVendorDDay = async () => {
     const orders = await getOrdersByEventDate(today);
     orders.forEach((order) => {
       const v = order.vendor;
-      if (v) send("mua_rmnd_d_day", { phone: v.phone, email: v.email, name: v.businessName || v.name });
+      if (v) send("mua_rmnd_d_day", { phone: v.phone, email: v.email, name: v.businessName || v.name, variables: [v.businessName || v.name] });
     });
     console.log(`[remindVendorDDay] ${orders.length} orders for ${today}`);
   } catch (err) {

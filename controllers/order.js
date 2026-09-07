@@ -113,7 +113,7 @@ const CreateOrder = async (req, res) => {
 
         // Notify each vendor with packageStatus of the new booking request
         vendors.forEach(v => {
-          send('MUA_PKG_REQS', { phone: v.phone, email: v.email, name: v.businessName || v.name });
+          send('MUA_PKG_REQS', { phone: v.phone, email: v.email, name: v.businessName || v.name, variables: [v.businessName || v.name] });
         });
 
         res.status(201).send({ message: "success", id: orderDoc._id, amount: total });
@@ -199,8 +199,8 @@ const CreateOrder = async (req, res) => {
             console.log(`Created notification for new personal package booking: ${result._id}`);
 
             const vendorForPkgNotify = await Vendor.findById(vendor).select('phone email name businessName').lean();
-            send('MUA_PRSNL_PKG_REQS', { phone: vendorForPkgNotify?.phone, email: vendorForPkgNotify?.email, name: vendorForPkgNotify?.businessName || vendorForPkgNotify?.name });
-            send('cx_prslpkg_req_send', { phone: user?.phone, email: user?.email, name: user?.name });
+            send('MUA_PRSNL_PKG_REQS', { phone: vendorForPkgNotify?.phone, email: vendorForPkgNotify?.email, name: vendorForPkgNotify?.businessName || vendorForPkgNotify?.name, variables: [vendorForPkgNotify?.businessName || vendorForPkgNotify?.name] });
+            send('cx_prslpkg_req_send', { phone: user?.phone, email: user?.email, name: user?.name, variables: [user?.name] });
 
             res
               .status(201)
@@ -325,7 +325,7 @@ const CreateOrder = async (req, res) => {
             }
 
             const vendorForBidConfirm = await Vendor.findById(vendor).select('phone email name businessName').lean();
-            send('MUA_BID_CONFRM', { phone: vendorForBidConfirm?.phone, email: vendorForBidConfirm?.email, name: vendorForBidConfirm?.businessName || vendorForBidConfirm?.name });
+            send('MUA_BID_CONFRM', { phone: vendorForBidConfirm?.phone, email: vendorForBidConfirm?.email, name: vendorForBidConfirm?.businessName || vendorForBidConfirm?.name, variables: [vendorForBidConfirm?.businessName || vendorForBidConfirm?.name] });
 
             res.status(201).send({
               message: "success",
@@ -1162,8 +1162,8 @@ const AcceptVendorPersonalPackageBooking = (req, res) => {
                 Vendor.findById(user_id).select('phone email name businessName').lean(),
                 User.findById(orderResult.user).select('phone email name').lean(),
               ]);
-              send('MUA_PRSNL_PKG_CONFRM', { phone: vendorForPrsnlConfirm?.phone, email: vendorForPrsnlConfirm?.email, name: vendorForPrsnlConfirm?.businessName || vendorForPrsnlConfirm?.name });
-              send('cust_prslpkg_accpt', { phone: userForPrsnlConfirm?.phone, email: userForPrsnlConfirm?.email, name: userForPrsnlConfirm?.name });
+              send('MUA_PRSNL_PKG_CONFRM', { phone: vendorForPrsnlConfirm?.phone, email: vendorForPrsnlConfirm?.email, name: vendorForPrsnlConfirm?.businessName || vendorForPrsnlConfirm?.name, variables: [vendorForPrsnlConfirm?.businessName || vendorForPrsnlConfirm?.name] });
+              send('cust_prslpkg_accpt', { phone: userForPrsnlConfirm?.phone, email: userForPrsnlConfirm?.email, name: userForPrsnlConfirm?.name, variables: [userForPrsnlConfirm?.name] });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });
@@ -1212,7 +1212,7 @@ const RejectVendorPersonalPackageBooking = (req, res) => {
           ).then(async (orderResult) => {
             if (orderResult) {
               const userForPrsnlReject = await User.findById(orderResult.user).select('phone email name').lean();
-              send('cust_prslpkg_dcln', { phone: userForPrsnlReject?.phone, email: userForPrsnlReject?.email, name: userForPrsnlReject?.name });
+              send('cust_prslpkg_dcln', { phone: userForPrsnlReject?.phone, email: userForPrsnlReject?.email, name: userForPrsnlReject?.name, variables: [userForPrsnlReject?.name] });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });
@@ -1265,8 +1265,8 @@ const AcceptWedsyPackageBooking = (req, res) => {
                 Vendor.findById(user_id).select('phone email name businessName').lean(),
                 User.findById(orderResult.user).select('phone email name').lean(),
               ]);
-              send('MUA_PKG_CNFRM', { phone: vendorForWedsy?.phone, email: vendorForWedsy?.email, name: vendorForWedsy?.businessName || vendorForWedsy?.name });
-              send('cx_pkg_cnfrm', { phone: userForWedsy?.phone, email: userForWedsy?.email, name: userForWedsy?.name });
+              send('MUA_PKG_CNFRM', { phone: vendorForWedsy?.phone, email: vendorForWedsy?.email, name: vendorForWedsy?.businessName || vendorForWedsy?.name, variables: [vendorForWedsy?.businessName || vendorForWedsy?.name] });
+              send('cx_pkg_cnfrm', { phone: userForWedsy?.phone, email: userForWedsy?.email, name: userForWedsy?.name, variables: [userForWedsy?.name] });
               res.status(200).send({ message: "success" });
             } else {
               res.status(404).send({ message: "not found" });

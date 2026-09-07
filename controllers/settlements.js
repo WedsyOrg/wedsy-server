@@ -342,7 +342,7 @@ const CreateSettlement = (req, res) => {
               const updatedOrder = await tempOrder.save();
               const vendorForSettle = await Vendor.findById(vendor).select('phone email name businessName').lean();
               if (vendorForSettle) {
-                send('mua_settlement', { phone: vendorForSettle.phone, email: vendorForSettle.email, name: vendorForSettle.businessName || vendorForSettle.name });
+                send('mua_settlement', { phone: vendorForSettle.phone, email: vendorForSettle.email, name: vendorForSettle.businessName || vendorForSettle.name, variables: [vendorForSettle.businessName || vendorForSettle.name] });
               }
               res.status(201).send({ message: "success" });
             })
