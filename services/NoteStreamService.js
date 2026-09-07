@@ -20,6 +20,7 @@
 // Source labels: pre-qual | qualifier | post-qual — "qualifier" marks the
 // qualifier stores; dated notes split pre-/post- on qualifiedAt.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
@@ -42,7 +43,6 @@ const AUTO_NOTE_RES = [/^Discovery call — result: /];
 const isAutoNote = (text) => AUTO_NOTE_RES.some((re) => re.test(String(text)));
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 // ── Blob-orphan detection (shared with scripts/audit-notes-blob-orphans.js) ──
 // The updates.notes blob is mostly the addNote mirror, but pre-OS leads carry

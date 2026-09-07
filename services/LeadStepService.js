@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const { STATUSES } = require("../models/LeadStep");
@@ -10,7 +11,6 @@ const LeadChatService = require("./LeadChatService");
 const AdminNotificationService = require("./AdminNotificationService");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 const STATUS_LABEL = {
   not_started: "Not started",

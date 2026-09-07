@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadChatMessage = require("../models/LeadChatMessage");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
@@ -7,7 +8,6 @@ const AdminNotificationService = require("./AdminNotificationService");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 const MAX_BODY = 5000;
 

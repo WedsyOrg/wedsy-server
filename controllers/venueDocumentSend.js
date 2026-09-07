@@ -13,6 +13,7 @@
  * it as a VenueLeadDocument like the others before it can be sent.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueLeadDocument = require("../models/VenueLeadDocument");
@@ -41,14 +42,14 @@ async function resolveOwnedLead(req, res) {
     .lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) { res.status(403).json({ message: "Forbidden" }); return null; }
-  if (!mongoose.isValidObjectId(req.params.enquiryId)) { res.status(404).json({ message: "Lead not found" }); return null; }
+  if (!isId(req.params.enquiryId)) { res.status(404).json({ message: "Lead not found" }); return null; }
   const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, req.params.enquiryId);
   if (!lead) { res.status(404).json({ message: "Lead not found" }); return null; }
   return { venue, lead };
 }
 
 async function resolveDocument(req, res, lead) {
-  if (!mongoose.isValidObjectId(req.params.documentId)) { res.status(404).json({ message: "Document not found" }); return null; }
+  if (!isId(req.params.documentId)) { res.status(404).json({ message: "Document not found" }); return null; }
   const doc = await VenueLeadDocument.findOne({ _id: req.params.documentId, enquiry: lead._id }).lean();
   if (!doc) { res.status(404).json({ message: "Document not found" }); return null; }
   if (!SENDABLE_KINDS.includes(doc.kind)) {
@@ -204,7 +205,7 @@ const getEmail = async (req, res) => {
   try {
     const owned = await resolveOwnedLead(req, res);
     if (!owned) return;
-    if (!mongoose.isValidObjectId(req.params.sendId)) return res.status(404).json({ message: "Email not found" });
+    if (!isId(req.params.sendId)) return res.status(404).json({ message: "Email not found" });
     const s = await VenueEmailSend.findOne({ _id: req.params.sendId, enquiry: owned.lead._id }).lean();
     if (!s) return res.status(404).json({ message: "Email not found" });
     return res.status(200).json({ email: presentSend(s, { withBody: true }) });
@@ -226,7 +227,7 @@ const storeQuoteDocument = async (req, res) => {
     const body = req.body || {};
     let quote;
     if (body.quoteId) {
-      if (!mongoose.isValidObjectId(body.quoteId)) return res.status(400).json({ message: "quoteId is not valid" });
+      if (!isId(body.quoteId)) return res.status(400).json({ message: "quoteId is not valid" });
       quote = await VenueQuote.findOne({ _id: body.quoteId, venue: venue._id, enquiry: lead._id }).lean();
       if (!quote) return res.status(404).json({ message: "Quote not found" });
     } else {

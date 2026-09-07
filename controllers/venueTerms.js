@@ -38,6 +38,7 @@
  * channel for it now would be scope nobody asked to maintain.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueQuoteRound = require("../models/VenueQuoteRound");
 const VenueDocumentTemplate = require("../models/VenueDocumentTemplate");
@@ -79,7 +80,7 @@ async function resolveOwnedLead(req, res) {
     res.status(403).json({ message: "Forbidden" });
     return null;
   }
-  if (!mongoose.isValidObjectId(req.params.enquiryId)) {
+  if (!isId(req.params.enquiryId)) {
     res.status(404).json({ message: "Lead not found" });
     return null;
   }
@@ -222,7 +223,7 @@ const sendTerms = async (req, res) => {
     let round = null;
     const roundId = (req.body || {}).roundId;
     if (roundId) {
-      if (!mongoose.isValidObjectId(roundId)) return res.status(400).json({ message: "roundId is not valid" });
+      if (!isId(roundId)) return res.status(400).json({ message: "roundId is not valid" });
       round = await VenueQuoteRound.findOne({ _id: roundId, enquiry: lead._id });
       if (!round) return res.status(404).json({ message: "Round not found" });
     } else {

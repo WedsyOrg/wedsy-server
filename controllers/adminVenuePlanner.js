@@ -8,6 +8,7 @@
  * so the venue always sees a real lead behind wedsy-side activity.
  */
 const crypto = require("crypto");
+const { isId } = require("../utils/objectId");
 const mongoose = require("mongoose");
 const Venue = require("../models/Venue");
 const VenueShortlist = require("../models/VenueShortlist");
@@ -39,7 +40,7 @@ const adminName = (req) => (req.auth && req.auth.user && req.auth.user.name) || 
 const ITEM_VENUE_FIELDS = "name slug zone city venueType pricing.perPlate coverPhoto spaces tagline status";
 
 const loadShortlist = async (id, res) => {
-  if (!mongoose.isValidObjectId(id)) {
+  if (!isId(id)) {
     res.status(400).json({ message: "Invalid shortlist id" });
     return null;
   }
@@ -406,7 +407,7 @@ const listSiteVisits = async (req, res) => {
 
 const updateSiteVisit = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.visitId)) {
+    if (!isId(req.params.visitId)) {
       return res.status(400).json({ message: "Invalid visit id" });
     }
     const visit = await VenueSiteVisit.findById(req.params.visitId);

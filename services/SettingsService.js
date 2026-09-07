@@ -1,4 +1,5 @@
 const Setting = require("../models/Setting");
+const { isId } = require("../utils/objectId");
 const { KIARA_DEFAULT_SYSTEM_PROMPT } = require("./kiaraDefaultPrompt");
 
 // ─── Defaults: the EXACT current hardcoded values. Empty collection ⇒ identical
@@ -322,7 +323,7 @@ const validateValue = (key, value) => {
       if (!Array.isArray(value)) throw err(400, "assignment.excludedAdminIds must be an array of admin ids");
       const mongooseLib = require("mongoose");
       const ids = value.map((v) => String(v).trim()).filter(Boolean);
-      if (!ids.every((id) => mongooseLib.Types.ObjectId.isValid(id))) {
+      if (!ids.every((id) => isId(id))) {
         throw err(400, "assignment.excludedAdminIds must contain valid admin ids");
       }
       return [...new Set(ids)];

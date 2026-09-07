@@ -15,6 +15,7 @@
  * the venue through it (invariant #5 violation).
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueSiteVisit = require("../models/VenueSiteVisit");
 const VenueEnquiry = require("../models/VenueEnquiry");
@@ -48,7 +49,7 @@ const resolveOwnVenue = async (req, res) => {
 async function resolveScopedVisit(req, res) {
   const venue = await resolveOwnVenue(req, res);
   if (!venue) return null;
-  if (!mongoose.isValidObjectId(req.params.visitId)) {
+  if (!isId(req.params.visitId)) {
     res.status(404).json({ message: "Visit not found" });
     return null;
   }
@@ -93,7 +94,7 @@ const listOwnSiteVisits = async (req, res) => {
     // Scope first — the visible lead set bounds what can be listed at all.
     const leadExtra = {};
     if (req.query.leadId) {
-      if (!mongoose.isValidObjectId(req.query.leadId)) return res.status(200).json({ visits: [], total: 0, counts: { upcoming: 0, today: 0, past: 0 } });
+      if (!isId(req.query.leadId)) return res.status(200).json({ visits: [], total: 0, counts: { upcoming: 0, today: 0, past: 0 } });
       leadExtra._id = req.query.leadId;
     }
     const leadFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id, leadExtra);
@@ -142,7 +143,7 @@ const createOwnSiteVisit = async (req, res) => {
 
     const leadRef = body.leadId || body.enquiryRef;
     if (!leadRef) return res.status(400).json({ message: "leadId is required" });
-    if (!mongoose.isValidObjectId(leadRef)) return res.status(404).json({ message: "Lead not found" });
+    if (!isId(leadRef)) return res.status(404).json({ message: "Lead not found" });
     const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, leadRef);
     if (!lead) return res.status(404).json({ message: "Lead not found" });
 

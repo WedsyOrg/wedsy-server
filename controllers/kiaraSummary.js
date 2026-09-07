@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const KiaraSummaryService = require("../services/KiaraSummaryService");
 
@@ -10,7 +11,7 @@ const respond = (res, error) => {
 // Enforce lead-scope: the lead must satisfy the caller's scope filter (built by
 // requirePermission with ownerField assignedTo). all-scope → {} → no narrowing.
 const assertInScope = async (id, scopeFilter = {}) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw Object.assign(new Error("Invalid enquiry id"), { status: 400 });
+  if (!isId(id)) throw Object.assign(new Error("Invalid enquiry id"), { status: 400 });
   const inScope = await Enquiry.findOne({ $and: [{ _id: id }, scopeFilter || {}] }, { _id: 1 }).lean();
   if (!inScope) throw Object.assign(new Error("Out of your scope"), { status: 403 });
 };

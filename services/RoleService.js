@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const RoleRepository = require("../repositories/RoleRepository");
 const Role = require("../models/Role");
 const Admin = require("../models/Admin");
@@ -41,7 +42,7 @@ const getAll = async (callerId) => {
 //   - callers cannot edit the role they themselves hold (403, self-elevation block)
 //   - only the founder may grant *:*:all or any settings_roles permission (403)
 const updatePermissions = async (_id, { permissions, description } = {}, callerId) => {
-  if (!mongoose.Types.ObjectId.isValid(_id)) {
+  if (!isId(_id)) {
     throw err(400, "Invalid role id.");
   }
   const role = await RoleRepository.findById(_id);
@@ -88,14 +89,14 @@ const createRole = async ({ name, departmentId, cloneFromRoleId, description } =
   let permissions = [];
   let dept = departmentId;
   if (cloneFromRoleId) {
-    if (!mongoose.Types.ObjectId.isValid(cloneFromRoleId)) throw err(400, "Invalid cloneFromRoleId");
+    if (!isId(cloneFromRoleId)) throw err(400, "Invalid cloneFromRoleId");
     const source = await Role.findById(cloneFromRoleId).lean();
     if (!source || source.deletedAt) throw err(404, "Clone-source role not found");
     if (isFounderRole(source)) throw err(422, "Founder role is immutable");
     permissions = [...source.permissions];
     dept = dept || source.departmentId;
   }
-  if (!dept || !mongoose.Types.ObjectId.isValid(String(dept))) {
+  if (!dept || !isId(dept)) {
     throw err(400, "departmentId is required (or clone from a role that has one)");
   }
   const { isFounder } = await callerContext(callerId);
@@ -115,7 +116,7 @@ const createRole = async ({ name, departmentId, cloneFromRoleId, description } =
 
 // Delete (soft) a role — only when zero admins hold it; 422 listing holders otherwise.
 const deleteRole = async (_id, callerId) => {
-  if (!mongoose.Types.ObjectId.isValid(_id)) throw err(400, "Invalid role id.");
+  if (!isId(_id)) throw err(400, "Invalid role id.");
   const role = await RoleRepository.findById(_id);
   if (!role || role.deletedAt) throw err(404, "Role not found.");
   if (isFounderRole(role)) throw err(422, "Founder role is immutable");

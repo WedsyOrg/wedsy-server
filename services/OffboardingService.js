@@ -1,9 +1,9 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const { employedOn } = require("../utils/employment");
 
 const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const dayKey = (d) => new Date(d).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
 

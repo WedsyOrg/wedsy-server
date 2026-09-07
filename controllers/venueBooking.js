@@ -12,6 +12,7 @@
  * primitive — never a parallel create.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
 const VenueEnquiry = require("../models/VenueEnquiry");
@@ -738,7 +739,7 @@ const confirmBookingFromLead = async (req, res) => {
     // (quote accepted earlier) wins — the id must then match or be absent.
     let confirmQuote = null;
     if (body.quoteId !== undefined && body.quoteId !== null && body.quoteId !== "") {
-      if (!mongoose.isValidObjectId(body.quoteId)) {
+      if (!isId(body.quoteId)) {
         return res.status(400).json({ message: "quoteId is not a valid id" });
       }
       const VenueQuote = require("../models/VenueQuote");
@@ -946,7 +947,7 @@ const confirmBookingFromLead = async (req, res) => {
     }
     let agreementDoc;
     if (body.agreementDocId !== undefined && body.agreementDocId !== null && body.agreementDocId !== "") {
-      if (!mongoose.isValidObjectId(body.agreementDocId)) {
+      if (!isId(body.agreementDocId)) {
         return res.status(400).json({ message: "agreementDocId is not a valid id" });
       }
       agreementDoc = body.agreementDocId;

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const AdminNotificationService = require("./AdminNotificationService");
@@ -22,9 +23,6 @@ const AdminNotificationService = require("./AdminNotificationService");
 // true), so a numeric id sails past the filter and only fails later, at the
 // database, inside the fire-and-safe catch — where nobody sees it. Require a
 // real id: a 24-character hex string, or an actual ObjectId instance.
-const isId = (v) =>
-  v instanceof mongoose.Types.ObjectId ||
-  (typeof v === "string" && /^[a-f0-9]{24}$/i.test(v));
 
 // The filtering every caller needs and must not each reinvent: real ids only,
 // no duplicates, and never the author — being told you mentioned yourself is

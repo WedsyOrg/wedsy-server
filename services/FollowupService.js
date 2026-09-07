@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const FollowupRepository = require("../repositories/FollowupRepository");
@@ -9,7 +10,6 @@ const LeadChatService = require("./LeadChatService");
 const AdminNotificationService = require("./AdminNotificationService");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 const nameOf = async (id) => (id ? (await Admin.findById(id, { name: 1 }).lean())?.name || "—" : null);
 

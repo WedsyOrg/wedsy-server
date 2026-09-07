@@ -18,6 +18,7 @@
  * has, and pricing is squarely money.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueQuoteRound = require("../models/VenueQuoteRound");
@@ -42,7 +43,7 @@ async function resolveOwnedLead(req, res) {
     res.status(403).json({ message: "Forbidden" });
     return null;
   }
-  if (!mongoose.isValidObjectId(req.params.enquiryId)) {
+  if (!isId(req.params.enquiryId)) {
     res.status(404).json({ message: "Lead not found" });
     return null;
   }
@@ -55,7 +56,7 @@ async function resolveOwnedLead(req, res) {
 async function resolveOwnedRound(req, res) {
   const owned = await resolveOwnedLead(req, res);
   if (!owned) return null;
-  if (!mongoose.isValidObjectId(req.params.roundId)) {
+  if (!isId(req.params.roundId)) {
     res.status(404).json({ message: "Round not found" });
     return null;
   }
@@ -176,7 +177,7 @@ const createRound = async (req, res) => {
     // to belong to this lead so a round cannot point at another lead's quote.
     let quoteRef;
     if (body.quoteRef) {
-      if (!mongoose.isValidObjectId(body.quoteRef)) {
+      if (!isId(body.quoteRef)) {
         return res.status(400).json({ message: "quoteRef is not a valid quote id" });
       }
       const q = await VenueQuote.findOne({ _id: body.quoteRef, enquiry: lead._id }).select("_id").lean();

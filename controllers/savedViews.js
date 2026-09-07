@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const SavedView = require("../models/SavedView");
 const { buildFilterConditions } = require("../utils/leadFilterBuilder");
 
@@ -54,7 +55,7 @@ const Create = async (req, res) => {
 
 const Update = async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw httpError(400, "Invalid id");
+    if (!isId(req.params.id)) throw httpError(400, "Invalid id");
     const { name, filters, view, isDefault } = req.body || {};
     await validateBody({ name, filters, view });
     const set = {};
@@ -82,7 +83,7 @@ const Update = async (req, res) => {
 
 const Delete = async (req, res) => {
   try {
-    if (!mongoose.Types.ObjectId.isValid(req.params.id)) throw httpError(400, "Invalid id");
+    if (!isId(req.params.id)) throw httpError(400, "Invalid id");
     const deleted = await SavedView.findOneAndDelete({ _id: req.params.id, adminId: req.auth.user_id });
     if (!deleted) throw httpError(404, "Saved view not found");
     res.status(200).json({ ok: true });

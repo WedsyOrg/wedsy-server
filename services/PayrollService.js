@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const PayrollRun = require("../models/PayrollRun");
 const EmployeeSalary = require("../models/EmployeeSalary");
 const Attendance = require("../models/Attendance");
@@ -13,7 +14,6 @@ const { employeeFilter, employedOn } = require("../utils/employment");
 const P = require("./payrollPolicy");
 
 const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const keyOf = (d) => `${d.adminId}|${d.kind}|${d.date}`;
 

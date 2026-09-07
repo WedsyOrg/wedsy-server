@@ -33,6 +33,7 @@
  * visibility could be consulted.
  */
 const mongoose = require("mongoose");
+const { isId } = require("./objectId");
 const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
 const { resolveScopedEnquiry } = require("./venueLeadScope");
@@ -53,7 +54,7 @@ async function resolveScopedBooking(req, res, select = "_id") {
     res.status(404).json({ message: "Venue not found" });
     return null;
   }
-  if (!mongoose.isValidObjectId(req.params.bookingId)) {
+  if (!isId(req.params.bookingId)) {
     res.status(404).json({ message: "Booking not found" });
     return null;
   }

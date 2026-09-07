@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const AdminRepository = require("../repositories/AdminRepository");
 const StageRepository = require("../repositories/StageRepository");
@@ -110,7 +111,7 @@ const notifyOfRecovery = async (enquiry, { type, title, message }) => {
 // but it KEEPS every lost audit field (lostReason/lostRequestedBy/At/lostDecidedBy/At/
 // lostDecisionNote) so we retain the full history of what happened. No migration.
 const recoverLead = async (enquiryId, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
   const enquiry = await EnquiryRepository.findById(enquiryId);
@@ -165,7 +166,7 @@ const updateStage = async (enquiryId, stage, updatedBy) => {
   if (!validStage) {
     throw httpError(400, `Invalid stage: ${stage}`);
   }
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
   // Interception: moving a lead into a "lost"-category stage (e.g. dragging it into the
@@ -223,7 +224,7 @@ const updateStage = async (enquiryId, stage, updatedBy) => {
 
 // Request that a lead be disqualified (marked lost). Pending approval afterward.
 const requestDisqualification = async (enquiryId, { reason, note } = {}, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
   const lostReasons = await SettingsService.get("lost.reasons");
@@ -318,7 +319,7 @@ const decideDisqualification = async (
   if (decision !== "approve" && decision !== "reject") {
     throw httpError(400, "Invalid decision");
   }
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
 
@@ -402,13 +403,13 @@ const updateAssignedTo = async (enquiryId, assignedTo, updatedBy) => {
     err.status = 400;
     throw err;
   }
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     const err = new Error("Invalid enquiry id");
     err.status = 400;
     throw err;
   }
   if (assignedTo !== null) {
-    if (!mongoose.Types.ObjectId.isValid(assignedTo)) {
+    if (!isId(assignedTo)) {
       const err = new Error(
         "Invalid assignedTo: must be an Admin _id or null"
       );

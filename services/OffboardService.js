@@ -7,6 +7,7 @@
 // system note + journey event; every touched lane gets an owner_changed auto
 // entry. Batched throughout: a fixed number of queries regardless of volume.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadLane = require("../models/LeadLane");
@@ -16,7 +17,6 @@ const LeadInternalEvent = require("../models/LeadInternalEvent");
 const { isAssignableAdmin } = require("../utils/assignable");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 // Open = still workable: not won, not lost. (An approved-lost lead carries
 // stage "lost", so the stage guard covers both spellings of gone.)

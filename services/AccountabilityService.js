@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
 const LeadStepRepository = require("../repositories/LeadStepRepository");
@@ -10,7 +11,6 @@ const LeadChatService = require("./LeadChatService");
 const { effective: followupEffective } = require("./FollowupService");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const DAY = 24 * 60 * 60 * 1000;
 const idStr = (v) => String(v);
 

@@ -10,6 +10,7 @@
  * follow-up" mirror via utils/venueFollowUp — see that file for why.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueFollowUp = require("../models/VenueFollowUp");
@@ -41,7 +42,7 @@ async function resolveOwnedVenue(req, res) {
 async function resolveScopedFollowUp(req, res) {
   const venue = await resolveOwnedVenue(req, res);
   if (!venue) return null;
-  if (!mongoose.isValidObjectId(req.params.followUpId)) {
+  if (!isId(req.params.followUpId)) {
     res.status(404).json({ message: "Follow-up not found" });
     return null;
   }
@@ -133,7 +134,7 @@ const listFollowUps = async (req, res) => {
     const leadExtra = {};
     if (stage) leadExtra.stage = stage;
     if (leadId) {
-      if (!mongoose.isValidObjectId(leadId)) return res.status(200).json({ followUps: [], total: 0, counts: emptyCounts(), scoped: true });
+      if (!isId(leadId)) return res.status(200).json({ followUps: [], total: 0, counts: emptyCounts(), scoped: true });
       leadExtra._id = leadId;
     }
     const leadFilter = await scopedLeadFilter(req.venueOwner, req.venueMember, venue._id, leadExtra);
@@ -158,7 +159,7 @@ const listFollowUps = async (req, res) => {
     if (assignee === "me") q.assignedTo = (await resolveActorMemberId(req)) || null;
     else if (assignee === "unassigned") q.assignedTo = null;
     else if (assignee) {
-      if (!mongoose.isValidObjectId(assignee)) return res.status(400).json({ message: "assignee must be a member id, 'me' or 'unassigned'" });
+      if (!isId(assignee)) return res.status(400).json({ message: "assignee must be a member id, 'me' or 'unassigned'" });
       q.assignedTo = assignee;
     }
 
@@ -261,7 +262,7 @@ const createFollowUp = async (req, res) => {
 
     const leadRef = body.leadId || body.lead;
     if (!leadRef) return res.status(400).json({ message: "leadId is required — a follow-up always belongs to a lead" });
-    if (!mongoose.isValidObjectId(leadRef)) return res.status(404).json({ message: "Lead not found" });
+    if (!isId(leadRef)) return res.status(404).json({ message: "Lead not found" });
     const lead = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, leadRef);
     if (!lead) return res.status(404).json({ message: "Lead not found" });
 
@@ -341,7 +342,7 @@ const updateFollowUp = async (req, res) => {
 
     // Moving a follow-up to a different lead must re-check scope on the TARGET.
     if (body.leadId !== undefined && String(body.leadId) !== String(followUp.lead)) {
-      if (!mongoose.isValidObjectId(body.leadId)) return res.status(404).json({ message: "Lead not found" });
+      if (!isId(body.leadId)) return res.status(404).json({ message: "Lead not found" });
       const target = await resolveScopedEnquiry(req.venueOwner, req.venueMember, venue._id, body.leadId, { select: "_id", lean: true });
       if (!target) return res.status(404).json({ message: "Lead not found" });
       followUp.lead = target._id;

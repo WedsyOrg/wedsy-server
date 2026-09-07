@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const CalendarEvent = require("../models/CalendarEvent");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
@@ -9,7 +10,7 @@ const AdminNotificationService = require("./AdminNotificationService");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 const assertValidId = (id, label = "id") => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw httpError(400, `Invalid ${label}`);
+  if (!isId(id)) throw httpError(400, `Invalid ${label}`);
 };
 
 const MEETING_TYPES = ["meeting", "gmeet", "visit"]; // types the meeting-notes gate applies to
@@ -205,7 +206,7 @@ const createEvent = async (ownerId, { type, title, start, end, leadId, participa
     start: s,
     end: e,
     leadId: leadId || null,
-    participantIds: (participantIds || []).filter((p) => mongoose.Types.ObjectId.isValid(p)),
+    participantIds: (participantIds || []).filter((p) => isId(p)),
   });
 };
 
@@ -296,9 +297,9 @@ const completeHuddle = async (huddleId, actorId, { attendeeIds = [], eventTeam =
   const huddle = await CalendarEvent.findOne({ _id: huddleId, type: "huddle", status: "scheduled" });
   if (!huddle) throw httpError(404, "Pending huddle not found");
 
-  const cleanAttendees = (attendeeIds || []).filter((a) => mongoose.Types.ObjectId.isValid(a));
+  const cleanAttendees = (attendeeIds || []).filter((a) => isId(a));
   const cleanTeam = (eventTeam || [])
-    .filter((t) => t && mongoose.Types.ObjectId.isValid(t.adminId))
+    .filter((t) => t && isId(t.adminId))
     .map((t) => ({ adminId: t.adminId, label: String(t.label || "").slice(0, 60) }));
 
   huddle.status = "closed";

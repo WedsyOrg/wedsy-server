@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeaveRequest = require("../models/LeaveRequest");
 const LeaveBalance = require("../models/LeaveBalance");
 const CompOff = require("../models/CompOff");
@@ -17,7 +18,6 @@ const err = (status, message, extra = {}) => Object.assign(new Error(message), {
 
 // Human names for the strip and for messages an applicant reads.
 const TYPE_NAME = { CL: "casual leave", SL: "sick leave", EL: "earned leave", WFH: "WFH", COMP_OFF: "comp-off" };
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // ─────────────────────────────────────────────────────────────────────────────

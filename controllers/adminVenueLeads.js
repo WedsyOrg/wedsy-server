@@ -8,6 +8,7 @@
  * is OS's build; we only produce the queue.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueForwardRequest = require("../models/VenueForwardRequest");
@@ -127,7 +128,7 @@ const listLeads = async (req, res) => {
 // a repeat forward returns the existing row with duplicate:true, never a copy.
 const forwardLead = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.enquiryId)) {
+    if (!isId(req.params.enquiryId)) {
       return res.status(400).json({ message: "Invalid enquiry id" });
     }
     const notes = req.body && req.body.notes;

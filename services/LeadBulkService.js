@@ -1,10 +1,10 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const ActivityLogService = require("./ActivityLogService");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const MAX = 200;
 
 // Validate the id list + verify EVERY lead is within the caller's scope (mirrors

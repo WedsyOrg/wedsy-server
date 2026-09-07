@@ -2,6 +2,7 @@
 // in one flat read — open tasks + open follow-ups from BOTH stores — plus the
 // batched per-row due/overdue marks the lists render.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const Followup = require("../models/Followup");
@@ -10,7 +11,6 @@ const LeadLane = require("../models/LeadLane");
 const { istDayStart, istDayEnd } = require("../utils/goldenWindow");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const CADENCE_TITLE = { call: "Call", meet: "G-Meet", visit: "Visit" };
 

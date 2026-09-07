@@ -4,6 +4,7 @@
 // Reactions (looks + moods) accept BOTH admin auth and the internal seam (the
 // couple app later) and echo onto the activity spine.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadPlan = require("../models/LeadPlan");
 const Enquiry = require("../models/Enquiry");
 const Decor = require("../models/Decor");
@@ -11,7 +12,6 @@ const DecorPackage = require("../models/DecorPackage");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 const planChangeLog = require("../utils/planChangeLog");
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const fmtINR = (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? `₹${Number(v).toLocaleString("en-IN")}` : "");
 

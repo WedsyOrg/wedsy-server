@@ -11,6 +11,7 @@
  * (transitive A→B→A); only a founder may assign the Founder role (incl. to self).
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 const Department = require("../models/Department");
@@ -18,7 +19,6 @@ const RoleService = require("./RoleService");
 const { roleIdsOf } = require("../middlewares/requirePermission");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.isValidObjectId(v);
 
 // Accept either the simple single-hat body (roleId/departmentId/reportingManagerId)
 // or an explicit hats[] array. Always returns a non-empty hats[] (primary first).

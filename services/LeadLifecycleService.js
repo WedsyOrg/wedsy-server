@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
@@ -26,7 +27,7 @@ const httpError = (status, message) => {
 };
 
 const assertValidId = (id, label = "enquiry id") => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  if (!isId(id)) {
     throw httpError(400, `Invalid ${label}`);
   }
 };
@@ -775,7 +776,7 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
   }
   if (leadIds.length > 200) throw httpError(400, "Max 200 leads per transfer");
   for (const id of leadIds) assertValidId(id, "lead id");
-  if (!mongoose.Types.ObjectId.isValid(toAdminId)) throw httpError(400, "Invalid toAdminId");
+  if (!isId(toAdminId)) throw httpError(400, "Invalid toAdminId");
 
   const target = await Admin.findById(toAdminId).lean();
   if (!target) throw httpError(400, "Target admin not found");

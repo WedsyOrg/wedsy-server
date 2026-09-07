@@ -13,6 +13,7 @@
  */
 const mongoose = require("mongoose");
 
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueOwner = require("../models/VenueOwner");
 const VenuePartnerVisit = require("../models/VenuePartnerVisit");
@@ -39,7 +40,6 @@ const adminActor = (req) => ({
 });
 
 const str = (v, max) => (typeof v === "string" ? v.slice(0, max) : "");
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const intParam = (v, def, max) => {
   const n = parseInt(v, 10);

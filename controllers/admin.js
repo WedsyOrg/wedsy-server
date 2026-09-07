@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const AdminService = require("../services/AdminService");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
@@ -120,7 +121,7 @@ const CreateAdmin = async (req, res) => {
 const UpdateAdmin = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.isValidObjectId(id)) {
+    if (!isId(id)) {
       return res.status(400).json({ message: "Invalid id format." });
     }
     const target = await Admin.findById(id).lean();
@@ -178,7 +179,7 @@ const UpdateAdmin = async (req, res) => {
     }
 
     if (body.roleId !== undefined && body.roleId !== null) {
-      if (!mongoose.isValidObjectId(body.roleId)) {
+      if (!isId(body.roleId)) {
         return res.status(400).json({ message: "Invalid roleId format." });
       }
       const role = await Role.findById(body.roleId).lean();
@@ -193,7 +194,7 @@ const UpdateAdmin = async (req, res) => {
     }
 
     if (body.departmentId !== undefined && body.departmentId !== null) {
-      if (!mongoose.isValidObjectId(body.departmentId)) {
+      if (!isId(body.departmentId)) {
         return res.status(400).json({ message: "Invalid departmentId format." });
       }
       const department = await Department.findById(body.departmentId).lean();
@@ -209,7 +210,7 @@ const UpdateAdmin = async (req, res) => {
       if (body.reportingManagerId === null || body.reportingManagerId === "") {
         update.reportingManagerId = null;
       } else {
-        if (!mongoose.isValidObjectId(body.reportingManagerId)) {
+        if (!isId(body.reportingManagerId)) {
           return res.status(400).json({ message: "Invalid reportingManagerId format." });
         }
         const manager = await Admin.findById(body.reportingManagerId).lean();
@@ -244,7 +245,7 @@ const UpdateAdmin = async (req, res) => {
 const SetMemberPassword = async (req, res) => {
   try {
     const { targetAdminId, newPassword } = req.body || {};
-    if (!mongoose.Types.ObjectId.isValid(targetAdminId)) {
+    if (!isId(targetAdminId)) {
       return res.status(400).json({ message: "Invalid targetAdminId." });
     }
     if (typeof newPassword !== "string" || newPassword.length < 8) {
@@ -292,7 +293,7 @@ const SetMemberPassword = async (req, res) => {
 const SetMemberAccess = async (req, res) => {
   try {
     const { targetAdminId, disabled } = req.body || {};
-    if (!mongoose.Types.ObjectId.isValid(targetAdminId)) {
+    if (!isId(targetAdminId)) {
       return res.status(400).json({ message: "Invalid targetAdminId." });
     }
     if (typeof disabled !== "boolean") {

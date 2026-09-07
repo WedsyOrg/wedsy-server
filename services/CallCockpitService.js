@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { computeDiscovery } = require("./DiscoveryService");
@@ -108,7 +109,7 @@ const httpError = (status, message) => {
 };
 
 const assertValidId = (id) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  if (!isId(id)) {
     throw httpError(400, "Invalid enquiry id");
   }
 };

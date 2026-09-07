@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const Venue = require("../models/Venue");
 const VenueLeadImport = require("../models/VenueLeadImport");
@@ -75,7 +76,7 @@ const attachActorNames = async (activities) => {
   for (const m of members) names.set(String(m._id), m.name);
   return list.map((a) => ({ ...a, actorName: a.actor ? names.get(String(a.actor)) || null : null }));
 };
-const toMemberIdOrNull = (v) => (mongoose.isValidObjectId(v) ? v : null);
+const toMemberIdOrNull = (v) => (isId(v) ? v : null);
 
 // Valid enum values (kept in sync with models/VenueEnquiry.js) for import coercion.
 const SOURCE_ENUM = ["wedsy", "instagram", "referral", "walk_in", "justdial", "wedmegood", "google", "other"];

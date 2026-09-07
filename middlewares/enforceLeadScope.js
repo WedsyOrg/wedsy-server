@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 
 // MB10 Slice 4 — per-document scope enforcement for lead WRITE routes.
@@ -17,7 +18,7 @@ const Enquiry = require("../models/Enquiry");
 const enforceLeadScope = (param = "_id") => async (req, res, next) => {
   try {
     const id = req.params[param];
-    if (!mongoose.isValidObjectId(id)) {
+    if (!isId(id)) {
       return res.status(400).json({ message: "Invalid lead id." });
     }
     const scopeFilter = req.scopeFilter || {};

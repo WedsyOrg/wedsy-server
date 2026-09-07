@@ -4,12 +4,12 @@
 // Department docs) — nothing new is stored except Admin.lastWorkspaceId
 // (whitelisted $set via setWorkspace).
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Department = require("../models/Department");
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 // Day-one departments, keyed by slug (Department.slug is the W1 additive
 // field; legacy departments key off a slugified name instead).

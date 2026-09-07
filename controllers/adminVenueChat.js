@@ -8,6 +8,7 @@
  * existing reminder pattern.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const VenueConversation = require("../models/VenueConversation");
 const VenueMessage = require("../models/VenueMessage");
 const Venue = require("../models/Venue");
@@ -105,7 +106,7 @@ const listThreads = async (req, res) => {
 
 const getThread = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.conversationId)) {
+    if (!isId(req.params.conversationId)) {
       return res.status(400).json({ message: "Invalid conversation id" });
     }
     const conversation = await VenueConversation.findById(req.params.conversationId)
@@ -128,7 +129,7 @@ const VALID_TARGETS = ["both", "couple_only", "venue_only"];
 
 const sendIntervention = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.conversationId)) {
+    if (!isId(req.params.conversationId)) {
       return res.status(400).json({ message: "Invalid conversation id" });
     }
     const conversation = await VenueConversation.findById(req.params.conversationId);
@@ -210,7 +211,7 @@ const sendIntervention = async (req, res) => {
 // gate real sends behind an env flag.
 const nudgeVenue = async (req, res) => {
   try {
-    if (!mongoose.isValidObjectId(req.params.conversationId)) {
+    if (!isId(req.params.conversationId)) {
       return res.status(400).json({ message: "Invalid conversation id" });
     }
     const conversation = await VenueConversation.findById(req.params.conversationId)

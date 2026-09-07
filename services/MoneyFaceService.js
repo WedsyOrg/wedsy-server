@@ -9,13 +9,13 @@
 // walletApplied: no wallet concept exists in this repo → always null.
 // discounts: no discount records exist → always [].
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadPayment = require("../models/LeadPayment");
 const PaymentMilestoneService = require("./PaymentMilestoneService");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const moneyFace = async (leadId) => {
   if (!isId(leadId)) throw err(400, "Invalid lead id");

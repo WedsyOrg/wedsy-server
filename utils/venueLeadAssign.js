@@ -15,13 +15,14 @@
  * pool — Sales, then any other member, then the owner as a last resort.
  */
 const mongoose = require("mongoose");
+const { isId } = require("./objectId");
 const VenueTeamMember = require("../models/VenueTeamMember");
 const VenueEnquiry = require("../models/VenueEnquiry");
 
 // Validate that `id` is an active VenueTeamMember of `venueId`.
 // Returns { ok, id } or { ok:false, message }.
 async function validateAssignable(venueId, id) {
-  if (!id || !mongoose.isValidObjectId(id)) {
+  if (!id || !isId(id)) {
     return { ok: false, message: "Assignee is not a valid member id" };
   }
   const member = await VenueTeamMember.findOne({ _id: id, venueId, isActive: true })

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
@@ -16,7 +17,6 @@ const AdminNotificationService = require("./AdminNotificationService");
 const NOTIFICATION_TYPE = "assignment";
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const sameId = (a, b) => String(a || "") === String(b || "");
 
 // Mirrors EnquiryService.updateAssignedTo's target checks (the manual-assign
