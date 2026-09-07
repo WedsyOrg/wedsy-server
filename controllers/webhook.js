@@ -83,12 +83,29 @@ const CreateNewAdsLead = async (req, res) => {
     const existing = await LeadIntakeService.findExistingByNormalizedPhone(phone);
     if (existing) {
       if (answers) {
-        // Merge NEW answer keys into the lead (existing answers win) + apply mapping
-        // into still-empty fields only.
+        // Merge the form's answers into the lead + apply mapping into
+        // still-empty fields only.
+        //
+        // A FORM SUBMISSION IS AUTHORITATIVE FOR THE KEYS IT CARRIES. This
+        // previously read `if (!(k in existingAnswers))` — existing answers win —
+        // which meant a real answer the couple had just typed was DISCARDED
+        // whenever anything already occupied that key, including a value
+        // KiaraFactExtractionService had merely inferred from a chat. That is
+        // data loss, not mislabelling: extractor guesses "Mysore", the couple
+        // then submits "Bengaluru", and the lead kept "Mysore".
+        //
+        // adFormAnswers is the RAW-ANSWERS bucket, not the edited brief — the
+        // qualificationData/customFields mapping below still refuses to
+        // overwrite anything non-empty — so no human edit is at risk here.
+        //
+        // The one thing a form may not do is erase: a key it carries with an
+        // empty value contains no answer, so it leaves an existing one alone.
         const mergeSets = {};
         const existingAnswers = existing.additionalInfo?.adFormAnswers || {};
         for (const [k, v] of Object.entries(answers)) {
-          if (!(k in existingAnswers)) mergeSets[`additionalInfo.adFormAnswers.${k}`] = v;
+          const carriesNothing = v === undefined || v === null || String(v).trim() === "";
+          if (k in existingAnswers && carriesNothing) continue;
+          mergeSets[`additionalInfo.adFormAnswers.${k}`] = v;
         }
         const { sets } = await AdFormService.mappedSetsFor(answers, existing);
         Object.assign(mergeSets, sets);
