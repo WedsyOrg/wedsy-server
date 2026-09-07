@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const ProjectRepository = require("../repositories/ProjectRepository");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 const EnquiryService = require("./EnquiryService");
@@ -30,7 +31,7 @@ const defaultCsOwner = async () => {
 // the meeting_scheduled gate stays for the legacy /convert route only. One
 // shared creation path, never forked.
 const convertLead = async (enquiryId, { csOwnerId, value, handoffNote, skipStageGate = false } = {}, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     throw httpError(400, "Invalid enquiry id");
   }
   const lead = await EnquiryRepository.findById(enquiryId);
@@ -46,7 +47,7 @@ const convertLead = async (enquiryId, { csOwnerId, value, handoffNote, skipStage
 
   let csOwner = null;
   if (csOwnerId) {
-    if (!mongoose.Types.ObjectId.isValid(csOwnerId)) {
+    if (!isId(csOwnerId)) {
       throw httpError(400, "Invalid csOwnerId");
     }
     csOwner = await Admin.findById(csOwnerId).lean();

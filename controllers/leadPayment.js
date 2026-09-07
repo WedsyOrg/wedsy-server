@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const LeadLane = require("../models/LeadLane");
 const LeadPaymentService = require("../services/LeadPaymentService");
@@ -13,7 +14,7 @@ const respond = (res, error) => {
 // WRITE guard (mirrors leadLane): ownership scope OR the caller owns ANY lane
 // on this lead (a lane owner records payments for their workstream).
 const assertCanWrite = async (leadId, scopeFilter, callerId) => {
-  if (!mongoose.Types.ObjectId.isValid(String(leadId)))
+  if (!isId(leadId))
     throw Object.assign(new Error("Invalid lead id"), { status: 400 });
   const inScope = await Enquiry.findOne({ $and: [{ _id: leadId }, scopeFilter || {}] }, { _id: 1 }).lean();
   if (inScope) return;

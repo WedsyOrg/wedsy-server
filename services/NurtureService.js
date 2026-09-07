@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Project = require("../models/Project");
 const LeadTask = require("../models/LeadTask");
@@ -10,7 +11,6 @@ const LeadTaskService = require("./LeadTaskService");
 const { callAnthropic } = require("../utils/anthropicQueue");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const cadenceDays = async () => {

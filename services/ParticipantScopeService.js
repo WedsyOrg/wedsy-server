@@ -5,6 +5,7 @@
 // OPEN lead-task. Any authed admin may use the scope for THEMSELVES; managers
 // may pass ?adminId= for a report inside their permission scope.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const LeadTeamMember = require("../models/LeadTeamMember");
 const LeadLane = require("../models/LeadLane");
@@ -52,7 +53,7 @@ const resolveParticipantTarget = async (req) => {
   const callerId = req.auth.user_id;
   const requested = req.query.adminId;
   if (!requested || String(requested) === String(callerId)) return callerId;
-  if (!mongoose.Types.ObjectId.isValid(String(requested))) throw err(400, "Invalid adminId");
+  if (!isId(requested)) throw err(400, "Invalid adminId");
   const scope = req.scope || "own";
   if (scope === "all") return requested;
   const { getSubordinateIds, getDepartmentMemberIds } = require("../middlewares/requirePermission");
@@ -71,7 +72,7 @@ const resolveParticipantTarget = async (req) => {
 // probes, no aggregation). Owner OR current roster OR lane owner OR open-task
 // assignee — the same four legs as participantLeadIds.
 const isParticipantOnLead = async (leadId, adminId) => {
-  if (!adminId || !mongoose.Types.ObjectId.isValid(String(leadId))) return false;
+  if (!adminId || !isId(leadId)) return false;
   const [owner, roster, laneOwn, taskAssn] = await Promise.all([
     Enquiry.exists({ _id: leadId, assignedTo: adminId }),
     LeadTeamMember.exists({ leadId, personId: adminId, activeTo: null }),

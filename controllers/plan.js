@@ -3,6 +3,7 @@
 // READ gate: roster/participant (assertInScopeOrRoster + includeParticipants).
 // WRITE gate: owner/manager (scopeFilter) OR any lane owner on the lead.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const LeadLane = require("../models/LeadLane");
 const PlanService = require("../services/PlanService");
@@ -20,7 +21,7 @@ const respond = (res, error, fallback = "The planner hiccuped — please retry."
 const READ = { includeParticipants: true };
 
 const canWrite = async (req, leadId) => {
-  if (!mongoose.Types.ObjectId.isValid(String(leadId))) {
+  if (!isId(leadId)) {
     throw Object.assign(new Error("Invalid lead id"), { status: 400 });
   }
   const inScope = await Enquiry.findOne({ $and: [{ _id: leadId }, req.scopeFilter || {}] }, { _id: 1 }).lean();

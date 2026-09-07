@@ -1,4 +1,5 @@
 const DashboardService = require("../services/DashboardService");
+const { isId } = require("../utils/objectId");
 const JourneyService = require("../services/JourneyService");
 const CustomFieldService = require("../services/CustomFieldService");
 const LeadLifecycleService = require("../services/LeadLifecycleService");
@@ -56,7 +57,7 @@ const Qualify = async (req, res) => {
     const Enquiry = require("../models/Enquiry");
     const mongoose = require("mongoose");
     const id = req.params._id;
-    if (!mongoose.Types.ObjectId.isValid(id)) return res.status(400).json({ message: "Invalid lead id" });
+    if (!isId(id)) return res.status(400).json({ message: "Invalid lead id" });
     const inScope = await Enquiry.findOne({ $and: [{ _id: id }, req.scopeFilter || {}] }, { _id: 1 }).lean();
     if (!inScope) return res.status(403).json({ message: "Out of your scope" });
     const result = await LeadLifecycleService.qualifyLead(id, req.auth.user_id);
@@ -200,7 +201,8 @@ const AddNote = async (req, res) => {
     const updated = await LeadLifecycleService.addNote(
       req.params._id,
       (req.body || {}).text,
-      req.auth.user_id
+      req.auth.user_id,
+      { mentions: (req.body || {}).mentions }
     );
     res.status(201).json(updated);
   } catch (error) {

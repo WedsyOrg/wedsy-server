@@ -6,12 +6,12 @@
 // entry (machine, untouchable) + the planner's own words as a plain update
 // below; resets the lane silence clock and soft-notifies the lead owner.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
 const LeadPlan = require("../models/LeadPlan");
 const Admin = require("../models/Admin");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const NO_CHANGES = "No material changes since last update.";
 

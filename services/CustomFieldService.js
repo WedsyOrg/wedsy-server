@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const CustomFieldDef = require("../models/CustomFieldDef");
 const Enquiry = require("../models/Enquiry");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
@@ -39,7 +40,7 @@ const createDef = async ({ key, label, type, options, showInCockpit, required, o
 // Update label/options/showInCockpit/required/order/status. key+type are immutable
 // (values already stored under the key with that type).
 const updateDef = async (id, body = {}) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid field id");
+  if (!isId(id)) throw err(400, "Invalid field id");
   const def = await CustomFieldDef.findById(id);
   if (!def) throw err(404, "Field not found");
   const fields = {};
@@ -62,7 +63,7 @@ const updateDef = async (id, body = {}) => {
 
 // Delete only while NO lead holds a value; otherwise the def must be archived.
 const deleteDef = async (id) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid field id");
+  if (!isId(id)) throw err(400, "Invalid field id");
   const def = await CustomFieldDef.findById(id);
   if (!def) throw err(404, "Field not found");
   const holding = await Enquiry.countDocuments({
@@ -125,7 +126,7 @@ const validateValues = async (values) => {
 
 // PUT /enquiry/:_id/custom-fields — partial merge of validated values.
 const setLeadValues = async (enquiryId, values, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) throw err(400, "Invalid enquiry id");
+  if (!isId(enquiryId)) throw err(400, "Invalid enquiry id");
   const clean = await validateValues(values);
   if (Object.keys(clean).length === 0) throw err(400, "No custom field values provided");
   const set = {};

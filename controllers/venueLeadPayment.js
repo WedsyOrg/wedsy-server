@@ -12,6 +12,7 @@
  * dispute. A partial keeps the original amount and records what arrived.
  */
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Venue = require("../models/Venue");
 const VenueBooking = require("../models/VenueBooking");
 const VenueTeamMember = require("../models/VenueTeamMember");
@@ -36,7 +37,7 @@ async function resolveOwnedLead(req, res) {
     res.status(404).json({ message: "Venue not found" });
     return null;
   }
-  if (!mongoose.isValidObjectId(req.params.enquiryId)) {
+  if (!isId(req.params.enquiryId)) {
     res.status(404).json({ message: "Lead not found" });
     return null;
   }

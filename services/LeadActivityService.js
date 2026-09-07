@@ -4,12 +4,12 @@
 // User.phone → the newest matching Enquiry (the same phone bridge the
 // intake/onboarding flow rides).
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadActivityEvent = require("../models/LeadActivityEvent");
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const KINDS = LeadActivityEvent.KINDS;

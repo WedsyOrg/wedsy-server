@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const WAConversation = require("../models/WAConversation");
@@ -6,7 +7,6 @@ const SettingsService = require("./SettingsService");
 const { getSubordinateIds, getDepartmentMemberIds } = require("../middlewares/requirePermission");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const MIN = 60 * 1000;
 const idStr = (v) => String(v);
 

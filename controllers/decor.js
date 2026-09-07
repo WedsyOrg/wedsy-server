@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Decor = require("../models/Decor");
 const LeadPlan = require("../models/LeadPlan");
 const Attribute = require("../models/Attribute");
@@ -551,7 +552,7 @@ const Reorder = (req, res) => {
   if (!field || !Array.isArray(ids) || !ids.length) {
     return res.status(400).send({ message: 'Pass collection ("bestSeller"|"popular"|"spotlight") and a non-empty ids array' });
   }
-  if (!ids.every((id) => mongoose.Types.ObjectId.isValid(String(id)))) {
+  if (!ids.every((id) => isId(id))) {
     return res.status(400).send({ message: "ids must all be valid object ids" });
   }
   Decor.bulkWrite(

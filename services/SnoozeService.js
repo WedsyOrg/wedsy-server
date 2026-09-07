@@ -15,6 +15,7 @@
 // episode (EscalationMark, anchor = the wake date). Past the date the daily
 // sweep clears the fields (journey event lead_woken).
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Followup = require("../models/Followup");
 const EscalationMark = require("../models/EscalationMark");
@@ -23,7 +24,6 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const AdminNotificationService = require("./AdminNotificationService");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const httpError = (status, message) => Object.assign(new Error(message), { status });
 
 const cfg = async () => {

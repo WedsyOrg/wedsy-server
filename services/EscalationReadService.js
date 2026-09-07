@@ -7,6 +7,7 @@
 //          snooze-wake (SnoozeService's warn marks, kind "snooze")
 // Scope: manager → their team; RH/founder → all; ?scope honored DOWNWARD only.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadLane = require("../models/LeadLane");
@@ -89,7 +90,7 @@ const list = async ({ callerId, reqScope, reqScopeFilter, requestedScope, page =
   // Global (lead-less) episodes — e.g. the content planner's stale marks —
   // are notification-only; they never join a lead and would cast-error the
   // $in below. Drop anything whose leadId isn't a real ObjectId.
-  const eps = [...episodes.values()].filter((e) => mongoose.Types.ObjectId.isValid(e.leadId));
+  const eps = [...episodes.values()].filter((e) => isId(e.leadId));
   if (!eps.length) return { items: [], total: 0, page, limit, scope };
 
   // 2 · scope + existence join on leads (batched).

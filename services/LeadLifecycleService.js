@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
@@ -26,7 +27,7 @@ const httpError = (status, message) => {
 };
 
 const assertValidId = (id, label = "enquiry id") => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  if (!isId(id)) {
     throw httpError(400, `Invalid ${label}`);
   }
 };
@@ -689,7 +690,12 @@ const onboardClient = async (enquiryId, { feeAmount, dealTotal, mode, note } = {
 // ── Quick notes (Redesign) ───────────────────────────────────────────────────
 // One note = one "commented" internal event (shows in the journey) + an append
 // to the legacy updates.notes blob so the old surfaces keep seeing it.
-const addNote = async (enquiryId, text, actorId) => {
+// mentions[] is optional and additive: the note behaves exactly as before
+// without it. Tagging fires chat_mention — the SAME trigger step notes and chat
+// messages use, composed in MentionNotifyService — rather than a second
+// notification path, and the id filtering (real ids, deduped, never the author)
+// is that service's, not a second copy of the same rules.
+const addNote = async (enquiryId, text, actorId, { mentions } = {}) => {
   assertValidId(enquiryId);
   if (typeof text !== "string" || !text.trim()) throw httpError(400, "Note text is required");
   if (text.length > 2000) throw httpError(400, "Notes are capped at 2000 characters");
@@ -722,6 +728,11 @@ const addNote = async (enquiryId, text, actorId) => {
   // Signal spine: the notes blob is employee activity (touched) but carries no
   // per-note timestamp, so it never contributes to firstRespondedAt.
   await EnquiryRepository.touchLastActivity(enquiryId);
+  // After the note is durably stored: a notification must never be the reason a
+  // note fails to save. Fire-and-safe inside the service.
+  await require("./MentionNotifyService").notifyMentions(enquiryId, actorId, mentions, clean, {
+    conversationId: String(convId),
+  });
   return updated;
 };
 
@@ -765,7 +776,7 @@ const bulkTransfer = async ({ leadIds, toAdminId } = {}, actorId, scopeFilter = 
   }
   if (leadIds.length > 200) throw httpError(400, "Max 200 leads per transfer");
   for (const id of leadIds) assertValidId(id, "lead id");
-  if (!mongoose.Types.ObjectId.isValid(toAdminId)) throw httpError(400, "Invalid toAdminId");
+  if (!isId(toAdminId)) throw httpError(400, "Invalid toAdminId");
 
   const target = await Admin.findById(toAdminId).lean();
   if (!target) throw httpError(400, "Target admin not found");

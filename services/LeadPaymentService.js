@@ -2,6 +2,7 @@
 // compute the running balance against Enquiry.dealTotal. Distinct from the
 // consumer-side Payment model (wedsy-user checkout) by design.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadPayment = require("../models/LeadPayment");
 const Enquiry = require("../models/Enquiry");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
@@ -9,7 +10,6 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const LeadLaneService = require("./LeadLaneService");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const MODES = ["cash", "bank", "upi", "razorpay"];
 
 // GET — ledger rows (newest first) + the computed header.

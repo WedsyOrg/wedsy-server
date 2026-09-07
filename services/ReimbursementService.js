@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Reimbursement = require("../models/Reimbursement");
 const Admin = require("../models/Admin");
 const AdminNotificationService = require("./AdminNotificationService");
@@ -6,7 +7,6 @@ const { isServiceAccount } = require("../utils/employment");
 const { storeReceipt } = require("../utils/receiptStore");
 
 const err = (status, message, extra = {}) => Object.assign(new Error(message), { status, ...extra });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DECIDED = ["approved", "partial", "rejected"];
 

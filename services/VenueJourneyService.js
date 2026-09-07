@@ -1,11 +1,12 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const VenueJourneyRepository = require("../repositories/VenueJourneyRepository");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
 
 // Aggregate the full venue journey for a CRM lead: lead -> user (by phone) -> venue enquiries + conversations.
 const getJourneyForEnquiry = async (enquiryId) => {
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) {
+  if (!isId(enquiryId)) {
     throw err(400, "Invalid enquiry id.");
   }
   const lead = await VenueJourneyRepository.findEnquiryById(enquiryId);
@@ -31,7 +32,7 @@ const getJourneyForEnquiry = async (enquiryId) => {
 };
 
 const getConversationMessages = async (conversationId) => {
-  if (!mongoose.Types.ObjectId.isValid(conversationId)) {
+  if (!isId(conversationId)) {
     throw err(400, "Invalid conversation id.");
   }
   const convo = await VenueJourneyRepository.findConversationById(conversationId);

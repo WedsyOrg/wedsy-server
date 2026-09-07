@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const LeadStepService = require("../services/LeadStepService");
 const { assertInScopeOrRoster } = require("../utils/leadScope");
@@ -13,7 +14,7 @@ const respond = (res, error) => {
 // Lead-scope guard (mirrors leadTeam/leadChat): the lead must satisfy the
 // caller's scope filter (requirePermission with ownerField assignedTo).
 const assertInScope = async (id, scopeFilter = {}) => {
-  if (!mongoose.Types.ObjectId.isValid(id))
+  if (!isId(id))
     throw Object.assign(new Error("Invalid lead id"), { status: 400 });
   const inScope = await Enquiry.findOne({ $and: [{ _id: id }, scopeFilter || {}] }, { _id: 1 }).lean();
   if (!inScope) throw Object.assign(new Error("Out of your scope"), { status: 403 });

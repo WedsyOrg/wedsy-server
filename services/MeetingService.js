@@ -5,6 +5,7 @@
 // CalendarEvent is stamped with the v2 fields (title, attendees, google
 // linkage). Postpone/cancel/MOM act on the CalendarEvent directly.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const CalendarEvent = require("../models/CalendarEvent");
@@ -13,7 +14,6 @@ const GoogleWorkspaceService = require("./GoogleWorkspaceService");
 const { findAssignable } = require("../utils/assignable");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const EMAILISH = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const DEFAULT_MEET_MINUTES = 60;

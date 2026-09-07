@@ -3,6 +3,7 @@
 // with zero live reads. P5 rides along here: the discount grant + decide + the
 // décor-lane feed. P6's composer read lives in PlanComposerService.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const PlanSnapshot = require("../models/PlanSnapshot");
 const DealDiscount = require("../models/DealDiscount");
 const Enquiry = require("../models/Enquiry");
@@ -15,7 +16,6 @@ const AdminNotificationService = require("./AdminNotificationService");
 const { filterAssignableIds } = require("../utils/assignable");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 // ── Content composers (all output is FROZEN — plain data, no ids the couple
 //    app must re-resolve) ────────────────────────────────────────────────────

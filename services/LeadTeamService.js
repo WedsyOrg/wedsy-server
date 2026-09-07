@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Admin = require("../models/Admin");
 const Department = require("../models/Department");
 const Role = require("../models/Role");
@@ -100,7 +101,7 @@ const decorate = async (rows) => {
 
 // Current team + full history for a lead.
 const listRoster = async (leadId) => {
-  if (!mongoose.Types.ObjectId.isValid(leadId)) throw err(400, "Invalid lead id");
+  if (!isId(leadId)) throw err(400, "Invalid lead id");
   const [currentRows, historyRows] = await Promise.all([
     LeadTeamMemberRepository.findCurrentByLead(leadId),
     LeadTeamMemberRepository.findByLead(leadId),
@@ -114,8 +115,8 @@ const listRoster = async (leadId) => {
 // Add a member to the roster. Writes an append-only row, a named journey event,
 // and notifies the new member (full-context: they get the WHOLE lead, Slice 4).
 const addMember = async (leadId, { personId, departmentId, role }, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(leadId)) throw err(400, "Invalid lead id");
-  if (!personId || !mongoose.Types.ObjectId.isValid(String(personId)))
+  if (!isId(leadId)) throw err(400, "Invalid lead id");
+  if (!personId || !isId(personId))
     throw err(400, "personId is required");
   if (role !== undefined && !["", "qualifier"].includes(role))
     throw err(400, 'role must be "" or "qualifier"');
@@ -125,7 +126,7 @@ const addMember = async (leadId, { personId, departmentId, role }, actorId) => {
 
   // Resolve which department this person is serving. If they belong to exactly
   // one, it's implied; otherwise the caller must pick one of theirs.
-  let depId = departmentId && mongoose.Types.ObjectId.isValid(String(departmentId)) ? String(departmentId) : null;
+  let depId = departmentId && isId(departmentId) ? String(departmentId) : null;
   const roleIds = roleIdsOf(person);
   const roles = roleIds.length
     ? await Role.find({ _id: { $in: roleIds } }, { departmentId: 1 }).lean()
@@ -188,7 +189,7 @@ const addMember = async (leadId, { personId, departmentId, role }, actorId) => {
 
 // Remove a member: close the active row (activeTo + removedBy). History retained.
 const removeMember = async (leadId, memberId, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(memberId)) throw err(400, "Invalid member id");
+  if (!isId(memberId)) throw err(400, "Invalid member id");
   const active = await LeadTeamMemberRepository.findActiveById(memberId);
   if (!active || String(active.leadId) !== String(leadId))
     throw err(404, "Active team member not found on this lead");

@@ -1,9 +1,9 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const StepDefinitionRepository = require("../repositories/StepDefinitionRepository");
 const { PHASES } = require("../models/StepDefinition");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 // Wedsy's real step-set (from their Zoho Projects / Bigin), grouped into 3
 // phases. systemKey makes the seed idempotent AND edit-preserving: a re-run

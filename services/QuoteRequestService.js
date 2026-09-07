@@ -4,6 +4,7 @@
 // LEAD OWNER and drops a decor-lane auto entry (fire-safe, never blocks the
 // ingest).
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const QuoteRequest = require("../models/QuoteRequest");
 const Enquiry = require("../models/Enquiry");
 const AdminNotificationService = require("./AdminNotificationService");
@@ -11,7 +12,6 @@ const LeadLaneService = require("./LeadLaneService");
 const { filterAssignableIds } = require("../utils/assignable");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const ingest = async ({ leadId, userId, phone, draftName, itemCount, payload, sentAt } = {}) => {
   // Resolve the lead when possible; a userId-only row is still queued (the

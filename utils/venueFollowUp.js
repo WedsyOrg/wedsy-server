@@ -10,6 +10,7 @@
  * write path funnels through syncLeadNextFollowUp().
  */
 const mongoose = require("mongoose");
+const { isId } = require("./objectId");
 const VenueEnquiry = require("../models/VenueEnquiry");
 const VenueFollowUp = require("../models/VenueFollowUp");
 const { scopedLeadFilter } = require("./venueLeadScope");
@@ -91,7 +92,7 @@ async function applyLegacyFollowUpWrite({ lead, venueId, dueAt, note, actorId, t
     note: note || "",
     // A follow-up defaults to the lead's owner: whoever has the lead owes the
     // next touch. Falls back to the acting member for an unassigned lead.
-    assignedTo: lead.assignedTo || (mongoose.isValidObjectId(actorId) ? actorId : null),
+    assignedTo: lead.assignedTo || (isId(actorId) ? actorId : null),
     createdBy: actorId || null,
   });
   await syncLeadNextFollowUp(lead._id);

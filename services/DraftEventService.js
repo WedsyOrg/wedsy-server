@@ -4,6 +4,7 @@
 // couple-facing event endpoints are untouched — these writes accept ONLY
 // OS drafts (event.leadId === lead).
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Event = require("../models/Event");
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
@@ -15,7 +16,6 @@ const DealDiscount = require("../models/DealDiscount");
 const { lineTotal, eventTotals } = require("../utils/eventDecorPricing");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 // Addendum A7 — the locked flow allows up to 5 drafts (was 3).
 const DRAFT_CAP = 5;
 

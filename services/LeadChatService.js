@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadChatMessage = require("../models/LeadChatMessage");
 const Admin = require("../models/Admin");
 const Enquiry = require("../models/Enquiry");
@@ -7,7 +8,6 @@ const AdminNotificationService = require("./AdminNotificationService");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 const MAX_BODY = 5000;
 
@@ -195,15 +195,11 @@ const postMessage = async (leadId, authorId, { body, attachments, mentions } = {
   }
 
   // @mentions → a DISTINCT notification, separate from normal activity.
+  // Built by MentionNotifyService, the single place chat_mention is composed,
+  // so the wording cannot drift between here, step notes and lead notes.
   if (ments.length) {
-    const author = await Admin.findById(authorId, { name: 1 }).lean();
-    const lead = await Enquiry.findById(leadId, { name: 1 }).lean();
-    await AdminNotificationService.notify(ments, {
-      type: "chat_mention",
-      title: `${author ? author.name : "Someone"} mentioned you on ${lead ? lead.name : "a lead"}`,
-      message: text.slice(0, 160),
-      leadId,
-      payload: { messageId: String(msg._id) },
+    await require("./MentionNotifyService").notifyMentions(leadId, authorId, ments, text, {
+      messageId: String(msg._id),
     });
   }
 

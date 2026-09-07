@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const DecorDraft = require("../models/DecorDraft");
 const Decor = require("../models/Decor");
 const Admin = require("../models/Admin");
@@ -17,7 +18,6 @@ const { lookupRead, panelQuoteFor } = require("./decorReadCache");
 const err = (status, message, extra = {}) =>
   Object.assign(new Error(message), { status, ...extra });
 
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 // ── Dedupe key ───────────────────────────────────────────────────────────────
 // pinId wins when the extension supplies one. Otherwise we match on a

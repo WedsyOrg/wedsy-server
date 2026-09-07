@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
@@ -184,7 +185,7 @@ const dynamicTitle = (type, payload = {}, nameOf) => {
 // GET /enquiry/:_id/journey — every moment of a lead's life, one chronological
 // stream, normalized to { at, type, actor, title, detail }.
 const buildJourney = async (enquiryId) => {
-  if (!mongoose.Types.ObjectId.isValid(enquiryId)) throw err(400, "Invalid enquiry id");
+  if (!isId(enquiryId)) throw err(400, "Invalid enquiry id");
   const lead = await Enquiry.findById(enquiryId).lean();
   if (!lead) throw err(404, "Enquiry not found");
 
@@ -201,7 +202,7 @@ const buildJourney = async (enquiryId) => {
     if (e.actorId) actorIds.add(String(e.actorId));
     const p = e.payload || {};
     for (const k of PARTY_ID_KEYS) {
-      if (p[k] && mongoose.Types.ObjectId.isValid(String(p[k]))) actorIds.add(String(p[k]));
+      if (p[k] && isId(p[k])) actorIds.add(String(p[k]));
     }
   }
   for (const a of activityRows) if (a.actorId) actorIds.add(String(a.actorId));

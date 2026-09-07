@@ -5,11 +5,11 @@
 // catalogue read surfaces tagged products first per category and NEVER hides
 // the rest.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const DecorTheme = require("../models/DecorTheme");
 const Decor = require("../models/Decor");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 const EVENT_TYPES = ["haldi", "sangeet", "wedding", "reception", "custom"];
 
 const list = async ({ eventType, includeInactive } = {}) => {

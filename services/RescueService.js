@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
@@ -9,7 +10,6 @@ const AdminNotificationService = require("./AdminNotificationService");
 const LeadTaskService = require("./LeadTaskService"); // idsByRoleName (Revenue Head)
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 const idStr = (v) => String(v);
 
 // Per-lead tier-2 notify cooldown (in-memory, single-process) — same anti-spam

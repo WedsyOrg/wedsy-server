@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const StageRepository = require("../repositories/StageRepository");
 const ActivityLogService = require("./ActivityLogService");
 
@@ -61,7 +62,7 @@ const createStage = async ({ name, color, category } = {}, actorId) => {
 // Rename / recolor / reorder a single stage. NEVER changes slug — leads store the slug,
 // so renaming is display-only to keep existing leads valid.
 const updateStage = async (id, { name, color, category, order, slaHours } = {}, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid stage id");
+  if (!isId(id)) throw err(400, "Invalid stage id");
   const existing = await StageRepository.findById(id);
   if (!existing) throw err(404, "Stage not found");
 
@@ -115,7 +116,7 @@ const reorderStages = async (orderedIds, actorId) => {
     throw err(400, "orderedIds must be a non-empty array");
   }
   for (const id of orderedIds) {
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!isId(id)) {
       throw err(400, `Invalid stage id in orderedIds: ${id}`);
     }
   }
@@ -137,12 +138,12 @@ const reorderStages = async (orderedIds, actorId) => {
 };
 
 const deleteStage = async (id, moveToSlug, actorId, migrateToStageId) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) throw err(400, "Invalid stage id");
+  if (!isId(id)) throw err(400, "Invalid stage id");
   const existing = await StageRepository.findById(id);
   if (!existing) throw err(404, "Stage not found");
   // Settings Suite: accept migrateToStageId (preferred) — resolve it to a slug.
   if (!moveToSlug && migrateToStageId) {
-    if (!mongoose.Types.ObjectId.isValid(migrateToStageId)) {
+    if (!isId(migrateToStageId)) {
       throw err(400, "Invalid migrateToStageId");
     }
     const target = await StageRepository.findById(migrateToStageId);

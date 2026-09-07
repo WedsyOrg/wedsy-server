@@ -8,6 +8,7 @@
 // their existing owner/manager gating (this helper is for reads; leadTeam's
 // routes deliberately use it for roster management too, per Slice 3).
 const mongoose = require("mongoose");
+const { isId } = require("./objectId");
 const Enquiry = require("../models/Enquiry");
 const LeadTeamMemberRepository = require("../repositories/LeadTeamMemberRepository");
 
@@ -15,7 +16,7 @@ const err = (status, message) => Object.assign(new Error(message), { status });
 
 // Is this admin CURRENTLY on the lead's roster (activeTo null)?
 const isCurrentRosterMember = async (leadId, adminId) => {
-  if (!adminId || !mongoose.Types.ObjectId.isValid(String(leadId))) return false;
+  if (!adminId || !isId(leadId)) return false;
   const roster = await LeadTeamMemberRepository.findCurrentByLead(leadId);
   return roster.some((r) => String(r.personId) === String(adminId));
 };
@@ -33,7 +34,7 @@ const assertInScopeOrRoster = async (
   callerId = null,
   { includeParticipants = false } = {}
 ) => {
-  if (!mongoose.Types.ObjectId.isValid(String(leadId))) throw err(400, "Invalid lead id");
+  if (!isId(leadId)) throw err(400, "Invalid lead id");
   const inScope = await Enquiry.findOne(
     { $and: [{ _id: leadId }, scopeFilter || {}] },
     { _id: 1 }

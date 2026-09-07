@@ -11,6 +11,7 @@
 // (createdAt <= qualifiedAt) when the lead has a qualifiedAt — the brief is
 // distilled from what the QUALIFIER knew; post-qual notes belong to the lanes.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const LeadInternalEvent = require("../models/LeadInternalEvent");
@@ -18,7 +19,6 @@ const LeadStep = require("../models/LeadStep");
 const LeadInternalEventService = require("./LeadInternalEventService");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const qualifierNoteFeed = async (leadId) => {
   const lead = await Enquiry.findById(leadId, {

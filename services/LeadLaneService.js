@@ -4,6 +4,7 @@
 // existing action services (logCall / meeting booked / proposal sent / task
 // done). Nothing here ever breaks a primary action.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadLane = require("../models/LeadLane");
 const LaneEntry = require("../models/LaneEntry");
 const Enquiry = require("../models/Enquiry");
@@ -14,7 +15,6 @@ const LeadInternalEventService = require("./LeadInternalEventService");
 const { filterAssignableIds, isAssignableAdmin } = require("../utils/assignable");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 const LANE_STATES = ["queued", "active", "paused", "done"];
 const WAKE_TYPES = ["afterLane", "onDate", "manual"];

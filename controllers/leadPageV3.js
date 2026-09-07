@@ -1,6 +1,7 @@
 // LEAD-PAGE v3 controllers — activity (L1), milestones (L2), the money face
 // (L3), quote requests (L4), the client-tasks proxy (L5).
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadActivityService = require("../services/LeadActivityService");
 const PaymentMilestoneService = require("../services/PaymentMilestoneService");
 const MoneyFaceService = require("../services/MoneyFaceService");
@@ -137,7 +138,7 @@ const ListClientTasks = async (req, res) => {
 const PutClientTask = async (req, res) => {
   try {
     const { milestoneId, status } = req.body || {};
-    if (!mongoose.Types.ObjectId.isValid(String(milestoneId || ""))) {
+    if (!isId(milestoneId || "")) {
       return res.status(400).json({ message: "Pass a milestoneId." });
     }
     const eventId = await clientTaskEventId(req.params._id);

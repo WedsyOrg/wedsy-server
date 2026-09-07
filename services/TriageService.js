@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const Admin = require("../models/Admin");
 const Role = require("../models/Role");
@@ -118,8 +119,8 @@ const listTriage = async () => {
 
 // ── Assign out of triage (picker or "take it myself"). ───────────────────────
 const assign = async (leadId, toAdminId, actorId) => {
-  if (!mongoose.Types.ObjectId.isValid(leadId)) throw httpError(400, "Invalid lead id");
-  if (!mongoose.Types.ObjectId.isValid(toAdminId)) throw httpError(400, "Invalid admin id");
+  if (!isId(leadId)) throw httpError(400, "Invalid lead id");
+  if (!isId(toAdminId)) throw httpError(400, "Invalid admin id");
   // Assignable predicate (status active AND not disabled): the Disable button
   // leaves status "active", so a status-only check let disabled admins receive
   // triage assignments.

@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const WAConversationRepository = require("../repositories/WAConversationRepository");
 const WAAgentMessageRepository = require("../repositories/WAAgentMessageRepository");
 const EnquiryRepository = require("../repositories/EnquiryRepository");
@@ -44,7 +45,7 @@ const httpError = (status, message, extra = {}) =>
   Object.assign(new Error(message), { status, ...extra });
 
 const assertValidId = (id) => {
-  if (!mongoose.Types.ObjectId.isValid(id)) {
+  if (!isId(id)) {
     throw httpError(400, "Invalid conversation id");
   }
 };
@@ -273,7 +274,7 @@ const listInbox = async ({ mode, needsHuman, status, enquiryId, page = 1, limit 
   if (status === "active" || status === "closed") filter.status = status;
 
   const requestedEnquiryId =
-    enquiryId && mongoose.Types.ObjectId.isValid(enquiryId) ? enquiryId : null;
+    enquiryId && isId(enquiryId) ? enquiryId : null;
 
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const lim = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));

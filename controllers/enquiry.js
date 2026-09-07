@@ -1,5 +1,6 @@
 // Core models and utilities used throughout the Enquiry controller
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Enquiry = require("../models/Enquiry");
 const User = require("../models/User");
 const Admin = require("../models/Admin");
@@ -1056,7 +1057,7 @@ const Get = (req, res) => {
   // than letting Mongoose throw a CastError that the terminal catch masks as an
   // opaque 400 {message:"error"}. This also stops a literal path that fell through
   // to /:_id (e.g. a missing sibling route) from surfacing as a cryptic cast error.
-  if (!mongoose.isValidObjectId(_id)) {
+  if (!isId(_id)) {
     return res.status(400).send({ message: "Invalid lead id" });
   }
   // RBAC scope: the doc must also satisfy req.scopeFilter. An out-of-scope id simply

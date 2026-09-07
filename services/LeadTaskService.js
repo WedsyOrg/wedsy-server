@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const LeadTask = require("../models/LeadTask");
 const LeadStep = require("../models/LeadStep");
 const Admin = require("../models/Admin");
@@ -12,7 +13,6 @@ const EnquiryRepository = require("../repositories/EnquiryRepository");
 const { assignableFilter } = require("../utils/assignable");
 
 const httpError = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(v);
 
 // ASSIGNABLE admins holding a named role (RBAC v2: roleId OR roleIds[]).
 // assignableFilter = status active AND not disabled — a disabled admin must

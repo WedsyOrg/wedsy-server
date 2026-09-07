@@ -3,12 +3,12 @@
 // / partial (some money) / overdue (dueAt past, not paid) / pending. Nothing
 // stored — old leads with no schedule are simply an empty list.
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const PaymentMilestone = require("../models/PaymentMilestone");
 const LeadPayment = require("../models/LeadPayment");
 const Enquiry = require("../models/Enquiry");
 
 const err = (status, message) => Object.assign(new Error(message), { status });
-const isId = (v) => mongoose.Types.ObjectId.isValid(String(v));
 
 // Batched decorate: milestones + ONE payment aggregation.
 const decorate = async (leadId, milestones, now = new Date()) => {

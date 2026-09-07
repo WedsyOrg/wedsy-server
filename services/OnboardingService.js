@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const { isId } = require("../utils/objectId");
 const Event = require("../models/Event");
 const User = require("../models/User");
 const Enquiry = require("../models/Enquiry");
@@ -113,7 +114,7 @@ const getOnboarding = async (leadId, eventId = null) =>
 // not onboarding was formally started), stamps the accepted version, journals
 // agreement_signed. Returns the onboarding doc.
 const acceptAgreement = async ({ leadId, eventId = null, acceptedName, actorId = null }) => {
-  if (!mongoose.Types.ObjectId.isValid(leadId)) {
+  if (!isId(leadId)) {
     throw Object.assign(new Error("Invalid lead id"), { status: 400 });
   }
   const name = String(acceptedName || "").trim();
@@ -152,13 +153,13 @@ const acceptAgreement = async ({ leadId, eventId = null, acceptedName, actorId =
 // The 2-day-window / draft-shared rule is surfaced as info (warn), not a hard
 // block. Idempotent: re-starting returns the existing record.
 const startOnboarding = async ({ leadId, eventId = null, actorId = null }) => {
-  if (!mongoose.Types.ObjectId.isValid(leadId)) {
+  if (!isId(leadId)) {
     throw Object.assign(new Error("Invalid lead id"), { status: 400 });
   }
   let milestones = null;
   let event = null;
   if (eventId) {
-    if (!mongoose.Types.ObjectId.isValid(eventId)) {
+    if (!isId(eventId)) {
       throw Object.assign(new Error("Invalid event id"), { status: 400 });
     }
     event = await Event.findById(eventId).lean();
@@ -204,7 +205,7 @@ const startOnboarding = async ({ leadId, eventId = null, actorId = null }) => {
 // Client-facing onboarding state (wedsy-user reads this to gate the planner).
 // Resolved by eventId; verifies the event belongs to the caller unless admin.
 const clientState = async (eventId, callerUserId, isAdmin) => {
-  if (!mongoose.Types.ObjectId.isValid(eventId)) {
+  if (!isId(eventId)) {
     throw Object.assign(new Error("Invalid event id"), { status: 400 });
   }
   const event = await Event.findById(eventId, { user: 1 }).lean();
