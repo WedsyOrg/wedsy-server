@@ -149,6 +149,9 @@ const settle = () => new Promise((r) => setTimeout(r, 250));
     console.log("\nG2  A QUALIFIED NON-META LEAD SENDS NOTHING, AND SAYS WHY");
     for (const [source, extra, why] of [
       ["Website", {}, "a website lead"],
+      ["Wedding Requirements Form", {}, "the wedding requirements form"],
+      ["User Signup (Account Creation)", {}, "a user signup"],
+      ["Instagram DM", {}, "an Instagram DM lead"],
       ["whatsapp", {}, "a WhatsApp lead"],
       ["landing_page", {}, "the bridge's explicit non-ad value"],
       ["Ads (Landing Screen)", {}, "the ambiguous historical default"],
@@ -163,6 +166,22 @@ const settle = () => new Promise((r) => setTimeout(r, 250));
         `…and the skip is logged with a reason`);
       const stillQualified = await Enquiry.findById(lead._id).lean();
       ok(stillQualified.qualified === true, `…and the lead still qualified`);
+    }
+    {
+      // "Meta Ads" — one qualified lead on production, unambiguous. Allowed by
+      // the census ruling; it does not fit the campaign-label shape, so it is a
+      // literal and needs its own gate.
+      captured = [];
+      const lead = await seedLead({ source: "Meta Ads" });
+      await LeadLifecycleService.qualifyLead(lead._id, null);
+      await settle();
+      eq(captured.length, 1, '"Meta Ads" DOES send — allowed by the census ruling');
+
+      captured = [];
+      const lead2 = await seedLead({ source: "meta ads" });
+      await LeadLifecycleService.qualifyLead(lead2._id, null);
+      await settle();
+      eq(captured.length, 1, "…and a case variant is not a silent miss");
     }
     {
       // The counterpart: an Instagram AD lead has no DM fingerprint and DOES send.

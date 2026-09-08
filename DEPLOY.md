@@ -50,3 +50,19 @@ Before widening which leads are sent, run
 `node scripts/audit-lead-source-meta-origin.js --qualified-only` and read
 `META_AD_SOURCES` in the service header. Sending a non-ad lead trains the
 algorithm on organic business and cannot be undone.
+
+### Phone country codes
+
+`utils/phone.js` is the ONE phone normaliser. A stored number that already
+carries a country code — a leading `+`, or more than ten digits — is used
+verbatim and never re-derived. Only a bare ten-digit number gets a code
+applied, from `DEFAULT_COUNTRY_CODE` (default `91`), and every such guess is
+logged with the lead id.
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `DEFAULT_COUNTRY_CODE` | no | Digits only, no `+`. Applied ONLY to bare ten-digit numbers. Defaults to `91`. |
+
+Grep the logs for `[phone] ASSUMED` to see how often we are guessing and on
+which leads. That line is the audit trail for the one case where this file does
+not know the answer.

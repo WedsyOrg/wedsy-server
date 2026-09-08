@@ -37,40 +37,61 @@ const API_VERSION = "v25.0";
 const EVENT_NAME = "Qualified Lead";
 
 // ── THE GATE ───────────────────────────────────────────────────────────────
-// Only controllers/webhook.js resolveSource() emits these, and it is the sole
-// entry point for the Make → OS Meta ad bridge. Campaign labels are open-ended
-// (facebook_june_decor, instagram_promo, …) so the shape is matched, not a
-// fixed list — this mirrors META_SOURCE_RE in that controller.
+// An ALLOW-LIST, settled by the production census
+// (scripts/audit-lead-source-meta-origin.js), never a deny-list: a source value
+// nobody has classified is skipped, not sent.
 //
-// NOTE THE SUFFIX REQUIREMENT ON instagram. Bare "instagram" is AMBIGUOUS:
-// resolveSource lowercases an Instagram ad campaign to it, and
-// services/InstagramAgentService.js independently stores every ORGANIC
-// Instagram DM lead as exactly the same string. Same value, two origins, and
-// one of them must never be sent. isMetaAdSource therefore treats bare
-// "instagram" as eligible ONLY when the DM agent's fingerprint
-// (additionalInfo.instagramId, which only that service writes) is absent.
+// ALLOWED
+//   facebook, facebook_*, instagram_*  — controllers/webhook.js resolveSource()
+//       is the sole emitter of these, and it is the Make → OS Meta ad bridge.
+//       Campaign labels are open-ended (facebook_june_decor, instagram_promo),
+//       so the SHAPE is matched, mirroring META_SOURCE_RE in that controller.
+//   "Meta Ads"                         — one qualified lead, unambiguous.
+//   bare "instagram"                   — ONLY without the DM fingerprint; see below.
+//
+// EXCLUDED (measured, not assumed)
+//   "whatsapp"                 — 29% of qualified leads and the largest signal we
+//       are choosing to drop. NOT because it is organic: click-to-WhatsApp is a
+//       real Meta ad path. Meta attaches a referral payload (source_type "ad" +
+//       the ad id) to the first inbound message of such a conversation, and
+//       controllers/whatsappAgent.js does not read it — so nothing on our side
+//       can tell a click-to-WhatsApp lead from someone who saved the number off
+//       a poster. Excluded until that payload is captured; see the WhatsApp note
+//       at the foot of this block.
+//   "Instagram DM", bare "instagram" WITH additionalInfo.instagramId,
+//   "Website", "User Signup (Account Creation)", "Wedding Requirements Form",
+//   "landing_page"             — organic or non-ad intake.
+//   "Ads (Landing Screen)"     — resolveSource's no-source default. NOT an open
+//       question: zero qualified leads carry it, so it is inert either way.
+//       Listed so a future reader does not have to rediscover that.
+//
+// THE bare-"instagram" COLLISION. resolveSource lowercases an Instagram AD
+// campaign to "instagram", and services/InstagramAgentService.js stores every
+// ORGANIC Instagram DM lead as exactly the same string. Same value, opposite
+// origins, one of which must never be sent. They are split on
+// additionalInfo.instagramId, which only the DM agent writes.
+//
+// NOT A DISCRIMINATOR: additionalInfo.adFormAnswers. It reads like proof of an
+// ad form and is not — KiaraFactExtractionService writes chat-extracted facts
+// into the same bucket, so a DM lead carries it too. Measured on production.
 const META_AD_SOURCE_RE = /^(facebook|instagram)(_[a-z0-9]+)*$/;
 
-// DELIBERATELY EXCLUDED, pending the production census
-// (scripts/audit-lead-source-meta-origin.js):
-//   "Ads (Landing Screen)" — resolveSource's DEFAULT when the bridge sends no
-//       source at all. Its own comment calls it "the historical landing-page
-//       default", so it holds a mix of real ad leads and plain landing-page
-//       fills that cannot be told apart from the source string. Excluded
-//       because a false send is unrecoverable — it trains the algorithm —
-//       while a missed send merely costs signal we never had.
-//   "landing_page" — the bridge's explicit non-ad value.
-// Widening this set is a product decision, not a code cleanup.
-const EXCLUDED_AMBIGUOUS = ["Ads (Landing Screen)", "landing_page"];
+// Exact stored values that mean "Meta ad" but do not fit the campaign shape.
+// Compared case-insensitively so a "Meta ads" typo is not a silent miss.
+const META_AD_SOURCE_LITERALS = ["meta ads"];
+
+// WHATSAPP JOINS LATER WITHOUT CHANGING ANYTHING ELSE. Once the referral
+// payload is captured at intake, the only edit here is a clause admitting a
+// WhatsApp lead that carries proof of an ad click. Existing WhatsApp leads stay
+// unrecoverable — the payload was never stored, so it cannot be backfilled.
 
 // Eligibility + the REASON, so a skip is always explainable in the log.
 const metaAdOrigin = (lead = {}) => {
   const source = String(lead.source || "").trim();
   if (!source) return { eligible: false, reason: "no source on the lead" };
-  if (EXCLUDED_AMBIGUOUS.includes(source)) {
-    return { eligible: false, reason: `source "${source}" is ambiguous (ad vs landing page) — excluded pending census` };
-  }
-  if (!META_AD_SOURCE_RE.test(source)) {
+  const isMetaAd =
+    META_AD_SOURCE_LITERALS.includes(source.toLowerCase()) || META_AD_SOURCE_RE.test(source);
+  if (!isMetaAd) {
     return { eligible: false, reason: `source "${source}" is not a Meta ad source` };
   }
   // The bare-"instagram" collision, resolved on the DM agent's own marker.
@@ -93,26 +114,11 @@ const normaliseEmail = (raw) => {
   return trimmed;
 };
 
-// ph: strip symbols, letters and LEADING ZEROS; the country code MUST be
-// present. Returns null when there is nothing trustworthy to send.
-const normalisePhone = (raw) => {
-  const original = String(raw || "").trim();
-  // "ig:<sender id>" is InstagramAgentService's PLACEHOLDER for a lead that has
-  // not shared a number yet. Stripping letters and symbols would turn it into a
-  // 14-digit "phone number" and we would hash a fabricated identifier. Reject
-  // it before normalisation, not after.
-  if (/^ig:/i.test(original)) return null;
-  const digits = original.replace(/[^0-9]/g, "").replace(/^0+/, "");
-  if (!digits) return null;
-  // A bare 10-digit number is an Indian local number with the country code
-  // dropped — the same assumption toFullPhone() already makes at IG intake.
-  // Meta requires the country code, so add it rather than send a number Meta
-  // cannot match.
-  if (digits.length === 10) return `91${digits}`;
-  // Shorter than a local number is not a phone number; do not guess.
-  if (digits.length < 10) return null;
-  return digits;
-};
+// ph: normalisation lives in utils/phone.js — the ONE implementation, shared
+// with every other consumer of a stored number. It is not duplicated here on
+// purpose: a second copy is how a wa.me link and a hashed identifier drift
+// apart, and the wa.me copy drifting is how you message a stranger.
+const { normalisePhone } = require("../utils/phone");
 
 // ── THE EVENT ──────────────────────────────────────────────────────────────
 // event_id is a STABLE dedup key: the same lead qualifying twice derives the
@@ -122,7 +128,7 @@ const eventIdFor = (leadId) => `wedsyos-${EVENT_NAME.toLowerCase().replace(/\s+/
 
 const buildEvent = (lead) => {
   const email = normaliseEmail(lead.email);
-  const phone = normalisePhone(lead.phone);
+  const phone = normalisePhone(lead.phone, { leadId: lead._id ? String(lead._id) : null, context: "meta-capi" });
   const user_data = {};
   const identifiers = [];
   if (email) { user_data.em = sha256Hex(email); identifiers.push("em"); }
@@ -230,5 +236,5 @@ module.exports = {
   EVENT_NAME,
   API_VERSION,
   META_AD_SOURCE_RE,
-  EXCLUDED_AMBIGUOUS,
+  META_AD_SOURCE_LITERALS,
 };

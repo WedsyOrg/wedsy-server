@@ -112,6 +112,10 @@ const num = (s, n) => String(s).padStart(n);
   }
 
   // ── 4. The ad-form bridge's own vocabulary ───────────────────────────────
+  // WARNING ON THE adFormAnswers COLUMN: it is NOT evidence of an ad form.
+  // KiaraFactExtractionService writes chat-extracted facts into the same
+  // additionalInfo.adFormAnswers bucket, so a DM lead carries it too. Measured
+  // on production 2026-09-08. The column is "has that bucket", nothing more.
   // resolveSource() in controllers/webhook.js only ever emits: the literal
   // "Ads (Landing Screen)" default, "landing_page", or a lowercased
   // facebook*/instagram* campaign label. Anything else under those shapes came
@@ -128,10 +132,49 @@ const num = (s, n) => String(s).padStart(n);
     { $sort: { n: -1 } },
   ]);
   if (!bridge.length) console.log("   (none)");
-  console.log(`   ${pad("source", 38)} ${num("n", 6)} ${num("w/ adFormAnswers", 18)}`);
+  console.log(`   ${pad("source", 38)} ${num("n", 6)} ${num("has answers bucket", 20)}`);
   for (const r of bridge) {
-    console.log(`   ${pad(JSON.stringify(r._id), 38)} ${num(r.n, 6)} ${num(r.withAdForm, 18)}`);
+    console.log(`   ${pad(JSON.stringify(r._id), 38)} ${num(r.n, 6)} ${num(r.withAdForm, 20)}`);
   }
+
+  // ── 5. PHONE COUNTRY CODES ───────────────────────────────────────────────
+  // The website concatenates the selected country code into `phone` before it
+  // POSTs (wedsy-user/pages/index.js), so the selection IS preserved — inside
+  // the phone string, with a leading "+", not as its own field. This counts how
+  // often that matters: every lead whose stored number is NOT the default
+  // country code, and every lead carrying no country code at all (where
+  // utils/phone.js has to guess one and logs that it did).
+  console.log("\n5. PHONE COUNTRY CODES (a wrong one messages a stranger)");
+  const DEFAULT_CC = String(process.env.DEFAULT_COUNTRY_CODE || "91");
+  const phones = await Enquiry.find(scope, { phone: 1, source: 1 }).lean();
+  const buckets = { placeholder: 0, tooShort: 0, noCountryCode: 0, defaultCC: 0, other: {} };
+  for (const l of phones) {
+    const raw = String(l.phone || "").trim();
+    if (/^ig:/i.test(raw)) { buckets.placeholder++; continue; }
+    const hadPlus = raw.startsWith("+");
+    const digits = raw.replace(/[^0-9]/g, "").replace(/^0+/, "");
+    if (digits.length < 10) { buckets.tooShort++; continue; }
+    if (!hadPlus && digits.length === 10) { buckets.noCountryCode++; continue; }
+    // WE DO NOT PARSE THE COUNTRY CODE OUT, and the reason is the whole point
+    // of this section: the national part is NOT a fixed ten digits. India's is
+    // ten, the UAE's is nine, so splitting on `length - 10` turns +971 into
+    // "+97". Prefix-matching the default is exact; anything else is reported as
+    // the LEADING DIGITS, which is all we can honestly claim without a
+    // per-country numbering table.
+    if (digits.startsWith(DEFAULT_CC)) buckets.defaultCC++;
+    else {
+      const lead4 = digits.slice(0, 4);
+      buckets.other[lead4] = (buckets.other[lead4] || 0) + 1;
+    }
+  }
+  console.log(`   carries +${DEFAULT_CC} (the default)      ${num(buckets.defaultCC, 6)}`);
+  console.log(`   does NOT start with ${DEFAULT_CC}          ${num(Object.values(buckets.other).reduce((a, b) => a + b, 0), 6)}`);
+  for (const [lead4, n] of Object.entries(buckets.other).sort((a, b) => b[1] - a[1])) {
+    console.log(`       leading digits ${pad(lead4, 6)} ${num(n, 5)}   <- NEVER re-derive these`);
+  }
+  console.log(`   NO country code (we must guess)  ${num(buckets.noCountryCode, 6)}`);
+  console.log(`   "ig:" placeholder (no phone)     ${num(buckets.placeholder, 6)}`);
+  console.log(`   too short to be a phone          ${num(buckets.tooShort, 6)}`);
 
   console.log("\nDECIDE FROM THIS: which of the section-1 values mean 'this person");
   console.log("clicked a Meta ad'. That set becomes META_AD_SOURCES in");
