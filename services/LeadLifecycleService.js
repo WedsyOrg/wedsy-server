@@ -1001,6 +1001,27 @@ const qualifyLead = async (enquiryId, actorId) => {
   }
 
   const fresh = await Enquiry.findById(enquiryId).lean();
+
+  // Meta Conversions API — tell Meta this lead QUALIFIED, so its algorithm
+  // optimises for leads sales can work with instead of the cheapest form fill.
+  //
+  // THIS SITS AFTER THE IDEMPOTENT EARLY RETURN, which is what makes it
+  // send-once: re-qualifying an already-qualified lead returns above and never
+  // reaches here. (The event_id is a stable per-lead key as well, so even a
+  // retry that did get through would be collapsed by Meta rather than counted
+  // twice.)
+  //
+  // NOT AWAITED. Qualifying a lead must succeed even when Meta is down or slow,
+  // so this never joins the transition's critical path. sendQualifiedLead
+  // resolves a described result instead of throwing; the .catch is a last-ditch
+  // net so a bug in it can never surface as an unhandled rejection.
+  //
+  // The service decides whether to send at all — only leads that originated
+  // from a Meta ad qualify, and every skip is logged with its reason.
+  require("./MetaConversionsService")
+    .sendQualifiedLead(fresh)
+    .catch((e) => console.error("[qualifyLead] Meta CAPI send failed:", e.message));
+
   return { lead: fresh, alreadyQualified: false, handedOff };
 };
 
