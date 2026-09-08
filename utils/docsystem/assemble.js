@@ -8,7 +8,7 @@ const { docDayWithWeekday } = require("../documentDate");
 const { receivedOn, milestoneStatus } = require("../venuePaymentStatus");
 const {
   DASH, money, dateProse, dateCell, dateTimeProse,
-  lineFigures, documentTotals, allocateScheduleGst,
+  lineFigures, documentTotals, allocateScheduleGst, decomposeGstInsideRows,
 } = require("./shared");
 
 /**
@@ -111,20 +111,25 @@ function roomsLineOf(booking) {
     .join(" · ");
 }
 
-function windowFacts(lead, booking, venueSpaces) {
+function windowFacts(lead, booking, venueSpaces, { includeSpaces = true } = {}) {
   const checkIn = (booking && booking.checkIn) || (lead && lead.checkIn);
   const checkOut = (booking && booking.checkOut) || (lead && lead.checkOut);
   const hours = checkIn && checkOut ? Math.round((new Date(checkOut) - new Date(checkIn)) / 36e5) : null;
   const spaceNames = venueSpaces && venueSpaces.length ? venueSpaces.join(", ") : null;
   const rooms = roomsLineOf(booking);
-  return [
+  const facts = [
     { label: "Check-in", value: dateTimeProse(checkIn) },
     { label: "Check-out", value: dateTimeProse(checkOut) },
     { label: "Total hours", value: hours ? `${hours} hours` : DASH },
-    rooms
-      ? { label: "Spaces & rooms", value: [spaceNames, rooms].filter(Boolean).join(" · ") }
-      : { label: "Spaces", value: spaceNames || DASH },
   ];
+  // the confirmation gives spaces and rooms their own full-width section, so
+  // its fact strip must not carry a cramped duplicate of the same facts
+  if (includeSpaces) {
+    facts.push(rooms
+      ? { label: "Spaces & rooms", value: [spaceNames, rooms].filter(Boolean).join(" · ") }
+      : { label: "Spaces", value: spaceNames || DASH });
+  }
+  return facts;
 }
 
 function spacesOf(booking) {
@@ -139,35 +144,25 @@ function spacesOf(booking) {
  * payable-with-extras EXACTLY, which the total row claims and the renderer
  * asserts before drawing.
  */
-/**
- * The totals the schedule TABLE is asserted against. On a GST-first booking
- * the rows carry their GST inside, so the table's truth is the collectable
- * (charged + refundable + GST), printed with an empty GST column; on every
- * older booking it is the ex-GST payable with the GST spread on top, exactly
- * as those schedules were written. The document's other blocks keep the real
- * totals — this shape exists only for the table and its assertion.
- */
-function scheduleTotalsFor(booking, totals, { includeAdditional = true } = {}) {
-  if (!(booking && booking.scheduleIncludesGst)) return totals;
-  const payable = totals.charged + totals.refundable + totals.gst + (includeAdditional ? totals.extrasAmount : 0);
-  return { ...totals, payable, gst: 0, extrasGst: 0, collectable: payable };
-}
-
 function shapeSchedule(booking, totals, { includeAdditional = true } = {}) {
   const agreed = ((booking && booking.paymentSchedule) || []).filter((r) => !r.isAdditional);
   const additional = includeAdditional ? ((booking && booking.paymentSchedule) || []).filter((r) => r.isAdditional) : [];
   // GST-FIRST (wizard2): on a booking whose schedule includes the GST, the
-  // rows ARE the collectable — spreading the lines' GST over them again
-  // would print every instalment inflated by its share a second time. The
-  // allocator runs with zero GST so the refundable carry still annotates,
-  // and each row's collectable equals its stored amount.
+  // rows ARE the collectable. They are DECOMPOSED into payable + GST by the
+  // taxed-stream-first rule (what each instalment's tax invoice carries),
+  // never re-taxed — so the table's columns agree with the document's own
+  // stated totals instead of contradicting them. Older schedules keep the
+  // ex-GST base they were written with, GST spread on top.
   const gstInside = Boolean(booking && booking.scheduleIncludesGst);
-  const shaped = allocateScheduleGst(agreed.map((r) => ({
+  const bare = agreed.map((r) => ({
     label: r.label || "Instalment",
     subLine: r.percent !== null && r.percent !== undefined ? `${r.percent}% of the booking value` : undefined,
     amount: r.amount, dueDate: r.dueDate, ref: r._id,
     state: stateOf(r),
-  })), gstInside ? { ...totals, gst: 0, extrasGst: 0 } : { ...totals, extrasGst: 0 });
+  }));
+  const shaped = gstInside
+    ? decomposeGstInsideRows(bare, totals)
+    : allocateScheduleGst(bare, { ...totals, extrasGst: 0 });
   for (const r of additional) {
     const payable = Math.round(Number(r.amount) || 0);
     shaped.push({
@@ -245,24 +240,66 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
         detail: docDayWithWeekday(day.date),
       }))
     : spacesOf(booking).map((name) => ({ name, detail: null })));
+  // rooms as their own rows so the section GROWS with the allocation — a
+  // narrow one-line summary was the two-panel layout's constraint, not ours
+  const alloc = booking.roomsAllocation;
+  const rooms = alloc && (alloc.items || []).length
+    ? (alloc.mode === "all"
+        ? [{ name: "Rooms — all categories", detail: `All ${alloc.items.reduce((s2, it) => s2 + it.count, 0)} rooms` }]
+        : alloc.items.map((it) => ({
+            name: `Rooms — ${it.name}`,
+            detail: it.count === it.total ? `All ${it.total}` : `${it.count} of ${it.total}`,
+          })))
+    : [];
   const firstDay = (booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn;
   const primaryContact = ((lead && lead.contacts) || []).find((c) => c.isPrimary) || ((lead && lead.contacts) || [])[0] || null;
   const received = ((booking.paymentSchedule || []).filter((r) => !r.isAdditional)).reduce((s2, r) => s2 + Math.round(receivedOn(r)), 0);
+  // what the schedule rows themselves total — GST inside on a GST-first
+  // booking, ex-GST on older ones. Received is recorded against these same
+  // rows, so the balance is honest in either era.
+  const scheduledTotal = ((booking.paymentSchedule || []).filter((r) => !r.isAdditional))
+    .reduce((s2, r) => s2 + Math.round(Number(r.amount) || 0), 0);
+  const identity = identityFrom(venue, logoBuffer);
   return {
-    identity: identityFrom(venue, logoBuffer),
+    identity,
     meta: { reference: `Booking ${String(booking._id).slice(-6).toUpperCase()}` },
     titleMeta: {
       eyebrow: "Booking confirmation",
       title: `Your date is held — ${dateProse(firstDay)}`,
-      subject: booking.coupleName
-        ? `For ${booking.coupleName}${primaryContact ? ` · ${[primaryContact.name, primaryContact.phone, primaryContact.email].filter(Boolean).join(" · ")}` : ""}`
-        : undefined,
+      // the parties block below carries the full client identity; repeating
+      // name·phone here is what printed "For Asiya · Asiya · +91…"
+      subject: booking.coupleName ? `For ${booking.coupleName}` : undefined,
       presentedTo: booking.coupleName,
       refs: ["Booking Confirmation", `Confirmed ${dateProse(booking.createdAt)}`],
     },
     intro: "The booking amount has been received and the dates below are held exclusively. This page records the agreed amount and the plan for the balance.",
-    facts: windowFacts(lead, booking, spacesOf(booking)),
+    // venue left, client right — as Indian tax documents read. Address and
+    // GSTIN are not collected for clients yet (the People model has no such
+    // fields); the block renders whichever facts exist and nothing where
+    // they are absent, so it grows the day the collection step lands.
+    parties: {
+      venue: {
+        name: identity.name,
+        lines: [
+          ...(identity.addressLines || []),
+          identity.gstin ? `GSTIN ${identity.gstin}` : null,
+          [identity.phone, identity.email].filter(Boolean).join(" · ") || null,
+        ].filter(Boolean),
+      },
+      client: {
+        name: booking.coupleName || (primaryContact && primaryContact.name) || null,
+        lines: [
+          primaryContact && primaryContact.name && primaryContact.name !== booking.coupleName ? primaryContact.name : null,
+          (primaryContact && primaryContact.phone) || booking.couplePhone || null,
+          (primaryContact && primaryContact.email) || null,
+          (primaryContact && primaryContact.address) || null,
+          primaryContact && primaryContact.gstin ? `GSTIN ${primaryContact.gstin}` : null,
+        ].filter(Boolean),
+      },
+    },
+    facts: windowFacts(lead, booking, spacesOf(booking), { includeSpaces: false }),
     spaces,
+    rooms,
     priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
     refundables: isLegacy ? [] : lines.filter((l) => l.refundable),
     totals,
@@ -273,12 +310,11 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
     schedule: isLegacy
       ? legacy.schedule.filter((r) => !r.subLine || !r.subLine.startsWith("Additional"))
       : shapeSchedule(booking, totals, { includeAdditional: false }),
-    scheduleTotals: scheduleTotalsFor(isLegacy ? null : booking, totals, { includeAdditional: false }),
     // The venue's cancellation policy, when the owner asked for it: rich-text
     // blocks flattened to sentences. Content inside the existing closing
     // section, not a new section — the anatomy stays fixed.
     received,
-    balance: Math.max(0, scheduleTotalsFor(isLegacy ? null : booking, totals, { includeAdditional: false }).payable - received),
+    balance: Math.max(0, scheduledTotal - received),
     specialRequirements: booking.specialRequirements || null,
     policyLines: (policyBlocks || []).flatMap((bk) => {
       if (!bk) return [];
@@ -390,7 +426,6 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
   const received = (summary && summary.totals && summary.totals.received) || 0;
   const outstanding = Math.max(0, totals.collectable - received);
   const schedule = isLegacy ? legacy.schedule : shapeSchedule(booking, totals);
-  const scheduleTotals = scheduleTotalsFor(isLegacy ? null : booking, totals);
   // payment sub-rows: one per instalment a payment touched, split stated
   const paymentSubRows = [];
   for (const r of (booking.paymentSchedule || [])) {
@@ -431,7 +466,6 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
     extras,
     totals,
     received, outstanding, receivedSub, overdueTotal,
-    scheduleTotals,
     schedule,
     paymentSubRows,
     contactLine: null,

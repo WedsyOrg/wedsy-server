@@ -141,7 +141,12 @@ class Engine {
   gap(h) { this.y += h; }
 
   // ── section label: Times-Italic 14, keeps its first two rows ─────────────
-  sectionLabel(label, { keep = 60, color = this.T.ink } = {}) {
+  // keep must cover a table head (~26), TWO data rows (~28 each), and the
+  // total row a short table's second row may carry via the no-orphan
+  // lookahead: the print rule is "a section label keeps at least its first
+  // two rows", and 60 let a label ship with a single row before the break
+  // (caught on the bytes of a small confirmation's schedule).
+  sectionLabel(label, { keep = 100, color = this.T.ink } = {}) {
     this.ensure(SPACE.section + 18 + keep);
     this.gap(SPACE.section);
     this.text(label, { font: "Times-Italic", size: TYPE.sectionLabel, color, tracking: 0.01 });
@@ -170,11 +175,9 @@ class Engine {
     };
     drawHead();
 
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
+    const rowHeight = (row) => {
       const pad = row.kind === "sub" ? 4 : SPACE.cellPad;
-      // measure the row before drawing — the height must be known first
-      let rowH = 0;
+      let h0 = 0;
       for (let c = 0; c < columns.length; c++) {
         const cell = row.cells[columns[c].key];
         if (cell === undefined || cell === null) continue;
@@ -183,10 +186,21 @@ class Engine {
         const indent = v.indent || 0;
         let h = this.measure(v.text, { font: v.bold ? "Helvetica-Bold" : "Helvetica", size, width: colW[c] - indent - (columns[c].numeric ? 0 : 8) });
         if (v.subLine) h += 2 + this.measure(v.subLine, { size: TYPE.subLine, width: colW[c] - indent - 8 });
-        rowH = Math.max(rowH, h);
+        h0 = Math.max(h0, h);
       }
-      rowH += pad * 2;
-      if (this.y + rowH > this.contentBottom) {
+      return h0 + pad * 2;
+    };
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const pad = row.kind === "sub" ? 4 : SPACE.cellPad;
+      const rowH = rowHeight(row);
+      // a TOTAL row never opens a page alone — a proof row with nothing above
+      // it to prove (it shipped orphaned once, under a lone repeated head).
+      // When the next row is the total, this row must leave room for both.
+      const next = rows[i + 1];
+      const needed = next && next.kind === "total" ? rowH + rowHeight(next) : rowH;
+      if (this.y + needed > this.contentBottom) {
         this.newPage();
         if (headRepeat) drawHead();
       }
@@ -218,7 +232,6 @@ class Engine {
       }
       this.y = top + rowH;
       // separators: hairline between data rows; 1px ink closes the data set
-      const next = rows[i + 1];
       if (row.kind === "total") this.rule(x, this.y, x + width, this.T.ruleWeights.tableTotal || 1, this.T.ink);
       else if (row.lastData) this.rule(x, this.y, x + width, 1, this.T.ink);
       else if (next && row.kind !== "subtotal") this.rule(x, this.y, x + width, this.T.ruleWeights.rowSep || 0.75, this.T.hairline);

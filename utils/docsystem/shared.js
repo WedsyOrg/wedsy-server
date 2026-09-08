@@ -170,6 +170,45 @@ function documentTotals(lines, extras = [], pct = 18) {
  * refundable held is attributed from the FINAL instalment backwards, since
  * the schedule carries it but no row is taxed on it.
  */
+/**
+ * GST-FIRST schedules (booking.scheduleIncludesGst): the stored row amounts
+ * ARE the collectable — the GST is inside them, not on top. The schedule
+ * table's columns are fixed (payable | gst | collectable), so each row is
+ * DECOMPOSED, not re-taxed: payments fill the taxed stream (taxable + its
+ * GST) first — the exact rule venueLeadInvoice cuts invoices by — so an
+ * instalment's GST share here is what its tax invoice will actually carry.
+ * Gross-down at the one rate per row; the stream-closing row reconciles by
+ * subtraction, so the printed columns sum EXACTLY to the booking's real
+ * payable / gst / collectable (asserted before drawing, as everywhere).
+ */
+function decomposeGstInsideRows(rows, totals) {
+  const pct = Number(totals.pct) || 18;
+  const taxedStream = totals.taxable + totals.gst;
+  const out = rows.map((r) => ({ ...r, collectable: Math.round(Number(r.amount) || 0) }));
+  let taxedCovered = 0;
+  let taxableCovered = 0;
+  for (const r of out) {
+    const taxedHere = Math.max(0, Math.min(r.collectable, taxedStream - taxedCovered));
+    const closes = taxedHere > 0 && taxedCovered + taxedHere === taxedStream;
+    const taxable = taxedHere === 0 ? 0
+      : closes ? totals.taxable - taxableCovered
+      : Math.round((taxedHere * 100) / (100 + pct));
+    r.gst = taxedHere - taxable;
+    r.payable = r.collectable - r.gst;
+    taxedCovered += taxedHere;
+    taxableCovered += taxable;
+  }
+  // the refundable held is attributed from the FINAL instalment backwards —
+  // the same annotation the on-top allocator writes, against the ex-GST side
+  let refundableLeft = totals.refundable;
+  for (let i = out.length - 1; i >= 0; i--) {
+    const carried = Math.min(refundableLeft, out[i].payable);
+    out[i].refundableCarried = carried;
+    refundableLeft -= carried;
+  }
+  return out;
+}
+
 function allocateScheduleGst(rows, totals) {
   const out = rows.map((r) => ({ ...r, payable: Math.round(Number(r.amount) || 0) }));
   let refundableLeft = totals.refundable;
@@ -196,5 +235,5 @@ module.exports = {
   A4, MM, DASH, PAGE_SCALE,
   money, moneyOrDash, dateProse, dateCell, dateTimeProse, amountInWords,
   WORDING, TYPE, SPACE,
-  lineFigures, documentTotals, allocateScheduleGst,
+  lineFigures, documentTotals, allocateScheduleGst, decomposeGstInsideRows,
 };
