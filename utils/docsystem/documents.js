@@ -131,12 +131,18 @@ function totalsStack(R, totals, x, width) {
   row("Charged", money(totals.charged), { mid: true });
   if (totals.extrasAmount) row("Extras", money(totals.extrasAmount), { mid: true });
   if (totals.refundable) row("Refundable deposit", money(totals.refundable), { mid: true });
-  R.gap(3);
-  row(WORDING.totalPayable, money(totals.payable), { figure: true, gapAfter: 4 });
-  if (totals.refundable) {
-    R.text(WORDING.refundableHeld(totals.refundable), { size: TYPE.subLine, color: R.T.mid, x, width });
-    R.gap(8);
-  }
+  R.gap(6);
+  // TOTAL PAYABLE IS THE FIGURE THIS DOCUMENT EXISTS FOR — so it, not the
+  // stack around it, is what the language's emphasisBlock wraps: the
+  // language-owned rule above (Classic 0.75 ink, Ledger/Panel 3, Stationery
+  // 0.75 accent), the hairline below, open sides. Segregated, never enclosed.
+  R.emphasisBlock((bx, bw) => {
+    kvRow(R, { x: bx, width: bw, label: WORDING.totalPayable, value: money(totals.payable), figure: true, gapAfter: 4 });
+    if (totals.refundable) {
+      R.text(WORDING.refundableHeld(totals.refundable), { size: TYPE.subLine, color: R.T.mid, x: bx, width: bw });
+      R.gap(4);
+    }
+  }, { x, width, estHeight: 72 });
   R.rule(x, R.y, x + width, 0.75, R.T.hairline);
   R.gap(8);
   R.text(WORDING.gstSentence(totals.taxable, totals.gst), { size: TYPE.fine, color: R.T.mid, x, width, lineGap: 3 });
@@ -368,12 +374,12 @@ async function renderConfirmation(R, d) {
     }
   }
   R.gap(SPACE.block);
-  R.ensure(210);
-  R.emphasisBlock((x, w) => {
-    R.text("The agreed amount", { font: "Times-Italic", size: 13, x, width: w });
-    R.gap(8);
-    totalsStack(R, d.totals, x, w);
-  }, { estHeight: 210 });
+  R.ensure(240);
+  // no emphasis wrapper around the WHOLE stack — the emphasis belongs to
+  // Total payable itself, and totalsStack now asks the language for it there
+  R.text("The agreed amount", { font: "Times-Italic", size: TYPE.sectionLabel });
+  R.gap(8);
+  totalsStack(R, d.totals, R.margin, R.width);
   R.gap(8);
   R.text("Anything added after this confirmation is an extra: it is billed as its own group and never changes the agreed amount above.", { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
   if (d.specialRequirements) {
@@ -496,25 +502,30 @@ async function renderStatement(R, d) {
   R.gap(14);
   R.ensure(120);
   {
-    // the position line: 0.75px ink rules above and below, open sides —
-    // nothing enclosed, no dividers, no fills; the hero is the Times figure
+    // the position line — open sides, nothing enclosed, the hero is the
+    // Times figure. The rule ABOVE is the LANGUAGE'S emphasisBlock, not a
+    // weight copied across: LANGUAGES.md §3 says the one number each
+    // document exists for "is carried by a 3px ink rule and the Times
+    // figure" on Panel — hand-rolled 0.75s here gave every language
+    // Classic's voice. A 0.75 ink rule still closes the line below.
     const x = R.margin, w = R.width;
-    R.rule(x, R.y, x + w, 0.75, R.T.ink);
-    R.gap(14);
-    const y0 = R.y;
-    const widths = [0.34, 0.30, 0.36];
-    let cx = x;
-    const cell = (i, label, figure, sub, hero) => {
-      const cw = w * widths[i] - 14;
-      R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: hero ? R.T.ink : R.T.mid, x: cx, y: y0, width: cw, advance: false });
-      R.text(figure, { font: "Times-Roman", size: hero ? R.T.heroSizes.statement : 24, x: cx, y: y0 + 13, width: cw, advance: false });
-      if (sub) R.text(sub, { size: TYPE.subLine, color: hero && d.overdueTotal ? R.T.accent : R.T.mid, x: cx, y: y0 + 13 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
-      cx += w * widths[i];
-    };
-    cell(0, "Total collectable", money(d.totals.collectable), `Agreed ${money(d.totals.charged + d.totals.refundable + d.totals.gst)} + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}`);
-    cell(1, "Received to date", money(d.received), d.receivedSub);
-    cell(2, "Outstanding", money(d.outstanding), d.overdueTotal ? `${money(d.overdueTotal)} of this is overdue` : "Nothing overdue", true);
-    R.y = y0 + Math.max(R.T.heroSizes.statement, 24) + 34;
+    R.emphasisBlock((bx, bw) => {
+      R.gap(2);
+      const y0 = R.y;
+      const widths = [0.34, 0.30, 0.36];
+      let cx = bx;
+      const cell = (i, label, figure, sub, hero) => {
+        const cw = bw * widths[i] - 14;
+        R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: hero ? R.T.ink : R.T.mid, x: cx, y: y0, width: cw, advance: false });
+        R.text(figure, { font: "Times-Roman", size: hero ? R.T.heroSizes.statement : 24, x: cx, y: y0 + 13, width: cw, advance: false });
+        if (sub) R.text(sub, { size: TYPE.subLine, color: hero && d.overdueTotal ? R.T.accent : R.T.mid, x: cx, y: y0 + 13 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
+        cx += bw * widths[i];
+      };
+      cell(0, "Total collectable", money(d.totals.collectable), `Agreed ${money(d.totals.charged + d.totals.refundable + d.totals.gst)} + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}`);
+      cell(1, "Received to date", money(d.received), d.receivedSub);
+      cell(2, "Outstanding", money(d.outstanding), d.overdueTotal ? `${money(d.overdueTotal)} of this is overdue` : "Nothing overdue", true);
+      R.y = y0 + Math.max(R.T.heroSizes.statement, 24) + 30;
+    }, { x, width: w, estHeight: 110 });
     R.rule(x, R.y, x + w, 0.75, R.T.ink);
     R.gap(2);
   }
@@ -596,31 +607,34 @@ async function renderReceipt(R, d) {
   R.gap(14);
   R.ensure(170);
   {
-    // 0.75px ink rules above and below — nothing enclosed, no fill, no
-    // divider: the amount at the hero size IS the emphasis
+    // nothing enclosed, no fill, no divider: the amount at the hero size IS
+    // the emphasis — carried by the LANGUAGE'S emphasisBlock rule above
+    // (Panel/Ledger 3px, Classic ink 0.75, Stationery accent 0.75), the
+    // same recipe every hero figure now goes through. 0.75 ink closes below.
     const x = R.margin, w = R.width;
-    R.rule(x, R.y, x + w, 0.75, R.T.ink);
-    R.gap(SPACE.block);
-    const y0 = R.y;
-    const leftW = w * 0.46;
-    R.text("Amount received", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.ink, x, y: y0, width: leftW, advance: false });
-    R.text(money(d.amount), { font: "Times-Roman", size: R.T.heroSizes.receipt, x, y: y0 + 14, width: leftW, advance: false });
-    R.text(amountInWords(d.amount), { size: 11.5, color: R.T.mid, x, y: y0 + 14 + R.T.heroSizes.receipt + 6, width: leftW - 12, lineGap: 3, advance: false });
-    const fx = x + leftW + 20;
-    const fw = w - leftW - 20;
-    let fy = y0;
-    const fact = (label, value) => {
-      if (!value) return;
-      R.text(label, { size: 12, color: R.T.mid, x: fx, y: fy, width: fw * 0.4, advance: false });
-      const h = R.text(value, { size: 12, x: fx + fw * 0.4, y: fy, width: fw * 0.6, align: "right", advance: false });
-      fy += Math.max(h, 13) + 6;
-    };
-    fact("Received on", dateProse(d.receivedOn));
-    fact("Mode", d.mode);
-    fact("Bank reference", d.reference);
-    fact("From", d.from);
-    fact("Credited to", d.creditedTo);
-    R.y = Math.max(y0 + 14 + R.T.heroSizes.receipt + 34, fy) + 8;
+    R.emphasisBlock((bx, bw) => {
+      R.gap(10);
+      const y0 = R.y;
+      const leftW = bw * 0.46;
+      R.text("Amount received", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.ink, x: bx, y: y0, width: leftW, advance: false });
+      R.text(money(d.amount), { font: "Times-Roman", size: R.T.heroSizes.receipt, x: bx, y: y0 + 14, width: leftW, advance: false });
+      R.text(amountInWords(d.amount), { size: 11.5, color: R.T.mid, x: bx, y: y0 + 14 + R.T.heroSizes.receipt + 6, width: leftW - 12, lineGap: 3, advance: false });
+      const fx = bx + leftW + 20;
+      const fw = bw - leftW - 20;
+      let fy = y0;
+      const fact = (label, value) => {
+        if (!value) return;
+        R.text(label, { size: 12, color: R.T.mid, x: fx, y: fy, width: fw * 0.4, advance: false });
+        const h = R.text(value, { size: 12, x: fx + fw * 0.4, y: fy, width: fw * 0.6, align: "right", advance: false });
+        fy += Math.max(h, 13) + 6;
+      };
+      fact("Received on", dateProse(d.receivedOn));
+      fact("Mode", d.mode);
+      fact("Bank reference", d.reference);
+      fact("From", d.from);
+      fact("Credited to", d.creditedTo);
+      R.y = Math.max(y0 + 14 + R.T.heroSizes.receipt + 34, fy) + 4;
+    }, { x, width: w, estHeight: 160 });
     R.rule(x, R.y, x + w, 0.75, R.T.ink);
     R.gap(2);
   }
