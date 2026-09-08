@@ -385,6 +385,32 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       }
     }
 
+    // ══ 8b2. THE HERO FIGURE CARRIES THE LANGUAGE'S EMPHASIS WEIGHT ═════════
+    // CONFIRMDOC refinement: Total payable (confirmation), outstanding
+    // (statement) and the amount (receipt) are all drawn through the
+    // language's emphasisBlock — never a hand-rolled rule with one weight
+    // copied across. On the bytes: Ledger and Panel emphasise at 3px
+    // ("3 w" ops present), Classic and Stationery at 0.75 (none), and
+    // Stationery's emphasis strokes in ACCENT (#8A4F32 → 0.5411…).
+    console.log("\n[8b2. hero emphasis weight is the language's own]");
+    {
+      const threeW = (raw) => (raw.match(/(?:^|\n)3 w\n/g) || []).length;
+      const ACCENT = "0.5411764705882353 0.3";
+      for (const type of ["confirmation", "statement", "receipt"]) {
+        const inputs = { venue, lead, booking, quote, summary, paymentId: P2 };
+        const byLang = {};
+        for (const language of LANGUAGE_NAMES) {
+          const built = await buildVenueDocument(type, inputs, { compress: false, language });
+          byLang[language] = built.buffer.toString("latin1");
+        }
+        ok(threeW(byLang.ledger) >= 1, `${type}: ledger's emphasis is its own 3px (${threeW(byLang.ledger)} ops)`);
+        ok(threeW(byLang.panel) >= 1, `${type}: panel's emphasis is its own 3px (${threeW(byLang.panel)} ops)`);
+        ok(threeW(byLang.classic) === 0, `${type}: classic stays 0.75 — no 3px op anywhere`);
+        ok(threeW(byLang.stationery) === 0, `${type}: stationery stays 0.75 — no 3px op anywhere`);
+        ok(byLang.stationery.includes(ACCENT), `${type}: stationery's emphasis strokes in accent`);
+      }
+    }
+
     // ══ 8c. THE REVISED STATEMENT CLOSING ═══════════════════════════════════
     console.log("\n[8c. the closing reconciliation, full measure]");
     const stC = await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" });
