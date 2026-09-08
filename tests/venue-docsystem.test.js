@@ -161,18 +161,69 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
     }
 
     // ══ 4. CONFIRMATION ═════════════════════════════════════════════════════
-    console.log("\n[4. confirmation: spaces, rooms, schedule]");
+    console.log("\n[4. confirmation: parties, spaces, LINES, schedule — the revised anatomy]");
     const conf = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
     const flatC = pdfFlat(conf.buffer);
     has(flatC, "Estate Lawn, Banyan Courtyard", "spaces allocated");
     // BOOKING 3 ruling: documents print rooms ONLY from the booking's
     // recorded allocation — never the enquiry's ask, never zero. This
-    // fixture booking records nothing, so the fact strip says nothing.
-    hasNot(flatC, "18 rooms", "the enquiry's rooms ASK is not printed — only a recorded allocation is");
+    // fixture booking records nothing, so the Spaces & rooms section carries
+    // no rooms row. (The agreed LINES may name rooms — that is the quote's
+    // own wording, legitimately printed since the line breakdown landed.)
+    hasNot(flatC, "Rooms — ", "no recorded allocation → no rooms row in Spaces & rooms");
+    // CONFIRMDOC finding 3: the four quote lines appear on the confirmation
+    has(flatC, "The agreed lines", "the priced-lines section exists");
+    has(flatC, "Guest rooms — 18 rooms, night of 21 Nov", "…with the quote's own line labels");
+    has(flatC, "Charged — the venue's revenue", "…and the charged subtotal row");
+    // CONFIRMDOC finding 5: a structured client block, venue left client right
+    has(flatC, "THE VENUE", "parties: the venue side");
+    has(flatC, "THE CLIENT", "parties: the client side");
+    has(flatC, "ananya@example.com", "…client email renders when it exists");
+    hasNot(flatC, "For Ananya Rao & Karthik Menon · Ananya Rao", "…and the title no longer duplicates name · name");
+    // CONFIRMDOC footer finding: the venue name never doubles
+    hasNot(flatC, `Aranya Estate · ${TAG}`, "footer: venue name printed once, not name · name");
     has(flatC, "Booking amount — token", "the schedule's rows");
     has(flatC, "Sums exactly to total payable", "…and its proof row");
     has(flatC, "Rs. 14,82,500", "the agreed payable");
     hasNot(flatC, "Bar extension on the night", "the confirmation documents the AGREED deal — extras are not on it");
+
+    // ── 4b. GST-FIRST confirmation: the schedule DECOMPOSES, never dashes ───
+    // The live Asiya document printed PAYABLE 6,76,000 · GST — · COLLECTABLE
+    // 6,76,000 while stating Rs. 36,000 of GST above it. The stored rows ARE
+    // the collectable; the table now splits each by the taxed-stream-first
+    // rule (what its tax invoice carries), so the columns agree with the
+    // document's own totals — and the proof row names the RIGHT figure.
+    console.log("\n[4b. GST-first schedule: decomposed by the taxed stream, label proven]");
+    {
+      const gfBooking = booking.toObject();
+      gfBooking.scheduleIncludesGst = true;
+      gfBooking.gstMode = "none";
+      gfBooking.lineItems = [
+        { label: "Venue rental", amount: 600000, gstTreatment: "part", taxableAmount: 200000, refundable: false },
+        { label: "Cleaning", amount: 5000, gstTreatment: "none", taxableAmount: 0, refundable: false },
+        { label: "Refundable deposit", amount: 25000, gstTreatment: "none", taxableAmount: 0, refundable: true },
+        { label: "Additional furniture", amount: 10000, gstTreatment: "none", taxableAmount: 0, refundable: false },
+      ];
+      gfBooking.paymentSchedule = [
+        { _id: new mongoose.Types.ObjectId(), label: "Token — received", amount: 100000, dueDate: new Date("2026-09-08"), entries: [] },
+        { _id: new mongoose.Types.ObjectId(), label: "First instalment", amount: 288000, dueDate: new Date("2026-10-10"), entries: [] },
+        { _id: new mongoose.Types.ObjectId(), label: "Balance", amount: 288000, dueDate: new Date("2026-10-31"), entries: [] },
+      ];
+      const gf = await buildVenueDocument("confirmation", { venue, lead, booking: gfBooking }, { compress: false, language: "classic" });
+      const flatGF = pdfFlat(gf.buffer);
+      has(flatGF, "Rs. 6,40,000", "Total payable states the ex-GST figure");
+      has(flatGF, "Rs. 6,76,000", "collectable states payable + GST");
+      // the decomposed rows: 1,00,000 → 84,746 + 15,254; the stream closes
+      // inside the 2,88,000 row → 2,67,254 + 20,746; the rest untaxed
+      has(flatGF, "84,746", "token row payable = collectable less its GST share");
+      has(flatGF, "15,254", "…token row GST, grossed down at 18%");
+      has(flatGF, "20,746", "…stream-closing row reconciles by subtraction");
+      has(flatGF, "36,000", "…and the GST column sums to the stated GST");
+      // the columns sum to the SAME figures the totals block states — the
+      // proof row's label ("total payable") now names the number beneath it
+      ok(84746 + 267254 + 288000 === 640000 && 15254 + 20746 === 36000,
+        "decomposed columns sum to payable 6,40,000 and GST 36,000 exactly");
+    }
 
     // ══ 5. STATEMENT: extras, absorbed figures, a year of payments ══════════
     console.log("\n[5. statement: extras group, sums, second sheet]");

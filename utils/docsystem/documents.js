@@ -175,6 +175,22 @@ function scheduleTable(R, schedule, totals, { withState = false, payments = null
       `gst ${sumGst}/${totals.gst + totals.extrasGst}, collectable ${sumCollectable}/${totals.collectable}`
     );
   }
+  // …AND THE LABEL IS PROVEN TOO. "Sums exactly to total payable" once named
+  // the wrong figure: a caller handed doctored totals whose "payable" held the
+  // collectable, the arithmetic matched the doctored object, and the word
+  // pointed at a number ₹36,000 away from the document's own Total payable.
+  // The row's figure must satisfy the DEFINITION of the label it prints —
+  // payable = charged + refundable + extras, collectable = payable + GST
+  // (LANGUAGES.md §1) — so a relabeled figure fails generation the same way a
+  // wrong sum does.
+  if (totals.payable !== totals.charged + totals.refundable + totals.extrasAmount
+    || totals.collectable !== totals.payable + totals.gst + totals.extrasGst) {
+    throw new Error(
+      `schedule totals violate the fixed definitions: payable ${totals.payable} vs ` +
+      `charged ${totals.charged} + refundable ${totals.refundable} + extras ${totals.extrasAmount}; ` +
+      `collectable ${totals.collectable} vs payable + gst ${totals.gst + totals.extrasGst}`
+    );
+  }
   const columns = scheduleColumns(withState);
   const rows = [];
   schedule.forEach((r, i) => {
@@ -227,22 +243,61 @@ function factStrip(R, facts) {
 
 // ── note + signature closing row ────────────────────────────────────────────
 function closingRow(R, noteLines, signatory) {
-  R.ensure(84);
+  const notes = noteLines.filter(Boolean);
+  if (!notes.length && !signatory) return;
+  // Without a signatory there is no signature line — the bare rule shipped on
+  // its own once, reading as a totals block that had lost its content — and
+  // the closing is only as tall as its notes, so two sentences never claim a
+  // second sheet by reservation alone.
+  R.ensure(signatory ? 84 : 44);
   R.gap(22);
   const y0 = R.y;
-  const noteW = R.width * 0.6;
+  const noteW = signatory ? R.width * 0.6 : R.width * 0.74;
   let leftH = 0;
-  for (const n of noteLines.filter(Boolean)) {
+  for (const n of notes) {
     leftH += R.text(n, { size: TYPE.fine, color: R.T.mid, lineGap: 3, x: R.margin, y: y0 + leftH, width: noteW, advance: false }) + 6;
   }
-  const sx = R.margin + R.width * 0.66;
-  const sw = R.width * 0.34;
-  R.rule(sx, y0 + 26, sx + sw, 0.75, R.T.ink);
   if (signatory) {
+    const sx = R.margin + R.width * 0.66;
+    const sw = R.width * 0.34;
+    R.rule(sx, y0 + 26, sx + sw, 0.75, R.T.ink);
     R.text(signatory.name, { size: TYPE.cell, x: sx, y: y0 + 32, width: sw, advance: false });
     if (signatory.role) R.text(signatory.role, { size: TYPE.subLine, color: R.T.mid, x: sx, y: y0 + 47, width: sw, advance: false });
   }
-  R.y = y0 + Math.max(leftH, 60);
+  R.y = y0 + Math.max(leftH, signatory ? 60 : 0);
+}
+
+// ── the parties block: venue left, client right, as Indian tax documents read ─
+// Fixed content over language tokens (the factStrip pattern): open 0.75px
+// rules above and below, nothing enclosed. Each side prints only the facts
+// that exist — client address and GSTIN are not collected anywhere today, so
+// those lines simply do not render until the collection step lands.
+function partiesBlock(R, parties) {
+  if (!parties) return;
+  R.gap(SPACE.block);
+  const y0 = R.y;
+  const half = R.width / 2;
+  const side = (x, w, label, p) => {
+    if (!p || (!p.name && !(p.lines || []).length)) return 0;
+    let y = y0 + 9;
+    R.text(label, { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, y, width: w, advance: false });
+    y += 13;
+    if (p.name) {
+      y += R.text(p.name, { size: TYPE.body, x, y, width: w, advance: false }) + 2;
+    }
+    for (const line of p.lines || []) {
+      y += R.text(line, { size: TYPE.subLine + 1, color: R.T.mid, x, y, width: w, advance: false }) + 2;
+    }
+    return y - y0 + 7;
+  };
+  const hL = side(R.margin, half - 14, "The venue", parties.venue);
+  const hR = side(R.margin + half + 14, half - 14, "The client", parties.client);
+  const maxH = Math.max(hL, hR);
+  if (!maxH) { R.y = y0; return; }
+  R.vrule(R.margin + half, y0 + 6, y0 + maxH - 4, 0.75, R.T.hairline);
+  R.rule(R.margin, y0, R.margin + R.width, 0.75, R.T.hairline);
+  R.rule(R.margin, y0 + maxH, R.margin + R.width, 0.75, R.T.hairline);
+  R.y = y0 + maxH;
 }
 
 // ═══ 1. QUOTE ════════════════════════════════════════════════════════════════
@@ -273,54 +328,52 @@ async function renderQuote(R, d) {
   totalsStack(R, d.totals, R.margin + R.width - rightW, rightW);
   R.y = Math.max(R.y, leftBottom);
   R.sectionLabel("Booking amount & instalment plan");
-  scheduleTable(R, d.schedule, d.scheduleTotals || d.totals);
+  scheduleTable(R, d.schedule, d.totals);
   closingRow(R, d.noteLines, d.signatory);
 }
 
 // ═══ 2. BOOKING CONFIRMATION ═════════════════════════════════════════════════
+// Full width, sequential — every document in the world lists prices one after
+// another: parties → event facts → spaces & rooms → the agreed lines →
+// totals → schedule. The two half-empty side panels are gone; full measure
+// lets the spaces-and-rooms section grow with the booking.
 async function renderConfirmation(R, d) {
   R.L.titleBlock(R, d.titleMeta);
   if (d.intro) {
     R.gap(6);
     R.text(d.intro, { size: TYPE.body, color: R.T.mid, x: R.margin + R.width * 0.13, width: R.width * 0.74, align: "center", lineGap: 3 });
   }
+  partiesBlock(R, d.parties);
   factStrip(R, d.facts);
-  R.gap(SPACE.block);
-  R.ensure(230);
-  const y0 = R.y;
-  const rightW = R.width * 0.42;
-  const leftW = R.width - rightW - 18;
-  // left: spaces allocated + inclusions
-  R.text("Spaces allocated", { font: "Times-Italic", size: TYPE.sectionLabel, x: R.margin, width: leftW });
-  R.gap(8);
+  R.sectionLabel("Spaces & rooms");
+  const srRows = [...(d.spaces || []), ...(d.rooms || [])];
   R.table({
-    x: R.margin, width: leftW, cellSize: TYPE.denseCell,
+    cellSize: TYPE.cell,
     columns: [
-      { key: "space", label: "Space", width: 0.62 },
-      { key: "detail", label: "Capacity / window", width: 0.38, align: "right" },
+      { key: "space", label: "Allocated", width: 0.64 },
+      { key: "detail", label: "Detail", width: 0.36, align: "right" },
     ],
-    rows: (d.spaces || []).map((s, i) => ({ cells: { space: s.name, detail: { text: s.detail || DASH, color: R.T.mid } }, lastData: i === d.spaces.length - 1 })),
+    rows: srRows.map((s, i) => ({ cells: { space: s.name, detail: { text: s.detail || DASH, color: R.T.mid } }, lastData: i === srRows.length - 1 })),
   });
-  const leftAfterSpaces = R.y;
-  // right: the agreed amount, boxed by the language's emphasis
-  R.y = y0;
+  R.sectionLabel("The agreed lines");
+  pricedLinesTable(R, d.priced, d.totals);
+  refundableBand(R, d.refundables);
+  if (d.inclusions && d.inclusions.length) {
+    R.gap(12);
+    R.text("Included in the agreed amount", { size: 8.5, caps: true, tracking: 0.2, color: R.T.mid });
+    R.gap(8);
+    for (const inc of d.inclusions) {
+      R.text(inc, { size: TYPE.cell, lineGap: 4 });
+      R.gap(3);
+    }
+  }
+  R.gap(SPACE.block);
+  R.ensure(210);
   R.emphasisBlock((x, w) => {
     R.text("The agreed amount", { font: "Times-Italic", size: 13, x, width: w });
     R.gap(8);
     totalsStack(R, d.totals, x, w);
-  }, { x: R.margin + R.width - rightW, width: rightW, estHeight: 230 });
-  const rightBottom = R.y;
-  R.y = leftAfterSpaces;
-  if (d.inclusions && d.inclusions.length) {
-    R.gap(12);
-    R.text("Included in the agreed amount", { size: 8.5, caps: true, tracking: 0.2, color: R.T.mid, x: R.margin, width: leftW });
-    R.gap(8);
-    for (const inc of d.inclusions) {
-      R.text(inc, { size: TYPE.cell, lineGap: 4, x: R.margin, width: leftW });
-      R.gap(3);
-    }
-  }
-  R.y = Math.max(R.y, rightBottom);
+  }, { estHeight: 210 });
   R.gap(8);
   R.text("Anything added after this confirmation is an extra: it is billed as its own group and never changes the agreed amount above.", { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
   if (d.specialRequirements) {
@@ -328,7 +381,7 @@ async function renderConfirmation(R, d) {
     R.text(`Special requirements — ${d.specialRequirements}`, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
   }
   R.sectionLabel("Payment schedule");
-  scheduleTable(R, d.schedule, d.scheduleTotals || d.totals, { withState: true });
+  scheduleTable(R, d.schedule, d.totals, { withState: true });
   if (d.received > 0) {
     R.gap(8);
     R.text(
@@ -491,7 +544,7 @@ async function renderStatement(R, d) {
     }, 60 + d.extras.length * 20);
   }
   R.sectionLabel("Schedule & payments received");
-  scheduleTable(R, d.schedule, d.scheduleTotals || d.totals, { withState: true, payments: d.paymentSubRows });
+  scheduleTable(R, d.schedule, d.totals, { withState: true, payments: d.paymentSubRows });
   // ── THE CLOSING RECONCILIATION — full measure, never beside the notes ──
   // "How the outstanding figure is arrived at": one hairline row per step,
   // the GST and Received rows stating their basis inline. Outstanding is at

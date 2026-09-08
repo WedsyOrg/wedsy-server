@@ -38,12 +38,19 @@ function rulePair(R, x1, x2, y) {
 function registrationLines(identity) {
   const right = [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null,
     identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean);
-  const left = [identity.legalName, ...(identity.addressLines || [])].filter(Boolean);
+  // the legal name leads the address block only when it differs from the
+  // display name the masthead already carries (same rule as the footer)
+  const legal = identity.legalName && identity.legalName !== identity.name ? identity.legalName : null;
+  const left = [legal, ...(identity.addressLines || [])].filter(Boolean);
   return { left, right };
 }
 
 function footerLine(identity, meta) {
-  return [identity.name, identity.legalName, identity.email, identity.phone].filter(Boolean).join(" · ")
+  // legalName defaults to the display name (identityFrom), which printed
+  // "Crown Estate · Crown Estate" — the legal name earns its slot only when
+  // it actually differs
+  const legal = identity.legalName && identity.legalName !== identity.name ? identity.legalName : null;
+  return [identity.name, legal, identity.email, identity.phone].filter(Boolean).join(" · ")
     + (meta.reference ? ` · ${meta.reference}` : "");
 }
 
