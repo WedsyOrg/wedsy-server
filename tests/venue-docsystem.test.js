@@ -411,6 +411,55 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       }
     }
 
+    // ══ 8b3. THE HERO FOLLOWS THE FACTS (confirmdoc2 finding 6) ═════════════
+    // With GST: "Total including GST" is the hero — standard Indian invoice
+    // phrasing; "Collectable" is model vocabulary and never reaches a couple's
+    // page. With NO GST: the line is ABSENT (not zero, not a dash) and the
+    // emphasis + Times figure move onto Total payable — a line repeating a
+    // figure already on screen is a figure with nothing to add. The fixed
+    // wording stays verbatim in both cases. Asserted on bytes, all four
+    // languages, and the emphasis rule's position is read off the stream.
+    console.log("\n[8b3. Total including GST when GST exists; absent — and payable the hero — when not]");
+    {
+      const heroAfterRule = (raw, weightOp) => {
+        // the text drawn just after the LAST emphasis-weight rule op — the
+        // language's rule precedes its hero figure in the content stream
+        const idx = raw.lastIndexOf(`\n${weightOp}\n`);
+        if (idx < 0) return "";
+        return pdfFlat(Buffer.from(raw.slice(idx, idx + 2600), "latin1"));
+      };
+      const noGstQuote = {
+        lineItems: [
+          { label: "Venue rental — no tax case", amount: 500000, gstTreatment: "none" },
+          { label: "Refundable security deposit", amount: 50000, gstTreatment: "none", refundable: true },
+        ],
+        gstPercent: 18, version: 3, createdAt: new Date(),
+      };
+      for (const language of LANGUAGE_NAMES) {
+        const withTax = await buildVenueDocument("quote", { venue, lead, quote }, { compress: false, language });
+        const flatW = pdfFlat(withTax.buffer);
+        has(flatW, "Total including GST", `${language}: GST present → the line exists`);
+        has(flatW, "Rs. 16,76,450", `${language}: …and carries the GST-inclusive total`);
+        hasNot(flatW, "Collectable — what you transfer", `${language}: the model's word is gone from the page`);
+        has(flatW, "Total payable", `${language}: Total payable verbatim, as the supporting line`);
+        const noTax = await buildVenueDocument("quote", { venue, lead, quote: noGstQuote }, { compress: false, language });
+        const flatN = pdfFlat(noTax.buffer);
+        hasNot(flatN, "Total including GST", `${language}: NO GST → the line is absent entirely`);
+        hasNot(flatN, "GST at 18% applies", `${language}: …and no GST sentence claims a zero`);
+        has(flatN, "Total payable", `${language}: …Total payable stays, verbatim`);
+        has(flatN, "of which refundable, held — returned after the event: Rs. 50,000", `${language}: …refundable-held verbatim under the hero`);
+      }
+      // the emphasis MOVED: on ledger (3px, and the quote's only emphasis
+      // block), the text right after the rule op is the hero's own label
+      const wLedger = await buildVenueDocument("quote", { venue, lead, quote }, { compress: false, language: "ledger" });
+      const nLedger = await buildVenueDocument("quote", { venue, lead, quote: noGstQuote }, { compress: false, language: "ledger" });
+      ok(heroAfterRule(wLedger.buffer.toString("latin1"), "3 w").includes("Total including GST"),
+        "ledger, GST: the 3px emphasis rule sits immediately above Total including GST");
+      const nAfter = heroAfterRule(nLedger.buffer.toString("latin1"), "3 w");
+      ok(nAfter.includes("Total payable") && !nAfter.includes("Total including GST"),
+        "ledger, no GST: the 3px emphasis rule moved onto Total payable");
+    }
+
     // ══ 8c. THE REVISED STATEMENT CLOSING ═══════════════════════════════════
     console.log("\n[8c. the closing reconciliation, full measure]");
     const stC = await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" });
