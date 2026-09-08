@@ -132,26 +132,41 @@ function totalsStack(R, totals, x, width) {
   if (totals.extrasAmount) row("Extras", money(totals.extrasAmount), { mid: true });
   if (totals.refundable) row("Refundable deposit", money(totals.refundable), { mid: true });
   R.gap(6);
-  // TOTAL PAYABLE IS THE FIGURE THIS DOCUMENT EXISTS FOR — so it, not the
-  // stack around it, is what the language's emphasisBlock wraps: the
-  // language-owned rule above (Classic 0.75 ink, Ledger/Panel 3, Stationery
-  // 0.75 accent), the hairline below, open sides. Segregated, never enclosed.
-  R.emphasisBlock((bx, bw) => {
-    kvRow(R, { x: bx, width: bw, label: WORDING.totalPayable, value: money(totals.payable), figure: true, gapAfter: 4 });
-    if (totals.refundable) {
-      R.text(WORDING.refundableHeld(totals.refundable), { size: TYPE.subLine, color: R.T.mid, x: bx, width: bw });
-      R.gap(4);
-    }
-  }, { x, width, estHeight: 72 });
-  R.rule(x, R.y, x + width, 0.75, R.T.hairline);
-  R.gap(8);
-  R.text(WORDING.gstSentence(totals.taxable, totals.gst), { size: TYPE.fine, color: R.T.mid, x, width, lineGap: 3 });
-  if (totals.extrasGst) {
+  // THE HERO FOLLOWS THE FACTS (founder ruling, confirmdoc2 finding 6).
+  // With GST, the number the couple transfers is "Total including GST" —
+  // standard Indian invoice phrasing, explaining its own arithmetic against
+  // the Total payable line above it — and IT takes the language's
+  // emphasisBlock and the Times figure. With no GST anywhere, Total payable
+  // IS that number: the emphasis moves onto it and nothing repeats it
+  // beneath — a line repeating a figure already on screen is a figure with
+  // nothing to add (the no-GST line echo's rule). "Total payable" and the
+  // refundable-held sentence stay verbatim in both cases; nothing enclosed.
+  const refundableSub = (px, pw) => {
+    if (!totals.refundable) return;
+    R.text(WORDING.refundableHeld(totals.refundable), { size: TYPE.subLine, color: R.T.mid, x: px, width: pw });
     R.gap(4);
-    R.text(WORDING.gstSentence(extrasTaxableOf(totals), totals.extrasGst, "the extras"), { size: TYPE.fine, color: R.T.mid, x, width, lineGap: 3 });
+  };
+  const gstAll = totals.gst + totals.extrasGst;
+  if (gstAll > 0) {
+    row(WORDING.totalPayable, money(totals.payable), { gapAfter: 4 });
+    refundableSub(x, width);
+    R.gap(4);
+    R.text(WORDING.gstSentence(totals.taxable, totals.gst), { size: TYPE.fine, color: R.T.mid, x, width, lineGap: 3 });
+    if (totals.extrasGst) {
+      R.gap(4);
+      R.text(WORDING.gstSentence(extrasTaxableOf(totals), totals.extrasGst, "the extras"), { size: TYPE.fine, color: R.T.mid, x, width, lineGap: 3 });
+    }
+    R.gap(8);
+    R.emphasisBlock((bx, bw) => {
+      kvRow(R, { x: bx, width: bw, label: WORDING.totalIncludingGst, value: money(totals.collectable), figure: true, gapAfter: 4 });
+    }, { x, width, estHeight: 52 });
+  } else {
+    R.emphasisBlock((bx, bw) => {
+      kvRow(R, { x: bx, width: bw, label: WORDING.totalPayable, value: money(totals.payable), figure: true, gapAfter: 4 });
+      refundableSub(bx, bw);
+    }, { x, width, estHeight: 72 });
   }
-  R.gap(8);
-  row("Collectable — what you transfer", money(totals.collectable), {});
+  R.rule(x, R.y, x + width, 0.75, R.T.hairline);
 }
 const extrasTaxableOf = (totals) => Math.round(totals.extrasGst / 0.18);
 

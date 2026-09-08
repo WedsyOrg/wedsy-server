@@ -102,6 +102,11 @@ const WORDING = {
   neverInvoiced: "The refundable deposit is held, not billed: it is never part of a tax invoice and is returned after the event.",
   extrasCaption: `Additional to the agreed amount ${DASH} they do not change it`,
   refundableTag: "REFUNDABLE",
+  // Founder ruling (confirmdoc2 finding 6): "Collectable" is the model's
+  // internal vocabulary and does not belong on a page a couple reads —
+  // "Total including GST" is standard Indian invoice phrasing and explains
+  // its own arithmetic against the Total payable line above it.
+  totalIncludingGst: "Total including GST",
   sumsExactly: "Sums exactly to total payable",
   chargedSubtotal: `Charged ${DASH} the venue's revenue`,
   poweredBy: "Powered by Wedsy",
