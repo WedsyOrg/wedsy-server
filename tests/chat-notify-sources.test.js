@@ -178,6 +178,44 @@ try {
     ok(render("whatsapp").startsWith("🔔 NEW LEAD — WhatsApp"), "…on both variants");
   }
 
+  console.log("\n5b. URGENCY NEEDS A NUMBER TO DIAL, NOT JUST AN URGENT SOURCE");
+  {
+    // The rule was scoped to SOURCE, and that was wrong. A website lead with no
+    // phone was getting 🚨 and "⚡ Call within 5 minutes" — the very objection
+    // raised against Instagram DM, reappearing through a different door,
+    // because the real precondition is whether there is a number to call.
+    const none = render("noPhone");
+    ok(!none.includes("⚡"),
+      "a WEBSITE lead with no phone gets NO ⚡ — there is nothing to dial");
+    ok(!none.startsWith("🚨"),
+      "…and no 🚨 either: the alert marker promises an action that cannot be taken");
+    ok(none.startsWith("🔔 NEW LEAD — Website"),
+      "…it falls back to 🔔, still naming the source");
+    ok(!none.includes("💬"),
+      "…and does NOT claim Kiara is replying, which would be false for a website lead");
+    ok(!/📞/.test(none), "…consistent with having no phone line at all");
+
+    // The counterpart must be untouched: an urgent source WITH a number keeps
+    // both, or this fix would have quietly removed the feature.
+    const withPhone = render("website");
+    ok(withPhone.startsWith("🚨") && withPhone.includes("⚡ Call within 5 minutes"),
+      "a website lead WITH a phone still gets 🚨 and ⚡");
+
+    // A placeholder is not a number, so the same rule must catch it. Built as
+    // an ad lead so the source alone would otherwise say "urgent".
+    const placeholderAd = newLeadChatMessage({
+      lead: { _id: "L1", name: "Someone", phone: "ig:17841400000009", source: "facebook_june_decor", createdAt: NOW },
+      assignedToName: "Anita", leadUrl: URL, now: NOW,
+    });
+    ok(!placeholderAd.includes("⚡") && !placeholderAd.startsWith("🚨"),
+      'an "ig:" placeholder is not dialable either — no ⚡, no 🚨');
+
+    // And Kiara's line is about the CONVERSATION, not the phone: an IG DM lead
+    // has no number and must still say Kiara is replying.
+    ok(render("igDm").includes("💬 Kiara is already replying"),
+      "an Instagram DM with no phone still says Kiara is replying — that is about the conversation");
+  }
+
   console.log("\n6. THE CONTEXT AND TIME LINES");
   {
     const ctx = render("fbAd");

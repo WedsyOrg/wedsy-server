@@ -22,9 +22,10 @@
 // nothing after it is worse than a missing line: it reads as a system that
 // lost the value rather than one that never had it.
 //
-// THE WORDING IS PROVISIONAL. Make posts a message for this today and its exact
-// text is coming; this is the shape, deliberately isolated so matching or
-// bettering that wording is an edit to this file and nothing else.
+// THE WORDING IS SETTLED (approved 2026-09-10) — this shape IS the wording,
+// not a placeholder for text arriving later. It stays isolated here anyway, for
+// the reason it always was: the next reword should touch this file and nothing
+// else.
 const { isPlaceholder } = require("./phone");
 
 // The Meta ad / organic distinction is NOT redefined here. metaAdOrigin() is
@@ -112,17 +113,27 @@ const displayPhone = (phone) => {
   return raw;
 };
 
-// ── WHICH SOURCES ARE COLD ─────────────────────────────────────────────────
-// An ad or website lead is COLD and silent: nobody has spoken to them, so the
-// five minutes is real and 🚨 earns its place. A WhatsApp or Instagram DM lead
-// is the opposite — Kiara is ALREADY replying, so "call within 5 minutes" would
-// have a rep interrupt a conversation that is going fine. Worse, on an IG DM
-// lead there is frequently no number to call at all, which makes it an
-// instruction that cannot be followed.
+// ── WHEN "CALL NOW" IS ACTUALLY TRUE ───────────────────────────────────────
+// TWO conditions, and both are required.
 //
-// Firing 🚨 on every lead is how a team learns the marker means nothing, which
-// then costs you the ad leads where it did matter. So the two get different
-// headers and different closing lines.
+// 1. THE SOURCE MUST BE COLD. An ad or website lead is silent — nobody has
+//    spoken to them, so the five minutes is real. A WhatsApp or Instagram DM
+//    lead is the opposite: Kiara is ALREADY replying, and "call within 5
+//    minutes" would have a rep interrupt a conversation that is going fine.
+//
+// 2. THERE MUST BE A NUMBER TO DIAL. This was the missing half. Scoping the
+//    rule to source alone put 🚨 and "⚡ Call within 5 minutes" on a WEBSITE
+//    lead with no phone — the same objection raised against Instagram DM,
+//    arriving through a different door, because the real precondition was never
+//    the source. It is whether the instruction can be followed.
+//
+// An alert that promises an action nobody can take is worse than no alert:
+// firing 🚨 on leads that cannot be called is how a team learns the marker
+// means nothing, which then costs the ad leads where it did matter.
+//
+// Kiara's line is deliberately NOT subject to condition 2. It describes the
+// CONVERSATION, not the phone, and it is equally true on an Instagram DM lead
+// that has no number at all.
 const KIARA_ENGAGED = new Set(["WhatsApp", "Instagram DM"]);
 
 /** "just now" / "2 min ago" / "3 h ago" / "2 d ago". Pure — `now` is injected. */
@@ -197,6 +208,9 @@ function newLeadChatMessage({ lead = {}, assignedToName, leadUrl, now = new Date
 
   const who = String(lead.name || "").trim() || "Unnamed lead";
   const dialable = displayPhone(lead.phone);
+  // Both conditions — see the block above. A cold source with no number is not
+  // urgent, it is just unreachable by phone.
+  const urgent = !engaged && !!dialable;
   const answers = (lead.additionalInfo && lead.additionalInfo.adFormAnswers) || {};
   const instagramId = (lead.additionalInfo && lead.additionalInfo.instagramId) || null;
 
@@ -213,7 +227,7 @@ function newLeadChatMessage({ lead = {}, assignedToName, leadUrl, now = new Date
   const when = relativeTime(lead.createdAt, now);
 
   return [
-    `${engaged ? "🔔" : "🚨"} NEW LEAD — ${label}`,
+    `${urgent ? "🚨" : "🔔"} NEW LEAD — ${label}`,
     `👤 ${who}`,
     dialable ? `📞 ${dialable}` : null,
     // Only worth a line when there is no phone: for a lead we CAN call, the
@@ -222,7 +236,11 @@ function newLeadChatMessage({ lead = {}, assignedToName, leadUrl, now = new Date
     context ? `📍 ${context}` : null,
     `🙋 ${ownership}`,
     when ? `🕒 ${when}` : null,
-    engaged ? "💬 Kiara is already replying" : "⚡ Call within 5 minutes",
+    // Kiara's line whenever she is engaged, phone or not. The ⚡ only when the
+    // call it demands is actually possible. Neither applies to a cold lead with
+    // no number: there is no true call to action, so no line is invented — the
+    // 🔗 is how they get to it.
+    engaged ? "💬 Kiara is already replying" : urgent ? "⚡ Call within 5 minutes" : null,
     `🔗 ${leadUrl}`,
   ]
     .filter(Boolean)
