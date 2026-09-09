@@ -482,23 +482,27 @@ async function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
   const window = booking && (booking.checkIn || (booking.days && booking.days[0]))
     ? dateWindowProse(booking.checkIn || booking.days[0].date, booking.checkOut || booking.checkIn)
     : null;
-  // ── THE AMOUNT-CARRYING QR (finding 9, founder ruling) ───────────────────
-  // A fresh QR with &am=<amount due> when the venue's UPI ID is known —
-  // scan-and-confirm instead of typing. The two catches, handled: an
-  // UPLOADED QR is opaque, so it renders as stored (no amount inside);
-  // and a payment-backed invoice evidences money ALREADY received, so it
-  // carries no pay-QR at all — a QR inviting a second payment would be
+  // ── THE PAY-QR CARRIES NO AMOUNT (founder ruling, superseding the
+  // amount-carrying build): every QR is the VPA alone — the payer types the
+  // figure. The amount was the only reason the invoice generated per
+  // render, so it now uses the ONE STORED QR from Settings like every
+  // other surface would — one image, one code path. The single residue: a
+  // venue that saved its UPI ID before the QR store existed (bankdetails
+  // shipped a release ahead of upiqr) has an ID and an empty store, so an
+  // amountless QR is generated for it — the SAME encoder, byte-equivalent
+  // payload to what the store would hold; a second trigger, not a second
+  // code path. A payment-backed invoice still carries no pay-QR at all:
+  // that money already arrived, and a QR inviting a second payment is
   // worse than none.
   let payQr = null;
-  if (!inv.forPaymentId || Number(t.grandTotal) > 0) {
-    const upiId = identity.bank && identity.bank.upiId;
-    if (!inv.forPaymentId && upiId) {
-      const { generateUpiQr } = require("../venueUpiQr");
-      const q = await generateUpiQr(upiId, identity.name, { amount: Math.round(Number(t.grandTotal) || 0), note: inv.invoiceNumber });
-      payQr = { buffer: Buffer.from(q.dataUrl.split(",")[1], "base64"), upiString: q.upiString, amountCarrying: true };
-    } else if (!inv.forPaymentId && identity.upiQr && identity.upiQr.dataUrl) {
+  if (!inv.forPaymentId) {
+    if (identity.upiQr && identity.upiQr.dataUrl) {
       const b64 = (identity.upiQr.dataUrl.split(",")[1]) || "";
-      if (b64) payQr = { buffer: Buffer.from(b64, "base64"), upiString: "", amountCarrying: false };
+      if (b64) payQr = { buffer: Buffer.from(b64, "base64"), upiString: "", source: identity.upiQr.source || "stored" };
+    } else if (identity.bank && identity.bank.upiId) {
+      const { generateUpiQr } = require("../venueUpiQr");
+      const q = await generateUpiQr(identity.bank.upiId, identity.name);
+      payQr = { buffer: Buffer.from(q.dataUrl.split(",")[1], "base64"), upiString: q.upiString, source: "fallback" };
     }
   }
   return {
