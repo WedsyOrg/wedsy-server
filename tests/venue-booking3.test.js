@@ -120,7 +120,10 @@ const confirmBody = (date, extras = {}) => ({
     const leadDoc = await VenueEnquiry.findById(leadCounts._id).lean();
     const conf = await buildVenueDocument("confirmation", { venue, lead: leadDoc, booking: bAll }, { compress: false, language: "classic" });
     const flatC = pdfFlat(conf.buffer);
-    ok(flatC.includes("4 of 6 Deluxe") && flatC.includes("all 2 Lake Suite"), "🔴 confirmation prints counts against ceilings");
+    // CONFIRMDOC anatomy: rooms are full-width rows ("Rooms — Deluxe · 4 of 6"),
+    // not the old fact-strip phrase — the counts-against-ceilings claim is the
+    // same, the shape moved with the ruled layout.
+    ok(flatC.includes("Deluxe") && flatC.includes("4 of 6") && flatC.includes("Lake Suite") && flatC.includes("All 2"), "🔴 confirmation prints counts against ceilings");
     const quote = { lineItems: [{ label: "Venue", amount: 500000, gstTreatment: "none" }], gstPercent: 0, version: 1, createdAt: new Date() };
     const q = await buildVenueDocument("quote", { venue, lead: leadDoc, quote, booking: bAll }, { compress: false, language: "classic" });
     ok(pdfFlat(q.buffer).includes("4 of 6 Deluxe"), "🔴 the quote's rooms-allocated line renders (it had nothing before)");
@@ -130,7 +133,7 @@ const confirmBody = (date, extras = {}) => ({
     ok(!/rooms/i.test(flatSkip.replace(/Other rooms/g, "")), "🔴 skipped → the documents say NOTHING about rooms (no zero)");
     const allBooking = await VenueBooking.findOne({ enquiry: leadAll._id }).lean();
     const confAll = await buildVenueDocument("confirmation", { venue, lead: await VenueEnquiry.findById(leadAll._id).lean(), booking: allBooking }, { compress: false, language: "classic" });
-    ok(pdfFlat(confAll.buffer).includes("All rooms (9)"), "…and 'all rooms' prints as the whole property");
+    ok(pdfFlat(confAll.buffer).includes("All 9 rooms"), "…and 'all rooms' prints as the whole property");
 
     // ══ 4. THE OVERLAP WARNING — time-level, warn-only, confirmed-only ══════
     console.log("\n[4. the overlap check]");

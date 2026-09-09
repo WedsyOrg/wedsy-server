@@ -912,6 +912,22 @@ const VenueSchema = new mongoose.Schema({
   gstin: { type: String, default: "" },
   pan: { type: String, default: "" },
   invoicePrefix: { type: String, default: "" },
+  // ── BANK DETAILS (founder ruling): where the money goes ──────────────────
+  // Collected in Settings → Business beside PAN and GSTIN; printed on the
+  // quote, confirmation, invoice and statement — never the receipt. ALL
+  // OPTIONAL: a venue that has not filled them prints nothing, not an empty
+  // block. The IFSC alone has a checkable shape; an account number is
+  // deliberately shape-free (an unusual account entered correctly beats a
+  // refusal by a rule we invented). UPI carries most Indian wedding payments,
+  // so it is a first-class field, not an afterthought.
+  bankDetails: {
+    accountName: { type: String, default: "" },
+    accountNumber: { type: String, default: "" },
+    ifsc: { type: String, default: "" },
+    bankName: { type: String, default: "" },
+    branch: { type: String, default: "" },
+    upiId: { type: String, default: "" },
+  },
   enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],
   nearbyAccommodation: [{
     placeId: { type: String },

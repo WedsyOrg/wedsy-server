@@ -79,6 +79,11 @@ const SCALAR_TOP_LEVEL = [
 
 const ARRAY_TOP_LEVEL = ["areas", "blockedDates", "spaces"];
 
+// Settings → Business (founder ruling): the venue's bank details. Validated
+// upstream in controllers/venue.updateVenue (utils/venueBankDetails) — this
+// list only says which keys may reach the document.
+const BANK_FIELDS = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upiId"];
+
 const ACCOMMODATION_SCALARS = ["available", "totalCapacity"];
 
 const PRICING_SCALARS = [
@@ -129,6 +134,12 @@ const updateVenueBySlug = async (slug, ownerVenueId, updates = {}, actor = null)
   }
   for (const k of ARRAY_TOP_LEVEL) {
     if (Array.isArray(updates[k])) $set[k] = updates[k];
+  }
+
+  if (updates.bankDetails && typeof updates.bankDetails === "object") {
+    for (const k of BANK_FIELDS) {
+      if (updates.bankDetails[k] !== undefined) $set[`bankDetails.${k}`] = updates.bankDetails[k];
+    }
   }
 
   // Places-enrich: persist the GeoJSON location object when provided.

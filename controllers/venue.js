@@ -111,6 +111,16 @@ const updateVenue = async (req, res) => {
     const beforeVenue = await VenueService.getVenueBySlug(slug).catch(() => null);
     const beforeSpaceIds = new Set(((beforeVenue && beforeVenue.spaces) || []).map((s) => String(s._id)));
 
+    // Bank details are refused with the reason at the door — the IFSC and UPI
+    // have shapes a typo breaks silently, everything else is deliberately
+    // shape-free (utils/venueBankDetails has the ruling).
+    if (req.body && req.body.bankDetails && typeof req.body.bankDetails === "object") {
+      const { validateBankDetails } = require("../utils/venueBankDetails");
+      const bd = validateBankDetails(req.body.bankDetails);
+      if (!bd.ok) return res.status(400).json({ message: bd.message });
+      req.body.bankDetails = bd.value;
+    }
+
     const venue = await VenueService.updateVenueBySlug(
       slug,
       ownerVenueId,

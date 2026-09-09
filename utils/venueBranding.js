@@ -31,7 +31,7 @@
  * lean read cannot drop a branding field.
  */
 const BRANDING_SELECT =
-  "_id name slug logo address formattedAddress contact phone email gstin pan invoicePrefix settings whiteLabel";
+  "_id name slug logo address formattedAddress contact phone email gstin pan invoicePrefix settings whiteLabel bankDetails";
 
 const clean = (v) => {
   if (v === null || v === undefined) return "";
@@ -61,6 +61,16 @@ function resolveBranding(venue) {
   const gstin = clean(v.gstin);
   const pan = clean(v.pan);
 
+  const bd = v.bankDetails || {};
+  const bank = {
+    accountName: clean(bd.accountName),
+    accountNumber: clean(bd.accountNumber),
+    ifsc: clean(bd.ifsc),
+    bankName: clean(bd.bankName),
+    branch: clean(bd.branch),
+    upiId: clean(bd.upiId),
+  };
+
   return {
     name,
     logo,
@@ -74,6 +84,10 @@ function resolveBranding(venue) {
     // Whether a GST invoice is even possible. S5 makes GST optional per invoice,
     // but "optional" must not mean "offer it with no GSTIN to put on it".
     hasGstin: Boolean(gstin),
+    // Settings → Business bank details, cleaned per field. hasBank gates the
+    // documents' payment block: a venue that filled nothing prints nothing.
+    bank,
+    hasBank: Object.values(bank).some((x) => x !== ""),
     // Pre-joined lines, so no renderer re-invents the separator. Absent parts
     // drop out rather than leaving a dangling bullet.
     contactLine: [address, phone, email].filter(Boolean).join("  •  "),

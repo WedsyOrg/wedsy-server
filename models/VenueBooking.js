@@ -245,6 +245,22 @@ const VenueBookingSchema = new mongoose.Schema(
     gstMode: { type: String, enum: ["none", "whole", "per_instalment"], default: "none" },
     gstPercent: { type: Number, default: 0, min: 0, max: 100 },
     specialRequirements: { type: String, default: "" },
+    // ── THE CLIENT'S ADDRESS AND GSTIN — a snapshot at confirm ─────────────
+    // Founder ruling, the quote-lines / roomsAllocation rule again: a document
+    // that gets disputed prints what was true when the deal was struck, not
+    // what someone edited afterwards. The lead's contacts[] stays the LIVE
+    // people record (the wizard still upserts name/phone/email/gstin there);
+    // THIS is the booking's own record of the billing party, written at
+    // confirm and changed only by an explicit, logged edit from the People
+    // tab — never silently by a contact edit. Documents read this and only
+    // this. All optional; the client block renders nothing where absent.
+    clientDetails: {
+      house: { type: String, default: "" },
+      street: { type: String, default: "" },
+      city: { type: String, default: "" },
+      pincode: { type: String, default: "" },
+      gstin: { type: String, default: "" },
+    },
     // Booking→Rooms handoff (product-map dead-end #6, "the Rooms island"): the
     // lead says "we need 20 rooms" and Rooms/PMS never hears about it. Carried
     // onto the booking at creation so the accommodation requirement survives

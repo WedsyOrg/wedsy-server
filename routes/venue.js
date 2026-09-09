@@ -17,7 +17,7 @@ const { getDay } = require("../controllers/venueCrmDay");
 const { getVenueAuspiciousDates } = require("../controllers/venueAuspiciousDates");
 const { getCrmSettings, updateCrmSettings } = require("../controllers/venueCrmSettings");
 const { listTemplates, createTemplate, updateTemplate, deleteTemplate } = require("../controllers/venueTemplate");
-const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, previewRoomsQuote, updateBookingWindow, previewCancellation, cancelBooking, getRoomCategories, overlapCheck } = require("../controllers/venueBooking");
+const { listBookings, getBooking, createBooking, updateBooking, confirmBookingFromLead, previewRoomsQuote, updateBookingWindow, previewCancellation, cancelBooking, getRoomCategories, overlapCheck, updateClientDetails } = require("../controllers/venueBooking");
 const { createQuote, listQuotes, getQuote, updateQuote, confirmBookingFromQuote, quotePdf } = require("../controllers/venueQuote");
 const { createFromBooking, listInvoices, getInvoice, addPayment, approvePayment, rejectPayment, invoicePdf } = require("../controllers/venueInvoice");
 const { summary: paymentsSummary } = require("../controllers/venuePayment");
@@ -185,6 +185,9 @@ router.post("/:slug/bookings/:bookingId/cancel", venueOwnerAuth, requireCapabili
 // The booking side of the ONE event window — same edit as the lead's PATCH,
 // same writer (utils/venueEventWindow), same calendar re-derivation.
 router.patch("/:slug/bookings/:bookingId/window", venueOwnerAuth, requireCapability("leads"), updateBookingWindow);
+// The booking's client snapshot (address + GSTIN) — the People tab's explicit,
+// logged edit; documents read only this record (founder snapshot ruling).
+router.patch("/:slug/bookings/:bookingId/client-details", venueOwnerAuth, requireCapability("leads"), updateClientDetails);
 
 // ── BUILD B: the negotiation log. Money-gated on bookings_money — the brief
 //    asked for `money_negotiate`, which does not exist in this codebase, and

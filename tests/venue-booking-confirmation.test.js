@@ -187,9 +187,13 @@ const makeTermsPdf = (pages) => new Promise((resolve) => {
     ok(withTerms.code === 201, "attaching → 201");
     ok(withTerms.body.attachedTerms && withTerms.body.attachedTerms.pages === 4, "…reporting the 4 carried pages");
     const p3 = await pageTexts(uploaded[2].buffer);
-    ok(p3.length === 5, `confirmation + 4 T&C pages = 5 (got ${p3.length})`);
+    // The confirmation's own page count follows its anatomy (the CONFIRMDOC
+    // revision grew it past one sheet); the stitch contract is the RELATION:
+    // whatever the confirmation runs, the 4 T&C pages ride behind it intact.
+    const confPages = p3.length - 4;
+    ok(confPages >= 1 && p3.length === confPages + 4, `confirmation (${confPages}p) + 4 T&C pages = ${p3.length}`);
     ok(p3[0].includes("Booking Confirmation"), "…confirmation first");
-    for (let i = 1; i <= 4; i++) ok(p3[i].includes(`VENUE TERMS PAGE ${i}`), `…T&C page ${i} present and in order`);
+    for (let i = 1; i <= 4; i++) ok(p3[confPages + i - 1].includes(`VENUE TERMS PAGE ${i}`), `…T&C page ${i} present and in order`);
     const row = await VenueLeadDocument.findOne({ enquiry: lead._id, kind: "booking_confirmation" }).sort({ version: -1 }).lean();
     ok(row.sourceVerified === true, "…and the source was verified page-by-page before storing");
 

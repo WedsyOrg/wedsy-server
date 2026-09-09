@@ -399,7 +399,7 @@ const confirmBookingFromQuote = async (req, res) => {
 // GET /venues/:slug/quotes/:quoteId/pdf
 const quotePdf = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email logo tagline gstin pan settings");
+    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email logo tagline gstin pan settings bankDetails");
     if (!venue) return;
     const quote = await VenueQuote.findOne({ _id: req.params.quoteId, venue: venue._id }).lean();
     if (!quote) return res.status(404).json({ message: "Quote not found" });
