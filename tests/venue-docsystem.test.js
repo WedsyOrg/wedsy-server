@@ -582,6 +582,21 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       ok((flat3.match(new RegExp("Booking Confirmation", "g")) || []).length === 0, "f4: the eyebrow is not repeated in the refs");
       // f6 + f7: header carries the brand alone; the venue block carries the registrations
       ok((normalise(flat3).match(/PAN AAGCA4821K/g) || []).length === 1, "f6/f7: PAN prints exactly once — the venue block, never the header");
+      // f6 COMPLETED: brand alone means brand alone — no address, no phone,
+      // no registration flanks the name on ANY page's header. The address is
+      // the clean probe (the footer legitimately repeats the phone per page).
+      ok((flat3.match(/Hesaraghatta Main Road/g) || []).length === 1, "f6: the address prints exactly once — the venue block");
+      ok((normalise(flat3).match(/GSTIN 29AAGCA4821K1ZP/g) || []).length >= 1 && !pages3.slice(1).some((pg) => pg.includes("Hesaraghatta")), "f6: page two's header carries no address");
+      ok(!pages3.slice(1).some((pg) => normalise(pg).includes("PAN AAGCA4821K")), "f6: …and no PAN");
+      ok((flat3.match(/\+91 80 4718 2200/g) || []).length === conf3.pages + 1, "f6: the phone appears once per footer plus once in the venue block — never the header");
+      // and the documents that RELY on their header keep their registrations
+      for (const type of ["quote", "invoice", "statement", "receipt"]) {
+        const built = await buildVenueDocument(type, { venue, lead, booking, quote, summary, paymentId: P2, invoice: mkInvoice(`Hdr ${type}`, 100000, 100000, 18000) }, { compress: false, language: "classic" });
+        const f = normalise(pdfFlat(built.buffer));
+        ok(f.includes("PAN AAGCA4821K") || f.includes("GSTIN 29AAGCA4821K1ZP") || type === "invoice",
+          `${type}: no venue block → the header still carries the registrations`);
+        if (type !== "invoice") ok(f.includes("Hesaraghatta Main Road"), `${type}: …and the address`);
+      }
       // f9: rooms are count · category, one line each; ceilings and summaries gone
       has(flat3, "8 · Deluxe", "f9: count · category");
       has(flat3, "2 · Lake Suite", "…every category its own line");

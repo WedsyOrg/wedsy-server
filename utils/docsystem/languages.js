@@ -36,13 +36,15 @@ function rulePair(R, x1, x2, y) {
 }
 
 function registrationLines(identity) {
-  // BRAND ALONE (confirmdoc3 f6): a document that carries its own venue
-  // block (the confirmation's parties block) tells the header to drop the
-  // tax registrations — they print once, in the block, not twice.
-  const right = identity.headerBrandOnly
-    ? [identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean)
-    : [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null,
-      identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean);
+  // BRAND ALONE MEANS BRAND ALONE (confirmdoc3 f6, completed): a document
+  // that carries its own venue block (the confirmation's parties block)
+  // gets a header of the logo and the name, NOTHING flanking them — no
+  // address, no phone, no PAN, no GSTIN. All four live in the venue block
+  // on that document, once. Every other document relies on its header for
+  // these facts and keeps them.
+  if (identity.headerBrandOnly) return { left: [], right: [] };
+  const right = [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null,
+    identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean);
   // the legal name leads the address block only when it differs from the
   // display name the masthead already carries (same rule as the footer)
   const legal = identity.legalName && identity.legalName !== identity.name ? identity.legalName : null;
@@ -256,14 +258,14 @@ const stationery = {
       R.text(identity.tagline, { size: 8, caps: true, tracking: 0.30, color: R.T.mid, x: margin, y: y + 5, width: R.width, align: "center", advance: false });
       y += 5 + 9;
     }
-    // brand-alone documents drop the registrations here too (see
-    // registrationLines) — Stationery composes its one line itself
+    // brand-alone documents drop the WHOLE registration line — Stationery
+    // composes its one line itself (see registrationLines for the rule)
     const legal = identity.legalName && identity.legalName !== identity.name ? identity.legalName : null;
-    const reg = [legal, ...(identity.addressLines || []),
-      ...(identity.headerBrandOnly ? [] : [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null]),
+    const reg = identity.headerBrandOnly ? "" : [legal, ...(identity.addressLines || []),
+      identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null,
     ].filter(Boolean).join(" · ");
-    R.text(reg, { size: 8, caps: true, tracking: 0.18, color: R.T.mid, x: margin, y: y + 6, width: R.width, align: "center", advance: false });
-    const bottom = y + 6 + 12 + 8;
+    if (reg) R.text(reg, { size: 8, caps: true, tracking: 0.18, color: R.T.mid, x: margin, y: y + 6, width: R.width, align: "center", advance: false });
+    const bottom = reg ? y + 6 + 12 + 8 : y + 10;
     // closed by a 0.5px ink rule — the frame is gone; this rule holds the line
     R.rule(margin, bottom, margin + R.width, 0.5, R.T.ink);
     return bottom + 1;

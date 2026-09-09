@@ -294,6 +294,9 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
         // name, address, PAN, GSTIN, phone (finding 7) — the header lost the
         // registrations to this block, so this block must actually carry them
         lines: [
+          // everything the brand-alone header dropped lives HERE, once —
+          // the legal name included, when it differs from the display name
+          identity.legalName && identity.legalName !== identity.name ? identity.legalName : null,
           ...(identity.addressLines || []),
           identity.pan ? `PAN ${identity.pan}` : null,
           identity.gstin ? `GSTIN ${identity.gstin}` : null,
