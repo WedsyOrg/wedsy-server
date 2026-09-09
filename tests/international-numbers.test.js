@@ -154,6 +154,58 @@ const ORIGINAL_CC = process.env.DEFAULT_COUNTRY_CODE;
       await mongoose.disconnect();
     }
 
+    // ══ D. THE SAFETY NET'S LENGTH GUARD ═════════════════════════════════════
+    console.log("\nD. THE KIARA SAFETY NET SKIPS SHORT NUMBERS — OUT LOUD");
+    {
+      // engageLead gated on `phone.length < 12`, which is "91 + ten digits" —
+      // an INDIAN length standing in for "is this a usable number". A US number
+      // is 11 digits with its code and a Maldives number 10, so both were
+      // dropped, silently. The census found leads in exactly those countries.
+      //
+      // WHO gets messaged is deliberately NOT changed here: that is a product
+      // call (Meta bills per country, and the template's language is fixed).
+      // The SILENCE is the bug, and the silence is what this asserts.
+      const mongoose = require("mongoose");
+      if (mongoose.connection.readyState !== 1) {
+        await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
+      }
+      const Enquiry = require("../models/Enquiry");
+      const SettingsService = require("../services/SettingsService");
+      const made = [];
+      const mk = async (phone, tag) => {
+        const l = await Enquiry.create({
+          name: `INTLFIX-${tag}`, phone, source: "Website",
+          stage: "new", verified: false, isInterested: false, isLost: false,
+        });
+        made.push(l._id);
+        return l.toObject();
+      };
+      // The safety net is dormant without a template name; give it one so the
+      // guard under test is actually reached.
+      const realGet = SettingsService.get;
+      SettingsService.get = async (k) =>
+        k === "kiara.welcomeTemplateName" ? "kiara_welcome" : realGet(k);
+
+      try {
+        reset();
+        const us = await mk("+14155550134", "us");
+        await KiaraSafetyNet.engageLead(us, "test");
+        eq(sent.whatsapp.length, 0, "a US number is still not engaged (policy unchanged)");
+        ok(logs.some((l) => l.includes("[kiara-safety-net] SKIPPED")),
+          "…but the skip is LOGGED instead of returning silently");
+        ok(logs.some((l) => l.includes(String(us._id))), "…naming the lead");
+        ok(logs.some((l) => l.includes("1415")), "…and the number's leading digits");
+
+        reset();
+        const inr = await mk("+919876500099", "in");
+        await KiaraSafetyNet.engageLead(inr, "test");
+        eq(sent.whatsapp.length, 1, "an Indian number is still engaged, exactly as before");
+      } finally {
+        SettingsService.get = realGet;
+        if (made.length) await Enquiry.deleteMany({ _id: { $in: made } });
+      }
+    }
+
     console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   } catch (e) {
     console.error("suite crashed:", e && e.stack ? e.stack : e);

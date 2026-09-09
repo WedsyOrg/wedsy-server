@@ -2,6 +2,7 @@ const Enquiry = require("../models/Enquiry");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const LeadAssignmentService = require("./LeadAssignmentService");
 const AdminNotificationService = require("./AdminNotificationService");
+const { hasExplicitCountryCode } = require("../utils/phone");
 
 const escapeRegExp = (str) => String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -13,11 +14,49 @@ const normalizePhone = (phone) => {
   return digits.length > 10 ? digits.slice(-10) : digits;
 };
 
-// Existing lead whose phone ends with the normalized number (null if too short to trust).
+// THE NARROW GUARD ON THE LAST-TEN KEY.
+//
+// The key itself is UNCHANGED, and deliberately so. The production census
+// (1078 leads, scripts/audit-phone-dedup-collisions.js) found ZERO collisions:
+// every existing group sharing a last-ten key is one number written two ways.
+// Widening the key would therefore split real customers into duplicate leads —
+// a worse and much more visible bug than the one being prevented.
+//
+// What the census DID find is 16 leads carrying a non-91 country code, and for
+// those the last-ten rule is a live hazard: +1 4155550134 and +91 4155550134
+// share their last ten digits, so the second person to enquire would be merged
+// into the first one's lead and read as a returning customer.
+//
+// So exactly one rule is added: when BOTH numbers carry an explicit country
+// code, they merge only if they are the same number. If either carries no code
+// — the 47 leads in that state, and every "9876543210" typed without one — the
+// old behaviour is untouched, because a bare number cannot be proven foreign
+// and guessing would break the pairs this key exists to catch.
+//
+// Note what this does NOT do: it never parses a country code out. It does not
+// need to. Two numbers sharing a last-ten key have equal full numbers if and
+// only if their leading digits are equal, so comparing the whole normalised
+// string decides it exactly — without a per-country numbering table, and
+// without the +971-becomes-+97 error that splitting on length would produce.
+const mayMergeNumbers = (a, b) => {
+  if (!hasExplicitCountryCode(a) || !hasExplicitCountryCode(b)) return true;
+  const digits = (v) => String(v || "").replace(/[^0-9]/g, "").replace(/^0+/, "");
+  return digits(a) === digits(b);
+};
+
+// Existing lead whose phone ends with the normalized number (null if too short
+// to trust), skipping any candidate the guard above says is a different person.
 const findExistingByNormalizedPhone = async (phone) => {
   const normalized = normalizePhone(phone);
   if (normalized.length < 7) return null;
-  return await Enquiry.findOne({ phone: { $regex: escapeRegExp(normalized) + "$" } });
+  // find() rather than findOne(): a candidate may be rejected by the guard, and
+  // the next one down may still be the right lead. Order is unchanged, so for
+  // every case the guard permits this returns exactly what findOne returned.
+  const candidates = await Enquiry.find({ phone: { $regex: escapeRegExp(normalized) + "$" } });
+  for (const candidate of candidates) {
+    if (mayMergeNumbers(phone, candidate.phone)) return candidate;
+  }
+  return null;
 };
 
 // Dedup-merge: an existing lead enquired again. No duplicate is created — we stamp
@@ -199,6 +238,8 @@ const createLead = async ({ name, phone, verified = false, source, additionalInf
 module.exports = {
   normalizePhone,
   findExistingByNormalizedPhone,
+  mayMergeNumbers,
+  normalizePhone,
   recordReEnquiry,
   afterCreate,
   createLead,
