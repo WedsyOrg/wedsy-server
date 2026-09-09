@@ -928,6 +928,19 @@ const VenueSchema = new mongoose.Schema({
     branch: { type: String, default: "" },
     upiId: { type: String, default: "" },
   },
+  // ── THE UPI QR — one stored image, two routes in ─────────────────────────
+  // GENERATED when a UPI ID is saved (utils/venueUpiQr: 600px, EC Q, black
+  // on white, 4-module quiet zone; upiString records exactly what the image
+  // encodes) or UPLOADED by a venue that has no UPI ID (their bank app's own
+  // QR; upiString stays "" — we cannot know what someone else's image says).
+  // A document reads dataUrl and never cares which route filled it. NOT
+  // printed anywhere yet — placement is ruled per document.
+  upiQr: {
+    dataUrl: { type: String, default: "" },
+    source: { type: String, enum: ["", "generated", "uploaded"], default: "" },
+    upiString: { type: String, default: "" },
+    updatedAt: { type: Date, default: null },
+  },
   enquiries: [{ type: mongoose.Schema.Types.ObjectId, ref: "VenueEnquiry" }],
   nearbyAccommodation: [{
     placeId: { type: String },
