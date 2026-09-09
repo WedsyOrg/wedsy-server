@@ -9,6 +9,7 @@ const { receivedOn, milestoneStatus } = require("../venuePaymentStatus");
 const {
   DASH, money, dateProse, dateCell, dateTimeProse,
   lineFigures, documentTotals, allocateScheduleGst, decomposeGstInsideRows,
+  bankLines,
 } = require("./shared");
 
 /**
@@ -84,6 +85,9 @@ function identityFrom(venue, logoBuffer) {
   }, []).slice(0, 3);
   return {
     name: b.name || "Venue",
+    // Settings → Business bank details — null when the venue filled nothing,
+    // and the payment block then does not exist (no heading, no empty rows).
+    bank: b.hasBank ? b.bank : null,
     monogram: logoBuffer ? "" : initialsOf(b.name),
     tagline: (venue && venue.tagline) || "",
     legalName: b.name,
@@ -286,16 +290,28 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
           [identity.phone, identity.email].filter(Boolean).join(" · ") || null,
         ].filter(Boolean),
       },
-      client: {
-        name: booking.coupleName || (primaryContact && primaryContact.name) || null,
-        lines: [
-          primaryContact && primaryContact.name && primaryContact.name !== booking.coupleName ? primaryContact.name : null,
-          (primaryContact && primaryContact.phone) || booking.couplePhone || null,
-          (primaryContact && primaryContact.email) || null,
-          (primaryContact && primaryContact.address) || null,
-          primaryContact && primaryContact.gstin ? `GSTIN ${primaryContact.gstin}` : null,
-        ].filter(Boolean),
-      },
+      client: (() => {
+        // Address + GSTIN come from the BOOKING'S OWN SNAPSHOT (clientDetails,
+        // written at confirm, edited only through the People tab's logged
+        // edit) — the disputed-document rule. The GSTIN falls back to the
+        // live contact for bookings that predate the snapshot, because those
+        // invoices already print it from there.
+        const cdd = (booking.clientDetails) || {};
+        const addressLine = [cdd.house, cdd.street].filter(Boolean).join(", ");
+        const cityLine = [cdd.city, cdd.pincode].filter(Boolean).join(" ");
+        const gstin = cdd.gstin || (primaryContact && primaryContact.gstin) || "";
+        return {
+          name: booking.coupleName || (primaryContact && primaryContact.name) || null,
+          lines: [
+            primaryContact && primaryContact.name && primaryContact.name !== booking.coupleName ? primaryContact.name : null,
+            (primaryContact && primaryContact.phone) || booking.couplePhone || null,
+            (primaryContact && primaryContact.email) || null,
+            addressLine || null,
+            cityLine || null,
+            gstin ? `GSTIN ${gstin}` : null,
+          ].filter(Boolean),
+        };
+      })(),
     },
     facts: windowFacts(lead, booking, spacesOf(booking), { includeSpaces: false }),
     spaces,
@@ -405,7 +421,9 @@ function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
     ],
     items, sum,
     dueDate: inv.dueDate || null,
-    remit: null,
+    // The amount-due block's designed remit slot. Composed from Settings →
+    // Business; null when nothing is filled, and the slot then never draws.
+    remit: identity.bank ? bankLines(identity.bank).join("\n") : null,
     noteLines: [],
     signatory: null,
   };

@@ -11,6 +11,7 @@ const { Engine } = require("./engine");
 const {
   TYPE, SPACE, DASH,
   money, moneyOrDash, dateProse, dateCell, dateTimeProse, amountInWords, WORDING,
+  bankLines,
 } = require("./shared");
 
 /**
@@ -242,6 +243,28 @@ function scheduleTable(R, schedule, totals, { withState = false, payments = null
   R.table({ columns, rows });
 }
 
+// ── the payment block: where the money goes ─────────────────────────────────
+// Founder placement ruling: beside the schedule on a quote and a confirmation
+// (the section that says WHEN to pay says WHERE), by the amount due on the
+// invoice (the designed remit slot), after the reconciliation on a statement.
+// NEVER on the receipt — that confirms money already arrived. Renders only
+// when the venue filled something (R.identity.bank is null otherwise): no
+// heading, no empty rows. Fixed content over tokens; nothing enclosed.
+function paymentBlock(R) {
+  const bank = R.identity.bank;
+  if (!bank) return;
+  const lines = bankLines(bank);
+  if (!lines.length) return;
+  R.ensure(30 + lines.length * 15);
+  R.gap(14);
+  R.text("Payment details", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid });
+  R.gap(4);
+  for (const line of lines) {
+    R.text(line, { size: TYPE.subLine + 1, color: R.T.mid, lineGap: 2 });
+    R.gap(2);
+  }
+}
+
 // ── the fact strip ──────────────────────────────────────────────────────────
 function factStrip(R, facts) {
   if (!facts || !facts.length) return;
@@ -350,6 +373,7 @@ async function renderQuote(R, d) {
   R.y = Math.max(R.y, leftBottom);
   R.sectionLabel("Booking amount & instalment plan");
   scheduleTable(R, d.schedule, d.totals);
+  paymentBlock(R);
   closingRow(R, d.noteLines, d.signatory);
 }
 
@@ -366,7 +390,10 @@ async function renderConfirmation(R, d) {
   }
   partiesBlock(R, d.parties);
   factStrip(R, d.facts);
-  R.sectionLabel("Spaces & rooms");
+  // BOOKING 3 ruling: no recorded allocation → the document says NOTHING
+  // about rooms — the heading included. "Spaces & rooms" naming rooms it
+  // then stays silent about is a claim with no rows under it.
+  R.sectionLabel(d.rooms && d.rooms.length ? "Spaces & rooms" : "Spaces");
   const srRows = [...(d.spaces || []), ...(d.rooms || [])];
   R.table({
     cellSize: TYPE.cell,
@@ -410,6 +437,7 @@ async function renderConfirmation(R, d) {
       { size: TYPE.fine, color: R.T.mid, lineGap: 3 }
     );
   }
+  paymentBlock(R);
   if (d.policyLines && d.policyLines.length) {
     R.sectionLabel("Cancellation policy");
     for (const line of d.policyLines) {
@@ -605,6 +633,7 @@ async function renderStatement(R, d) {
       gapAfter: 2,
     });
   }, { estHeight: 250 });
+  paymentBlock(R);
   // the notes sit below, behind a 0.5px rule, at 74% measure
   R.gap(12);
   R.rule(R.margin, R.y, R.margin + R.width * 0.74, 0.5, R.T.hairline);

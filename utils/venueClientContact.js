@@ -120,4 +120,34 @@ function mergeClientIntoContacts(existing, client) {
   return { contacts: list, matchedBy, created, index };
 }
 
-module.exports = { mergeClientIntoContacts, phoneKey, emailKey };
+/**
+ * ── THE BOOKING'S OWN CLIENT SNAPSHOT (founder ruling) ──────────────────────
+ * house/street/city/pincode/gstin, written onto booking.clientDetails at
+ * confirm and by the People tab's explicit edit — the ONE sanitizer for both
+ * doors, so they cannot normalise differently.
+ *
+ * Address parts are free text with length caps only — an address has no shape
+ * worth refusing over, and the pincode field is capped, not pattern-locked
+ * (an NRI billing party's postal code is not six digits and is still their
+ * postal code). GSTIN rides utils/venueGstin like every other GSTIN in the
+ * system: shape refused, doubtful check digit warned but saved.
+ *
+ * @returns {{ok:true, value:object, warning?:string} | {ok:false, message:string}}
+ */
+function sanitizeClientDetails(input = {}) {
+  const { normaliseGstin } = require("./venueGstin");
+  const clean = (v) => (typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim());
+  const value = {
+    house: clean(input.house).slice(0, 120),
+    street: clean(input.street).slice(0, 160),
+    city: clean(input.city).slice(0, 80),
+    pincode: clean(input.pincode).slice(0, 12),
+    gstin: "",
+  };
+  const gst = normaliseGstin(input.gstin);
+  if (!gst.ok) return { ok: false, message: `client GSTIN — ${gst.message}` };
+  value.gstin = gst.value;
+  return { ok: true, value, warning: gst.warning || undefined };
+}
+
+module.exports = { mergeClientIntoContacts, phoneKey, emailKey, sanitizeClientDetails };

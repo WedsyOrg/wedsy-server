@@ -629,7 +629,7 @@ const receiptPdf = async (req, res) => {
     if (!owned) return;
     const { lead } = owned;
     const venue = await Venue.findOne({ _id: req.venueOwner.venueId })
-      .select("name slug address formattedAddress contact phone email logo tagline gstin pan settings")
+      .select("name slug address formattedAddress contact phone email logo tagline gstin pan settings bankDetails")
       .lean();
     const booking = await VenueBooking.findOne({ enquiry: lead._id }).lean();
     if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });

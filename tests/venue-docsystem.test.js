@@ -490,6 +490,56 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       }
     }
 
+    // ══ 10. BANK DETAILS + CLIENT SNAPSHOT (bankdetails build) ══════════════
+    // Present → the payment block on quote/confirmation/statement and the
+    // invoice's remit slot; NEVER the receipt. Absent → nothing at all: no
+    // heading, no empty rows. The confirmation's client block prints the
+    // BOOKING'S clientDetails snapshot; absent fields print nothing.
+    console.log("\n[10. bank details print where money is asked for — never the receipt]");
+    {
+      const bankVenue = venue.toObject();
+      bankVenue.bankDetails = {
+        accountName: "Aranya Estate Hospitality LLP", accountNumber: "50100987654321",
+        ifsc: "HDFC0001234", bankName: "HDFC Bank", branch: "Hesaraghatta", upiId: "aranyaestate@icici",
+      };
+      const inv10 = mkInvoice("Tenth section", 400000, 320000, 57600);
+      for (const language of LANGUAGE_NAMES) {
+        for (const type of ["quote", "confirmation", "statement"]) {
+          const built = await buildVenueDocument(type, { venue: bankVenue, lead, booking, quote, summary, invoice: inv10 }, { compress: false, language });
+          const flat = pdfFlat(built.buffer);
+          has(flat, "PAYMENT DETAILS", `${language} × ${type}: the payment block exists`);
+          has(flat, "A/C 50100987654321 · IFSC HDFC0001234", `${language} × ${type}: account + IFSC on one line`);
+          has(flat, "UPI aranyaestate@icici", `${language} × ${type}: UPI printed`);
+        }
+      }
+      const invB = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking, invoice: inv10 }, { compress: false, language: "classic" });
+      const flatInv = pdfFlat(invB.buffer);
+      has(flatInv, "REMIT TO", "invoice: the designed remit slot carries the bank");
+      has(flatInv, "A/C 50100987654321 · IFSC HDFC0001234", "…same one composer as every other document");
+      const rec = await buildVenueDocument("receipt", { venue: bankVenue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" });
+      const flatRec = pdfFlat(rec.buffer);
+      hasNot(flatRec, "PAYMENT DETAILS", "🔴 the RECEIPT never carries bank details — it confirms money already arrived");
+      hasNot(flatRec, "50100987654321", "…not the account number");
+      hasNot(flatRec, "aranyaestate@icici", "…not the UPI");
+      // ABSENT → invisible (the plain fixture venue has no bankDetails)
+      for (const type of ["quote", "confirmation", "statement", "invoice"]) {
+        const built = await buildVenueDocument(type, { venue, lead, booking, quote, summary, invoice: mkInvoice(`NoBank ${type}`, 100000, 100000, 18000) }, { compress: false, language: "classic" });
+        const flat = pdfFlat(built.buffer);
+        hasNot(flat, "PAYMENT DETAILS", `${type}: no bank details → no block, no heading`);
+        hasNot(flat, "REMIT TO", `${type}: …and no empty remit slot`);
+      }
+      // ── the client snapshot on the confirmation ──
+      const cdBooking = booking.toObject();
+      cdBooking.clientDetails = { house: "14 Prithvi Enclave", street: "8th Cross, Malleswaram", city: "Bengaluru", pincode: "560003", gstin: "29AAGCA4821K1ZP" };
+      const confCd = await buildVenueDocument("confirmation", { venue, lead, booking: cdBooking }, { compress: false, language: "classic" });
+      const flatCd = pdfFlat(confCd.buffer);
+      has(flatCd, "14 Prithvi Enclave, 8th Cross, Malleswaram", "client block: house + street");
+      has(flatCd, "Bengaluru 560003", "…city and pincode");
+      has(flatCd, "GSTIN 29AAGCA4821K1ZP", "…and the snapshot GSTIN");
+      const confNoCd = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
+      hasNot(pdfFlat(confNoCd.buffer), "Prithvi", "no snapshot → no address lines, nothing invented");
+    }
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {

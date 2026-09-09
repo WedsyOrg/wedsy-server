@@ -236,9 +236,26 @@ function allocateScheduleGst(rows, totals) {
   return out;
 }
 
+/**
+ * The printable lines of a bank block — only fields that exist, no labels for
+ * absences. Account number and IFSC share a line (they are read together at
+ * the bank); UPI is its own line because it is how most couples actually pay.
+ * ONE composer: the invoice's remit slot and the payment block on the quote,
+ * confirmation and statement all print exactly these lines.
+ */
+function bankLines(bank) {
+  return [
+    bank.accountName || null,
+    [bank.accountNumber ? `A/C ${bank.accountNumber}` : null, bank.ifsc ? `IFSC ${bank.ifsc}` : null].filter(Boolean).join(" \u00b7 ") || null,
+    [bank.bankName, bank.branch].filter(Boolean).join(", ") || null,
+    bank.upiId ? `UPI ${bank.upiId}` : null,
+  ].filter(Boolean);
+}
+
 module.exports = {
   A4, MM, DASH, PAGE_SCALE,
   money, moneyOrDash, dateProse, dateCell, dateTimeProse, amountInWords,
   WORDING, TYPE, SPACE,
   lineFigures, documentTotals, allocateScheduleGst, decomposeGstInsideRows,
+  bankLines,
 };

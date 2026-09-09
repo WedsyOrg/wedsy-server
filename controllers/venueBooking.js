@@ -1381,6 +1381,19 @@ const confirmBookingFromLead = async (req, res) => {
       }
     }
 
+    // ── THE BOOKING'S CLIENT SNAPSHOT (founder ruling) ──────────────────────
+    // Address + GSTIN as they were when the deal was struck — the quote-lines
+    // rule again: a disputed document prints what was true then. contacts[]
+    // above stays the live people record; THIS is the booking's own, changed
+    // afterwards only through the People tab's explicit, logged edit.
+    if (body.client && typeof body.client === "object") {
+      const { sanitizeClientDetails } = require("../utils/venueClientContact");
+      const cd = sanitizeClientDetails(body.client);
+      if (!cd.ok) { await undoEverything(); return res.status(400).json({ message: `client — ${cd.message}` }); }
+      booking.clientDetails = cd.value;
+      if (cd.warning) clientWarnings = [...(clientWarnings || []), cd.warning];
+    }
+
 
     // ── ROOMS: RESERVE THE COUNT, NOT A TO-DO ──────────────────────────────
     // The lead's accommodation requirement becomes real inventory here. Before
@@ -1493,6 +1506,55 @@ const confirmBookingFromLead = async (req, res) => {
   }
 };
 
+/**
+ * PATCH /:slug/bookings/:bookingId/client-details — the People tab's explicit
+ * edit of the booking's client snapshot (address + GSTIN).
+ *
+ * ── SNAPSHOT vs EDIT-LATER, reconciled ──────────────────────────────────────
+ * The snapshot rule says a disputed document prints what was true when the
+ * deal was struck; the People tab must still be able to fix a typo'd GSTIN
+ * without reopening the wizard. The reconciliation: documents read ONLY the
+ * booking's own record, and that record changes ONLY through this endpoint —
+ * an explicit act on the booking, logged on the timeline with before → after.
+ * A contact edit anywhere else never touches it, so nothing drifts silently;
+ * what changed, when, and by whom is on the record the way a corrected quote
+ * line is.
+ */
+const updateClientDetails = async (req, res) => {
+  try {
+    const owned = await resolveScopedBooking(req, res);
+    if (!owned) return;
+    const booking = await VenueBooking.findOne({ _id: req.params.bookingId, venue: owned.venue._id });
+    if (!booking) return res.status(404).json({ message: "Booking not found" });
+    const { sanitizeClientDetails } = require("../utils/venueClientContact");
+    const cd = sanitizeClientDetails(req.body || {});
+    if (!cd.ok) return res.status(400).json({ message: cd.message });
+    // COPY the before-state: booking.clientDetails is a live subdocument, and
+    // assigning over it mutates what a bare reference still points at — the
+    // timeline printed "was <new>, now <new>" exactly that way (drive-caught).
+    const before = booking.clientDetails && booking.clientDetails.toObject
+      ? booking.clientDetails.toObject()
+      : { ...(booking.clientDetails || {}) };
+    const line = (d) => [d.house, d.street, d.city, d.pincode].filter(Boolean).join(", ") + (d.gstin ? ` \u00b7 GSTIN ${d.gstin}` : "");
+    const beforeLine = line(before);
+    booking.clientDetails = cd.value;
+    await booking.save();
+    const enquiry = booking.enquiry ? await VenueEnquiry.findById(booking.enquiry) : null;
+    if (enquiry) {
+      enquiry.activities.push({
+        type: "note",
+        description: `Client billing details updated on the booking — was "${beforeLine || "empty"}", now "${line(cd.value) || "empty"}"`,
+        actor: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
+        timestamp: new Date(),
+      });
+      await enquiry.save();
+    }
+    return res.status(200).json({ success: true, clientDetails: booking.clientDetails, ...(cd.warning ? { warning: cd.warning } : {}) });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
 module.exports = {
   previewRoomsQuote,
   previewCancellation,
@@ -1506,4 +1568,5 @@ module.exports = {
   getRoomCategories,
   overlapCheck,
   updateBookingWindow,
+  updateClientDetails,
 };
