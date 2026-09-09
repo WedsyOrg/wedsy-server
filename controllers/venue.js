@@ -142,6 +142,33 @@ const updateVenue = async (req, res) => {
      * response instead of passing quietly, because the failure mode it guards
      * against is a silent double-booking.
      */
+    // ── THE GENERATED UPI QR FOLLOWS THE FACTS IT ENCODES ───────────────────
+    // Saved a UPI ID → the QR is (re)generated from it. Cleared the ID → a
+    // GENERATED QR goes with it (an uploaded one is the venue's own file and
+    // only the explicit delete removes it). The venue NAME rides inside the
+    // payload (pn=), so a rename regenerates too — a QR naming the old venue
+    // is a QR announcing the wrong payee.
+    try {
+      const { generateUpiQr, EMPTY_QR } = require("../utils/venueUpiQr");
+      const Venue = require("../models/Venue");
+      const sentUpi = req.body && req.body.bankDetails && req.body.bankDetails.upiId !== undefined;
+      const beforeUpi = (beforeVenue && beforeVenue.bankDetails && beforeVenue.bankDetails.upiId) || "";
+      const beforeSource = (beforeVenue && beforeVenue.upiQr && beforeVenue.upiQr.source) || "";
+      const effectiveUpi = sentUpi ? req.body.bankDetails.upiId : beforeUpi;
+      const nameChanged = req.body && req.body.name !== undefined && beforeVenue && req.body.name !== beforeVenue.name;
+      if (sentUpi || (nameChanged && beforeSource === "generated")) {
+        if (effectiveUpi) {
+          const qr = await generateUpiQr(effectiveUpi, venue.name);
+          await Venue.updateOne({ _id: venue._id }, { $set: { upiQr: { dataUrl: qr.dataUrl, source: "generated", upiString: qr.upiString, updatedAt: new Date() } } });
+        } else if (beforeSource === "generated") {
+          await Venue.updateOne({ _id: venue._id }, { $set: { upiQr: { ...EMPTY_QR } } });
+        }
+      }
+    } catch (qrErr) {
+      // The venue's save must not be lost to a QR library hiccup — report it.
+      console.error(`[venue:${slug}] UPI QR sync failed: ${qrErr.message}`);
+    }
+
     const newSpaceIds = ((venue && venue.spaces) || [])
       .map((s) => s._id)
       .filter((id) => !beforeSpaceIds.has(String(id)));
@@ -193,4 +220,77 @@ const createVenue = async (req, res) => {
   }
 };
 
-module.exports = { getVenues, getVenueBySlug, updateVenue, createVenue };
+/**
+ * PUT /venues/:slug/upi-qr — a venue with NO UPI ID uploads the QR its bank
+ * app made. Same store as the generated route, so a document never cares
+ * which produced it. Refused while a UPI ID is set: the generated QR is the
+ * one whose contents we can PROVE, so it wins whenever it can exist.
+ */
+const uploadUpiQr = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    let ownerVenueId;
+    if (req.admin) {
+      const existing = await VenueService.getVenueBySlug(slug);
+      ownerVenueId = existing._id;
+    } else {
+      ownerVenueId = req.venueOwner.venueId;
+    }
+    const Venue = require("../models/Venue");
+    const venue = await Venue.findOne({ slug }).select("_id bankDetails upiQr").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(ownerVenueId)) return res.status(403).json({ message: "Forbidden" });
+    if (venue.bankDetails && venue.bankDetails.upiId) {
+      return res.status(400).json({
+        message: "You have a UPI ID, so its QR is generated automatically. Clear the UPI ID first to use your own image.",
+        code: "upi_id_generates",
+      });
+    }
+    const { validateQrImageDataUrl } = require("../utils/venueUpiQr");
+    const v = validateQrImageDataUrl((req.body || {}).image);
+    if (!v.ok) return res.status(400).json({ message: v.message });
+    const upiQr = { dataUrl: v.value, source: "uploaded", upiString: "", updatedAt: new Date() };
+    await Venue.updateOne({ _id: venue._id }, { $set: { upiQr } });
+    return res.status(200).json({ success: true, upiQr });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+/**
+ * DELETE /venues/:slug/upi-qr — removes an UPLOADED QR. A generated QR's door
+ * is the UPI ID itself (clear the ID and the QR goes with it) — deleting it
+ * here while the ID stayed would just regenerate on the next save, a control
+ * that lies.
+ */
+const deleteUpiQr = async (req, res) => {
+  try {
+    const { slug } = req.params;
+    let ownerVenueId;
+    if (req.admin) {
+      const existing = await VenueService.getVenueBySlug(slug);
+      ownerVenueId = existing._id;
+    } else {
+      ownerVenueId = req.venueOwner.venueId;
+    }
+    const Venue = require("../models/Venue");
+    const venue = await Venue.findOne({ slug }).select("_id upiQr").lean();
+    if (!venue) return res.status(404).json({ message: "Venue not found" });
+    if (String(venue._id) !== String(ownerVenueId)) return res.status(403).json({ message: "Forbidden" });
+    if (venue.upiQr && venue.upiQr.source === "generated") {
+      return res.status(400).json({
+        message: "This QR is generated from your UPI ID — clear the UPI ID to remove it.",
+        code: "clear_upi_id_instead",
+      });
+    }
+    const { EMPTY_QR } = require("../utils/venueUpiQr");
+    await Venue.updateOne({ _id: venue._id }, { $set: { upiQr: { ...EMPTY_QR } } });
+    return res.status(200).json({ success: true });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getVenues, getVenueBySlug, updateVenue,
+  uploadUpiQr,
+  deleteUpiQr, createVenue };

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { getVenues, getVenueBySlug, updateVenue, createVenue } = require("../controllers/venue");
+const { getVenues, getVenueBySlug, updateVenue, createVenue, uploadUpiQr, deleteUpiQr } = require("../controllers/venue");
 const { createEnquiry, createManualLead, getVenueEnquiries, getEnquiryById, deleteEnquiry, checkEnquiryExists, updateEnquiry, getWindowImpact, importLeads, getImports } = require("../controllers/venueEnquiry");
 const { saveAvailability, availabilityCheck } = require("../controllers/venueAvailability");
 const { trackView } = require("../controllers/venueView");
@@ -86,6 +86,10 @@ router.get("/dashboard/overview", venueOwnerAuth, getDashboardOverview);
 router.get("/:slug", getVenueBySlug);
 // Listing edit: admins bypass; venue tokens need the "listing" capability.
 router.put("/:slug", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("listing"), updateVenue);
+// The venue's own UPI QR image (no UPI ID → upload the bank app's QR).
+// Mechanism only — no document prints it yet; placement is ruled per document.
+router.put("/:slug/upi-qr", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("listing"), uploadUpiQr);
+router.delete("/:slug/upi-qr", adminOrVenueOwnerAuth, requireCapabilityOrAdmin("listing"), deleteUpiQr);
 // Public enquiry submission — rate-limited per IP and per phone+venue (NOT capability-gated; public).
 router.post("/:slug/enquiry", enquiryIpLimiter, enquiryPhoneLimiter, createEnquiry);
 router.post("/:slug/enquiries", enquiryIpLimiter, enquiryPhoneLimiter, createEnquiry);
