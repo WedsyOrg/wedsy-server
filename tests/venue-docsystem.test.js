@@ -728,6 +728,33 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       has(fo, "Hesaraghatta Main Road", "…the venue's address still prints (identity, not registration)");
     }
 
+    // ══ 13. THE GENERATION DATE — every document, beside its event date ═════
+    console.log("\n[13. Generated <today> on all five; event dates unchanged and distinct]");
+    {
+      const today = require("../utils/docsystem/shared").dateProse(new Date());
+      for (const language of LANGUAGE_NAMES) {
+        for (const type of ["quote", "confirmation", "invoice", "statement", "receipt"]) {
+          const inputs = { venue, lead, booking, quote, summary, paymentId: P2, invoice: mkInvoice(`G ${language} ${type}`, 100000, 100000, 18000) };
+          const built = await buildVenueDocument(type, inputs, { compress: false, language });
+          const flat = pdfFlat(built.buffer);
+          has(flat, `Generated ${today}`, `${language} × ${type}: the copy says when it was made`);
+        }
+      }
+      // the event dates are UNCHANGED and distinguishable from the generation
+      // date — different labels, and (where stored) different instants
+      const qb = await buildVenueDocument("quote", { venue, lead, quote }, { compress: false, language: "classic" });
+      const fq = pdfFlat(qb.buffer);
+      has(fq, "Issued", "quote: the stored issue date stays, its own label");
+      const cb = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
+      has(pdfFlat(cb.buffer), "Confirmed", "confirmation: Confirmed stays — a regenerated copy still says when it was confirmed");
+      const rb = await buildVenueDocument("receipt", { venue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" });
+      const frr = pdfFlat(rb.buffer);
+      hasNot(frr, "Issued", "receipt: the LIVE date no longer wears an event label");
+      has(frr, "Received on", "…the receipt's true event date is untouched");
+      const sb = await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" });
+      has(pdfFlat(sb.buffer), `As of ${today}`, "statement: the position's As-of cutoff stays beside the generation date");
+    }
+
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exitCode = fail ? 1 : 0;
   } catch (e) {

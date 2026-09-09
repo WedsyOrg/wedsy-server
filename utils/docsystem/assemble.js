@@ -114,6 +114,17 @@ function clientParty({ name, contact, clientDetails, gstin, showGstin = true }) 
   };
 }
 
+/**
+ * ── EVERY DOCUMENT SAYS WHEN THIS COPY WAS MADE (founder ruling) ────────────
+ * The event dates stay what they are — Issued and Confirmed are facts about
+ * the thing, immutable across regenerations — and this rides beside them in
+ * the reference row: a couple holding two copies of a regenerated statement
+ * needs to know which is newer. Plain fact, not a system stamp.
+ */
+function generatedRef() {
+  return `Generated ${dateProse(new Date())}`;
+}
+
 function primaryContactOf(lead) {
   return ((lead && lead.contacts) || []).find((c) => c.isPrimary) || ((lead && lead.contacts) || [])[0] || null;
 }
@@ -275,6 +286,7 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
         `Quote ${quote.quoteNumber || `v${quote.version || 1}`}`,
         `Issued ${dateProse(quote.createdAt || new Date())}`,
         heldUntil ? `Held until ${dateProse(heldUntil)}` : null,
+        generatedRef(),
       ].filter(Boolean),
     },
     facts: windowFacts(lead, booking || null, booking ? spacesOf(booking) : null),
@@ -342,7 +354,7 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
       title: "Booking confirmation",
       subject: [held, booking.coupleName ? `For ${booking.coupleName}` : null].filter(Boolean).join(" \u00b7 "),
       presentedTo: booking.coupleName,
-      refs: [bookingRef, `Confirmed ${dateProse(booking.createdAt)}`],
+      refs: [bookingRef, `Confirmed ${dateProse(booking.createdAt)}`, generatedRef()],
     },
     intro: "The booking amount has been received and the dates below are held exclusively. This page records the agreed amount and the plan for the balance.",
     // venue left, client right — as Indian tax documents read. Address and
@@ -518,6 +530,7 @@ async function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
         `Invoice ${inv.invoiceNumber}`,
         `Issued ${dateProse(inv.createdAt || new Date())}`,
         isTax ? "Place of supply \u2014 Karnataka (29)" : null,
+        generatedRef(),
       ].filter(Boolean),
     },
     facts: [
@@ -600,7 +613,7 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
       title: booking.coupleName || "Statement",
       subject: `As of ${dateProse(new Date())}`,
       presentedTo: booking.coupleName,
-      refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateProse((booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn)}`],
+      refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateProse((booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn)}`, generatedRef()],
     },
     bookedOn: booking.createdAt,
     priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
@@ -672,7 +685,7 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
       title: "Received, with thanks",
       subject: booking.coupleName ? `From ${booking.coupleName}` : undefined,
       presentedTo: booking.coupleName,
-      refs: [`Receipt ${String(paymentId).slice(-8).toUpperCase()}`, `Issued ${dateProse(new Date())}`],
+      refs: [`Receipt ${String(paymentId).slice(-8).toUpperCase()}`, generatedRef()],
     },
     amount,
     receivedOn: first.date,
