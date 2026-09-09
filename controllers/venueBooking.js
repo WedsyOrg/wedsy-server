@@ -1529,15 +1529,21 @@ const updateClientDetails = async (req, res) => {
     const { sanitizeClientDetails } = require("../utils/venueClientContact");
     const cd = sanitizeClientDetails(req.body || {});
     if (!cd.ok) return res.status(400).json({ message: cd.message });
-    const before = booking.clientDetails || {};
-    const line = (d) => [d.house, d.street, d.city, d.pincode].filter(Boolean).join(", ") + (d.gstin ? ` · GSTIN ${d.gstin}` : "");
+    // COPY the before-state: booking.clientDetails is a live subdocument, and
+    // assigning over it mutates what a bare reference still points at — the
+    // timeline printed "was <new>, now <new>" exactly that way (drive-caught).
+    const before = booking.clientDetails && booking.clientDetails.toObject
+      ? booking.clientDetails.toObject()
+      : { ...(booking.clientDetails || {}) };
+    const line = (d) => [d.house, d.street, d.city, d.pincode].filter(Boolean).join(", ") + (d.gstin ? ` \u00b7 GSTIN ${d.gstin}` : "");
+    const beforeLine = line(before);
     booking.clientDetails = cd.value;
     await booking.save();
     const enquiry = booking.enquiry ? await VenueEnquiry.findById(booking.enquiry) : null;
     if (enquiry) {
       enquiry.activities.push({
         type: "note",
-        description: `Client billing details updated on the booking — was "${line(before) || "empty"}", now "${line(cd.value) || "empty"}"`,
+        description: `Client billing details updated on the booking — was "${beforeLine || "empty"}", now "${line(cd.value) || "empty"}"`,
         actor: req.venueOwner ? req.venueOwner.memberId || req.venueOwner.venueOwnerId : null,
         timestamp: new Date(),
       });
