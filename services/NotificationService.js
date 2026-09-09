@@ -1,4 +1,5 @@
 const axios = require("axios");
+const { nationalFor, leadingDigits, defaultCountryCode } = require("../utils/phone");
 const NotificationFailureLog = require("../models/NotificationFailureLog");
 const { Client: MailjetClient } = require("node-mailjet");
 
@@ -72,8 +73,41 @@ const TRIGGERS = {
 
 // ─── Channel senders ──────────────────────────────────────────────────────────
 
-function sendSMS(phone, templateId, variables = [], senderId = "WEDSYY") {
-  if (!phone || !phone.includes("+91")) return Promise.resolve();
+// SMS goes out through Fast2SMS on the `dlt` route. THAT GATEWAY IS INDIA-ONLY:
+// DLT is TRAI's Indian registration regime, and Fast2SMS's own documentation
+// states recipients are Indian ten-digit mobile numbers ("If your customers are
+// outside India, this plugin is not for you"). Measured 2026-09-09, not assumed.
+//
+// So REFUSING an international destination is correct and stays. What was wrong
+// was doing it in silence: `if (!phone.includes("+91")) return` dropped every
+// international lead's SMS with nothing logged anywhere, so nobody could know it
+// had happened, let alone how often.
+//
+// The national number is now DERIVED rather than string-replaced. The old
+// `phone.replace("+91", "")` does nothing at all to "+971501234567" — that
+// string does not contain "+91" — so a number that slipped past the guard would
+// have been handed to the gateway with a "+" still in it.
+//
+// WhatsApp is unaffected and still goes to international numbers: AiSensy and
+// the Meta Cloud API both take a full international destination. Only the SMS
+// leg is India-bound.
+function sendSMS(phone, templateId, variables = [], senderId = "WEDSYY", { leadId = null } = {}) {
+  const who = `${leadId ? `lead=${leadId}` : "lead=(unknown)"} template=${templateId}`;
+  if (!phone) {
+    console.log(`[sms] SKIPPED — no phone. ${who}`);
+    return Promise.resolve();
+  }
+  // The subscriber digits are NOT logged: a full mobile number identifies a
+  // person, and a skip line does not need one to be actionable.
+  const national = nationalFor(phone, defaultCountryCode());
+  if (!national) {
+    console.log(
+      `[sms] SKIPPED — Fast2SMS delivers to ${defaultCountryCode()} numbers only; ` +
+        `this number begins ${leadingDigits(phone) || "(unreadable)"}. ${who}`
+    );
+    return Promise.resolve();
+  }
+  console.log(`[sms] SENDING — ${who} to a +${defaultCountryCode()} number`);
   return axios({
     method: "post",
     url: process.env.FAST2SMS_API_URL,
@@ -87,7 +121,7 @@ function sendSMS(phone, templateId, variables = [], senderId = "WEDSYY") {
       message: templateId,
       variables_values: variables.join("|"),
       flash: 0,
-      numbers: phone.replace("+91", ""),
+      numbers: national,
     }),
   });
 }
@@ -163,7 +197,7 @@ function sendEmail(email, templateId, variables = {}, name = "", opts = {}) {
 // variables : string[] — positional substitutions for SMS (variables_values) and WhatsApp (templateParams)
 // emailVariables : object  — named variables for Mailjet template ({{ var:key }})
 
-function send(triggerId, { phone, email, name = "", variables = [], emailVariables = {} }) {
+function send(triggerId, { phone, email, name = "", variables = [], emailVariables = {}, leadId = null }) {
   const config = TRIGGERS[triggerId];
   if (!config) {
     console.error(`[NotificationService] Unknown trigger: "${triggerId}"`);
@@ -174,7 +208,7 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
 
   if (config.sms && phone) {
     const { templateId, senderId = "WEDSYY" } = config.sms;
-    sends.push(sendSMS(phone, templateId, variables, senderId));
+    sends.push(sendSMS(phone, templateId, variables, senderId, { leadId }));
   }
 
   if (config.whatsapp && phone) {
@@ -237,4 +271,4 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
   });
 }
 
-module.exports = { send, sendEmail, buildEmailMessage, TRIGGERS, MAILJET_MESSAGE_LIMIT_BYTES };
+module.exports = { send, sendSMS, sendEmail, buildEmailMessage, TRIGGERS, MAILJET_MESSAGE_LIMIT_BYTES };

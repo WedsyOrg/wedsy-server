@@ -5,6 +5,7 @@ const NotificationFailureLog = require('../models/NotificationFailureLog');
 const QualifiedLead = require('../models/QualifiedLead');
 const axios = require('axios');
 const { google } = require('googleapis');
+const { normalisePhone } = require('../utils/phone');
 
 // MB6 Slice 7 — the MB4 hook pattern ADAPTED to Instagram's reality: the
 // thread is keyed by the IG-scoped user id (NOT a phone). The conversation
@@ -194,7 +195,11 @@ const checkQualified = async (history) => {
 
 const igPlaceholderPhone = (igSenderId) => `ig:${igSenderId}`;
 const isPlaceholderPhone = (phone) => String(phone || '').startsWith('ig:');
-const toFullPhone = (digits) => (digits.length === 10 ? `91${digits}` : digits);
+// THIS ONE REACHES THE DATABASE — it is the phone createLead stores on the
+// lead. Routed through the ONE normaliser so a number that already carries a
+// country code is stored as given, and every defaulted one says so in the log.
+const toFullPhone = (digits, leadId = null) =>
+  normalisePhone(digits, { leadId, context: "ig-intake" }) || String(digits || "");
 
 // Existing lead for this IG person (no-number dedup key — the stable IG id).
 const findExistingByIgSenderId = async (igSenderId) =>
@@ -636,4 +641,6 @@ const receiveMessage = async (instagramId, message) => {
   }
 };
 
-module.exports = { receiveMessage, receiveAttachment };
+// toFullPhone is exported because it decides what gets WRITTEN to a lead;
+// a rule that reaches the database has to be assertable on its own.
+module.exports = { receiveMessage, receiveAttachment, toFullPhone };

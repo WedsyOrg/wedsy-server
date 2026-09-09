@@ -1,4 +1,5 @@
 const VendorPersonalLead = require("../models/VendorPersonalLead");
+const { normalisePhone } = require("../utils/phone");
 const Enquiry = require("../models/Enquiry");
 const { SendUpdate } = require("../utils/update");
 
@@ -394,9 +395,14 @@ const SendPaymentReminder = async (req, res) => {
     const rawPhone = String(lead.phone || "").trim();
     if (!rawPhone) return res.status(400).send({ message: "error", error: "Lead phone missing" });
 
-    // Normalize phone for WhatsApp provider
-    const phone =
-      rawPhone.startsWith("+") ? rawPhone : rawPhone.length === 10 ? `+91${rawPhone}` : rawPhone;
+    // Normalize phone for the WhatsApp provider through the ONE normaliser, so
+    // a vendor lead already carrying a country code keeps it. Unlike the other
+    // two sites this one only builds a send destination — it does not write the
+    // number back to the lead.
+    const phone = normalisePhone(rawPhone, { leadId: String(lead._id), context: "vendor-payment-reminder" });
+    if (!phone) {
+      return res.status(400).send({ message: "error", error: "Lead phone is not a usable number" });
+    }
 
     const total = Number(lead?.payment?.total || 0);
     const received = Number(lead?.payment?.received || 0);

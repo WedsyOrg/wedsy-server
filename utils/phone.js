@@ -73,4 +73,41 @@ const normalisePhone = (raw, { leadId = null, context = "" } = {}) => {
   return `${cc}${digits}`;
 };
 
-module.exports = { normalisePhone, defaultCountryCode, isPlaceholder };
+/**
+ * The NATIONAL part of a number, for a gateway that wants it without the
+ * country code — Fast2SMS's `numbers` field, for one.
+ *
+ * Returns null when the number does not start with the code asked for. That
+ * refusal is the point: the previous implementation did
+ * `phone.replace("+91", "")`, which silently does NOTHING to "+971501234567"
+ * and hands the gateway a string with a "+" in it. A caller that cannot get a
+ * national number back must decide what to do about it, not send a mangled one.
+ *
+ * @param {string} raw
+ * @param {string} [cc]  country code to strip; defaults to DEFAULT_COUNTRY_CODE
+ * @returns {string|null}
+ */
+const nationalFor = (raw, cc = defaultCountryCode()) => {
+  const full = normalisePhone(raw);
+  if (!full) return null;
+  const code = String(cc).replace(/[^0-9]/g, "");
+  if (!code || !full.startsWith(code)) return null;
+  const national = full.slice(code.length);
+  return national.length >= 6 ? national : null;
+};
+
+/**
+ * The leading digits of a number, for a log line.
+ *
+ * DELIBERATELY NOT "the country code". Splitting a country code out requires a
+ * per-country numbering table — the national part is ten digits in India and
+ * nine in the UAE, so any fixed-width split turns +971 into +97. This returns
+ * what can be claimed honestly: the first few digits, enough to identify which
+ * country a skipped number belongs to when someone reads the log.
+ */
+const leadingDigits = (raw, n = 4) => {
+  const full = normalisePhone(raw);
+  return full ? full.slice(0, n) : "";
+};
+
+module.exports = { normalisePhone, defaultCountryCode, isPlaceholder, nationalFor, leadingDigits };
