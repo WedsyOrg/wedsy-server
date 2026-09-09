@@ -78,3 +78,31 @@ Before changing `LeadIntakeService.normalizePhone` (it dedups on the last ten
 digits, so two countries can collide), run
 `node scripts/audit-phone-dedup-collisions.js` — read-only — and let the count
 decide.
+
+## Google Chat — new-lead ping
+
+`services/GoogleChatNotifyService.js` posts a new-lead message into Google Chat
+from `LeadIntakeService.afterCreate`. It replaces the notification the Make
+scenario owns today.
+
+| Variable | Required | Notes |
+| --- | --- | --- |
+| `GOOGLE_CHAT_LEADS_WEBHOOK_URL` | to enable | **Secret.** The incoming-webhook URL carries its own `key` and `token` — anyone holding it can post into the space. Never logged. |
+| `OS_FRONTEND_URL` | no | Base for the deep link (defaults to `https://os.wedsy.in`). Already used elsewhere. |
+
+**IT SHIPS DORMANT, AND THE ORDER OF ROLLOUT MATTERS.** With
+`GOOGLE_CHAT_LEADS_WEBHOOK_URL` unset it logs
+`[chat-notify] SKIPPED … not configured` and posts nothing. Make is still
+posting today, so setting this before Make's Chat module is switched off would
+double-notify the team on every lead — and an alert people learn to ignore has
+stopped working.
+
+    1. switch the Chat module OFF in the Make scenario
+    2. THEN set GOOGLE_CHAT_LEADS_WEBHOOK_URL and restart with --update-env
+
+Never the other way round. To verify, create one lead and grep for
+`[chat-notify] SENT`.
+
+The message wording lives in `utils/chatMessages.js` — one pure function,
+deliberately isolated from the transport so it can be reworded without touching
+the HTTP call, the secret, or the fire-and-forget contract.

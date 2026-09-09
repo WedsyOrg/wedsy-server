@@ -205,6 +205,28 @@ const afterCreate = async (enquiryId, { explicitAssignee = null, actorId = null 
   // Internal OS new-lead notification — additive, fire-safe; runs after assignment so
   // the recipient is known. Self-insulated (own try/catch); can never throw into create.
   await notifyNewLead(enquiryId, assignee);
+
+  // Google Chat ping — the notification Make currently owns. SHIPS DORMANT:
+  // it posts only when GOOGLE_CHAT_LEADS_WEBHOOK_URL is set, because Make is
+  // still posting today and going live before that scenario is switched off
+  // would double-notify the team on every lead.
+  //
+  // NOT AWAITED, and wrapped besides. The ordering matters: the lead already
+  // exists and its owner already knows by the line above, so nothing after this
+  // point may cost us a lead. The try/catch guards a SYNCHRONOUS throw (before
+  // any promise exists), the .catch guards a rejected one, and the service
+  // itself is built never to throw at all — three layers, because a Chat outage
+  // taking down lead intake would be an absurd way to lose business.
+  try {
+    const lead = await Enquiry.findById(enquiryId, { name: 1, phone: 1, source: 1 }).lean();
+    if (lead) {
+      require("./GoogleChatNotifyService")
+        .notifyNewLead(lead, { assignedToName: assignee && assignee.name ? assignee.name : null })
+        .catch((e) => console.error("[chat-notify] send rejected:", e.message));
+    }
+  } catch (e) {
+    console.error("[chat-notify] could not dispatch:", e.message);
+  }
   // MB5 Slice 5: Kiara safety net — after-hours creates get the welcome
   // template immediately. Template-gated (dormant when unset); fire-safe.
   try {
