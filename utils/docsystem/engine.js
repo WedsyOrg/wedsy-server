@@ -161,6 +161,13 @@ class Engine {
 
   gap(h) { this.y += h; }
 
+  /** An image, measuring-aware — nothing may land in the stream on a
+   *  measuring pass (the invisible-duplicate lesson, applied to pictures). */
+  image(buf, x, y, opts = {}) {
+    if (this.measuring) return;
+    try { this.doc.image(buf, x, y, opts); } catch (_) { /* a bad image draws nothing */ }
+  }
+
   // ── section label: Times-Italic 14, keeps its first two rows ─────────────
   // keep must cover a table head (~26), TWO data rows (~28 each), and the
   // total row a short table's second row may carry via the no-orphan

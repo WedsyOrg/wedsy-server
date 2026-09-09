@@ -70,6 +70,54 @@ function legacyAssembly(booking) {
   return { totals, priced, refundables: [], schedule, legacy: true };
 }
 
+/**
+ * ── ONE HEADER, ONE PARTIES BLOCK, EVERY DOCUMENT (founder ruling) ─────────
+ * The header is the brand alone; the registrations live in the parties
+ * block, on page one, on every document — venue left, client right, each
+ * side rendering only what exists. A tax invoice without PAN and GSTIN is
+ * not a valid tax invoice, so what the header lost must have this home.
+ */
+function venueParty(identity, { registers = true } = {}) {
+  return {
+    name: identity.name,
+    lines: [
+      identity.legalName && identity.legalName !== identity.name ? identity.legalName : null,
+      ...(identity.addressLines || []),
+      registers && identity.pan ? `PAN ${identity.pan}` : null,
+      registers && identity.gstin ? `GSTIN ${identity.gstin}` : null,
+      registers && identity.stateLine ? identity.stateLine : null,
+      [identity.phone, identity.email].filter(Boolean).join(" \u00b7 ") || null,
+    ].filter(Boolean),
+  };
+}
+
+/**
+ * The client side: name from the booking (or the billed-to snapshot), the
+ * primary contact's phone/email, the BOOKING's address snapshot, and the
+ * GSTIN (snapshot first, live contact for bookings that predate it).
+ * `showGstin: false` is the ordinary invoice's no-register rule.
+ */
+function clientParty({ name, contact, clientDetails, gstin, showGstin = true }) {
+  const cdd = clientDetails || {};
+  const addressLine = [cdd.house, cdd.street].filter(Boolean).join(", ");
+  const cityLine = [cdd.city, cdd.pincode].filter(Boolean).join(" ");
+  return {
+    name: name || (contact && contact.name) || null,
+    lines: [
+      contact && contact.name && contact.name !== name ? contact.name : null,
+      (contact && contact.phone) || null,
+      (contact && contact.email) || null,
+      addressLine || null,
+      cityLine || null,
+      showGstin && gstin ? `GSTIN ${gstin}` : null,
+    ].filter(Boolean),
+  };
+}
+
+function primaryContactOf(lead) {
+  return ((lead && lead.contacts) || []).find((c) => c.isPrimary) || ((lead && lead.contacts) || [])[0] || null;
+}
+
 function initialsOf(name) {
   return String(name || "").split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join("");
 }
@@ -84,9 +132,13 @@ function identityFrom(venue, logoBuffer) {
   }, []).slice(0, 3);
   return {
     name: b.name || "Venue",
+    // ONE HEADER (founder ruling): the brand alone on every document — the
+    // parties block carries the registrations everywhere.
+    headerBrandOnly: true,
     // Settings → Business bank details — null when the venue filled nothing,
     // and the payment block then does not exist (no heading, no empty rows).
     bank: b.hasBank ? b.bank : null,
+    upiQr: b.upiQr || null,
     monogram: logoBuffer ? "" : initialsOf(b.name),
     tagline: (venue && venue.tagline) || "",
     legalName: b.name,
@@ -195,8 +247,21 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
     [{ label: "Booking amount", subLine: "Confirms the date and holds the spaces", dueLabel: "On confirmation", amount: totals.payable }],
     totals
   );
+  const qIdentity = identityFrom(venue, logoBuffer);
+  const qContact = primaryContactOf(lead);
   return {
-    identity: identityFrom(venue, logoBuffer),
+    identity: qIdentity,
+    // parties on the quote too (one anatomy): pre-booking there is no
+    // address snapshot yet — the contact's own facts render, nothing more
+    parties: {
+      venue: venueParty(qIdentity),
+      client: clientParty({
+        name: (lead && lead.coupleName) || null,
+        contact: qContact,
+        clientDetails: booking && booking.clientDetails,
+        gstin: (booking && booking.clientDetails && booking.clientDetails.gstin) || (qContact && qContact.gstin) || "",
+      }),
+    },
     meta: { reference: quote.quoteNumber || `Quote v${quote.version || 1}` },
     titleMeta: {
       eyebrow: "Quote",
@@ -257,10 +322,6 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
   const scheduledTotal = ((booking.paymentSchedule || []).filter((r) => !r.isAdditional))
     .reduce((s2, r) => s2 + Math.round(Number(r.amount) || 0), 0);
   const identity = identityFrom(venue, logoBuffer);
-  // The header carries the BRAND ALONE on this document (finding 6): the
-  // venue block below is the registration record, so PAN and GSTIN print
-  // there and not twice.
-  identity.headerBrandOnly = true;
   // the WINDOW the couple holds runs check-in to check-out (finding 2's own
   // example checks out on the 3rd) — event days are a subset of it
   const winFrom = booking.checkIn || firstDay;
@@ -289,42 +350,13 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
     // fields); the block renders whichever facts exist and nothing where
     // they are absent, so it grows the day the collection step lands.
     parties: {
-      venue: {
-        name: identity.name,
-        // name, address, PAN, GSTIN, phone (finding 7) — the header lost the
-        // registrations to this block, so this block must actually carry them
-        lines: [
-          // everything the brand-alone header dropped lives HERE, once —
-          // the legal name included, when it differs from the display name
-          identity.legalName && identity.legalName !== identity.name ? identity.legalName : null,
-          ...(identity.addressLines || []),
-          identity.pan ? `PAN ${identity.pan}` : null,
-          identity.gstin ? `GSTIN ${identity.gstin}` : null,
-          [identity.phone, identity.email].filter(Boolean).join(" · ") || null,
-        ].filter(Boolean),
-      },
-      client: (() => {
-        // Address + GSTIN come from the BOOKING'S OWN SNAPSHOT (clientDetails,
-        // written at confirm, edited only through the People tab's logged
-        // edit) — the disputed-document rule. The GSTIN falls back to the
-        // live contact for bookings that predate the snapshot, because those
-        // invoices already print it from there.
-        const cdd = (booking.clientDetails) || {};
-        const addressLine = [cdd.house, cdd.street].filter(Boolean).join(", ");
-        const cityLine = [cdd.city, cdd.pincode].filter(Boolean).join(" ");
-        const gstin = cdd.gstin || (primaryContact && primaryContact.gstin) || "";
-        return {
-          name: booking.coupleName || (primaryContact && primaryContact.name) || null,
-          lines: [
-            primaryContact && primaryContact.name && primaryContact.name !== booking.coupleName ? primaryContact.name : null,
-            (primaryContact && primaryContact.phone) || booking.couplePhone || null,
-            (primaryContact && primaryContact.email) || null,
-            addressLine || null,
-            cityLine || null,
-            gstin ? `GSTIN ${gstin}` : null,
-          ].filter(Boolean),
-        };
-      })(),
+      venue: venueParty(identity),
+      client: clientParty({
+        name: booking.coupleName,
+        contact: primaryContact || (booking.couplePhone ? { phone: booking.couplePhone } : null),
+        clientDetails: booking.clientDetails,
+        gstin: ((booking.clientDetails || {}).gstin) || (primaryContact && primaryContact.gstin) || "",
+      }),
     },
     facts: (() => {
       const facts = windowFacts(lead, booking, spacesOf(booking), { includeSpaces: false });
@@ -378,7 +410,7 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
 }
 
 // ── 3. TAX INVOICE ──────────────────────────────────────────────────────────
-function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
+async function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
   const inv = invoice;
   const half = (n) => Math.round((Number(n) || 0) / 2);
   const items = (inv.lineItems || []).map((li) => {
@@ -386,8 +418,15 @@ function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
     const hasFacts = li.taxable !== null && li.taxable !== undefined && li.gst !== null && li.gst !== undefined;
     const taxable = hasFacts ? Math.round(Number(li.taxable) || 0) : null;
     const gst = hasFacts ? Math.round(Number(li.gst) || 0) : null;
+    // the line is named after the instalment; the couple's name is the
+    // addressee, not part of the charge (finding 4) — a stored " — <name>"
+    // suffix is display-trimmed, and new invoices no longer append it
+    const coupleName = (booking && booking.coupleName) || "";
+    const rawLabel = li.label || "Charge";
     return {
-      label: li.label || "Charge",
+      label: coupleName && rawLabel.endsWith(` \u2014 ${coupleName}`)
+        ? rawLabel.slice(0, -(` \u2014 ${coupleName}`.length))
+        : rawLabel,
       subLine: hasFacts && !gst ? "No GST" : undefined,
       amount, taxable, gst,
       cgst: gst !== null ? half(gst) : null,
@@ -416,45 +455,88 @@ function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
   // shape strips every GST-register fact: registration lines, state code,
   // place of supply, SAC, reverse-charge. The layout is otherwise the same
   // tax-invoice anatomy.
-  if (isTax) identity.stateLine = "State code 29 · Karnataka";
-  else { identity.gstin = ""; identity.pan = ""; }
+  if (isTax) identity.stateLine = "State code 29 \u00b7 Karnataka";
+  else { identity.gstin = ""; identity.pan = ""; identity.stateLine = ""; }
+  // THE TITLE FOLLOWS THE LINE (finding 4): a milestone-backed invoice is
+  // titled by the instalment it bills — the stored `kind` (every milestone
+  // invoice was written "final") stays a creator-side defect for the money
+  // ruling, but the document stops repeating the lie.
+  const firstLabel = items.length === 1 ? items[0].label : null;
+  const title = inv.kind === "addon"
+    ? "Additional billing"
+    : inv.forMilestoneId && firstLabel ? firstLabel
+    : inv.kind === "final" ? "Final instalment" : "Instalment";
+  // the event window, as the confirmation carries it (finding 7)
+  const window = booking && (booking.checkIn || (booking.days && booking.days[0]))
+    ? dateWindowProse(booking.checkIn || booking.days[0].date, booking.checkOut || booking.checkIn)
+    : null;
+  // ── THE AMOUNT-CARRYING QR (finding 9, founder ruling) ───────────────────
+  // A fresh QR with &am=<amount due> when the venue's UPI ID is known —
+  // scan-and-confirm instead of typing. The two catches, handled: an
+  // UPLOADED QR is opaque, so it renders as stored (no amount inside);
+  // and a payment-backed invoice evidences money ALREADY received, so it
+  // carries no pay-QR at all — a QR inviting a second payment would be
+  // worse than none.
+  let payQr = null;
+  if (!inv.forPaymentId || Number(t.grandTotal) > 0) {
+    const upiId = identity.bank && identity.bank.upiId;
+    if (!inv.forPaymentId && upiId) {
+      const { generateUpiQr } = require("../venueUpiQr");
+      const q = await generateUpiQr(upiId, identity.name, { amount: Math.round(Number(t.grandTotal) || 0), note: inv.invoiceNumber });
+      payQr = { buffer: Buffer.from(q.dataUrl.split(",")[1], "base64"), upiString: q.upiString, amountCarrying: true };
+    } else if (!inv.forPaymentId && identity.upiQr && identity.upiQr.dataUrl) {
+      const b64 = (identity.upiQr.dataUrl.split(",")[1]) || "";
+      if (b64) payQr = { buffer: Buffer.from(b64, "base64"), upiString: "", amountCarrying: false };
+    }
+  }
   return {
     identity,
     plain: !isTax,
+    parties: {
+      venue: venueParty(identity, { registers: isTax }),
+      client: clientParty({
+        name: billed.name || (booking && booking.coupleName),
+        contact: primaryContactOf(lead),
+        clientDetails: booking && booking.clientDetails,
+        // the invoice's own snapshot first (immutable), the booking's for
+        // invoices that predate the address collection
+        gstin: isTax ? (billed.gstin || (booking && booking.clientDetails && booking.clientDetails.gstin) || "") : "",
+        showGstin: isTax,
+      }),
+      // a TAX invoice must state the unregistered case explicitly — B2C is a
+      // fact of the invoice, not an absence
+      clientNote: isTax && !(billed.gstin || (booking && booking.clientDetails && booking.clientDetails.gstin))
+        ? "GSTIN \u2014 unregistered (B2C)" : null,
+    },
     meta: { reference: inv.invoiceNumber },
     titleMeta: {
       eyebrow: isTax ? "Tax invoice" : "Invoice",
-      title: inv.kind === "addon" ? "Additional billing" : inv.kind === "final" ? "Final instalment" : "Instalment",
+      title,
       subject: booking && booking.coupleName ? `For ${booking.coupleName}` : undefined,
       presentedTo: billed.name || (booking && booking.coupleName),
       refs: [
         `Invoice ${inv.invoiceNumber}`,
         `Issued ${dateProse(inv.createdAt || new Date())}`,
-        isTax ? "Place of supply — Karnataka (29)" : null,
+        isTax ? "Place of supply \u2014 Karnataka (29)" : null,
       ].filter(Boolean),
     },
     facts: [
-      {
-        label: "Billed to",
-        value: [
-          billed.name || (booking && booking.coupleName),
-          isTax ? (billed.gstin ? `GSTIN ${billed.gstin}` : "GSTIN — unregistered (B2C)") : null,
-        ].filter(Boolean).join("\n"),
-      },
       { label: "Supply", value: isTax ? ["Venue & event services", "SAC 996334"].join("\n") : "Venue & event services" },
       {
         label: "Against",
         value: [
           `Booking ${booking ? String(booking._id).slice(-6).toUpperCase() : DASH}`,
-          isTax ? "Reverse charge — not applicable" : null,
+          window ? `Event ${window}` : null,
         ].filter(Boolean).join("\n"),
       },
-    ],
+      isTax ? { label: "Reverse charge", value: "Not applicable" } : null,
+    ].filter(Boolean),
     items, sum,
     dueDate: inv.dueDate || null,
     // The amount-due block's designed remit slot. Composed from Settings →
     // Business; null when nothing is filled, and the slot then never draws.
     remit: identity.bank ? bankLines(identity.bank).join("\n") : null,
+    payQr,
     noteLines: [],
     signatory: null,
   };
@@ -499,9 +581,20 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
     ? `${paymentDates.length} payment${paymentDates.length === 1 ? "" : "s"}, ${dateCell(new Date(Math.min(...paymentDates)))} – ${dateCell(new Date(Math.max(...paymentDates)))}`
     : "No payments yet";
   const overdueTotal = (summary && summary.overdueTotal) || 0;
+  const stIdentity = identityFrom(venue, logoBuffer);
+  const stContact = primaryContactOf(lead);
   return {
-    identity: identityFrom(venue, logoBuffer),
-    meta: { reference: `Statement · Booking ${String(booking._id).slice(-6).toUpperCase()}` },
+    identity: stIdentity,
+    parties: {
+      venue: venueParty(stIdentity),
+      client: clientParty({
+        name: booking.coupleName,
+        contact: stContact || (booking.couplePhone ? { phone: booking.couplePhone } : null),
+        clientDetails: booking.clientDetails,
+        gstin: ((booking.clientDetails || {}).gstin) || (stContact && stContact.gstin) || "",
+      }),
+    },
+    meta: { reference: `Statement \u00b7 Booking ${String(booking._id).slice(-6).toUpperCase()}` },
     titleMeta: {
       eyebrow: "Statement of account",
       title: booking.coupleName || "Statement",
@@ -560,9 +653,20 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
   });
   const next = (summary && summary.next) || null;
   const modeLabel = { bank_transfer: "Bank transfer", cash: "Cash", cheque: "Cheque", upi: "UPI", card: "Card", other: "Other" }[first.method] || first.method || DASH;
+  const rcIdentity = identityFrom(venue, logoBuffer);
+  const rcContact = primaryContactOf(lead);
   return {
-    identity: identityFrom(venue, logoBuffer),
-    meta: { reference: `Receipt · ${String(paymentId).slice(-8).toUpperCase()}` },
+    identity: rcIdentity,
+    parties: {
+      venue: venueParty(rcIdentity),
+      client: clientParty({
+        name: booking.coupleName,
+        contact: rcContact || (booking.couplePhone ? { phone: booking.couplePhone } : null),
+        clientDetails: booking.clientDetails,
+        gstin: ((booking.clientDetails || {}).gstin) || (rcContact && rcContact.gstin) || "",
+      }),
+    },
+    meta: { reference: `Receipt \u00b7 ${String(paymentId).slice(-8).toUpperCase()}` },
     titleMeta: {
       eyebrow: "Payment receipt",
       title: "Received, with thanks",

@@ -467,20 +467,19 @@ const createLeadInvoice = async (req, res) => {
     const lineView = !paymentPieces.length && !milestone && (booking.lineItems || []).length
       ? invoiceViewOfLines(booking.lineItems, booking.gstPercent)
       : null;
+    // The line names the INSTALMENT alone (invoicedoc finding 4): the couple
+    // is the document's addressee, not part of the charge — "First
+    // instalment — Asiya" on a page addressed to Asiya read oddly.
     const lineItems = paymentPieces.length
       ? paymentPieces.map((x) => ({
-          label:
-            `${x.row.label || "Instalment"}${x.row.isAdditional ? " (additional)" : ""}` +
-            ` — ${booking.coupleName || "booking"}`,
+          label: `${x.row.label || "Instalment"}${x.row.isAdditional ? " (additional)" : ""}`,
           category: x.row.isAdditional ? "extra" : "instalment",
           qty: 1,
           unitPrice: Math.round(Number(x.entry.amount) || 0),
         }))
       : milestone
         ? [{
-            label:
-              `${milestone.label || "Instalment"}${milestone.isAdditional ? " (additional)" : ""}` +
-              ` — ${booking.coupleName || "booking"}`,
+            label: `${milestone.label || "Instalment"}${milestone.isAdditional ? " (additional)" : ""}`,
             category: milestone.isAdditional ? "extra" : "instalment",
             qty: 1,
             unitPrice: Math.round(Number(milestone.amount) || 0),

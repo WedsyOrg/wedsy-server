@@ -355,8 +355,11 @@ function partiesBlock(R, parties) {
     }
     return y - y0 + 7;
   };
+  const clientSide = parties.clientNote
+    ? { ...parties.client, lines: [...(parties.client.lines || []), parties.clientNote] }
+    : parties.client;
   const hL = side(R.margin, half - 14, "The venue", parties.venue);
-  const hR = side(R.margin + half + 14, half - 14, "The client", parties.client);
+  const hR = side(R.margin + half + 14, half - 14, "The client", clientSide);
   const maxH = Math.max(hL, hR);
   if (!maxH) { R.y = y0; return; }
   R.vrule(R.margin + half, y0 + 6, y0 + maxH - 4, 0.75, R.T.hairline);
@@ -368,6 +371,7 @@ function partiesBlock(R, parties) {
 // ═══ 1. QUOTE ════════════════════════════════════════════════════════════════
 async function renderQuote(R, d) {
   R.L.titleBlock(R, d.titleMeta);
+  partiesBlock(R, d.parties);
   factStrip(R, d.facts);
   R.sectionLabel("Quoted lines");
   pricedLinesTable(R, d.priced, d.totals);
@@ -482,7 +486,8 @@ async function renderConfirmation(R, d) {
 // ═══ 3. TAX INVOICE ══════════════════════════════════════════════════════════
 async function renderInvoice(R, d) {
   R.L.titleBlock(R, d.titleMeta);
-  factStrip(R, d.facts); // billed to / supply / against
+  partiesBlock(R, d.parties);
+  factStrip(R, d.facts); // supply / against (+ reverse charge on tax)
   R.sectionLabel("Invoiced lines");
   // THE ORDINARY INVOICE (GST-first): same anatomy, NO tax columns — the
   // taxed/untaxed split exists precisely so this document never mentions the
@@ -528,49 +533,68 @@ async function renderInvoice(R, d) {
     },
   });
   R.table({ columns, rows });
+  // ── FULL WIDTH, SEQUENTIAL (finding 6): the two half-empty side panels
+  // were the shape the confirmation already shed. Tax working and notes run
+  // the measure, then the amount due takes the language's emphasis with the
+  // remit slot and the pay-QR inside it.
   R.gap(SPACE.block);
-  R.ensure(240);
-  const y0 = R.y;
-  const rightW = R.width * 0.42;
-  const leftW = R.width - rightW - 18;
-  // left: tax working + fixed notes + words
   if (!d.plain) {
-    R.text(WORDING.gstSentence(d.sum.taxable, d.sum.cgst + d.sum.sgst, "this invoice's lines"), { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
-    R.gap(8);
+    R.text(WORDING.gstSentence(d.sum.taxable, d.sum.cgst + d.sum.sgst, "this invoice's lines"), { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
+    R.gap(6);
   }
-  R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, width: leftW, lineGap: 3 });
+  R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
   R.gap(10);
-  R.text("Amount in words", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, width: leftW });
-  R.gap(3);
-  R.text(amountInWords(d.sum.total), { size: TYPE.fine, width: leftW, lineGap: 3 });
-  const leftBottom = R.y;
-  R.y = y0;
-  R.emphasisBlock((x, w) => {
-    const line = (label, value, mid) => kvRow(R, { x, width: w, label, value, mid, gapAfter: 4 });
-    if (!d.plain) {
-      line("Taxable value", money(d.sum.taxable), true);
-      if (d.sum.nonTaxable) line("Non-taxable recoveries", money(d.sum.nonTaxable), true);
-      line(`CGST ${d.sum.pctHalf}% + SGST ${d.sum.pctHalf}%`, money(d.sum.cgst + d.sum.sgst), true);
-      R.gap(4);
-    }
-    kvRow(R, { x, width: w, label: "Amount due", value: money(d.sum.total), figure: true, gapAfter: 4 });
-    if (d.dueDate) R.text(`Due ${dateProse(d.dueDate)}`, { size: TYPE.subLine, color: R.T.mid, x, width: w });
-    if (d.remit) {
-      R.gap(10);
-      R.rule(x, R.y, x + w, 0.75, R.T.hairline);
-      R.gap(8);
-      R.text("Remit to", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: w });
-      R.gap(3);
-      R.text(d.remit, { size: TYPE.subLine, color: R.T.mid, lineGap: 3, x, width: w });
-    }
-  }, { x: R.margin + R.width - rightW, width: rightW, estHeight: 220 });
-  R.y = Math.max(R.y, leftBottom);
+  {
+    const drawDue = () => {
+      R.emphasisBlock((x, w) => {
+        const y0 = R.y;
+        // the QR claims the right edge when it exists — roughly 25mm on A4
+        // (94px at design scale), black on white, its caption beneath
+        const qrSide = d.payQr ? 96 : 0;
+        const lw = w - (qrSide ? qrSide + 20 : 0);
+        const line = (label, value, mid) => kvRow(R, { x, width: lw, label, value, mid, gapAfter: 4 });
+        if (!d.plain) {
+          line("Taxable value", money(d.sum.taxable), true);
+          if (d.sum.nonTaxable) line("Non-taxable recoveries", money(d.sum.nonTaxable), true);
+          line(`CGST ${d.sum.pctHalf}% + SGST ${d.sum.pctHalf}%`, money(d.sum.cgst + d.sum.sgst), true);
+          R.gap(4);
+        }
+        kvRow(R, { x, width: lw, label: "Amount due", value: money(d.sum.total), figure: true, gapAfter: 4 });
+        if (d.dueDate) R.text(`Due ${dateProse(d.dueDate)}`, { size: TYPE.subLine, color: R.T.mid, x, width: lw });
+        R.gap(6);
+        R.text("Amount in words", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: lw });
+        R.gap(3);
+        R.text(amountInWords(d.sum.total), { size: TYPE.fine, x, width: lw, lineGap: 3 });
+        if (d.remit) {
+          R.gap(10);
+          R.rule(x, R.y, x + lw, 0.75, R.T.hairline);
+          R.gap(8);
+          R.text("Remit to", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: lw });
+          R.gap(3);
+          R.text(d.remit, { size: TYPE.subLine, color: R.T.mid, lineGap: 3, x, width: lw });
+        }
+        if (d.payQr) {
+          const qx = x + w - 94;
+          R.image(d.payQr.buffer, qx, y0 + 2, { fit: [94, 94] });
+          R.text(d.payQr.amountCarrying ? `Scan to pay ${money(d.sum.total)}` : "Scan to pay by UPI",
+            { size: TYPE.subLine, color: R.T.mid, x: qx - 20, y: y0 + 2 + 96 + 4, width: 114, align: "center", advance: false });
+          // the caption never moves the cursor; the block's height is the
+          // taller of the rows and the QR column
+          if (R.y < y0 + 96 + 22) R.y = y0 + 96 + 22;
+        }
+      }, { estHeight: 240 });
+    };
+    const h = R.measure_height(drawDue);
+    R.ensure(Math.min(h + 4, R.contentBottom - R.contentTop));
+    drawDue();
+  }
   closingRow(R, d.noteLines, d.signatory);
 }
 
 // ═══ 4. STATEMENT OF ACCOUNT ═════════════════════════════════════════════════
 async function renderStatement(R, d) {
   R.L.titleBlock(R, { ...d.titleMeta, dense: true });
+  partiesBlock(R, d.parties);
   // top band: collectable / received / OUTSTANDING (the hero)
   R.gap(14);
   R.ensure(120);
@@ -678,6 +702,7 @@ async function renderStatement(R, d) {
 // ═══ 5. PAYMENT RECEIPT ══════════════════════════════════════════════════════
 async function renderReceipt(R, d) {
   R.L.titleBlock(R, d.titleMeta);
+  partiesBlock(R, d.parties);
   R.gap(14);
   R.ensure(170);
   {

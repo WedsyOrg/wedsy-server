@@ -31,7 +31,7 @@
  * lean read cannot drop a branding field.
  */
 const BRANDING_SELECT =
-  "_id name slug logo address formattedAddress contact phone email gstin pan invoicePrefix settings whiteLabel bankDetails";
+  "_id name slug logo address formattedAddress contact phone email gstin pan invoicePrefix settings whiteLabel bankDetails upiQr";
 
 const clean = (v) => {
   if (v === null || v === undefined) return "";
@@ -88,6 +88,9 @@ function resolveBranding(venue) {
     // documents' payment block: a venue that filled nothing prints nothing.
     bank,
     hasBank: Object.values(bank).some((x) => x !== ""),
+    // the ONE stored QR (generated-from-ID or uploaded) — the invoice's
+    // amount-carrying QR regenerates from bank.upiId; this is the fallback
+    upiQr: v.upiQr && v.upiQr.dataUrl ? { dataUrl: v.upiQr.dataUrl, source: v.upiQr.source || "" } : null,
     // Pre-joined lines, so no renderer re-invents the separator. Absent parts
     // drop out rather than leaving a dangling bullet.
     contactLine: [address, phone, email].filter(Boolean).join("  •  "),
