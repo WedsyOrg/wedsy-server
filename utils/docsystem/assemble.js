@@ -4,10 +4,9 @@
  * utils/venuePaymentStatus; nothing here computes money, it only arranges it.
  */
 const { resolveBranding } = require("../venueBranding");
-const { docDayWithWeekday } = require("../documentDate");
 const { receivedOn, milestoneStatus } = require("../venuePaymentStatus");
 const {
-  DASH, money, dateProse, dateCell, dateTimeProse,
+  DASH, money, dateProse, dateWindowProse, dateCell, dateTimeProse,
   lineFigures, documentTotals, allocateScheduleGst, decomposeGstInsideRows,
   bankLines,
 } = require("./shared");
@@ -236,24 +235,18 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
   const totals = isLegacy
     ? { ...legacy.totals, extrasAmount: 0, extrasGst: 0, payable: legacy.totals.charged, collectable: legacy.totals.charged + legacy.totals.gst }
     : documentTotals(booking.lineItems || [], [], pct);
-  // one row per EVENT DAY — the composed weekday date the couple agreed to,
-  // from the same docDayWithWeekday every document uses
-  const spaces = ((booking.days || []).length
-    ? (booking.days || []).map((day) => ({
-        name: [((day.spaces || []).join(", ")) || "Venue", day.eventType, day.guestCount ? `${day.guestCount} guests` : null].filter(Boolean).join(" — "),
-        detail: docDayWithWeekday(day.date),
-      }))
-    : spacesOf(booking).map((name) => ({ name, detail: null })));
-  // rooms as their own rows so the section GROWS with the allocation — a
-  // narrow one-line summary was the two-panel layout's constraint, not ours
+  // ── SPACES AND ROOMS, LINE BY LINE (founder ruling, confirmdoc3 f9) ──────
+  // One line PER SPACE — the function name does not belong on the space line
+  // ("Entire property", never "Entire property — Wedding") — and no date in
+  // the detail: check-in, check-out and hours sit directly above. Rooms are
+  // COUNT AND CATEGORY per line ("8 · Deluxe"), each category its own line,
+  // never a summary that says the same thing twice.
+  const spaces = [...new Set(((booking.days || []).length
+    ? (booking.days || []).flatMap((day) => (day.spaces || []).length ? day.spaces : ["Venue"])
+    : spacesOf(booking)))].map((name) => ({ name }));
   const alloc = booking.roomsAllocation;
   const rooms = alloc && (alloc.items || []).length
-    ? (alloc.mode === "all"
-        ? [{ name: "Rooms — all categories", detail: `All ${alloc.items.reduce((s2, it) => s2 + it.count, 0)} rooms` }]
-        : alloc.items.map((it) => ({
-            name: `Rooms — ${it.name}`,
-            detail: it.count === it.total ? `All ${it.total}` : `${it.count} of ${it.total}`,
-          })))
+    ? alloc.items.filter((it) => it.count > 0).map((it) => ({ name: `${it.count} \u00b7 ${it.name}` }))
     : [];
   const firstDay = (booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn;
   const primaryContact = ((lead && lead.contacts) || []).find((c) => c.isPrimary) || ((lead && lead.contacts) || [])[0] || null;
@@ -264,17 +257,31 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
   const scheduledTotal = ((booking.paymentSchedule || []).filter((r) => !r.isAdditional))
     .reduce((s2, r) => s2 + Math.round(Number(r.amount) || 0), 0);
   const identity = identityFrom(venue, logoBuffer);
+  // The header carries the BRAND ALONE on this document (finding 6): the
+  // venue block below is the registration record, so PAN and GSTIN print
+  // there and not twice.
+  identity.headerBrandOnly = true;
+  // the WINDOW the couple holds runs check-in to check-out (finding 2's own
+  // example checks out on the 3rd) — event days are a subset of it
+  const winFrom = booking.checkIn || firstDay;
+  const winTo = booking.checkOut || (booking.days && booking.days.length && booking.days[booking.days.length - 1].date) || winFrom;
+  const held = dateWindowProse(winFrom, winTo);
+  const multiDay = held !== dateProse(winFrom);
+  const bookingRef = `Booking ${String(booking._id).slice(-6).toUpperCase()}`;
   return {
     identity,
-    meta: { reference: `Booking ${String(booking._id).slice(-6).toUpperCase()}` },
+    meta: { reference: bookingRef },
+    // THE HIERARCHY, righted (finding 3): the document's NAME carries the
+    // weight — the sentiment is the whisper above it, and the facts (the
+    // window, finding 2, and the client) sit beneath. The reference row is
+    // the anatomy's home for the searchable number (finding 5), and the old
+    // "Booking Confirmation" ref repeated the eyebrow (finding 4) — dropped.
     titleMeta: {
-      eyebrow: "Booking confirmation",
-      title: `Your date is held — ${dateProse(firstDay)}`,
-      // the parties block below carries the full client identity; repeating
-      // name·phone here is what printed "For Asiya · Asiya · +91…"
-      subject: booking.coupleName ? `For ${booking.coupleName}` : undefined,
+      eyebrow: multiDay ? "Your dates are held" : "Your date is held",
+      title: "Booking confirmation",
+      subject: [held, booking.coupleName ? `For ${booking.coupleName}` : null].filter(Boolean).join(" \u00b7 "),
       presentedTo: booking.coupleName,
-      refs: ["Booking Confirmation", `Confirmed ${dateProse(booking.createdAt)}`],
+      refs: [bookingRef, `Confirmed ${dateProse(booking.createdAt)}`],
     },
     intro: "The booking amount has been received and the dates below are held exclusively. This page records the agreed amount and the plan for the balance.",
     // venue left, client right — as Indian tax documents read. Address and
@@ -284,8 +291,11 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
     parties: {
       venue: {
         name: identity.name,
+        // name, address, PAN, GSTIN, phone (finding 7) — the header lost the
+        // registrations to this block, so this block must actually carry them
         lines: [
           ...(identity.addressLines || []),
+          identity.pan ? `PAN ${identity.pan}` : null,
           identity.gstin ? `GSTIN ${identity.gstin}` : null,
           [identity.phone, identity.email].filter(Boolean).join(" · ") || null,
         ].filter(Boolean),
@@ -313,7 +323,17 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
         };
       })(),
     },
-    facts: windowFacts(lead, booking, spacesOf(booking), { includeSpaces: false }),
+    facts: (() => {
+      const facts = windowFacts(lead, booking, spacesOf(booking), { includeSpaces: false });
+      // guests moved off the space lines (finding 9), so the fact strip
+      // carries them: the plain number, or "Up to N" when days differ
+      const counts = [...new Set(((booking.days || []).map((d) => d.guestCount).filter((n) => n > 0)))];
+      if (counts.length) {
+        const max = Math.max(...counts);
+        facts.push({ label: "Guests", value: counts.length > 1 ? `Up to ${max}` : String(max) });
+      }
+      return facts;
+    })(),
     spaces,
     rooms,
     priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
@@ -323,9 +343,17 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
     // The confirmation documents the AGREED deal: its schedule is the plan
     // for the agreed amount alone. Extras live on the statement, which sums
     // them explicitly — the confirmation's own note says exactly that.
-    schedule: isLegacy
-      ? legacy.schedule.filter((r) => !r.subLine || !r.subLine.startsWith("Additional"))
-      : shapeSchedule(booking, totals, { includeAdditional: false }),
+    schedule: (() => {
+      if (isLegacy) return legacy.schedule.filter((r) => !r.subLine || !r.subLine.startsWith("Additional"));
+      const rows = shapeSchedule(booking, totals, { includeAdditional: false });
+      // THE TOKEN ROW'S ONE LINE (finding 10): a couple sees a round token
+      // split into two odd figures — that is the taxed stream filling first,
+      // said in the schedule's own voice. Only where there is GST to explain.
+      if (booking.scheduleIncludesGst && rows.length && rows[0].gst > 0 && !rows[0].subLine) {
+        rows[0].subLine = `Includes ${money(rows[0].gst)} GST \u2014 payments cover the quote's taxed share first`;
+      }
+      return rows;
+    })(),
     // The venue's cancellation policy, when the owner asked for it: rich-text
     // blocks flattened to sentences. Content inside the existing closing
     // section, not a new section — the anatomy stays fixed.

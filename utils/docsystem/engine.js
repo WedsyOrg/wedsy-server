@@ -76,8 +76,26 @@ class Engine {
   /** Room left on this page. */
   room() { return this.contentBottom - this.y; }
 
+  /**
+   * MEASURE WITHOUT EMITTING: run `draw` with every operator suppressed —
+   * text heights still compute and advance the cursor, rules and boxes are
+   * skipped, page breaks disabled — return the height, and leave the page
+   * exactly as found. Unlike an invisible-ink pass, NOTHING lands in the
+   * stream: an opacity-zero pass still writes selectable text into the PDF
+   * (it shipped a doubled totals stack, caught on the decoded bytes).
+   */
+  measure_height(draw) {
+    const y0 = this.y;
+    this.measuring = true;
+    try { draw(); } finally { this.measuring = false; }
+    const h = this.y - y0;
+    this.y = y0;
+    return h;
+  }
+
   /** Guarantee `h` of vertical room; breaks the page when it is not there. */
   ensure(h) {
+    if (this.measuring) return;
     if (this.y + h > this.contentBottom) this.newPage();
   }
 
@@ -90,6 +108,7 @@ class Engine {
 
   // ── primitives ──────────────────────────────────────────────────────────
   rule(x1, y, x2, weight = 0.5, color = this.T.ink, dash = null) {
+    if (this.measuring) return;
     const d = this.doc;
     d.save();
     if (dash) d.dash(dash, { space: dash });
@@ -97,9 +116,11 @@ class Engine {
     d.restore();
   }
   vrule(x, y1, y2, weight = 0.75, color = this.T.hairline) {
+    if (this.measuring) return;
     this.doc.save().moveTo(x, y1).lineTo(x, y2).lineWidth(weight).strokeColor(color).stroke().restore();
   }
   box(x, y, w, h, { weight = 1.5, color = this.T.ink, fill = null, dash = null } = {}) {
+    if (this.measuring) return;
     const d = this.doc;
     d.save();
     if (fill) d.rect(x, y, w, h).fill(fill);
@@ -127,7 +148,7 @@ class Engine {
     const textOpts = { width, align: opts.align || "left", characterSpacing, lineGap: opts.lineGap || 0 };
     const s = opts.caps ? String(str).toUpperCase() : String(str);
     const h = d.heightOfString(s, textOpts);
-    d.text(s, x, y, textOpts);
+    if (!this.measuring) d.text(s, x, y, textOpts);
     if (opts.advance !== false && opts.y === undefined) this.y = y + h;
     return h;
   }

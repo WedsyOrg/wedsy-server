@@ -134,12 +134,15 @@ const makeTermsPdf = (pages) => new Promise((resolve) => {
     ok(plain.code === 201, `generating → 201 (got ${plain.code}${plain.code !== 201 ? " " + JSON.stringify(plain.body) : ""})`);
     const t1 = (await pageTexts(uploaded[0].buffer)).join("");
     ok(t1.includes(`${TAG} Palace`), "the decoder sees the venue name (guards every absence check below)");
-    ok(t1.includes("Booking Confirmation"), "titled as a confirmation");
+    // CONFIRMDOC3 f3: the document's NAME is the title (sentence case)
+    ok(t1.includes("Booking confirmation"), "titled as a confirmation");
     ok(t1.includes("29ABCDE1234F1Z5"), "carries the GSTIN from Settings (S1a branding)");
     ok(t1.includes("Priya & Arjun"), "names the couple");
     ok(t1.includes("priya@example.com"), "…and the contacts from the lead");
-    ok(t1.includes("Thursday, 26 November 2026"), "event dates with weekdays, composed not localised");
-    ok(t1.includes("Friday, 27 November 2026"), "…including the second day");
+    // CONFIRMDOC3 f9 dropped per-day date rows — the window facts carry the
+    // dates now (check-in and check-out, weekday-composed by dateTimeProse)
+    ok(/26 . 27 November 2026/.test(t1), "the held WINDOW prints — both days, one range");
+    ok(t1.includes("Grand Lawn") && t1.includes("Banquet Hall"), "…and each day's space has its own line");
     ok(t1.includes("Grand Lawn") && t1.includes("Banquet Hall"), "…and the spaces");
     ok(t1.includes("Vegetarian kitchen only"), "…and the special requirements");
     ok(t1.includes("Advance") && t1.includes("Second instalment") && t1.includes("Balance"), "the payment schedule as a table");
@@ -192,7 +195,7 @@ const makeTermsPdf = (pages) => new Promise((resolve) => {
     // whatever the confirmation runs, the 4 T&C pages ride behind it intact.
     const confPages = p3.length - 4;
     ok(confPages >= 1 && p3.length === confPages + 4, `confirmation (${confPages}p) + 4 T&C pages = ${p3.length}`);
-    ok(p3[0].includes("Booking Confirmation"), "…confirmation first");
+    ok(p3[0].includes("Booking confirmation"), "…confirmation first");
     for (let i = 1; i <= 4; i++) ok(p3[confPages + i - 1].includes(`VENUE TERMS PAGE ${i}`), `…T&C page ${i} present and in order`);
     const row = await VenueLeadDocument.findOne({ enquiry: lead._id, kind: "booking_confirmation" }).sort({ version: -1 }).lean();
     ok(row.sourceVerified === true, "…and the source was verified page-by-page before storing");

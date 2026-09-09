@@ -52,6 +52,28 @@ function dateProse(d) {
   if (Number.isNaN(dt.getTime())) return DASH;
   return `${dt.getDate()} ${MONTHS[dt.getMonth()]} ${dt.getFullYear()}`;
 }
+/**
+ * "1 – 3 January 2027" — a DATE WINDOW in prose, for multi-day bookings.
+ * Same day collapses to the single date; the shared parts print once
+ * ("30 January – 2 February 2027", "30 December 2026 – 2 January 2027").
+ */
+function dateWindowProse(a, b) {
+  if (!a) return dateProse(b);
+  if (!b) return dateProse(a);
+  const d1 = new Date(a), d2 = new Date(b);
+  if (Number.isNaN(d1.getTime()) || Number.isNaN(d2.getTime())) return dateProse(a);
+  if (d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate()) {
+    return dateProse(d1);
+  }
+  if (d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth()) {
+    return `${d1.getDate()} \u2013 ${d2.getDate()} ${MONTHS[d1.getMonth()]} ${d1.getFullYear()}`;
+  }
+  if (d1.getFullYear() === d2.getFullYear()) {
+    return `${d1.getDate()} ${MONTHS[d1.getMonth()]} \u2013 ${d2.getDate()} ${MONTHS[d2.getMonth()]} ${d1.getFullYear()}`;
+  }
+  return `${dateProse(d1)} \u2013 ${dateProse(d2)}`;
+}
+
 /** "21 Nov 2026" — table cells. */
 function dateCell(d) {
   if (!d) return DASH;
@@ -254,7 +276,7 @@ function bankLines(bank) {
 
 module.exports = {
   A4, MM, DASH, PAGE_SCALE,
-  money, moneyOrDash, dateProse, dateCell, dateTimeProse, amountInWords,
+  money, moneyOrDash, dateProse, dateWindowProse, dateCell, dateTimeProse, amountInWords,
   WORDING, TYPE, SPACE,
   lineFigures, documentTotals, allocateScheduleGst, decomposeGstInsideRows,
   bankLines,
