@@ -6,7 +6,7 @@ const LeadIntakeService = require("./LeadIntakeService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { sendWhatsApp } = require("../utils/whatsapp");
 const { toIstWallClock, goldenWindowFor } = require("../utils/goldenWindow");
-const { normalisePhone } = require("../utils/phone");
+const { normalisePhone, leadingDigits, defaultCountryCode } = require("../utils/phone");
 
 // KIARA SAFETY NET (MB5 Slice 5) — template-gated, ships DORMANT.
 // When kiara.welcomeTemplateName is set:
@@ -44,8 +44,25 @@ const inWorkingHours = async (now = new Date()) => {
 const engageLead = async (lead, reason, now = new Date()) => {
   const tpl = await templateName();
   if (!tpl) return false; // dormant
-  const phone = metaPhone(lead.phone);
-  if (!phone || phone.length < 12) return false;
+  const phone = metaPhone(lead.phone, String(lead._id));
+  // `length < 12` is "91 + ten digits" — an INDIAN length standing in for "is
+  // this a usable number". It is not one: a US number is 11 digits with its
+  // country code and a Maldives number 10, and the production census found
+  // leads in both. Those leads were dropped here in silence.
+  //
+  // WHO gets engaged is deliberately UNCHANGED — widening this is a product
+  // call, because Meta bills per destination country and the welcome template
+  // is a fixed language. What changes is that the drop now says so, with the
+  // lead id, exactly as the SMS refusal does. See the report on this branch.
+  if (!phone || phone.length < 12) {
+    console.log(
+      `[kiara-safety-net] SKIPPED lead=${lead._id} — number begins ` +
+        `${leadingDigits(lead.phone) || "(unreadable)"} and is ${phone ? `${phone.length} digits` : "unusable"}; ` +
+        `the engage guard requires ${String(defaultCountryCode()).length + 10}. ` +
+        `Non-${defaultCountryCode()} leads are not engaged (unchanged) — widening this is a product decision.`
+    );
+    return false;
+  }
 
   // Once per lead — atomic claim.
   const claimed = await Enquiry.findOneAndUpdate(

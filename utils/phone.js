@@ -110,4 +110,28 @@ const leadingDigits = (raw, n = 4) => {
   return full ? full.slice(0, n) : "";
 };
 
-module.exports = { normalisePhone, defaultCountryCode, isPlaceholder, nationalFor, leadingDigits };
+/**
+ * Does this stored value carry a country code of its own?
+ *
+ * The same test rule 1 of normalisePhone uses: a leading "+", or more than ten
+ * digits once the trunk zero is off. Exported because the dedup guard needs to
+ * ask the question without re-deriving the answer — two implementations of
+ * "has a country code" is exactly how the guard and the normaliser would drift.
+ *
+ * An "ig:" placeholder is not a number at all, so it carries nothing.
+ */
+const hasExplicitCountryCode = (raw) => {
+  const original = String(raw || "").trim();
+  if (!original || isPlaceholder(original)) return false;
+  if (original.startsWith("+")) return true;
+  return original.replace(/[^0-9]/g, "").replace(/^0+/, "").length > 10;
+};
+
+module.exports = {
+  normalisePhone,
+  defaultCountryCode,
+  isPlaceholder,
+  nationalFor,
+  leadingDigits,
+  hasExplicitCountryCode,
+};

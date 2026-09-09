@@ -1,5 +1,5 @@
 const axios = require("axios");
-const { nationalFor, leadingDigits, defaultCountryCode } = require("../utils/phone");
+const { nationalFor, leadingDigits, defaultCountryCode, normalisePhone } = require("../utils/phone");
 const NotificationFailureLog = require("../models/NotificationFailureLog");
 const { Client: MailjetClient } = require("node-mailjet");
 
@@ -206,22 +206,41 @@ function send(triggerId, { phone, email, name = "", variables = [], emailVariabl
 
   const sends = [];
 
-  if (config.sms && phone) {
-    const { templateId, senderId = "WEDSYY" } = config.sms;
-    sends.push(sendSMS(phone, templateId, variables, senderId, { leadId }));
+  // ONE clean destination for every phone channel, built once.
+  //
+  // Both WhatsApp legs used to receive the stored value VERBATIM, so a lead
+  // stored as "+91 98765 43210" was handed to Meta as a `to` with spaces in it
+  // — broken for domestic numbers, not just international ones — and an
+  // "ig:<sender id>" placeholder was sent as though it were a phone number.
+  //
+  // Digits with the country code is the shape utils/whatsapp.js expects and the
+  // shape controllers/auth.international.js:53 already builds for that same
+  // function, so this makes the dispatcher agree with the precedent rather than
+  // inventing a third convention.
+  const cleanPhone = phone ? normalisePhone(phone, { leadId, context: "notify" }) : null;
+  if (phone && !cleanPhone) {
+    console.log(
+      `[notify] SKIPPED every phone channel for "${triggerId}" — ` +
+        `${leadId ? `lead=${leadId} ` : ""}the stored value is not a usable number. Email (if any) still sent.`
+    );
   }
 
-  if (config.whatsapp && phone) {
-    sends.push(sendWhatsApp(phone, config.whatsapp.campaign, variables, name));
+  if (config.sms && cleanPhone) {
+    const { templateId, senderId = "WEDSYY" } = config.sms;
+    sends.push(sendSMS(cleanPhone, templateId, variables, senderId, { leadId }));
+  }
+
+  if (config.whatsapp && cleanPhone) {
+    sends.push(sendWhatsApp(cleanPhone, config.whatsapp.campaign, variables, name));
   }
 
   // Meta WhatsApp Cloud API leg (Graph, not AiSensy): utils/whatsapp.js builds
   // the template payload per Meta's contract (body component only when there
   // are variables). It retries + FailureLogs internally and resolves null on
   // final failure, so it never rejects this Promise.allSettled.
-  if (config.metaTemplate && phone) {
+  if (config.metaTemplate && cleanPhone) {
     const { sendWhatsApp: sendMetaTemplate } = require("../utils/whatsapp");
-    sends.push(sendMetaTemplate(phone, config.metaTemplate.name, variables));
+    sends.push(sendMetaTemplate(cleanPhone, config.metaTemplate.name, variables));
   }
 
   if (config.email && email) {
