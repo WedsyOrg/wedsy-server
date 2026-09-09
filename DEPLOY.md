@@ -66,3 +66,15 @@ logged with the lead id.
 Grep the logs for `[phone] ASSUMED` to see how often we are guessing and on
 which leads. That line is the audit trail for the one case where this file does
 not know the answer.
+
+**SMS is India-only, by the gateway's own limits.** Fast2SMS's `dlt` route is
+TRAI's Indian registration regime and its documentation states recipients are
+Indian ten-digit mobile numbers. An international destination is therefore
+refused — but out loud: grep `[sms] SKIPPED` and `[otp] SMS SKIPPED` for the
+lead id and the number's leading digits. WhatsApp is unaffected and still
+reaches international numbers.
+
+Before changing `LeadIntakeService.normalizePhone` (it dedups on the last ten
+digits, so two countries can collide), run
+`node scripts/audit-phone-dedup-collisions.js` — read-only — and let the count
+decide.

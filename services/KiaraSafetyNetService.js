@@ -6,6 +6,7 @@ const LeadIntakeService = require("./LeadIntakeService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { sendWhatsApp } = require("../utils/whatsapp");
 const { toIstWallClock, goldenWindowFor } = require("../utils/goldenWindow");
+const { normalisePhone } = require("../utils/phone");
 
 // KIARA SAFETY NET (MB5 Slice 5) — template-gated, ships DORMANT.
 // When kiara.welcomeTemplateName is set:
@@ -16,12 +17,13 @@ const { toIstWallClock, goldenWindowFor } = require("../utils/goldenWindow");
 // Engaged leads join mission-quiet until escalation/qualification; after-hours
 // leads surface in triage at open with the Kiara transcript attached.
 
-// Meta wa_id format: digits with country code (Indian default).
-const metaPhone = (phone) => {
-  const digits = String(phone || "").replace(/\D/g, "");
-  if (digits.length === 10) return `91${digits}`;
-  return digits;
-};
+// Meta wa_id format: digits with a country code. Routed through the ONE
+// normaliser (utils/phone.js) so a stored number that already carries a country
+// code is never re-derived — the previous version stripped non-digits first,
+// which turned the "ig:<id>" placeholder into a plausible-looking phone number
+// and would have sent a template to it.
+const metaPhone = (phone, leadId = null) =>
+  normalisePhone(phone, { leadId, context: "kiara-safety-net" }) || "";
 
 const templateName = async () => {
   try {
