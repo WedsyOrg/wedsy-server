@@ -692,18 +692,41 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       has(f, "unregistered (B2C)", "f5: the unregistered case stated explicitly in the client block");
       has(f, "14 Prithvi Enclave", "f5: the client's address renders when the booking holds it");
       has(f, "REMIT TO", "f8: bank details in the designed remit slot");
-      // f9: the QR pays the invoice's own figure — decoded, not trusted
-      ok(built.data.payQr && built.data.payQr.amountCarrying, "f9: an amount-carrying QR generated (venue has a UPI ID)");
+      // THE QR CARRIES NO AMOUNT (founder ruling): the VPA alone, decoded
+      // and proven — UPI ceilings vary, and a rejected QR is worse than one
+      // the payer completes themselves.
+      ok(built.data.payQr && built.data.payQr.source === "fallback", "the pre-store venue gets an amountless fallback QR (same encoder)");
       const decoded = decodeQr(built.data.payQr.buffer);
       ok(decoded === built.data.payQr.upiString, "…the embedded buffer decodes to its own payload");
-      ok(decoded.includes("&am=457600"), `🔴 the QR pays EXACTLY the amount due (${decoded.match(/am=\d+/)})`);
-      ok(decoded.includes(`&tn=${encodeURIComponent(mInv.invoiceNumber)}`), "…and names the invoice");
+      ok(!/[?&]am=/.test(decoded), "🔴 NO am= anywhere — the payer types the figure");
+      ok(!/[?&]tn=/.test(decoded), "…and no tn — the payload is the VPA alone");
+      ok(/^upi:\/\/pay\?pa=.+&pn=.+&cu=INR$/.test(decoded), `…exactly pa+pn+cu (${decoded})`);
       ok(built.buffer.toString("latin1").includes("/Subtype /Image"), "…and an image object is actually embedded in the PDF");
-      // uploaded-QR venue: falls back to the stored image, no amount inside
+      hasNot(pdfFlat(built.buffer), "Scan to pay Rs.", "the caption promises no figure the QR does not encode");
+      has(pdfFlat(built.buffer), "enter the amount", "…it says the figure is the payer's to enter");
+      // a venue WITH a stored QR: the invoice uses THE STORED IMAGE —
+      // one image, one code path, byte-identical to Settings
+      const storedVenue = venue.toObject();
+      storedVenue.bankDetails = bankVenue.bankDetails;
+      const { generateUpiQr } = require("../utils/venueUpiQr");
+      const storedQ = await generateUpiQr("aranyaestate@icici", storedVenue.name);
+      storedVenue.upiQr = { dataUrl: storedQ.dataUrl, source: "generated", upiString: storedQ.upiString };
+      const stBuilt = await buildVenueDocument("invoice", { venue: storedVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-MS`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language: "classic" });
+      ok(stBuilt.data.payQr && stBuilt.data.payQr.source === "generated"
+        && stBuilt.data.payQr.buffer.equals(Buffer.from(storedQ.dataUrl.split(",")[1], "base64")),
+        "🔴 with a stored QR the invoice embeds THE STORED BYTES — no per-render generation");
+      ok(!/[?&]am=/.test(decodeQr(stBuilt.data.payQr.buffer)), "…and the stored payload carries no amount either");
+      // uploaded-QR venue: the stored image, verbatim
       const upVenue = venue.toObject();
       upVenue.upiQr = { dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", source: "uploaded", upiString: "" };
       const upBuilt = await buildVenueDocument("invoice", { venue: upVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-M2`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language: "classic" });
-      ok(upBuilt.data.payQr && !upBuilt.data.payQr.amountCarrying, "f9 catch 1: an uploaded QR renders as stored — no amount can be put inside it");
+      ok(upBuilt.data.payQr && upBuilt.data.payQr.source === "uploaded", "an uploaded QR renders as stored, verbatim");
+      // every language: the QR (when present) decodes amountless
+      for (const language of LANGUAGE_NAMES) {
+        const lb = await buildVenueDocument("invoice", { venue: storedVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-L${language}`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language });
+        const ld = lb.data.payQr && decodeQr(lb.data.payQr.buffer);
+        ok(ld && !/[?&]am=/.test(ld), `${language}: the QR decodes with no am=`);
+      }
       // a payment-backed invoice evidences money RECEIVED — no pay-QR at all
       const payBuilt = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-M3`, forMilestoneId: null, forPaymentId: new mongoose.Types.ObjectId() } }, { compress: false, language: "classic" });
       ok(!payBuilt.data.payQr, "a payment-backed invoice carries no pay-QR — that money already arrived");

@@ -576,8 +576,9 @@ async function renderInvoice(R, d) {
         if (d.payQr) {
           const qx = x + w - 94;
           R.image(d.payQr.buffer, qx, y0 + 2, { fit: [94, 94] });
-          R.text(d.payQr.amountCarrying ? `Scan to pay ${money(d.sum.total)}` : "Scan to pay by UPI",
-            { size: TYPE.subLine, color: R.T.mid, x: qx - 20, y: y0 + 2 + 96 + 4, width: 114, align: "center", advance: false });
+          // the caption promises what the QR actually does — the account is
+          // right, the figure is theirs to enter (no amount is encoded)
+          R.text("Scan to pay by UPI \u2014 enter the amount", { size: TYPE.subLine, color: R.T.mid, x: qx - 20, y: y0 + 2 + 96 + 4, width: 114, align: "center", advance: false });
           // the caption never moves the cursor; the block's height is the
           // taller of the rows and the QR column
           if (R.y < y0 + 96 + 22) R.y = y0 + 96 + 22;
