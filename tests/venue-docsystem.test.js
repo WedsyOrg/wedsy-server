@@ -128,7 +128,10 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
     }
     ok(sumA === 1332500 && sumT === 1077500 && sumG === 193950 && sumL === 1526450,
       `Σ printed line values === printed totals (${sumA}/${sumT}/${sumG}/${sumL})`);
-    has(flatQ, "15,26,450", "the charged row's line-total column equals the per-line sum");
+    // CONFIRMDOC3 f1: charged + GST is a figure the money model has no name
+    // for — the subtotal's line-total cell is a DASH, and the unnamed figure
+    // appears NOWHERE on the document.
+    hasNot(flatQ, "15,26,450", "the charged row never prints the unnamed charged+GST figure");
 
     // ══ 3. QUOTE STATES ═════════════════════════════════════════════════════
     console.log("\n[3. quote states: no refundable / only refundable / 15 lines]");
@@ -164,7 +167,10 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
     console.log("\n[4. confirmation: parties, spaces, LINES, schedule — the revised anatomy]");
     const conf = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
     const flatC = pdfFlat(conf.buffer);
-    has(flatC, "Estate Lawn, Banyan Courtyard", "spaces allocated");
+    // CONFIRMDOC3 f9: one line PER SPACE — never a joined list
+    has(flatC, "Estate Lawn", "spaces allocated — first space, its own line");
+    has(flatC, "Banyan Courtyard", "…second space, its own line");
+    hasNot(flatC, "Estate Lawn, Banyan Courtyard", "…never joined into one line");
     // BOOKING 3 ruling: documents print rooms ONLY from the booking's
     // recorded allocation — never the enquiry's ask, never zero. This
     // fixture booking records nothing, so the Spaces & rooms section carries
@@ -538,6 +544,95 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       has(flatCd, "GSTIN 29AAGCA4821K1ZP", "…and the snapshot GSTIN");
       const confNoCd = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
       hasNot(pdfFlat(confNoCd.buffer), "Prithvi", "no snapshot → no address lines, nothing invented");
+    }
+
+    // ══ 11. CONFIRMDOC3 — the eleven findings, on bytes ═════════════════════
+    console.log("\n[11. confirmdoc3: hierarchy, window, brand-alone header, rooms lines, token line]");
+    {
+      const md = booking.toObject();
+      md.scheduleIncludesGst = true;
+      md.checkIn = new Date("2027-01-01T10:00:00+05:30");
+      md.checkOut = new Date("2027-01-03T00:00:00+05:30");
+      md.days = [
+        { date: new Date("2027-01-01"), eventType: "Wedding", guestCount: 150, spaces: ["Indoor Hall", "Big Lawn"] },
+        { date: new Date("2027-01-02"), eventType: "Wedding", guestCount: 400, spaces: ["Grand Ballroom", "Poolside Lawn"] },
+      ];
+      md.roomsAllocation = { mode: "counts", items: [
+        { name: "Deluxe", count: 8, total: 10 }, { name: "Lake Suite", count: 2, total: 2 }, { name: "Standard", count: 12, total: 20 },
+      ] };
+      md.lineItems = [
+        { label: "Venue rental", amount: 600000, gstTreatment: "part", taxableAmount: 200000, refundable: false },
+        { label: "Refundable deposit", amount: 25000, gstTreatment: "none", taxableAmount: 0, refundable: true },
+      ];
+      md.paymentSchedule = [
+        { _id: new mongoose.Types.ObjectId(), label: "Token — received", amount: 100000, dueDate: new Date("2026-09-09"), entries: [] },
+        { _id: new mongoose.Types.ObjectId(), label: "Balance", amount: 561000, dueDate: new Date("2026-12-01"), entries: [] },
+      ];
+      const conf3 = await buildVenueDocument("confirmation", { venue, lead, booking: md }, { compress: false, language: "classic" });
+      const flat3 = pdfFlat(conf3.buffer);
+      const pages3 = pdfPagesText(conf3.buffer);
+      // f2 + f3: the NAME is the title; the window is said; the sentiment is the whisper
+      has(flat3, "YOUR DATES ARE HELD", "f3: the sentiment is the eyebrow whisper");
+      has(flat3, "Booking confirmation", "f3: …and the document's NAME carries the weight");
+      ok(/1 . 3 January 2027/.test(flat3), "f2: the WINDOW is said — check-in to check-out");
+      // f4 + f5: the reference row keeps the confirmed date, drops the repeated
+      // name, and carries the searchable booking number near the top
+      const bookingRef = `Booking ${String(md._id).slice(-6).toUpperCase()}`;
+      ok(pages3[0].includes(bookingRef), "f5: the booking number is on page one, in the reference row");
+      ok((flat3.match(new RegExp("Booking Confirmation", "g")) || []).length === 0, "f4: the eyebrow is not repeated in the refs");
+      // f6 + f7: header carries the brand alone; the venue block carries the registrations
+      ok((normalise(flat3).match(/PAN AAGCA4821K/g) || []).length === 1, "f6/f7: PAN prints exactly once — the venue block, never the header");
+      // f9: rooms are count · category, one line each; ceilings and summaries gone
+      has(flat3, "8 · Deluxe", "f9: count · category");
+      has(flat3, "2 · Lake Suite", "…every category its own line");
+      hasNot(flat3, "8 of 10", "…ceilings are not on the couple's confirmation");
+      hasNot(flat3, "Rooms — all categories", "…and no summary that says the same thing twice");
+      hasNot(flat3, "Indoor Hall, Big Lawn", "…spaces never joined");
+      hasNot(flat3, "Entire property — Wedding", "…the function name stays off the space line");
+      // f10: the token row explains its split, in the schedule's voice
+      has(flat3, "payments cover the quote's taxed share first", "f10: the token row's one line");
+      // f11: the footer still reads well — name · contact · reference
+      has(pages3[0], "POWERED BY WEDSY", "f11: the footer's platform mark");
+      // no-GST: the token line is absent, and no zero prints under GST
+      const ng = booking.toObject();
+      ng.scheduleIncludesGst = true;
+      ng.lineItems = [{ label: "Venue rental", amount: 200000, gstTreatment: "none", taxableAmount: 0, refundable: false }];
+      ng.paymentSchedule = [
+        { _id: new mongoose.Types.ObjectId(), label: "Token — received", amount: 60000, dueDate: new Date("2026-09-09"), entries: [] },
+        { _id: new mongoose.Types.ObjectId(), label: "Balance", amount: 140000, dueDate: new Date("2026-12-01"), entries: [] },
+      ];
+      const confNg = await buildVenueDocument("confirmation", { venue, lead, booking: ng }, { compress: false, language: "classic" });
+      const flatNg = pdfFlat(confNg.buffer);
+      hasNot(flatNg, "taxed share first", "f10: no GST → the explanation line does not exist");
+      hasNot(flatNg, "Rs. 0", "no GST → no zero prints as a money figure");
+      // single-day: the single date stays, singular voice
+      const sd = booking.toObject();
+      sd.checkIn = new Date("2027-02-06T16:00:00+05:30");
+      sd.checkOut = new Date("2027-02-06T23:00:00+05:30");
+      sd.days = [{ date: new Date("2027-02-06"), eventType: "Engagement", guestCount: 80, spaces: ["Poolside Lawn"] }];
+      const confSd = await buildVenueDocument("confirmation", { venue, lead, booking: sd }, { compress: false, language: "classic" });
+      const flatSd = pdfFlat(confSd.buffer);
+      has(flatSd, "YOUR DATE IS HELD", "single day: singular voice");
+      has(flatSd, "6 February 2027 · For", "…and the single date, not a window");
+      // the f1 guard THROWS on a lying subtotal (doctored line figures)
+      let threw = false;
+      try {
+        const bad = booking.toObject();
+        bad.lineItems = [{ label: "Venue rental", amount: 100000, gstTreatment: "none", taxableAmount: 0, refundable: false }];
+        const assembled = require("../utils/docsystem/index");
+        // hand the renderer a priced set that disagrees with totals via a
+        // direct call — the assembler cannot produce this, which is the point
+        const { RENDERERS } = require("../utils/docsystem/documents");
+        const { Engine } = require("../utils/docsystem/engine");
+        const { LANGUAGES } = require("../utils/docsystem/languages");
+        const asm = require("../utils/docsystem/assemble").assembleConfirmation({ venue, lead, booking: bad, logoBuffer: null });
+        asm.priced = [{ label: "Doctored", amount: 999, taxable: 0, gst: 0, lineTotal: 999, refundable: false, treatment: "none" }];
+        const R = new Engine({ language: LANGUAGES.classic, identity: asm.identity, meta: asm.meta, compress: false });
+        await RENDERERS.confirmation(R, asm);
+      } catch (e) {
+        threw = /charged subtotal would lie/.test(e.message);
+      }
+      ok(threw, "f1 guard: a subtotal that would lie about charged fails generation");
     }
 
     console.log(`\n${pass} passed, ${fail} failed`);

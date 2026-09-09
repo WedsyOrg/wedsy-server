@@ -71,6 +71,20 @@ const DENSE_LINE_COLUMNS = (pct) => [
 ];
 
 function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
+  // PROVEN, NOT PRINTED (confirmdoc3 f1, the scheduleTotalsFor class again):
+  // the subtotal row is LABELLED "Charged — the venue's revenue", so its
+  // figures must BE that. The lines' own sums are asserted against the
+  // named totals before anything draws — a subtotal that lies about its
+  // label must fail generation, never ship.
+  const sumA = priced.reduce((s2, l) => s2 + l.amount, 0);
+  const sumT = priced.reduce((s2, l) => s2 + (l.taxable || 0), 0);
+  const sumG = priced.reduce((s2, l) => s2 + (l.gst || 0), 0);
+  if (sumA !== totals.charged || sumT !== totals.taxable || sumG !== totals.gst) {
+    throw new Error(
+      `the charged subtotal would lie: lines sum ${sumA}/${sumT}/${sumG} vs ` +
+      `charged ${totals.charged} / taxable ${totals.taxable} / gst ${totals.gst}`
+    );
+  }
   const columns = dense ? DENSE_LINE_COLUMNS(totals.pct) : LINE_COLUMNS(totals.pct);
   const rows = priced.map((l, i) => ({
     cells: dense ? {
@@ -90,17 +104,24 @@ function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
   }));
   rows.push({
     kind: "subtotal",
+    // The line-total column's sum (charged + GST) is a figure the money
+    // model has NO NAME for — it is not collectable (the deposit is missing)
+    // and not payable — and an unnamed near-miss of collectable under a
+    // revenue label is how misreadings start. A non-applicable money cell
+    // is an em dash (LANGUAGES.md §1) — so that is what it holds.
+    // A zero under TAXABLE or GST on a no-GST document is not a sum, it is
+    // noise — the non-applicable cell is a dash (§1), same as the line rows.
     cells: dense ? {
       line: { text: WORDING.chargedSubtotal, caps: true, size: 9, color: R.T.mid },
       amount: { text: money(totals.charged).replace("Rs. ", ""), bold: true },
-      gst: { text: money(totals.gst).replace("Rs. ", ""), bold: true },
-      total: { text: money(totals.charged + totals.gst).replace("Rs. ", ""), bold: true },
+      gst: totals.gst ? { text: money(totals.gst).replace("Rs. ", ""), bold: true } : DASH,
+      total: DASH,
     } : {
       line: { text: WORDING.chargedSubtotal, caps: true, size: 9, color: R.T.mid },
       amount: { text: money(totals.charged).replace("Rs. ", ""), bold: true },
-      taxable: { text: money(totals.taxable).replace("Rs. ", ""), bold: true },
-      gst: { text: money(totals.gst).replace("Rs. ", ""), bold: true },
-      total: { text: money(totals.charged + totals.gst).replace("Rs. ", ""), bold: true },
+      taxable: totals.taxable ? { text: money(totals.taxable).replace("Rs. ", ""), bold: true } : DASH,
+      gst: totals.gst ? { text: money(totals.gst).replace("Rs. ", ""), bold: true } : DASH,
+      total: DASH,
     },
   });
   R.table({ columns, rows, cellSize: dense ? TYPE.denseCell : TYPE.cell });
@@ -236,7 +257,7 @@ function scheduleTable(R, schedule, totals, { withState = false, payments = null
     cells: {
       instalment: { text: WORDING.sumsExactly, caps: true, size: 9, color: R.T.mid },
       payable: { text: money(totals.payable).replace("Rs. ", ""), bold: true },
-      gst: { text: money(totals.gst + totals.extrasGst).replace("Rs. ", ""), bold: true },
+      gst: (totals.gst + totals.extrasGst) ? { text: money(totals.gst + totals.extrasGst).replace("Rs. ", ""), bold: true } : DASH,
       collectable: { text: money(totals.collectable).replace("Rs. ", ""), bold: true },
     },
   });
@@ -394,14 +415,14 @@ async function renderConfirmation(R, d) {
   // about rooms — the heading included. "Spaces & rooms" naming rooms it
   // then stays silent about is a claim with no rows under it.
   R.sectionLabel(d.rooms && d.rooms.length ? "Spaces & rooms" : "Spaces");
+  // One line per space, one line per room category (count · name) — and no
+  // second column: the dates live in the fact strip directly above, and a
+  // column of dashes is noise, not information (confirmdoc3 f9).
   const srRows = [...(d.spaces || []), ...(d.rooms || [])];
   R.table({
     cellSize: TYPE.cell,
-    columns: [
-      { key: "space", label: "Allocated", width: 0.64 },
-      { key: "detail", label: "Detail", width: 0.36, align: "right" },
-    ],
-    rows: srRows.map((s, i) => ({ cells: { space: s.name, detail: { text: s.detail || DASH, color: R.T.mid } }, lastData: i === srRows.length - 1 })),
+    columns: [{ key: "space", label: "Allocated", width: 1 }],
+    rows: srRows.map((s, i) => ({ cells: { space: s.name }, lastData: i === srRows.length - 1 })),
   });
   R.sectionLabel("The agreed lines");
   pricedLinesTable(R, d.priced, d.totals);
@@ -416,12 +437,21 @@ async function renderConfirmation(R, d) {
     }
   }
   R.gap(SPACE.block);
-  R.ensure(240);
-  // no emphasis wrapper around the WHOLE stack — the emphasis belongs to
-  // Total payable itself, and totalsStack now asks the language for it there
-  R.text("The agreed amount", { font: "Times-Italic", size: TYPE.sectionLabel });
-  R.gap(8);
-  totalsStack(R, d.totals, R.margin, R.width);
+  // Reserve what the block MEASURES, not a guess: the flat ensure(240) broke
+  // the page whenever less than 240 was free, stranding a third of page one
+  // blank while the stack would have fit (confirmdoc3 f8). Draw once
+  // invisibly against a bottomless page to learn the true height, then
+  // reserve exactly that.
+  {
+    const drawAgreed = () => {
+      R.text("The agreed amount", { font: "Times-Italic", size: TYPE.sectionLabel });
+      R.gap(8);
+      totalsStack(R, d.totals, R.margin, R.width);
+    };
+    const h = R.measure_height(drawAgreed);
+    R.ensure(Math.min(h + 4, R.contentBottom - R.contentTop));
+    drawAgreed();
+  }
   R.gap(8);
   R.text("Anything added after this confirmation is an extra: it is billed as its own group and never changes the agreed amount above.", { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
   if (d.specialRequirements) {

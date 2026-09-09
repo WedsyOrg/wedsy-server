@@ -120,10 +120,12 @@ const confirmBody = (date, extras = {}) => ({
     const leadDoc = await VenueEnquiry.findById(leadCounts._id).lean();
     const conf = await buildVenueDocument("confirmation", { venue, lead: leadDoc, booking: bAll }, { compress: false, language: "classic" });
     const flatC = pdfFlat(conf.buffer);
-    // CONFIRMDOC anatomy: rooms are full-width rows ("Rooms — Deluxe · 4 of 6"),
-    // not the old fact-strip phrase — the counts-against-ceilings claim is the
-    // same, the shape moved with the ruled layout.
-    ok(flatC.includes("Deluxe") && flatC.includes("4 of 6") && flatC.includes("Lake Suite") && flatC.includes("All 2"), "🔴 confirmation prints counts against ceilings");
+    // CONFIRMDOC3 f9 (supersedes the ceilings display): the couple's
+    // confirmation prints COUNT AND CATEGORY per line — "4 · Deluxe" — and
+    // the ceilings stay internal. The STORED allocation still carries
+    // count/total (pinned above); only the couple-facing print changed.
+    ok(flatC.includes("4 · Deluxe") && flatC.includes("2 · Lake Suite"), "🔴 confirmation prints count · category, one line each");
+    ok(!flatC.includes("4 of 6"), "…ceilings stay off the couple's page");
     const quote = { lineItems: [{ label: "Venue", amount: 500000, gstTreatment: "none" }], gstPercent: 0, version: 1, createdAt: new Date() };
     const q = await buildVenueDocument("quote", { venue, lead: leadDoc, quote, booking: bAll }, { compress: false, language: "classic" });
     ok(pdfFlat(q.buffer).includes("4 of 6 Deluxe"), "🔴 the quote's rooms-allocated line renders (it had nothing before)");
@@ -133,7 +135,8 @@ const confirmBody = (date, extras = {}) => ({
     ok(!/rooms/i.test(flatSkip.replace(/Other rooms/g, "")), "🔴 skipped → the documents say NOTHING about rooms (no zero)");
     const allBooking = await VenueBooking.findOne({ enquiry: leadAll._id }).lean();
     const confAll = await buildVenueDocument("confirmation", { venue, lead: await VenueEnquiry.findById(leadAll._id).lean(), booking: allBooking }, { compress: false, language: "classic" });
-    ok(pdfFlat(confAll.buffer).includes("All 9 rooms"), "…and 'all rooms' prints as the whole property");
+    const flatAll = pdfFlat(confAll.buffer);
+    ok(flatAll.includes("6 · Deluxe") && flatAll.includes("2 · Lake Suite"), "…and 'all rooms' prints per category, count · name");
 
     // ══ 4. THE OVERLAP WARNING — time-level, warn-only, confirmed-only ══════
     console.log("\n[4. the overlap check]");

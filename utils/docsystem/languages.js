@@ -36,8 +36,13 @@ function rulePair(R, x1, x2, y) {
 }
 
 function registrationLines(identity) {
-  const right = [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null,
-    identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean);
+  // BRAND ALONE (confirmdoc3 f6): a document that carries its own venue
+  // block (the confirmation's parties block) tells the header to drop the
+  // tax registrations — they print once, in the block, not twice.
+  const right = identity.headerBrandOnly
+    ? [identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean)
+    : [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null,
+      identity.stateLine || [identity.phone, identity.email].filter(Boolean).join(" · ")].filter(Boolean);
   // the legal name leads the address block only when it differs from the
   // display name the masthead already carries (same rule as the footer)
   const legal = identity.legalName && identity.legalName !== identity.name ? identity.legalName : null;
@@ -251,7 +256,12 @@ const stationery = {
       R.text(identity.tagline, { size: 8, caps: true, tracking: 0.30, color: R.T.mid, x: margin, y: y + 5, width: R.width, align: "center", advance: false });
       y += 5 + 9;
     }
-    const reg = [identity.legalName, ...(identity.addressLines || []), identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null].filter(Boolean).join(" · ");
+    // brand-alone documents drop the registrations here too (see
+    // registrationLines) — Stationery composes its one line itself
+    const legal = identity.legalName && identity.legalName !== identity.name ? identity.legalName : null;
+    const reg = [legal, ...(identity.addressLines || []),
+      ...(identity.headerBrandOnly ? [] : [identity.pan ? `PAN ${identity.pan}` : null, identity.gstin ? `GSTIN ${identity.gstin}` : null]),
+    ].filter(Boolean).join(" · ");
     R.text(reg, { size: 8, caps: true, tracking: 0.18, color: R.T.mid, x: margin, y: y + 6, width: R.width, align: "center", advance: false });
     const bottom = y + 6 + 12 + 8;
     // closed by a 0.5px ink rule — the frame is gone; this rule holds the line
@@ -281,8 +291,15 @@ const stationery = {
     }
     R.text(m.title, { font: "Times-Roman", size: R.T.titleSize, align: "center", lineGap: 2 });
     {
-      // "presented to" already names the client — never say it twice
-      const subject = m.presentedTo && m.subject && m.subject.includes(m.presentedTo) ? null : m.subject;
+      // "presented to" already names the client — strip just that fragment,
+      // never the whole line (the held window must survive the dedupe)
+      let subject = m.subject;
+      if (m.presentedTo && subject && subject.includes(m.presentedTo)) {
+        subject = subject
+          .split(" \u00b7 ")
+          .filter((part) => !part.includes(m.presentedTo))
+          .join(" \u00b7 ") || null;
+      }
       if (subject) { R.gap(6); R.text(subject, { font: "Times-Italic", size: 13, color: R.T.mid, align: "center" }); }
     }
     if (m.refs && m.refs.length) {
