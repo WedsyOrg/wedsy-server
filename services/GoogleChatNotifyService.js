@@ -31,7 +31,7 @@
  *
  * THE WORDS ARE NOT IN HERE. utils/chatMessages.js owns them.
  */
-const { newLeadChatMessage, sourceLabel } = require("../utils/chatMessages");
+const { newLeadChatMessage } = require("../utils/chatMessages");
 
 // The OS base, for the deep link. NEVER a literal URL: staging and production
 // point at different hosts, and a hardcoded link would send the whole team to
@@ -78,15 +78,13 @@ const notifyNewLead = async (lead, { assignedToName = null } = {}) => {
       return { sent: false, reason: "no_lead" };
     }
 
-    // sourceLabel() turns the stored value into words, and resolves the
-    // instagram ad/DM collision via metaAdOrigin — see utils/chatMessages.js.
+    // The whole lead goes in: the message decides which lines it can fill from
+    // what is actually there, and resolves the instagram ad/DM collision via
+    // metaAdOrigin — see utils/chatMessages.js.
     const text = newLeadChatMessage({
-      name: lead.name,
-      phone: lead.phone,
-      sourceLabel: sourceLabel(lead),
+      lead,
       assignedToName,
       leadUrl: leadUrlFor(leadId),
-      instagramId: (lead.additionalInfo && lead.additionalInfo.instagramId) || null,
     });
 
     const res = await fetch(webhookUrl, {

@@ -31,42 +31,47 @@ const chatMessages = require("../utils/chatMessages");
 const { newLeadChatMessage, sourceLabel } = chatMessages;
 
 const URL = "https://os.example/leads/L1";
+const NOW = new Date("2026-09-10T12:00:00Z");
 
 // One lead per source shape, as they are ACTUALLY stored by each intake path.
 const SHAPES = {
   fbAd: {
     label: "Facebook ad form",
-    lead: { _id: "L1", name: "Priya & Arjun", phone: "+919876543210", source: "facebook_june_decor" },
+    lead: {
+      _id: "L1", name: "Priya & Arjun", phone: "+919876543210", source: "facebook_june_decor",
+      createdAt: new Date("2026-09-10T11:58:00Z"),
+      additionalInfo: { adFormAnswers: { state: "Karnataka", eventMonth: "between_3-6_months" } },
+    },
     assignedToName: "Anita",
   },
   metaAds: {
     label: "Meta Ads (the literal source value)",
-    lead: { _id: "L1", name: "Riya", phone: "919876500011", source: "Meta Ads" },
+    lead: { _id: "L1", name: "Riya", phone: "919876500011", source: "Meta Ads", createdAt: NOW },
     assignedToName: "Anita",
   },
   igAd: {
     label: "Instagram AD lead (no DM fingerprint)",
-    lead: { _id: "L1", name: "Sneha", phone: "+919876500012", source: "instagram", additionalInfo: { adFormAnswers: { city: "Mysore" } } },
+    lead: { _id: "L1", name: "Sneha", phone: "+919876500012", source: "instagram", createdAt: NOW, additionalInfo: { adFormAnswers: { city: "Mysore" } } },
     assignedToName: "Anita",
   },
   igDm: {
     label: "Instagram DM, NO PHONE — the placeholder shape",
-    lead: { _id: "L1", name: "sneha.weds", phone: "ig:17841400000001", source: "instagram", additionalInfo: { instagramId: "17841400000001", awaitingNumber: true } },
+    lead: { _id: "L1", name: "sneha.weds", phone: "ig:17841400000001", source: "instagram", createdAt: NOW, additionalInfo: { instagramId: "17841400000001", awaitingNumber: true } },
     assignedToName: null,
   },
   whatsapp: {
     label: "WhatsApp (Kiara is already replying)",
-    lead: { _id: "L1", name: "WhatsApp 3210", phone: "919876543210", source: "whatsapp" },
+    lead: { _id: "L1", name: "WhatsApp 3210", phone: "919876543210", source: "whatsapp", createdAt: NOW },
     assignedToName: "Ravi",
   },
   website: {
     label: "Website form",
-    lead: { _id: "L1", name: "Meera", phone: "+919876500013", source: "Website" },
+    lead: { _id: "L1", name: "Meera", phone: "+919876500013", source: "Website", createdAt: NOW },
     assignedToName: "Anita",
   },
   signup: {
     label: "User signup",
-    lead: { _id: "L1", name: "Kavya", phone: "919876500014", source: "User Signup (Account Creation)" },
+    lead: { _id: "L1", name: "Kavya", phone: "919876500014", source: "User Signup (Account Creation)", createdAt: NOW },
     assignedToName: null,
   },
   noPhone: {
@@ -76,13 +81,12 @@ const SHAPES = {
   },
 };
 
-const render = (k) => newLeadChatMessage({
-  name: SHAPES[k].lead.name,
-  phone: SHAPES[k].lead.phone,
-  sourceLabel: sourceLabel(SHAPES[k].lead),
+const render = (k, over = {}) => newLeadChatMessage({
+  lead: SHAPES[k].lead,
   assignedToName: SHAPES[k].assignedToName,
   leadUrl: URL,
-  instagramId: SHAPES[k].lead.additionalInfo?.instagramId || null,
+  now: NOW,
+  ...over,
 });
 
 try {
@@ -150,10 +154,52 @@ try {
     ok(!wa.includes("Instagram"), "…and carries no Instagram line it does not have");
   }
 
-  console.log("\n5. OWNERSHIP READS CORRECTLY EITHER WAY");
+  console.log("\n5. THE HEADER AND THE URGENCY SPLIT BY SOURCE");
   {
-    ok(render("fbAd").includes("Anita"), "an assigned lead names the owner");
-    ok(/triage|unassigned|grab/i.test(render("igDm")), "an unassigned lead says it is in triage");
+    // Ad and website leads are COLD and silent — nobody has spoken to them, so
+    // the five minutes is real and the alert marker earns its place.
+    for (const k of ["fbAd", "metaAds", "igAd", "website", "signup"]) {
+      const m = render(k);
+      ok(m.startsWith("🚨 NEW LEAD — "), `${k}: header is the 🚨 alert marker`);
+      ok(m.includes("⚡ Call within 5 minutes"), `${k}: carries the ⚡ line`);
+      ok(!m.includes("💬"), `${k}: and no Kiara line — nobody is talking to them`);
+    }
+    // WhatsApp and Instagram DM are the opposite: Kiara is ALREADY replying, so
+    // "call within 5 minutes" would interrupt a conversation that is going fine
+    // — and on an IG DM lead there is often no number to call at all.
+    for (const k of ["whatsapp", "igDm"]) {
+      const m = render(k);
+      ok(m.startsWith("🔔 NEW LEAD — "), `${k}: header is the quieter 🔔`);
+      ok(!m.includes("⚡"), `${k}: no ⚡ — Kiara is mid-conversation`);
+      ok(m.includes("💬 Kiara is already replying"), `${k}: says so instead`);
+    }
+    ok(render("fbAd").startsWith("🚨 NEW LEAD — Facebook Ad"),
+      "the header names the source");
+    ok(render("whatsapp").startsWith("🔔 NEW LEAD — WhatsApp"), "…on both variants");
+  }
+
+  console.log("\n6. THE CONTEXT AND TIME LINES");
+  {
+    const ctx = render("fbAd");
+    ok(ctx.includes("📍 Karnataka · Wedding in 3-6 months"),
+      "📍 carries location · timeline from the form answers");
+    ok(!render("whatsapp").includes("📍"),
+      "a WhatsApp lead with no answers shows NO 📍 line at all");
+
+    ok(render("fbAd", { now: new Date(SHAPES.fbAd.lead.createdAt.getTime() + 2 * 60000) }).includes("🕒 2 min ago"),
+      "🕒 reads as '2 min ago'");
+    ok(render("fbAd", { now: SHAPES.fbAd.lead.createdAt }).includes("🕒 just now"),
+      "…and 'just now' when it has only landed");
+    ok(!render("noPhone").includes("🕒"),
+      "a lead with no createdAt shows no 🕒 line rather than an empty one");
+  }
+
+  console.log("\n7. OWNERSHIP READS CORRECTLY EITHER WAY");
+  {
+    ok(render("fbAd").includes("🙋 Anita"), "an assigned lead names the owner on the 🙋 line");
+    ok(render("igDm").includes("🙋 Unassigned — sitting in triage, grab it"),
+      "an unassigned lead reads as triage, in those exact words");
+    ok(render("fbAd").includes("👤 Priya & Arjun"), "and 👤 is the LEAD, not the owner");
   }
 
   // ── What a person will actually see ──────────────────────────────────────

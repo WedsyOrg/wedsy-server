@@ -76,12 +76,20 @@ const sampleLead = (over = {}) => ({
       const { newLeadChatMessage } = chatMessages;
       ok(typeof newLeadChatMessage === "function", "newLeadChatMessage is exported");
       if (typeof newLeadChatMessage === "function") {
+        // The function takes the LEAD and decides which lines it can fill.
+        // Per-source rendering is covered in full by chat-notify-sources.test.js;
+        // what this suite owns is that the transport carries what it produces.
         const args = {
-          name: "Priya & Arjun",
-          phone: "+919876543210",
-          sourceLabel: require("../utils/chatMessages").sourceLabel({ source: "facebook_june_decor" }),
+          lead: {
+            _id: "abc123",
+            name: "Priya & Arjun",
+            phone: "+919876543210",
+            source: "facebook_june_decor",
+            createdAt: new Date("2026-09-10T12:00:00Z"),
+          },
           assignedToName: "Anita",
           leadUrl: "https://os.example/leads/abc123",
+          now: new Date("2026-09-10T12:00:00Z"),
         };
         const a = newLeadChatMessage(args);
         const b = newLeadChatMessage(args);

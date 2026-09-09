@@ -112,49 +112,121 @@ const displayPhone = (phone) => {
   return raw;
 };
 
+// ── WHICH SOURCES ARE COLD ─────────────────────────────────────────────────
+// An ad or website lead is COLD and silent: nobody has spoken to them, so the
+// five minutes is real and 🚨 earns its place. A WhatsApp or Instagram DM lead
+// is the opposite — Kiara is ALREADY replying, so "call within 5 minutes" would
+// have a rep interrupt a conversation that is going fine. Worse, on an IG DM
+// lead there is frequently no number to call at all, which makes it an
+// instruction that cannot be followed.
+//
+// Firing 🚨 on every lead is how a team learns the marker means nothing, which
+// then costs you the ad leads where it did matter. So the two get different
+// headers and different closing lines.
+const KIARA_ENGAGED = new Set(["WhatsApp", "Instagram DM"]);
+
+/** "just now" / "2 min ago" / "3 h ago" / "2 d ago". Pure — `now` is injected. */
+function relativeTime(from, now = new Date()) {
+  if (!from) return null;
+  const then = from instanceof Date ? from : new Date(from);
+  if (Number.isNaN(then.getTime())) return null;
+  const mins = Math.floor((now.getTime() - then.getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins === 1) return "1 min ago";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
+
+// A month BAND from an ad form ("between_3-6_months") is not a date — see the
+// exclusion in DiscoveryService, which refuses to let one satisfy the discovery
+// gate. It is still the most useful thing to show a rep at a glance, so it is
+// phrased as the approximation it is.
+const humaniseTimeline = (raw) => {
+  const v = String(raw || "").trim();
+  if (!v) return null;
+  const m = v.match(/^between_(\d+)-(\d+)_months?$/i);
+  if (m) return `Wedding in ${m[1]}-${m[2]} months`;
+  const b = v.match(/^beyond_(\d+)_months?$/i);
+  if (b) return `Wedding beyond ${b[1]} months`;
+  const w = v.match(/^within_(\d+)_months?$/i);
+  if (w) return `Wedding within ${w[1]} months`;
+  return humanise(v.replace(/_/g, " "));
+};
+
+// BEST-EFFORT READ of a free-form bucket. adFormAnswers is whatever the form
+// sent, so the key names are not guaranteed — the first non-empty candidate
+// wins and NOTHING is shown when none is found. That is the degrade rule: an
+// absent 📍 line is honest, a "📍 " with nothing after it is not.
+const LOCATION_KEYS = ["state", "city", "location", "area", "region"];
+const TIMELINE_KEYS = ["eventMonth", "weddingDate", "eventDate", "timeline", "date"];
+const firstOf = (answers, keys) => {
+  for (const k of keys) {
+    const v = answers && answers[k];
+    if (v !== undefined && v !== null && String(v).trim()) return String(v).trim();
+  }
+  return null;
+};
+
 /**
  * The new-lead ping.
  *
- * Ordered by what the reader does with it: WHO it is, HOW to reach them, then
- * the context (where they came from, whose lead it is), then the way in. The
- * name leads because that is what someone scanning a busy room of messages
- * recognises; the link is last because it is what they click after deciding to
- * act, not before.
+ * Ordered by what the reader does with it: what kind of alert this is, WHO it
+ * is, HOW to reach them, the context, whose it is and how fresh, what to do,
+ * then the way in. The link is last because it is what they click after
+ * deciding to act, not before.
  *
- * Every line except the name, source, ownership and link is CONDITIONAL.
+ * EVERY LINE EXCEPT THE HEADER, 👤, 🙋 AND 🔗 IS CONDITIONAL. A label with
+ * nothing after it reads as a system that lost the value rather than one that
+ * never had it, so a missing field removes its line entirely.
+ *
+ * The emoji names the field, so the labels Make carries ("Phone:", "Source:")
+ * are dropped as redundant.
  *
  * @param {object}  args
- * @param {string}  args.name            the lead's name as captured
- * @param {?string} args.phone           raw stored value; omitted if unusable
- * @param {string}  args.sourceLabel     already humanised — sourceLabel(lead)
- * @param {?string} args.assignedToName  null when it landed in triage
- * @param {string}  args.leadUrl         deep link, already built by the caller
- * @param {?string} [args.instagramId]   shown when there is no phone to show
+ * @param {object}  args.lead             the lead document
+ * @param {?string} args.assignedToName   null when it landed in triage
+ * @param {string}  args.leadUrl          deep link, already built by the caller
+ * @param {Date}    [args.now]            injected so the 🕒 line is testable
  * @returns {string}
  */
-function newLeadChatMessage({ name, phone, sourceLabel: label, assignedToName, leadUrl, instagramId = null }) {
-  const who = String(name || "").trim() || "Unnamed lead";
-  const dialable = displayPhone(phone);
+function newLeadChatMessage({ lead = {}, assignedToName, leadUrl, now = new Date() }) {
+  const label = sourceLabel(lead);
+  const engaged = KIARA_ENGAGED.has(label);
+
+  const who = String(lead.name || "").trim() || "Unnamed lead";
+  const dialable = displayPhone(lead.phone);
+  const answers = (lead.additionalInfo && lead.additionalInfo.adFormAnswers) || {};
+  const instagramId = (lead.additionalInfo && lead.additionalInfo.instagramId) || null;
+
+  const context = [firstOf(answers, LOCATION_KEYS), humaniseTimeline(firstOf(answers, TIMELINE_KEYS))]
+    .filter(Boolean)
+    .join(" · ");
+
   // An unassigned lead is not a broken one — it is in triage and needs someone
-  // to grab it, which is a DIFFERENT call to action. "Assigned to: null" would
-  // be both ugly and wrong, so the line changes rather than the value.
+  // to grab it, which is a DIFFERENT call to action. "🙋 null" would be both
+  // ugly and wrong, so the line changes rather than the value.
   const ownership = assignedToName
-    ? `Assigned to ${assignedToName}`
+    ? String(assignedToName)
     : "Unassigned — sitting in triage, grab it";
-  const where = String(label || "").trim();
+  const when = relativeTime(lead.createdAt, now);
 
   return [
-    `🔔 New lead: ${who}`,
+    `${engaged ? "🔔" : "🚨"} NEW LEAD — ${label}`,
+    `👤 ${who}`,
     dialable ? `📞 ${dialable}` : null,
     // Only worth a line when there is no phone: for a lead we CAN call, the
     // Instagram id is noise. For one we cannot, it is the only way to reach them.
     !dialable && instagramId ? `📷 Instagram ID: ${instagramId}` : null,
-    where ? `📍 ${where}` : null,
-    `👤 ${ownership}`,
+    context ? `📍 ${context}` : null,
+    `🙋 ${ownership}`,
+    when ? `🕒 ${when}` : null,
+    engaged ? "💬 Kiara is already replying" : "⚡ Call within 5 minutes",
     `🔗 ${leadUrl}`,
   ]
     .filter(Boolean)
     .join("\n");
 }
 
-module.exports = { newLeadChatMessage, sourceLabel, displayPhone, humanise };
+module.exports = { newLeadChatMessage, sourceLabel, displayPhone, humanise, relativeTime, humaniseTimeline };

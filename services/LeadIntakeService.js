@@ -218,10 +218,13 @@ const afterCreate = async (enquiryId, { explicitAssignee = null, actorId = null 
   // itself is built never to throw at all — three layers, because a Chat outage
   // taking down lead intake would be an absurd way to lose business.
   try {
-    // additionalInfo.instagramId is projected because the source label needs it:
-    // bare "instagram" WITH it is an organic DM, without it is an ad.
+    // Projected because the message needs them: instagramId resolves the source
+    // label (bare "instagram" WITH it is an organic DM, without it is an ad),
+    // adFormAnswers fills the 📍 context line, createdAt fills the 🕒 line.
+    // A field that is not projected renders as a missing line, not a wrong one.
     const lead = await Enquiry.findById(enquiryId, {
-      name: 1, phone: 1, source: 1, "additionalInfo.instagramId": 1,
+      name: 1, phone: 1, source: 1, createdAt: 1,
+      "additionalInfo.instagramId": 1, "additionalInfo.adFormAnswers": 1,
     }).lean();
     if (lead) {
       require("./GoogleChatNotifyService")
