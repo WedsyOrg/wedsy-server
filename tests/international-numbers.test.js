@@ -206,6 +206,49 @@ const ORIGINAL_CC = process.env.DEFAULT_COUNTRY_CODE;
       }
     }
 
+    // ══ E. THE DISPATCHER'S WhatsApp LEGS ════════════════════════════════════
+    console.log("\nE. NotificationService BUILDS A CLEAN wa DESTINATION");
+    {
+      // Both legs used to pass the stored phone VERBATIM. A stored
+      // "+91 98765 43210" therefore reached Meta as a `to` with spaces in it —
+      // broken for domestic numbers too, not only international ones. The
+      // digits-only shape is the one controllers/auth.international.js:53
+      // already produces for this same function, so the "+" question is
+      // settled by precedent rather than by guessing.
+      process.env.AISENSY_API_URL = "https://stub.invalid/aisensy";
+
+      reset();
+      // et_reciept carries BOTH an AiSensy campaign and an SMS template.
+      NotificationService.send("event_pmnt_rmnd", { phone: "+91 98765 43210", name: "Priya", variables: ["x"] });
+      await new Promise((r) => setTimeout(r, 50));
+      const aisensy = sent.sms.find((c) => String(c.url).includes("aisensy"));
+      ok(!!aisensy, "the AiSensy leg fired");
+      if (aisensy) {
+        const dest = JSON.parse(aisensy.data).destination;
+        eq(dest, "919876543210", "AiSensy gets digits only — no '+', no spaces");
+        ok(!/[^0-9]/.test(dest), "…nothing but digits");
+      }
+
+      reset();
+      // user_signup_greet carries a metaTemplate — the Meta Cloud API leg.
+      NotificationService.send("user_signup_greet", { phone: "+91 98765 43210", name: "Priya", variables: ["Priya"] });
+      await new Promise((r) => setTimeout(r, 50));
+      const metaDest = (sent.whatsapp[0] || [])[0];
+      eq(metaDest, "919876543210", "the Meta template leg gets the same digits-only shape");
+
+      reset();
+      NotificationService.send("user_signup_greet", { phone: "+971 50 123 4567", name: "Sara", variables: ["Sara"] });
+      await new Promise((r) => setTimeout(r, 50));
+      eq((sent.whatsapp[0] || [])[0], "971501234567",
+        "…and an international number keeps its OWN code, spaces stripped");
+
+      reset();
+      NotificationService.send("user_signup_greet", { phone: "ig:17841400000001", name: "X", variables: ["X"] });
+      await new Promise((r) => setTimeout(r, 50));
+      eq(sent.whatsapp.length, 0, "an ig: placeholder produces no WhatsApp send at all");
+      ok(logs.some((l) => l.includes("[notify] SKIPPED")), "…and says so");
+    }
+
     console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   } catch (e) {
     console.error("suite crashed:", e && e.stack ? e.stack : e);
