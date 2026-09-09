@@ -222,6 +222,10 @@ function decomposeGstInsideRows(rows, totals) {
       : Math.round((taxedHere * 100) / (100 + pct));
     r.gst = taxedHere - taxable;
     r.payable = r.collectable - r.gst;
+    // the row's taxable slice, kept so the milestone INVOICE can render the
+    // same decomposition the schedule prints — one implementation, no
+    // recomputation at the invoice's end (founder ruling, invoicedoc)
+    r.taxableShare = taxable;
     taxedCovered += taxedHere;
     taxableCovered += taxable;
   }
