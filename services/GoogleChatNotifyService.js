@@ -31,7 +31,7 @@
  *
  * THE WORDS ARE NOT IN HERE. utils/chatMessages.js owns them.
  */
-const { newLeadChatMessage } = require("../utils/chatMessages");
+const { newLeadChatMessage, sourceLabel } = require("../utils/chatMessages");
 
 // The OS base, for the deep link. NEVER a literal URL: staging and production
 // point at different hosts, and a hardcoded link would send the whole team to
@@ -59,7 +59,8 @@ const log = (msg) => console.log(redact(`[chat-notify] ${msg}`));
 /**
  * Post the new-lead ping. NEVER THROWS.
  *
- * @param {object}  lead              needs _id, name, phone, source
+ * @param {object}  lead              needs _id, name, phone, source,
+ *                                    and additionalInfo for the IG split
  * @param {object}  [opts]
  * @param {?string} [opts.assignedToName]  null when the lead is in triage
  * @returns {Promise<{sent: boolean, reason?: string, status?: number}>}
@@ -77,12 +78,15 @@ const notifyNewLead = async (lead, { assignedToName = null } = {}) => {
       return { sent: false, reason: "no_lead" };
     }
 
+    // sourceLabel() turns the stored value into words, and resolves the
+    // instagram ad/DM collision via metaAdOrigin — see utils/chatMessages.js.
     const text = newLeadChatMessage({
       name: lead.name,
       phone: lead.phone,
-      source: lead.source,
+      sourceLabel: sourceLabel(lead),
       assignedToName,
       leadUrl: leadUrlFor(leadId),
+      instagramId: (lead.additionalInfo && lead.additionalInfo.instagramId) || null,
     });
 
     const res = await fetch(webhookUrl, {

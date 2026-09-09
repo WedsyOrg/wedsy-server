@@ -79,7 +79,7 @@ const sampleLead = (over = {}) => ({
         const args = {
           name: "Priya & Arjun",
           phone: "+919876543210",
-          source: "facebook_june_decor",
+          sourceLabel: require("../utils/chatMessages").sourceLabel({ source: "facebook_june_decor" }),
           assignedToName: "Anita",
           leadUrl: "https://os.example/leads/abc123",
         };
@@ -91,7 +91,11 @@ const sampleLead = (over = {}) => ({
         ok(a.includes("+919876543210"),
           "the FULL phone is in it, unmasked — staff copy it to dial");
         ok(!/\*{3,}|x{4,}|X{4,}/.test(a), "…and nothing in it is masked");
-        ok(a.includes("facebook_june_decor"), "the source is in it");
+        // The RAW slug is deliberately no longer shown — sourceLabel() humanises
+        // it (asserted in full by tests/chat-notify-sources.test.js). What this
+        // suite still owns is that the source reaches the message at all.
+        ok(a.includes("Facebook Ad — June Decor"), "the source is in it, in human words");
+        ok(!a.includes("facebook_june_decor"), "…and not as the raw stored slug");
         ok(a.includes("Anita"), "who it was assigned to is in it");
         ok(a.includes("https://os.example/leads/abc123"), "and the link to the lead");
 
@@ -130,7 +134,7 @@ const sampleLead = (over = {}) => ({
       ok(typeof body.text === "string" && body.text.length > 0, "with a text body");
       ok(body.text.includes("Priya & Arjun"), "…carrying the lead name");
       ok(body.text.includes("+919876543210"), "…the full phone");
-      ok(body.text.includes("facebook_june_decor"), "…the source");
+      ok(body.text.includes("Facebook Ad — June Decor"), "…the source, humanised");
       ok(body.text.includes("Anita"), "…the assignee");
       ok(body.text.includes("https://os.example/leads/6aa03d362c0ca70189c8879c"),
         "…and a deep link to that exact lead");

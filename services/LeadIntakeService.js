@@ -218,7 +218,11 @@ const afterCreate = async (enquiryId, { explicitAssignee = null, actorId = null 
   // itself is built never to throw at all — three layers, because a Chat outage
   // taking down lead intake would be an absurd way to lose business.
   try {
-    const lead = await Enquiry.findById(enquiryId, { name: 1, phone: 1, source: 1 }).lean();
+    // additionalInfo.instagramId is projected because the source label needs it:
+    // bare "instagram" WITH it is an organic DM, without it is an ad.
+    const lead = await Enquiry.findById(enquiryId, {
+      name: 1, phone: 1, source: 1, "additionalInfo.instagramId": 1,
+    }).lean();
     if (lead) {
       require("./GoogleChatNotifyService")
         .notifyNewLead(lead, { assignedToName: assignee && assignee.name ? assignee.name : null })
