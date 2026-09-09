@@ -589,13 +589,24 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       ok((normalise(flat3).match(/GSTIN 29AAGCA4821K1ZP/g) || []).length >= 1 && !pages3.slice(1).some((pg) => pg.includes("Hesaraghatta")), "f6: page two's header carries no address");
       ok(!pages3.slice(1).some((pg) => normalise(pg).includes("PAN AAGCA4821K")), "f6: …and no PAN");
       ok((flat3.match(/\+91 80 4718 2200/g) || []).length === conf3.pages + 1, "f6: the phone appears once per footer plus once in the venue block — never the header");
-      // and the documents that RELY on their header keep their registrations
-      for (const type of ["quote", "invoice", "statement", "receipt"]) {
-        const built = await buildVenueDocument(type, { venue, lead, booking, quote, summary, paymentId: P2, invoice: mkInvoice(`Hdr ${type}`, 100000, 100000, 18000) }, { compress: false, language: "classic" });
-        const f = normalise(pdfFlat(built.buffer));
-        ok(f.includes("PAN AAGCA4821K") || f.includes("GSTIN 29AAGCA4821K1ZP") || type === "invoice",
-          `${type}: no venue block → the header still carries the registrations`);
-        if (type !== "invoice") ok(f.includes("Hesaraghatta Main Road"), `${type}: …and the address`);
+      // ONE HEADER, ONE PARTIES BLOCK (founder ruling, invoicedoc): every
+      // document's header is the brand alone, and every document's parties
+      // block carries the registrations — EXACTLY ONCE, on page one, never
+      // on a later page's header. Asserted per document, per language.
+      for (const language of LANGUAGE_NAMES) {
+        for (const type of ["quote", "confirmation", "statement", "receipt"]) {
+          const built = await buildVenueDocument(type, { venue, lead, booking, quote, summary, paymentId: P2 }, { compress: false, language });
+          const f = normalise(pdfFlat(built.buffer));
+          const pgs = pdfPagesText(built.buffer);
+          ok((f.match(/PAN AAGCA4821K/g) || []).length === 1, `${language} × ${type}: PAN exactly once — the parties block`);
+          ok((f.match(/Hesaraghatta Main Road/g) || []).length === 1, `${language} × ${type}: the address exactly once`);
+          ok(!pgs.slice(1).some((pg) => pg.includes("Hesaraghatta") || normalise(pg).includes("PAN AAGCA4821K")),
+            `${language} × ${type}: later pages' headers carry neither`);
+        }
+        const taxInv = await buildVenueDocument("invoice", { venue, lead, booking, invoice: mkInvoice(`Hd ${language}`, 100000, 100000, 18000) }, { compress: false, language });
+        const fi = normalise(pdfFlat(taxInv.buffer));
+        ok((fi.match(/PAN AAGCA4821K/g) || []).length === 1 && (fi.match(/GSTIN 29AAGCA4821K1ZP/g) || []).length === 1,
+          `${language} × tax invoice: PAN and venue GSTIN exactly once — a tax invoice is never left without them`);
       }
       // f9: rooms are count · category, one line each; ceilings and summaries gone
       has(flat3, "8 · Deluxe", "f9: count · category");
@@ -648,6 +659,100 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
         threw = /charged subtotal would lie/.test(e.message);
       }
       ok(threw, "f1 guard: a subtotal that would lie about charged fails generation");
+    }
+
+    // ══ 12. THE INVOICE FINDINGS + THE AMOUNT-CARRYING QR ═══════════════════
+    console.log("\n[12. invoicedoc: title follows the line, window, B2C, the QR pays the invoice's own figure]");
+    {
+      const { PNG } = require("pngjs");
+      const jsQR = require("jsqr");
+      const decodeQr = (buf) => {
+        const png = PNG.sync.read(buf);
+        const r = jsQR(new Uint8ClampedArray(png.data), png.width, png.height);
+        return r ? r.data : null;
+      };
+      const bankVenue = venue.toObject();
+      bankVenue.bankDetails = { accountName: "Aranya Estate LLP", accountNumber: "50100987654321", ifsc: "HDFC0001234", bankName: "HDFC Bank", branch: "MG Road", upiId: "aranyaestate@icici" };
+      // a milestone-backed invoice whose stored kind lies (the audited path)
+      const mInv = {
+        invoiceNumber: `${TAG}-M1`, kind: "final", gstMode: "exclusive", gstPercent: 18, createdAt: new Date(),
+        forMilestoneId: new mongoose.Types.ObjectId(), billedTo: { name: "Ananya Rao & Karthik Menon", gstin: "" },
+        lineItems: [{ label: "First instalment — Ananya Rao & Karthik Menon", qty: 1, unitPrice: 400000, taxable: 320000, gst: 57600 }],
+        totals: { subtotal: 400000, taxable: 320000, gst: 57600, grandTotal: 457600 },
+        dueDate: new Date("2026-11-01"),
+      };
+      const cdBooking12 = booking.toObject();
+      cdBooking12.clientDetails = { house: "14 Prithvi Enclave", street: "8th Cross, Malleswaram", city: "Bengaluru", pincode: "560003", gstin: "" };
+      const built = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking: cdBooking12, invoice: mInv }, { compress: false, language: "classic" });
+      const f = pdfFlat(built.buffer);
+      has(f, "First instalment", "f4: the title follows the LINE, not the lying stored kind");
+      hasNot(f, "Final instalment", "…'Final instalment' is gone");
+      hasNot(f, "First instalment — Ananya", "f4: the couple's name is the addressee, not part of the charge");
+      ok(/Event 21 . 22 November 2026/.test(f), "f7: the event WINDOW is on the invoice — check-in to check-out");
+      has(f, "unregistered (B2C)", "f5: the unregistered case stated explicitly in the client block");
+      has(f, "14 Prithvi Enclave", "f5: the client's address renders when the booking holds it");
+      has(f, "REMIT TO", "f8: bank details in the designed remit slot");
+      // f9: the QR pays the invoice's own figure — decoded, not trusted
+      ok(built.data.payQr && built.data.payQr.amountCarrying, "f9: an amount-carrying QR generated (venue has a UPI ID)");
+      const decoded = decodeQr(built.data.payQr.buffer);
+      ok(decoded === built.data.payQr.upiString, "…the embedded buffer decodes to its own payload");
+      ok(decoded.includes("&am=457600"), `🔴 the QR pays EXACTLY the amount due (${decoded.match(/am=\d+/)})`);
+      ok(decoded.includes(`&tn=${encodeURIComponent(mInv.invoiceNumber)}`), "…and names the invoice");
+      ok(built.buffer.toString("latin1").includes("/Subtype /Image"), "…and an image object is actually embedded in the PDF");
+      // uploaded-QR venue: falls back to the stored image, no amount inside
+      const upVenue = venue.toObject();
+      upVenue.upiQr = { dataUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", source: "uploaded", upiString: "" };
+      const upBuilt = await buildVenueDocument("invoice", { venue: upVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-M2`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language: "classic" });
+      ok(upBuilt.data.payQr && !upBuilt.data.payQr.amountCarrying, "f9 catch 1: an uploaded QR renders as stored — no amount can be put inside it");
+      // a payment-backed invoice evidences money RECEIVED — no pay-QR at all
+      const payBuilt = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-M3`, forMilestoneId: null, forPaymentId: new mongoose.Types.ObjectId() } }, { compress: false, language: "classic" });
+      ok(!payBuilt.data.payQr, "a payment-backed invoice carries no pay-QR — that money already arrived");
+      // no bank, no stored QR → nothing
+      const bare = await buildVenueDocument("invoice", { venue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-M4`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language: "classic" });
+      ok(!bare.data.payQr, "no UPI ID and no stored QR → no block, nothing invented");
+      // a REGISTERED client: their GSTIN prints, the B2C line does not
+      const regBuilt = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking, invoice: { ...mInv, invoiceNumber: `${TAG}-M5`, forMilestoneId: new mongoose.Types.ObjectId(), billedTo: { name: "Acme Events LLP", gstin: "29AAGCA4821K1ZP" } } }, { compress: false, language: "classic" });
+      const fr = pdfFlat(regBuilt.buffer);
+      has(fr, "GSTIN 29AAGCA4821K1ZP", "a registered client's GSTIN prints in the client block");
+      hasNot(fr, "unregistered (B2C)", "…and the B2C line does not");
+      // the ORDINARY invoice: no register fact anywhere, either side
+      const ordBuilt = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking, invoice: {
+        invoiceNumber: `${TAG}-ORD2`, kind: "final", gstMode: "none", gstPercent: 0, createdAt: new Date(), stream: "untaxed",
+        forMilestoneId: new mongoose.Types.ObjectId(), billedTo: { name: "Ananya Rao & Karthik Menon", gstin: "" },
+        lineItems: [{ label: "Payment received — Balance", qty: 1, unitPrice: 50000, taxable: 0, gst: 0 }],
+        totals: { subtotal: 50000, taxable: 0, gst: 0, grandTotal: 50000 },
+      } }, { compress: false, language: "classic" });
+      const fo = normalise(pdfFlat(ordBuilt.buffer));
+      hasNot(fo, "PAN AAGCA4821K", "ordinary: no PAN anywhere — either side");
+      hasNot(fo, "GSTIN", "ordinary: no GSTIN anywhere — either side");
+      has(fo, "Hesaraghatta Main Road", "…the venue's address still prints (identity, not registration)");
+    }
+
+    // ══ 13. THE GENERATION DATE — every document, beside its event date ═════
+    console.log("\n[13. Generated <today> on all five; event dates unchanged and distinct]");
+    {
+      const today = require("../utils/docsystem/shared").dateProse(new Date());
+      for (const language of LANGUAGE_NAMES) {
+        for (const type of ["quote", "confirmation", "invoice", "statement", "receipt"]) {
+          const inputs = { venue, lead, booking, quote, summary, paymentId: P2, invoice: mkInvoice(`G ${language} ${type}`, 100000, 100000, 18000) };
+          const built = await buildVenueDocument(type, inputs, { compress: false, language });
+          const flat = pdfFlat(built.buffer);
+          has(flat, `Generated ${today}`, `${language} × ${type}: the copy says when it was made`);
+        }
+      }
+      // the event dates are UNCHANGED and distinguishable from the generation
+      // date — different labels, and (where stored) different instants
+      const qb = await buildVenueDocument("quote", { venue, lead, quote }, { compress: false, language: "classic" });
+      const fq = pdfFlat(qb.buffer);
+      has(fq, "Issued", "quote: the stored issue date stays, its own label");
+      const cb = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
+      has(pdfFlat(cb.buffer), "Confirmed", "confirmation: Confirmed stays — a regenerated copy still says when it was confirmed");
+      const rb = await buildVenueDocument("receipt", { venue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" });
+      const frr = pdfFlat(rb.buffer);
+      hasNot(frr, "Issued", "receipt: the LIVE date no longer wears an event label");
+      has(frr, "Received on", "…the receipt's true event date is untouched");
+      const sb = await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" });
+      has(pdfFlat(sb.buffer), `As of ${today}`, "statement: the position's As-of cutoff stays beside the generation date");
     }
 
     console.log(`\n${pass} passed, ${fail} failed`);

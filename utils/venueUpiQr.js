@@ -28,13 +28,21 @@ const QR_WIDTH = 600;   // px — ≈610dpi at the 25mm print size
 const QR_MARGIN = 4;    // modules of white quiet zone
 const QR_EC = "Q";      // 25% recovery
 
-function upiPayload(upiId, venueName) {
-  return `upi://pay?pa=${upiId}&pn=${encodeURIComponent(venueName || "")}&cu=INR`;
+function upiPayload(upiId, venueName, { amount, note } = {}) {
+  return `upi://pay?pa=${upiId}&pn=${encodeURIComponent(venueName || "")}`
+    + (amount ? `&am=${Math.round(Number(amount))}` : "")
+    + (note ? `&tn=${encodeURIComponent(note)}` : "")
+    + "&cu=INR";
 }
 
-/** @returns {Promise<{dataUrl: string, upiString: string}>} */
-async function generateUpiQr(upiId, venueName) {
-  const upiString = upiPayload(upiId, venueName);
+/**
+ * @param {object} [extra] {amount?, note?} — the INVOICE's amount-carrying QR
+ * (founder ruling): &am= locks the figure so a couple scans and confirms
+ * instead of typing. Everything else (size, EC, colours) is identical.
+ * @returns {Promise<{dataUrl: string, upiString: string}>}
+ */
+async function generateUpiQr(upiId, venueName, extra = {}) {
+  const upiString = upiPayload(upiId, venueName, extra);
   const dataUrl = await QRCode.toDataURL(upiString, {
     errorCorrectionLevel: QR_EC,
     width: QR_WIDTH,

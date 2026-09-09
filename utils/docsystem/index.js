@@ -36,7 +36,7 @@ async function buildVenueDocument(type, inputs, opts = {}) {
   const assembler = ASSEMBLERS[type];
   if (!renderer || !assembler) throw new Error(`unknown document type: ${type}`);
   const language = (opts.language && LANGUAGES[opts.language]) || resolveLanguage(inputs.venue);
-  const data = assembler(inputs);
+  const data = await assembler(inputs);
   if (!data) return null;
   const R = new Engine({ language, identity: data.identity, meta: data.meta, compress: opts.compress !== false });
   await renderer(R, data);

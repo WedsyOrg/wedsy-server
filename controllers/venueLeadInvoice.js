@@ -431,6 +431,37 @@ const createLeadInvoice = async (req, res) => {
     }
     const forMilestoneId = milestone ? milestone._id : null;
 
+    // ── GST-FIRST: THE MILESTONE BRANCH GETS THE SAME GUARD (founder ruling) ─
+    // This branch predates GST-first and was the one ungated door: it took
+    // the schedule row's stored amount — the COLLECTABLE, GST inside — as an
+    // ex-GST base and let the owner's checkbox tax it AGAIN (INV0005 billed
+    // Rs. 34,567 over the schedule's promise). The confirmation already
+    // prints each instalment's payable and GST from the stream
+    // decomposition; the invoice RENDERS those same figures — one
+    // implementation, never a recomputation from a misread figure — and the
+    // checkbox can neither conjure nor strip tax here: the lines decide, as
+    // ruled everywhere else.
+    let milestoneStream = null;
+    if (milestone && !milestone.isAdditional && booking.scheduleIncludesGst) {
+      const { computeLineTotals: cltMs } = require("../utils/venueMoney");
+      const { decomposeGstInsideRows } = require("../utils/docsystem/shared");
+      const lfMs = cltMs(booking.lineItems || [], booking.gstPercent);
+      const agreedRows = (booking.paymentSchedule || []).filter((r) => !r.isAdditional);
+      const decomposed = decomposeGstInsideRows(
+        agreedRows.map((r) => ({ amount: r.amount, ref: r._id })),
+        { pct: Number(booking.gstPercent) || 18, taxable: lfMs.taxable, gst: lfMs.gst, refundable: lfMs.refundable }
+      );
+      milestoneStream = decomposed.find((r) => String(r.ref) === String(milestone._id)) || null;
+      if (!milestoneStream) {
+        return res.status(409).json({
+          message: "That instalment could not be matched against the booking's schedule — refresh and try again.",
+          code: "milestone_stream_mismatch",
+        });
+      }
+      // position decides the kind — the old branch hard-coded every one "final"
+      milestoneStream.isLast = String(agreedRows[agreedRows.length - 1]._id) === String(milestone._id);
+    }
+
     // No accidental duplicate — an invoice is immutable and consumes a number.
     // The friendly path only; the unique index is the guarantee (see below).
     const existing = await VenueInvoice.findOne({ enquiry: lead._id, forMilestoneId, forPaymentId }).select("invoiceNumber _id").lean();
@@ -467,23 +498,25 @@ const createLeadInvoice = async (req, res) => {
     const lineView = !paymentPieces.length && !milestone && (booking.lineItems || []).length
       ? invoiceViewOfLines(booking.lineItems, booking.gstPercent)
       : null;
+    // The line names the INSTALMENT alone (invoicedoc finding 4): the couple
+    // is the document's addressee, not part of the charge — "First
+    // instalment — Asiya" on a page addressed to Asiya read oddly.
     const lineItems = paymentPieces.length
       ? paymentPieces.map((x) => ({
-          label:
-            `${x.row.label || "Instalment"}${x.row.isAdditional ? " (additional)" : ""}` +
-            ` — ${booking.coupleName || "booking"}`,
+          label: `${x.row.label || "Instalment"}${x.row.isAdditional ? " (additional)" : ""}`,
           category: x.row.isAdditional ? "extra" : "instalment",
           qty: 1,
           unitPrice: Math.round(Number(x.entry.amount) || 0),
         }))
       : milestone
         ? [{
-            label:
-              `${milestone.label || "Instalment"}${milestone.isAdditional ? " (additional)" : ""}` +
-              ` — ${booking.coupleName || "booking"}`,
+            label: `${milestone.label || "Instalment"}${milestone.isAdditional ? " (additional)" : ""}`,
             category: milestone.isAdditional ? "extra" : "instalment",
             qty: 1,
-            unitPrice: Math.round(Number(milestone.amount) || 0),
+            // GST-first: the ex-GST payable — the same figure the
+            // confirmation's schedule prints for this instalment
+            unitPrice: milestoneStream ? milestoneStream.payable : Math.round(Number(milestone.amount) || 0),
+            ...(milestoneStream ? { taxable: milestoneStream.taxableShare, gst: milestoneStream.gst } : {}),
           }]
         : lineView
           ? lineView.lineItems
@@ -549,6 +582,26 @@ const createLeadInvoice = async (req, res) => {
           code: "no_gstin",
         });
       }
+    } else if (milestoneStream) {
+      // the stream decided above; body.gst / body.gstMode are IGNORED — a
+      // checkbox must not conjure or strip tax on a GST-first booking
+      derivedGst = {
+        bears: milestoneStream.gst > 0,
+        gstPercent: Number(booking.gstPercent) || 18,
+        totals: {
+          subtotal: milestoneStream.payable,
+          discount: 0,
+          taxable: milestoneStream.taxableShare,
+          gst: milestoneStream.gst,
+          grandTotal: milestoneStream.collectable,
+        },
+      };
+      if (derivedGst.bears && !brand.hasGstin) {
+        return res.status(400).json({
+          message: "This instalment carries GST, but no GSTIN is set. Add it in Settings \u2192 Billing & tax.",
+          code: "no_gstin",
+        });
+      }
     } else if (lineView) {
       // Same rule as the payment invoice, one level up: the AGREEMENT decides
       // the GST, not the owner's checkbox. A line booking's tax was settled
@@ -602,7 +655,15 @@ const createLeadInvoice = async (req, res) => {
         enquiry: lead._id,
         forMilestoneId,
         forPaymentId,
-        kind: forPaymentId || milestone ? "final" : "advance",
+        // the OLD branch hard-coded every milestone invoice "final" — the
+        // position decides: the last agreed instalment is final, the rest
+        // are instalments, a payment invoice evidences a completed payment
+        kind: forPaymentId
+          ? "final"
+          : milestone
+            ? (milestoneStream ? (milestoneStream.isLast ? "final" : "instalment")
+               : (String((booking.paymentSchedule || []).filter((r) => !r.isAdditional).slice(-1)[0] && (booking.paymentSchedule || []).filter((r) => !r.isAdditional).slice(-1)[0]._id) === String(milestone._id) ? "final" : "instalment"))
+            : "advance",
         lineItems,
         gstPercent,
         gstMode,

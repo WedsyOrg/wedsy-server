@@ -9,7 +9,10 @@ const VenueInvoiceSchema = new mongoose.Schema(
     booking: { type: mongoose.Schema.Types.ObjectId, ref: "VenueBooking", required: true },
     invoiceNumber: { type: String, required: true },
     seq: { type: Number, required: true }, // per-venue sequence backing invoiceNumber
-    kind: { type: String, enum: ["advance", "final", "addon"], default: "advance" },
+    // "instalment" added (invoicedoc): the milestone branch hard-coded every
+    // milestone invoice to "final"; a middle instalment is neither an advance
+    // nor final, and the title follows this.
+    kind: { type: String, enum: ["advance", "instalment", "final", "addon"], default: "advance" },
     lineItems: [
       {
         label: { type: String, default: "" },
