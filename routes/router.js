@@ -120,5 +120,12 @@ router.use("/plan", require("./plan")); // Planner P1 — internal seam + discou
 // wedding IS the Event document (docs/couple-app-api.md). Mounted here, below
 // every existing route, so nothing above changes shape.
 router.use("/wedding", require("./coupleApp"));
+// The couple app's child routes live at the root, not under /wedding: the
+// client calls PATCH /guests/:id, POST /payments/:id/pay, POST /decor/:id/heart
+// and so on (§ 06.2). Each domain sub-router exports them as `.itemRoutes`.
+router.use("/", require("./coupleApp-people").itemRoutes);
+router.use("/", require("./coupleApp-website").itemRoutes || ((req, res, next) => next()));
+router.use("/", require("./coupleApp-money").itemRoutes || ((req, res, next) => next()));
+router.use("/", require("./coupleApp-planning").itemRoutes || ((req, res, next) => next()));
 
 module.exports = router;
