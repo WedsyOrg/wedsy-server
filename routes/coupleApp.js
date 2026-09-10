@@ -24,4 +24,14 @@ router.get("/:id", CoupleAuth, coupleApp.GetWedding);
 // no payment decision card and a null paid total, not a zero.
 router.get("/:id/home", CoupleAuth, coupleApp.GetHome);
 
+
+/**
+ * Domain sub-routers. Each milestone owns one file so the four can be built
+ * and merged independently; every one mounts under /wedding/:id.
+ */
+router.use("/", require("./coupleApp-people"));
+router.use("/", require("./coupleApp-website"));
+router.use("/", require("./coupleApp-money"));
+router.use("/", require("./coupleApp-planning"));
+
 module.exports = router;
