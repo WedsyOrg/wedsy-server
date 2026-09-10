@@ -36,10 +36,55 @@ const isConfigured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE
 
 // ── OAuth ─────────────────────────────────────────────────────────────────────
 
-// Consent URL with a signed state (the adminId rides through Google and back).
-const startUrl = (adminId) => {
+// Where someone lands if we do not know where they came from. The Google card
+// lives on this page, so it is the one place the result is guaranteed to make
+// sense (wedsy-crm/src/app/(app)/settings/account/page.tsx).
+const DEFAULT_ORIGIN = "/settings/account";
+
+// The OS base for the return trip. NEVER a literal — staging and production are
+// different hosts and a hardcoded link would send people to the wrong product.
+// Same convention as controllers/auth.js:714 and controllers/admin.js:98.
+const osBase = () => String(process.env.OS_FRONTEND_URL || "https://os.wedsy.in").replace(/\/+$/, "");
+
+// A path we are willing to send a browser to after Google hands control back.
+//
+// THIS IS AN OPEN-REDIRECT GUARD, not tidying. The origin arrives from the
+// client, survives a round trip through Google, and comes back as the
+// destination of a 302 — the exact shape attackers look for. Only a
+// SITE-RELATIVE path is allowed, and "//evil.example" is rejected explicitly:
+// it is protocol-relative, so a browser reads it as a different host even
+// though it starts with a slash. Backslashes are refused because some browsers
+// normalise them to slashes.
+const safeOriginPath = (raw) => {
+  const p = String(raw || "").trim();
+  if (!p.startsWith("/")) return DEFAULT_ORIGIN;   // absolute URL, or nonsense
+  if (p.startsWith("//")) return DEFAULT_ORIGIN;   // protocol-relative
+  if (p.includes("\\")) return DEFAULT_ORIGIN;      // browser-normalised separator
+  if (/[\r\n]/.test(p)) return DEFAULT_ORIGIN;      // header splitting
+  return p;
+};
+
+// The OS URL to return to, carrying a flag the page can read. The flag is a
+// fixed slug, never an error message: a raw message in a URL leaks internals
+// and lands unescaped in whatever renders it.
+const osReturnUrl = (originPath, flag) => {
+  const path = safeOriginPath(originPath);
+  const sep = path.includes("?") ? "&" : "?";
+  return `${osBase()}${path}${sep}${flag}`;
+};
+
+// Consent URL with a signed state. The adminId has always ridden through Google
+// and back in here; the ORIGIN PATH now rides in the SAME token rather than in
+// a second parameter of its own. One mechanism: the state is already signed and
+// already expires, so the origin inherits both properties for free, and there
+// is no second channel to keep in step.
+const startUrl = (adminId, originPath = DEFAULT_ORIGIN) => {
   if (!isConfigured()) throw httpError(409, "Google is not configured yet");
-  const state = jwt.sign({ g: String(adminId) }, process.env.JWT_SECRET, { expiresIn: "15m" });
+  const state = jwt.sign(
+    { g: String(adminId), p: safeOriginPath(originPath) },
+    process.env.JWT_SECRET,
+    { expiresIn: "15m" }
+  );
   const params = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID,
     redirect_uri: REDIRECT_URI,
@@ -66,6 +111,18 @@ const exchangeCode = async (code) => {
   });
   if (!res.ok) throw httpError(502, `Google token exchange failed (${res.status})`);
   return await res.json();
+};
+
+// The origin from a state we have VERIFIED. Used on the failure path, where we
+// still want to return someone to where they started — but only if the state's
+// signature holds. An unverified state is attacker-controlled, so its origin is
+// discarded and the default applies.
+const originFromState = (state) => {
+  try {
+    return safeOriginPath(jwt.verify(state, process.env.JWT_SECRET).p);
+  } catch (_) {
+    return DEFAULT_ORIGIN;
+  }
 };
 
 const handleCallback = async (code, state) => {
@@ -447,6 +504,10 @@ const bookMeet = async (leadId, { start, end }, actorId) => {
 module.exports = {
   isConfigured,
   startUrl,
+  osReturnUrl,
+  originFromState,
+  safeOriginPath,
+  DEFAULT_ORIGIN,
   handleCallback,
   status,
   linkRoster,
