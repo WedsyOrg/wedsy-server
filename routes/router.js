@@ -116,5 +116,9 @@ router.use("/team", require("./team")); // W6 — team page read
 router.use("/cs", require("./cs")); // C2/C4 — CS workspace (dashboard + planner)
 router.use("/quote-requests", require("./quoteRequests")); // L4 — quote queue
 router.use("/plan", require("./plan")); // Planner P1 — internal seam + discount decide
+// COUPLE APP § 06.2 — the couple-facing API. `:id` is an Event._id: a couple's
+// wedding IS the Event document (docs/couple-app-api.md). Mounted here, below
+// every existing route, so nothing above changes shape.
+router.use("/wedding", require("./coupleApp"));
 
 module.exports = router;

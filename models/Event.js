@@ -323,6 +323,67 @@ const EventSchema = new mongoose.Schema(
         default: [],
       },
     },
+    // ── COUPLE APP (additive, optional) ─────────────────────────────────────
+    // A couple's wedding IS this document — the CRM, the admin event tool and
+    // the vendor apps all read it, and a parallel Wedding collection would give
+    // the business two records per wedding and the sync problem § 06.3 of the
+    // couple-app spec exists to prevent. `weddingId` in every couple-app route
+    // is an Event._id.
+    //
+    // Everything the couple app adds to the wedding ITSELF lives under this one
+    // optional sub-document. NOTHING ABOVE IS TOUCHED: no existing field
+    // changes shape, no default moves, and every surface that reads this model
+    // today sees exactly what it saw before. Absent on every existing document,
+    // and absent is a valid state everywhere it is read.
+    coupleApp: {
+      // The two people. `user` above is the account the wedding was created
+      // under; the second partner signs in with an account of their own, and
+      // BOTH are full members of the wedding (§ 06.4). middlewares/coupleAuth
+      // resolves membership from `user` plus these ids.
+      partners: {
+        type: [
+          {
+            user: {type: ObjectId, ref: "User", default: null},
+            name: {type: String, default: ""},
+            role: {type: String, enum: ["bride", "groom"], required: true},
+            phone: {type: String, default: ""},
+            email: {type: String, default: ""},
+            avatar: {type: String, default: ""},
+          },
+        ],
+        default: [],
+      },
+      // Couple-facing wedding facts the CRM has no field for.
+      city: {type: String, default: ""},
+      muhurthamTime: {type: String, default: ""}, // "07:40"
+      coverPhoto: {type: String, default: ""},
+
+      // § 06.3 (Décor finalise → Budget) — THE BUDGET, as lines, not a total.
+      // `committed` is never stored: it is Σ lines[].amount, so the number on
+      // Home and the number in the Budget tracker cannot drift. Each line
+      // carries a `sourceKey` ("decor:<eventDayId>") and finalise UPSERTS on
+      // it — which is what makes finalising twice idempotent rather than
+      // doubling the commitment. See services/CoupleDecorFinaliseService.js.
+      budget: {
+        estimate: {type: Number, default: 0},
+        target: {type: Number, default: 0},
+        // The wizard's answers behind the estimate, kept so the team sees the
+        // same estimate the couple did.
+        estimateAnswers: {type: Object, default: {}},
+        lines: {
+          type: [
+            {
+              sourceKey: {type: String, required: true},
+              source: {type: String, default: ""}, // "decor" | "venue" | "store" | …
+              label: {type: String, default: ""},
+              amount: {type: Number, default: 0},
+              at: {type: Date, default: Date.now},
+            },
+          ],
+          default: [],
+        },
+      },
+    },
   },
   {timestamps: true}
 );
