@@ -520,7 +520,7 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       }
       const invB = await buildVenueDocument("invoice", { venue: bankVenue, lead, booking, invoice: inv10 }, { compress: false, language: "classic" });
       const flatInv = pdfFlat(invB.buffer);
-      has(flatInv, "REMIT TO", "invoice: the designed remit slot carries the bank");
+      has(flatInv, "PAYMENT DETAILS", "invoice: one name for the payment block everywhere (statementdoc f7)");
       has(flatInv, "A/C 50100987654321 · IFSC HDFC0001234", "…same one composer as every other document");
       const rec = await buildVenueDocument("receipt", { venue: bankVenue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" });
       const flatRec = pdfFlat(rec.buffer);
@@ -532,7 +532,7 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
         const built = await buildVenueDocument(type, { venue, lead, booking, quote, summary, invoice: mkInvoice(`NoBank ${type}`, 100000, 100000, 18000) }, { compress: false, language: "classic" });
         const flat = pdfFlat(built.buffer);
         hasNot(flat, "PAYMENT DETAILS", `${type}: no bank details → no block, no heading`);
-        hasNot(flat, "REMIT TO", `${type}: …and no empty remit slot`);
+        hasNot(flat, "PAYMENT DETAILS", `${type}: …and no empty payment block`);
       }
       // ── the client snapshot on the confirmation ──
       const cdBooking = booking.toObject();
@@ -691,7 +691,7 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       ok(/Event 21 . 22 November 2026/.test(f), "f7: the event WINDOW is on the invoice — check-in to check-out");
       has(f, "unregistered (B2C)", "f5: the unregistered case stated explicitly in the client block");
       has(f, "14 Prithvi Enclave", "f5: the client's address renders when the booking holds it");
-      has(f, "REMIT TO", "f8: bank details in the designed remit slot");
+      has(f, "PAYMENT DETAILS", "f8: bank details in the one payment block");
       // THE QR CARRIES NO AMOUNT (founder ruling): the VPA alone, decoded
       // and proven — UPI ceilings vary, and a rejected QR is worse than one
       // the payer completes themselves.
@@ -844,6 +844,76 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
         const lb = pdfFlat((await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: { ...posInv, invoiceNumber: `${TAG}-L2${language}`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language })).buffer);
         ok(lb.includes("Instalment 1 of 4") && lb.includes("Scan to pay") && lb.includes("Due 11 October 2026"),
           `${language}: position, caption and due date all present`);
+      }
+    }
+
+    // ══ 15. STATEMENTDOC — eight fixes and six additions, on bytes ══════════
+    console.log("\n[15. statementdoc: dense sum, window, agreed, trail, overdue, one payment block]");
+    {
+      const stVenue = venue.toObject();
+      stVenue.bankDetails = { accountName: "Aranya Estate LLP", accountNumber: "50100987654321", ifsc: "HDFC0001234", bankName: "HDFC Bank", branch: "MG Road", upiId: "aranyaestate@icici" };
+      const { generateUpiQr } = require("../utils/venueUpiQr");
+      const stQ = await generateUpiQr("aranyaestate@icici", stVenue.name);
+      stVenue.upiQr = { dataUrl: stQ.dataUrl, source: "generated", upiString: stQ.upiString };
+      const stInvoices = [
+        { invoiceNumber: "INV-0031", createdAt: new Date("2026-09-01"), kind: "final", forMilestoneId: new mongoose.Types.ObjectId(),
+          lineItems: [{ label: "First instalment" }], totals: { grandTotal: 400000 } },
+        { invoiceNumber: "INV-0032", createdAt: new Date("2026-09-05"), kind: "final", forPaymentId: new mongoose.Types.ObjectId(), stream: "taxed",
+          lineItems: [{ label: "Payment received" }], totals: { grandTotal: 250000 } },
+      ];
+      const st15 = await buildVenueDocument("statement", { venue: stVenue, lead, booking, summary, invoices: stInvoices }, { compress: false, language: "classic" });
+      const f15 = pdfFlat(st15.buffer);
+      // f1: the dense subtotal's line-total cell holds the REAL column sum
+      has(f15, "15,26,450", "f1: the dense line-total cell holds the true column sum (charged + GST)");
+      // f2: the window
+      ok(/Event 21 . 22 November 2026/.test(f15), "f2: the statement says the window");
+      // f3: Agreed is charged+refundable, and NO zero-extras clause on this
+      // booking (it HAS extras, so the clause appears with a figure)
+      has(f15, "Agreed Rs. 14,82,500", "f3: Agreed = payable ex-extras");
+      has(f15, "+ extras Rs. 2,28,000", "…extras named only because they exist");
+      // f8: the reconciliation resolves before subtracting
+      has(f15, "Total including GST", "f8: the running figure resolves to the collectable");
+      // f9: method + reference on payment rows
+      has(f15, "UPI · UTR-771", "f9: method and reference on the token's payment row");
+      has(f15, "Bank transfer · UTR-802", "…and on the instalment's");
+      // f10: the invoice trail
+      has(f15, "Invoices raised", "f10: the trail section exists");
+      has(f15, "INV-0031", "…with the invoice numbers");
+      has(f15, "Payment received (tax)", "…and what each was against");
+      // f6/f7: ONE payment block with the QR
+      has(f15, "PAYMENT DETAILS", "f6/f7: the one payment block, one name");
+      has(f15, "UPI aranyaestate@icici", "…UPI beside the QR");
+      has(f15, "Scan to pay", "…the caption");
+      ok(st15.data.payQr && !/[?&]am=/.test((() => { const { PNG } = require("pngjs"); const jsQR = require("jsqr"); const png = PNG.sync.read(st15.data.payQr.buffer); return jsQR(new Uint8ClampedArray(png.data), png.width, png.height).data; })()), "…the stored QR, amountless");
+      // f13/f14: the deposit's fate and the query contact
+      has(f15, "any deduction is itemised to you before the balance is returned", "f13: the deposit's fate, as process");
+      has(f15, "If anything here does not match your records, contact", "f14: the query contact");
+      // placement: the as-of truth beside the outstanding figure
+      has(f15, "Figures as recorded on the booking today", "the as-of line lives by the figure it qualifies");
+      // f4: one payment states its date once (single-payment fixture)
+      const onePay = booking.toObject();
+      onePay.paymentSchedule = [
+        { _id: new mongoose.Types.ObjectId(), label: "Token", amount: 250000, dueDate: new Date("2025-12-05"), entries: [mkEntry(250000, "2025-12-05", new mongoose.Types.ObjectId(), "upi", "UTR-1")] },
+        { _id: new mongoose.Types.ObjectId(), label: "Balance", amount: 1232500, dueDate: new Date("2026-11-07"), entries: [] },
+      ];
+      const oneSum = summarizeSchedule(onePay);
+      const f1p = pdfFlat((await buildVenueDocument("statement", { venue: stVenue, lead, booking: onePay, summary: oneSum, invoices: [] }, { compress: false, language: "classic" })).buffer);
+      has(f1p, "1 payment, 5 Dec 2025", "f4: one payment, its date once");
+      hasNot(f1p, "5 Dec 2025 \u2013 5 Dec 2025", "…never a same-day range");
+      hasNot(f1p, "Invoices raised", "no invoices → no trail section");
+      // f11: an overdue instalment is NAMED with days and amount
+      const late = booking.toObject();
+      late.paymentSchedule = late.paymentSchedule.map((r) => ({ ...r }));
+      late.paymentSchedule[3].dueDate = new Date(Date.now() - 12 * 86400000); // Final instalment overdue
+      const lateSum = summarizeSchedule(late);
+      const fLate = pdfFlat((await buildVenueDocument("statement", { venue: stVenue, lead, booking: late, summary: lateSum, invoices: [] }, { compress: false, language: "classic" })).buffer);
+      ok(/Overdue . Final instalment: Rs\. 4,32,500, 12 days late/.test(fLate), "f11: the late instalment named — what, how much, how long");
+      // every language builds with the new anatomy
+      for (const language of LANGUAGE_NAMES) {
+        const lb = await buildVenueDocument("statement", { venue: stVenue, lead, booking, summary, invoices: stInvoices }, { compress: false, language });
+        const lf2 = pdfFlat(lb.buffer);
+        ok(lf2.includes("Invoices raised") && lf2.includes("PAYMENT DETAILS") && lf2.includes("Total including GST"),
+          `${language}: trail, payment block and resolution all present`);
       }
     }
 
