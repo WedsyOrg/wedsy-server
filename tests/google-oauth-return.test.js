@@ -219,6 +219,61 @@ const restore = () => Object.entries(SAVED).forEach(([k, v]) => { if (v === unde
       }
     }
 
+    // ══ 7. A MISSING ?origin IS VISIBLE ══════════════════════════════════════
+    console.log("\n7. STARTING WITHOUT AN ORIGIN SAYS SO");
+    {
+      // A silent fallback is how a defect stays invisible. If the OS forgets
+      // ?origin — or a future page ships without it — the connect lands on the
+      // default instead of where the person started, and nobody finds out. This
+      // line is the same idea as [phone] ASSUMED and [chat-notify] SKIPPED: the
+      // one guess in the path announces itself.
+      //
+      // It is EXPECTED to fire on every connect until the frontend passes
+      // ?origin. Once it does, the line stops; if it ever returns, a new page
+      // shipped without it.
+      const logs = [];
+      const realLog = console.log;
+      console.log = (...a) => { logs.push(a.join(" ")); realLog(...a); };
+      const startTok = jwt.sign({ _id: String(admin._id), isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+      const start = (qs) =>
+        fetch(`${base}/google/oauth/start${qs}`, { headers: { Authorization: `Bearer ${startTok}` } });
+
+      try {
+        logs.length = 0;
+        const noOrigin = await start("");
+        eq(noOrigin.status, 200, "a connect with no origin still succeeds");
+        const line = logs.find((l) => l.includes("[google-oauth]"));
+        ok(!!line, "…and logs a [google-oauth] line");
+        ok(line && line.includes(String(admin._id)), "…naming the admin");
+        ok(line && line.includes("/settings/integrations"),
+          "…saying where it will land instead");
+        ok(line && /not the page|rather than/i.test(line),
+          "…and that this is NOT where they started");
+
+        logs.length = 0;
+        const withOrigin = await start("?origin=%2Fleads%2Fabc123");
+        eq(withOrigin.status, 200, "a connect WITH an origin succeeds");
+        ok(!logs.some((l) => l.includes("[google-oauth]")),
+          "…and logs NOTHING — the line disappears once the frontend sends it");
+        const st = new URL((await withOrigin.json()).url).searchParams.get("state");
+        eq(jwt.verify(st, process.env.JWT_SECRET).p, "/leads/abc123",
+          "…and the origin really did ride in the state");
+
+        // A supplied-but-rejected origin lands on the default too, and just as
+        // silently. Same defect, so the same line — with its own reason.
+        logs.length = 0;
+        const badOrigin = await start("?origin=https%3A%2F%2Fevil.example");
+        eq(badOrigin.status, 200, "a rejected origin still succeeds");
+        const bl = logs.find((l) => l.includes("[google-oauth]"));
+        ok(!!bl, "…and is ALSO logged, rather than silently discarded");
+        ok(bl && /reject/i.test(bl), "…as a rejection, not as an absence");
+        ok(bl && !bl.includes("evil.example"),
+          "…without echoing the hostile value into the log");
+      } finally {
+        console.log = realLog;
+      }
+    }
+
     console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   } catch (e) {
     console.error("suite crashed:", e && e.stack ? e.stack : e);

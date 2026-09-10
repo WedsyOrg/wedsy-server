@@ -5,11 +5,35 @@ const respond = (res, error) =>
 
 const Start = async (req, res) => {
   try {
-    // The OS may say which page it is sending the person from; when it does not
-    // (the current frontend does not yet), the service falls back to account
-    // settings. Optional on purpose — a caller that never learns about this
-    // parameter keeps working.
-    res.status(200).json({ url: GoogleWorkspaceService.startUrl(req.auth.user_id, req.query.origin) });
+    // The OS may say which page it is sending the person from. Optional on
+    // purpose — a caller that never learns about this parameter keeps working,
+    // falling back to DEFAULT_ORIGIN.
+    //
+    // BUT THE FALLBACK ANNOUNCES ITSELF, in the shape [phone] ASSUMED and
+    // [chat-notify] SKIPPED already use. A silent fallback is how this kind of
+    // defect stays invisible: the connect lands somewhere other than where the
+    // person started, they see a page they did not ask for, and nothing
+    // anywhere records that a guess was made.
+    //
+    // EXPECT THIS ON EVERY CONNECT until the frontend sends ?origin — that is
+    // correct, and it is the point. Once it does, the line stops appearing. If
+    // it ever comes back, a new page shipped without it.
+    //
+    // A supplied-but-REJECTED origin is logged too. It lands on the default
+    // just as silently, so it is the same defect wearing a different hat — but
+    // it gets its own word, because "we were sent nothing" and "we were sent
+    // something we refused" want different fixes. The rejected value is NOT
+    // echoed: it is attacker-controlled by definition.
+    const requested = req.query.origin;
+    const resolved = GoogleWorkspaceService.safeOriginPath(requested);
+    if (!requested || resolved !== String(requested)) {
+      console.log(
+        `[google-oauth] ${requested ? "ORIGIN REJECTED" : "NO ORIGIN"} admin=${req.auth.user_id} — ` +
+          `the connect will return to ${resolved}, not the page they started from` +
+          `${requested ? " (the value sent was not a safe site-relative path)" : " (the OS did not send ?origin)"}`
+      );
+    }
+    res.status(200).json({ url: GoogleWorkspaceService.startUrl(req.auth.user_id, requested) });
   } catch (error) {
     respond(res, error);
   }
