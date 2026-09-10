@@ -340,9 +340,13 @@ const finalise = async (couple, target, body, now = new Date()) => {
   const chosen =
     drafts.find((draft) => draft.id === rules.slug(wanted) || draft.name === wanted) || drafts[0] || null;
 
-  const rows = dayAmounts(event, chosen).filter(
-    (row) => !target || !target.dayId || String(row.dayId) === String(target.dayId)
-  );
+  const rows = dayAmounts(event, chosen)
+    .filter((row) => !target || !target.dayId || String(row.dayId) === String(target.dayId))
+    // A day priced at nothing has nothing to finalise. Without this it still
+    // earned a ₹0 budget line — a row in the couple's budget that means
+    // nothing, and one the payment schedule already (correctly) skipped, so
+    // the two disagreed about how many days had been committed to.
+    .filter((row) => row.amount > 0);
   const total = rows.reduce((sum, row) => sum + row.amount, 0);
 
   if (!total) {
