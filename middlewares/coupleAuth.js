@@ -132,6 +132,41 @@ const CoupleAuth = async (req, res, next) => {
 };
 
 /**
+ * A COUPLE'S SESSION, WITH NO WEDDING YET.
+ *
+ * Every other route in this API knows its wedding from the path. `GET
+ * /wedding/mine` is the one that does not — it is how the app finds out which
+ * wedding it is looking at in the first place. So this verifies the person and
+ * stops there; it grants access to nothing until a wedding is resolved.
+ *
+ * Sets `req.person` — { userId, user } — deliberately NOT `req.couple`, so a
+ * handler cannot mistake "signed in" for "on this wedding".
+ */
+const CouplePerson = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization;
+    if (!header) return unauthenticated(res, "Please sign in to open your wedding.");
+    const token = header.split(" ")[1];
+    if (!token || token === "null") return unauthenticated(res);
+
+    const payload = await verify(token);
+    if (!payload || !payload._id) return unauthenticated(res, "Your session expired — please sign in again.");
+    if (payload.isAdmin || payload.isVendor) {
+      return unauthenticated(res, "This is not a couple's session.");
+    }
+
+    const user = await User.findById(payload._id).lean();
+    if (!user || user.blocked || user.deleted) return unauthenticated(res, "Please sign in again.");
+
+    req.person = { userId: String(user._id), user };
+    req.auth = { user_id: String(user._id), user, isAdmin: false, isVendor: false };
+    return next();
+  } catch (error) {
+    return res.status(500).send({ error: "server_error", message: "We could not open your wedding — please retry." });
+  }
+};
+
+/**
  * SECTION ENFORCEMENT — § 06.4, "on every endpoint".
  *
  * Both partners pass everything. A shared member passes only where their
@@ -174,4 +209,4 @@ const RequirePayout = (req, res, next) => {
   }
 };
 
-module.exports = { CoupleAuth, RequireSection, RequirePayout, resolveMembership, weddingIdFrom };
+module.exports = { CoupleAuth, CouplePerson, RequireSection, RequirePayout, resolveMembership, weddingIdFrom };

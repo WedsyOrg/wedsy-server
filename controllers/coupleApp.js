@@ -10,6 +10,7 @@
 // controller in this file can assume `req.couple` is a person entitled to what
 // the route mounted.
 const CoupleWeddingService = require("../services/CoupleWeddingService");
+const CoupleMyWeddingsService = require("../services/CoupleMyWeddingsService");
 
 const respond = (res, error, fallback) => {
   const status = error && error.status ? error.status : 500;
@@ -29,6 +30,18 @@ const wrap = (fn, fallback) => async (req, res) => {
   }
 };
 
+/**
+ * GET /wedding/mine — which wedding is this person's.
+ *
+ * No wedding in the path, so no membership to check yet: this IS the question
+ * "which weddings am I on". Answers 200 with weddingId: null for a signed-in
+ * person on no wedding, because a fresh account is a state to render, not a
+ * failure to report.
+ */
+const GetMyWeddings = wrap(async (req, res) => {
+  res.status(200).send(await CoupleMyWeddingsService.listForPerson(req.person.userId));
+}, "We could not work out which wedding is yours — please retry.");
+
 /** GET /wedding/:id — the wedding, its functions and its team. */
 const GetWedding = wrap(async (req, res) => {
   res.status(200).send(await CoupleWeddingService.getWedding(req.couple));
@@ -39,4 +52,4 @@ const GetHome = wrap(async (req, res) => {
   res.status(200).send(await CoupleWeddingService.getHome(req.couple));
 }, "We could not load your home screen — please retry.");
 
-module.exports = { GetWedding, GetHome };
+module.exports = { GetMyWeddings, GetWedding, GetHome };

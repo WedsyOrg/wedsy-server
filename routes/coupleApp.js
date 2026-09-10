@@ -14,8 +14,12 @@
 // behind it is gated.
 const express = require("express");
 const router = express.Router();
-const { CoupleAuth } = require("../middlewares/coupleAuth");
+const { CoupleAuth, CouplePerson } = require("../middlewares/coupleAuth");
 const coupleApp = require("../controllers/coupleApp");
+
+// BEFORE "/:id", or Express reads "mine" as a wedding id and answers 400.
+// This is the only route here without a wedding: it is how the app finds one.
+router.get("/mine", CouplePerson, coupleApp.GetMyWeddings);
 
 router.get("/:id", CoupleAuth, coupleApp.GetWedding);
 // Home is a digest of five sections, so it cannot be gated on ONE of them. It
