@@ -627,3 +627,300 @@ Both integration files mount the real app the way `routes/router.js` does, plus
   accent- or transliteration-aware: "Meera" does not find "Mīra". No index
   serves it either — acceptable at a guest list's size, wrong at a mailing
   list's.
+
+---
+
+# Website — the builder, the public site and the guest RSVP
+
+*Appended by the website milestone. Nothing above this line was edited.*
+
+Files owned by this milestone:
+
+```
+routes/coupleApp-website.js         the six couple routes and the three public ones
+controllers/coupleAppWebsite.js     nine handlers, each wrapped
+services/CoupleWebsiteRules.js      PURE — the withholding rule, the slug, the settings whitelist, the unlock token
+services/CoupleWebsiteService.js    the couple's builder: settings, content, photographs, slug, publish
+services/CouplePublicSiteService.js the guest's door: the public read, the password compare, the RSVP
+utils/coupleSiteRateLimit.js        § 06.4's rate limits, keyed on IP AND slug
+```
+
+No model was changed. `models/Website` already carried everything this needed,
+including the sparse-unique `slug` index the whole design rests on.
+
+## W1 · Endpoints and their gates
+
+| Endpoint | Gate | Notes |
+|---|---|---|
+| `GET /wedding/:id/website` | `website / view` | Creates the document on first read, with **no slug**. Never serialises `privacy.password`. |
+| `PUT /wedding/:id/website` | `website / edit` | `{ themeId, paletteId, fontId, sections, slug, privacy }`. `409 slug_taken` comes from the **index**. |
+| `PUT /wedding/:id/website/content` | `website / edit` | Two shapes — see W4. |
+| `POST /wedding/:id/website/photos` | `website / edit` | multipart → `{ slotId, mediaId, url, original }`. `201`. |
+| `GET /wedding/:id/website/slug/check?slug=` | `website / view` | `{ available, slug, reason, message }`. A **courtesy**, not the control. |
+| `POST /wedding/:id/website/publish` | `website / edit` | Stamps `publishedAt`. Idempotent: `alreadyPublished: true` is a value, not an error. |
+| `GET /site/:slug` | **none — public** | SSR read. Withholds (W2). Sends `X-Robots-Tag: noindex, nofollow` itself. |
+| `POST /site/:slug/rsvp` | **none — public, rate-limited** | `CoupleRsvpService.applyRsvp` decides everything. |
+| `POST /site/:slug/unlock` | **none — public, rate-limited** | `bcrypt.compare` server-side; mints the token `GET` accepts. |
+
+The three public routes are exported as `.itemRoutes` and mounted at the API
+root by `routes/router.js` (that line already exists), so a guest's link is
+`/site/:slug` and not `/wedding/site/:slug`.
+
+Refusal bodies are unchanged from § 3: `401 { error: "unauthenticated" }`,
+`403 { error: "forbidden", section: "website", required, held, message }`,
+`422 { error: "validation", fields }`, `409 { error: "slug_taken" | "already_replied", … }`,
+`404 { error: "not_found" }`, `429 { error: "rate_limited", retryAfter }`.
+
+## W2 · The withholding rule — the security-critical piece
+
+§ 06.4 and the `⛏ STUB` in `wedsy-user/lib/plan/api-public.js`: a
+password-protected site that has not proved an unlock gets **exactly seven
+keys** —
+
+```
+slug, publishedAt, themeId, paletteId, fontId, privacy, wedding.partners
+```
+
+— and `content`, `photos`, `events`, `registry` and `sections` are **not put in
+the object at all**. Not emptied, not nulled, not stripped afterwards.
+
+Three things make that hold rather than merely happen:
+
+1. **One function builds the body.** `CoupleWebsiteRules.publicPayload` is the
+   only thing that can produce a public response, and the withholding branch
+   `return`s the shell before the full object is ever constructed.
+   `tests/couple-site-rsvp-seam.test.js` reads the source and asserts
+   `publicPayload` is called **exactly once** in the whole milestone, and never
+   from the controller or the route.
+2. **The query does not happen.** `CouplePublicSiteService.site` only reads the
+   registry when it is going to be sent. A locked visitor's request never
+   touches `RegistryItem`.
+3. **The test asserts absence, not emptiness.**
+   `tests/couple-site-withholding.test.js` checks `!(key in body)` for all five
+   withheld keys, then checks that no word the couple typed, no venue, no
+   function name, no gift, no phone, no email and not even the city appears
+   anywhere in `JSON.stringify(body)`. `tests/couple-public-site.int.test.js`
+   repeats it on the **raw HTTP text**.
+
+**An unpublished site is withheld the same way**, and for the same reason: a
+draft the couple has not sent out is not a draft a stranger who guessed the
+address may read. It returns `200` with `publishedAt: null` rather than a 404
+because the client renders "not out yet" and "no such address" as two different
+pages — an unknown slug is the 404.
+
+**The password never crosses the wire.** `privacy.password` is a bcrypt hash,
+`select: false` on the model, loaded only where `bcrypt.compare` needs it, and
+read by `isGated` for its **length** and nothing else. Every response carries
+`privacy: { linkOnly, passwordRequired }` — two booleans, no third key. Asserted
+on the locked body, the unlocked body and the couple's own read.
+
+**`noindex` is the server's answer.** The response carries `privacy.linkOnly`
+and `privacy.passwordRequired` so the page has the state it needs, *and* the
+route sets `X-Robots-Tag: noindex, nofollow` whenever the site is link-only,
+gated or unpublished — the header a crawler that never runs JavaScript obeys.
+A gated site is also `Cache-Control: private, no-store, must-revalidate` with
+`Vary: Cookie, X-Site-Unlock`, so one guest's unlock cannot become everybody's
+at the edge.
+
+### The unlock token
+
+§ 06.2 never defined `POST /site/:slug/unlock`; the contract is in
+`api-public.js`. It answers `200 { ok: true, unlockToken, expiresAt }` /
+`401 { ok: false }`, and additionally sets an httpOnly, `SameSite=Lax`,
+per-slug cookie.
+
+The token is `<expiry>.<hmac(slug.expiry)>` signed with `SITE_UNLOCK_SECRET`,
+falling back to `JWT_SECRET`. It is not the password, it names the slug it was
+minted for (unlocking one wedding never unlocks another — asserted twice), and
+its expiry is inside the signed payload so a holder cannot push it forward.
+**With no secret configured nothing verifies**, so a misconfigured deploy leaves
+a gated site shut rather than opening it. `GET /site/:slug` accepts the proof
+from three doors: `X-Site-Unlock`, `?unlock=`, or the cookie.
+
+## W3 · The RSVP invariant is called, never reimplemented
+
+| Invariant | Where it is called |
+|---|---|
+| **Phone match** (§ 06.3 #4) | `CouplePublicSiteService.rsvp` reads the wedding's guests, derives the function keys through `CoupleWeddingService.dayKey`, and hands the lot to `CoupleRsvpService.applyRsvp`. It then writes the `update` or the `create` it was given. There is **no phone comparison, no normalisation and no matching branch** in any file this milestone owns — `tests/couple-site-rsvp-seam.test.js` reads all six source files and asserts that no `normalisePhone` call, no digit-stripping regex and no literal country code exists in any of them. |
+| **Headcount** (§ 06.3 #1) | `response.headcount` is whatever `applyRsvp` computed from `CoupleHeadcountService.tally` **with the reply applied**. No file here sums a `party`; the seam test asserts that too, in both directions and through `reduce`. |
+| **Activity** (§ 06.3) | The `activityService.record` call sits **outside** the create/update branch, so no path can write a guest without appending a feed row. `actorType: "guest"`, `actorId: null` — `ActivityLog.actorId` is an `Admin` ref and a guest is not one. |
+| **Events defined once** | The keys a guest may reply for come from `Event.eventDays` through `dayKey`; a function this wedding does not have is dropped by `cleanEvents`. |
+
+## W4 · Content, photographs and the theme switch
+
+§ 04.10: *content keyed by `slotId`/`blockId`, **never** by theme.*
+
+That is true here **by construction, not by care**:
+`CoupleWebsiteRules.settingsPatch` — the only thing that builds the patch
+`PUT /wedding/:id/website` writes — emits keys drawn from a fixed set that does
+not include `content` or `photos`, and ignores them if a caller sends them.
+A theme switch therefore *cannot* disturb a word the couple typed. Asserted
+purely (the patch has no such key, and a stored document is byte-identical
+across a switch) and again over a real database in the integration test.
+
+`PUT /wedding/:id/website/content` takes two shapes, because the client sends
+one and the brief names the other:
+
+- `{ content, photos }` — the builder's actual save (`Microsite.saveContent`).
+  The maps are **replaced**, because the builder holds the whole map and
+  `delete next[slotId]` is how a photograph is cleared; a merge would make
+  clearing impossible.
+- `{ blockId: value }` — a bare debounced map. **Merged**, and an explicit
+  `null` or `""` deletes that block.
+
+A photo slot holds either the URL string the builder sets or the
+`{ url, mediaId, original }` record the upload writes — the two shapes
+`LandingPage` documents (`string | {url}`) and `photoPath()` already reads.
+
+### The image pipeline, honestly
+
+`POST /wedding/:id/website/photos` goes through **this repo's existing S3 path**
+(`utils/s3Upload`, the same env vars, endpoint override included) — not a
+second one. It stores:
+
+- the **original**, byte for byte, at `couple-website/<weddingId>/<mediaId>-original.<ext>` — this is what a re-crop reads when the theme changes (§ 04.10);
+- a **WebP derivative** capped at 2400px on its long side, EXIF-rotated, at `…/<mediaId>.webp` — this is what the slot points at.
+
+`MEDIA_CDN_BASE`, when the deploy sets one, rewrites the returned origin; there
+is no hardcoded host (rule 3). If `sharp` cannot read a format the slot falls
+back to the original rather than losing the couple's photograph.
+
+**What is NOT done: the resize to the slot's aspect.** The slot → aspect table
+is a fact of the theme layer and lives in `wedsy-user/lib/plan/website/themes`,
+not on this server. Cropping to a guessed aspect cuts a face out of a
+photograph. The original is stored precisely so that crop can be added later,
+once the table is shared. `mediaId` is a real id (a fresh `ObjectId`), not a
+placeholder.
+
+## W5 · Slug uniqueness is the index
+
+`Website.slug` carries `{ unique: true, sparse: true }` on the model the
+foundation wrote. `applySettings` **attempts the write and catches E11000**;
+that is what becomes `409 slug_taken`. There is deliberately no read-then-write
+check in the write path — two couples typing the same address in the same
+second both pass a `findOne` and one of them silently loses it.
+
+`GET …/slug/check` does read, and the code says in as many words that it is a
+**courtesy to the typist** and cannot make an address safe to take.
+
+Normalisation is one function: `"Ananya & Vikram"` → `ananya-vikram`, NFKD-folded
+so `Mīra` becomes `mira`, 3–60 characters, with a short reserved list (the
+routes wedsy.in already answers on) and a refusal of any 24-hex string, which
+would shadow every `/:id` route on this API.
+
+## W6 · The rate limiter's real scope
+
+Both public POSTs are limited (§ 06.4), and so is the public read:
+
+| Route | Default | Env |
+|---|---|---|
+| `POST /site/:slug/rsvp` | 20 / hour | `SITE_RSVP_WINDOW_MS`, `SITE_RSVP_MAX` |
+| `POST /site/:slug/unlock` | 10 / 10 min, `skipSuccessfulRequests` | `SITE_UNLOCK_WINDOW_MS`, `SITE_UNLOCK_MAX` |
+| `GET /site/:slug` | 120 / min | `SITE_READ_WINDOW_MS`, `SITE_READ_MAX` |
+
+The key is **IP *and* slug** (`ipKeyGenerator(req.ip) + ":" + slug`). IP alone
+would let one family behind a NAT spend another wedding's budget; slug alone
+would let an attacker lock a wedding's real guests out of replying.
+`ipKeyGenerator` is express-rate-limit's IPv6-safe bucketing — a raw `req.ip`
+keys every address in a /64 separately, which is no limit at all.
+
+**Honestly: the store is express-rate-limit's default MEMORY STORE, so the
+limiter is PER-INSTANCE.** Behind two Node processes the effective ceiling is
+2×, and a restart forgives everything. That is acceptable for an RSVP form (the
+point is to blunt a script, not to be a quota). It is **not** good enough for
+the unlock endpoint the day this server runs more than one instance — that one
+wants a shared store (Redis) before the guest password is relied on for
+anything that matters. Recorded here rather than left to be found during an
+incident.
+
+## W7 · Notifications
+
+**None were added.** Triggers only, through `services/NotificationService.js`,
+WhatsApp via the Meta Cloud API — never Aisensy — after the Notification System
+spec in Notion. Two marked comments name the ones this feature wants:
+
+| Moment | Trigger | Marked at |
+|---|---|---|
+| The couple publishes their website | `couple_website_published` — the link, to the couple | `CoupleWebsiteService.publish` |
+| A guest RSVPs | a couple-side **digest**, not one message per reply — the in-app Activity already covers the individual one | `CouplePublicSiteService.rsvp` |
+
+## W8 · Client contracts this milestone could not fully satisfy
+
+1. **The SSR route does not forward the unlock proof.** `pages/site/[slug].js`
+   calls `siteApi.site(slug)` with no token, header or cookie, and enforces the
+   gate with its **own** HMAC cookie minted in `lib/plan/site-gate.js`. With the
+   real endpoint live, a gated site therefore renders its gate correctly and
+   then, once unlocked, still receives the withheld shell — because this server
+   was never told about the unlock. The server side is complete and accepts the
+   proof three ways; the client change is one line in `getServerSideProps`
+   (forward `X-Site-Unlock` from the value `siteApi.unlock` returns, or from the
+   cookie). Deliberately **not** made here: `wedsy-user` is another repo and
+   another milestone.
+2. **A gated site's RSVP is not itself gated.** `components/site/RsvpForm.js`
+   posts with no unlock proof of any kind, so requiring one would break every
+   gated wedding's reply form. `POST /site/:slug/rsvp` therefore checks that the
+   site exists and is published, and relies on the controls that are actually
+   about a reply: the phone match, the one-reply-per-guest 409, and the rate
+   limit. If a gated RSVP must be gated, it needs the same client change as (1).
+3. **The slot-aspect crop.** See W4.
+4. **`GET /registry/:slug` and `POST /registry/:slug/contribute`** are the
+   money milestone's, not this one's, although they resolve on the same
+   `Website.slug`. The site read includes a `registry[]` array shaped for
+   `LandingPage` (`{id, name, price}` / `{id, name, raised, goal}`) when the
+   couple has the registry section switched on; the registry **page** is
+   elsewhere.
+5. **`content` values are stored as the couple typed them.** No enum of block
+   ids is enforced — the theme layer owns that list and it lives in
+   `wedsy-user`. Keys are shape-validated (`[a-z0-9][a-z0-9._-]{0,60}`) and
+   values capped at 4000 characters, which refuses a path, a script tag and a
+   paste accident without inventing a schema this server does not own.
+
+## W9 · Untested seams (honest list)
+
+- **Everything that needs a database**, as in § 7. The two integration files
+  below were written and **not run**.
+- **The unique index under real concurrency.** The E11000 path is asserted
+  sequentially in the integration test; two genuinely simultaneous writes are
+  asserted by the index's own semantics, not by a test.
+- **S3.** `POST …/photos` is not exercised anywhere: a test that needs AWS
+  credentials is a test nobody runs. `AWS_S3_ENDPOINT` points `utils/s3Upload`
+  at MinIO or a stub for a manual pass.
+- **The rate limiters.** Their windows are an hour and ten minutes; a test that
+  waits, or reaches into the limiter's private store, proves something about
+  the test. Their *keying and mounting* are asserted structurally instead
+  (every public route mounts exactly one limiter and one handler, and no
+  `CoupleAuth`).
+- **`sharp` on HEIC.** The fallback-to-original branch is written and not
+  exercised — the container has no HEIC fixture.
+
+## W10 · Tests
+
+Pure, no database — **these run and pass** (real output, in this container):
+
+```
+node tests/couple-site-withholding.test.js      #  76 assertions — the withholding rule, keys ABSENT not empty
+node tests/couple-website-builder.test.js       # 108 — slug normalisation and validation, the settings whitelist,
+                                                #       the theme-switch carry, the content merge
+node tests/couple-site-unlock.test.js           #  62 — the unlock token, its cookie, and the real bcrypt compare
+node tests/couple-website-permissions.test.js   # 116 — every refusal path through the REAL middlewares,
+                                                #       plus the route table itself
+node tests/couple-site-rsvp-seam.test.js        #  92 — the RSVP contract, and a source-level assertion that
+                                                #       nothing here reimplements the invariant
+```
+
+Integration, **need a dev database (`DATABASE_URL`, never production — rule 7),
+and were not run**:
+
+```
+node tests/couple-website-builder.int.test.js   # slug uniqueness as the INDEX enforces it (E11000 → 409),
+                                                # two unnamed drafts coexisting, the bcrypt hash and its
+                                                # select:false, and a theme switch leaving the stored
+                                                # content byte-for-byte intact
+node tests/couple-public-site.int.test.js       # the withholding rule on the RAW HTTP BODY, the whole unlock
+                                                # loop through all three doors, a cross-wedding token refused,
+                                                # and the RSVP landing on ONE Guest row with a headcount that
+                                                # equals the couple's own Guests tab
+```
+
+Both integration files mount the real app the way `routes/router.js` does, plus
+`itemRoutes` at the root, and drive it over HTTP.
