@@ -77,6 +77,8 @@ const lastUpload = () => uploads[uploads.length - 1];
     has(lineFlat, "Terms & conditions", "loss #1: the venue's own terms print");
     has(lineFlat, "Outside caterers need prior approval.", "…verbatim");
     has(lineFlat, "POWERED BY WEDSY", "non-white-label: the mark prints");
+    ok(!normalise(lineFlat).includes("Accepted by"), "…and no acceptance line when nothing was accepted");
+    ok(!normalise(lineFlat).includes("Discount"), "…and no discount row when none was given");
 
     // the LEGACY quote — the blocker: real figures, never zero
     const legacyQuote = await VenueQuote.create({
@@ -101,6 +103,21 @@ const lastUpload = () => uploads[uploads.length - 1];
     has(legFlat, "Accepted by Ananya Rao on 1 September 2026 via link (phone verified).", "loss #2: the acceptance evidence, verbatim");
     ok(!normalise(legFlat).includes("POWERED BY WEDSY"), "loss #3: white-label drops Wedsy's mark");
     ok(!/Rs\. 0\b/.test(legFlat), "…and no zero-rupee figure anywhere");
+    ok(!normalise(legFlat).includes("Terms & conditions"), "…and no terms section when the quote stored none");
+
+    // the SAME door in the other three languages — the switch must hold in
+    // every language a venue can pick, not just the default it was proven in
+    for (const lang of ["ledger", "stationery", "panel"]) {
+      await Venue.updateOne({ _id: venue._id }, { $set: { "settings.documentLanguage": lang } });
+      const rl = await call(send.storeQuoteDocument, req({ params: { enquiryId: String(lead._id) }, body: { quoteId: String(legacyQuote._id) } }));
+      ok(rl.code === 201, `[${lang}] legacy quote filed (${rl.code})`);
+      const f = pdfFlat(lastUpload().buffer);
+      has(f, "3,00,000", `[${lang}] real figures, never zero`);
+      has(f, "Accepted by Ananya Rao on 1 September 2026 via link (phone verified).", `[${lang}] acceptance verbatim`);
+      ok(!normalise(f).includes("POWERED BY WEDSY"), `[${lang}] white-label holds`);
+      ok(!/Rs\. 0\b/.test(f), `[${lang}] no zero-rupee figure`);
+    }
+    await Venue.updateOne({ _id: venue._id }, { $unset: { "settings.documentLanguage": "" } });
 
     // ══ 2. THE CONFIRMATION through its endpoint ════════════════════════════
     console.log("\n[2. confirmation via generateBookingConfirmation]");
