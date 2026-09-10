@@ -51,6 +51,7 @@ const jwt = require("jsonwebtoken");
 
 const User = require("../models/User");
 const Event = require("../models/Event");
+const Enquiry = require("../models/Enquiry");
 const Guest = require("../models/Guest");
 const Payment = require("../models/Payment");
 const SharedMember = require("../models/SharedMember");
@@ -72,7 +73,7 @@ let pass = 0, fail = 0;
 const ok = (c, label) => { if (c) { pass++; console.log(`  ✓ ${label}`); } else { fail++; console.error(`  ✗ ${label}`); } };
 const eq = (got, want, label) => ok(got === want, `${label} (${JSON.stringify(got)} vs ${JSON.stringify(want)})`);
 
-const created = { users: [], events: [], venues: [], vendors: [], biddings: [], categories: [], decors: [] };
+const created = { users: [], events: [], venues: [], vendors: [], biddings: [], categories: [], decors: [], enquiries: [] };
 
 const app = express();
 app.use(express.json());
@@ -112,7 +113,17 @@ const call = async (method, path, { as, body } = {}) => {
     const auntie = await User.create({ name: `${TAG}-auntie`, phone: `${TAG}-a` });
     created.users.push(bride._id, auntie._id);
 
-    const leadId = new mongoose.Types.ObjectId();
+    // A REAL lead. QuoteRequestService.ingest resolves the lead through
+    // LeadActivityService.resolveLeadId, which verifies it exists — a
+    // fabricated ObjectId resolves to null, and correctly so. The couple app
+    // never invents a lead; every real wedding arrives through the CRM.
+    const lead = await Enquiry.create({
+      name: `${TAG} Ananya & Vikram`,
+      phone: `${TAG}-lead`.slice(0, 20),
+      source: "Default",
+    });
+    created.enquiries.push(lead._id);
+    const leadId = lead._id;
     const event = await Event.create({
       user: bride._id,
       leadId,
@@ -130,6 +141,23 @@ const call = async (method, path, { as, body } = {}) => {
         partners: [{ user: bride._id, name: "Ananya Sharma", role: "bride" }, { name: "Vikram Reddy", role: "groom" }],
       },
     });
+
+    // A day is PRICED when the event tool has computed its total onto
+    // amount.summary — decorItems are the line items, not the priced total.
+    // dayAmounts reads the published snapshot first and falls back to this;
+    // with neither, the couple correctly sees nothing to finalise.
+    {
+      const priced = await Event.findById(event._id).lean();
+      await Event.updateOne(
+        { _id: event._id },
+        { $set: { "amount.summary": priced.eventDays.map((day) => ({
+            eventDayId: String(day._id),
+            decorItems: (day.decorItems || []).reduce((sum, item) => sum + (item.price || 0), 0),
+            total: (day.decorItems || []).reduce((sum, item) => sum + (item.price || 0), 0),
+          })) } }
+      );
+      event.amount = { summary: [] };
+    }
     created.events.push(event._id);
     const id = String(event._id);
     const AS_BRIDE = token(bride._id);
@@ -139,6 +167,9 @@ const call = async (method, path, { as, body } = {}) => {
       { weddingId: event._id, first: "Meera", last: "Iyer", side: "bride", party: 4, rsvp: "yes", events: ["wedding"] },
       { weddingId: event._id, first: "Rahul", last: "Nair", side: "groom", party: 2, rsvp: "pending", events: ["wedding", "haldi"] },
       { weddingId: event._id, first: "Priya", last: "Rao", side: "bride", party: 6, rsvp: "no", events: ["wedding"] },
+      // No `party` at all — one person, and the case a blank field in the
+      // add-guest form produces. 4 + 2 + 1 = 7, and Priya's 6 subtracts nothing.
+      { weddingId: event._id, first: "Arjun", last: "Iyer", side: "groom", rsvp: "pending", events: ["wedding"] },
     ]);
 
     // A shared family member who may LOOK at the planning and nothing else.
@@ -592,6 +623,9 @@ const call = async (method, path, { as, body } = {}) => {
       Venue.deleteMany({ _id: { $in: created.venues } }),
       Event.deleteMany({ _id: { $in: created.events } }),
       User.deleteMany({ _id: { $in: created.users } }),
+      // The lead the store draft resolves against, plus anything the CRM hung
+      // off it while this test ran.
+      Enquiry.deleteMany({ _id: { $in: created.enquiries } }),
     ]).catch(() => {});
     await mongoose.disconnect().catch(() => {});
     if (server) server.close();
