@@ -61,22 +61,31 @@ const note = (couple, { action, objectId, summary }) => {
 const catalogue = async () => {
   const [categories, products] = await Promise.all([
     Category.find({ status: true }, { name: 1, order: 1 }).sort({ order: 1, name: 1 }).lean(),
-    Decor.find(
-      { productVisibility: true, productAvailability: true },
+    // An aggregation, not a find(), because of how `bestSellerOrder` sorts.
+    // It defaults to null and most of the catalogue has never been ranked, and
+    // MongoDB orders null BEFORE numbers ascending — so a plain
+    // .sort({ bestSellerOrder: 1 }) puts every unranked product first and
+    // pushes the actual best sellers past CATALOGUE_LIMIT, which is the exact
+    // opposite of what the field is for. Ranked first, unranked after, then
+    // alphabetical inside each group.
+    Decor.aggregate([
+      { $match: { productVisibility: true, productAvailability: true } },
+      { $addFields: { _rank: { $ifNull: ["$bestSellerOrder", Number.MAX_SAFE_INTEGER] } } },
+      { $sort: { _rank: 1, name: 1 } },
+      { $limit: CATALOGUE_LIMIT },
       {
-        name: 1,
-        category: 1,
-        description: 1,
-        thumbnail: 1,
-        image: 1,
-        productTypes: 1,
-        "productVariation.occassion": 1,
-        bestSellerOrder: 1,
-      }
-    )
-      .sort({ bestSellerOrder: 1, name: 1 })
-      .limit(CATALOGUE_LIMIT)
-      .lean(),
+        $project: {
+          name: 1,
+          category: 1,
+          description: 1,
+          thumbnail: 1,
+          image: 1,
+          productTypes: 1,
+          "productVariation.occassion": 1,
+          bestSellerOrder: 1,
+        },
+      },
+    ]),
   ]);
 
   const shaped = products.map(rules.shapeStoreProduct);
