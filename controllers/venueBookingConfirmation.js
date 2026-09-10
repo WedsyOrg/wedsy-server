@@ -26,7 +26,6 @@ const VenueTeamMember = require("../models/VenueTeamMember");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
 const { BRANDING_SELECT } = require("../utils/venueBranding");
-const { buildBookingConfirmationPdf } = require("../utils/venueBookingConfirmationPdf");
 const { fetchSourcePdf, stitchCoverOntoPdf, verifySourcePreserved, StitchError } = require("../utils/pdfStitch");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { insertNextVersion } = require("./venueLeadDocument");

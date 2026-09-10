@@ -6,7 +6,6 @@ const Venue = require("../models/Venue");
 const VenueQuote = require("../models/VenueQuote");
 const { computeTotals, computeLineTotals, GST_MODES } = require("../utils/venueMoney");
 const { checkChargeMoney } = require("../utils/venueBookingCharges");
-const { streamQuotePdf } = require("../utils/venuePdf");
 const { createDraftBookingForEnquiry } = require("./venueBooking");
 const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { syncQuotedValue } = require("../utils/venueQuotedValue");

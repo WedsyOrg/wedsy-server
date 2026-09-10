@@ -109,7 +109,8 @@ const classic = {
     const y = A4.h - 14 * MM - 22;
     R.rule(R.margin, y, R.margin + R.width, 0.5, R.T.ink);
     R.text(footerLine(R.identity, R.meta), { size: 9.5, color: R.T.mid, x: R.margin, y: y + 9, width: R.width * 0.72, advance: false });
-    R.text(WORDING.poweredBy, { size: 8, caps: true, tracking: 0.22, color: R.T.mid, x: R.margin + R.width * 0.6, y: y + 10, width: R.width * 0.4, align: "right", advance: false });
+    // loss #3 (quotewire): a white-label document never gains Wedsy's mark
+    if (!R.identity.whiteLabel) R.text(WORDING.poweredBy, { size: 8, caps: true, tracking: 0.22, color: R.T.mid, x: R.margin + R.width * 0.6, y: y + 10, width: R.width * 0.4, align: "right", advance: false });
     return y;
   },
   titleBlock(R, m) {
@@ -273,7 +274,7 @@ const stationery = {
   footer(R) {
     const y = A4.h - 14 * MM - 20;
     R.rule(R.margin, y, R.margin + R.width, 0.5, R.T.hairline);
-    R.text(`${footerLine(R.identity, R.meta)}   ·   ${WORDING.poweredBy.toUpperCase()}`, { size: 8.5, color: R.T.mid, x: R.margin, y: y + 6, width: R.width, align: "center", advance: false });
+    R.text(R.identity.whiteLabel ? footerLine(R.identity, R.meta) : `${footerLine(R.identity, R.meta)}   ·   ${WORDING.poweredBy.toUpperCase()}`, { size: 8.5, color: R.T.mid, x: R.margin, y: y + 6, width: R.width, align: "center", advance: false });
     return y;
   },
   titleBlock(R, m) {
@@ -365,7 +366,7 @@ const panel = {
     const y = A4.h - bandH;
     R.doc.save().rect(0, y, A4.w, bandH).fill(panel.tokens.bandFill).restore();
     R.text(footerLine(R.identity, R.meta), { size: 9.5, color: R.T.mid, x: 16 * MM, y: y + 11, width: R.width * 0.72, advance: false });
-    R.text(WORDING.poweredBy, { size: 8, caps: true, tracking: 0.22, color: R.T.mid, x: A4.w - 16 * MM - R.width * 0.4, y: y + 12, width: R.width * 0.4, align: "right", advance: false });
+    if (!R.identity.whiteLabel) R.text(WORDING.poweredBy, { size: 8, caps: true, tracking: 0.22, color: R.T.mid, x: A4.w - 16 * MM - R.width * 0.4, y: y + 12, width: R.width * 0.4, align: "right", advance: false });
     return y;
   },
   titleBlock(R, m) {

@@ -27,7 +27,12 @@ const { cleanStr } = require("../utils/venueInput");
 // in for storage without a network: the send path is what is under test.
 const pdfStitch = require("../utils/pdfStitch");
 const s3 = require("../utils/s3Upload");
-const { buildQuotePdfBuffer } = require("../utils/venuePdf");
+// QUOTEWIRE: the quote's bytes come from the DOCUMENT SYSTEM — the old
+// generator's last quote door. c5da676 added this entry point five days
+// before b5a24f1's sweep enumerated "the five documents"; the sweep
+// converted the design's enumeration, not the code's reality.
+const { buildVenueDocument } = require("../utils/docsystem");
+const { loadLogoBuffer } = require("../utils/venuePdf");
 const { sanitizeContacts } = require("../utils/venueContacts");
 const { recipientOptions, isOnLead, EMAIL_RE } = require("../utils/venueRecipients");
 const VenueMail = require("../services/VenueMail");
@@ -38,7 +43,7 @@ const SENDABLE_KINDS = Object.keys(VenueMail.KINDS);
 
 async function resolveOwnedLead(req, res) {
   const venue = await Venue.findOne({ slug: req.params.slug })
-    .select("_id name slug logo address formattedAddress contact phone email settings termsDocument whiteLabel")
+    .select("_id name slug logo address formattedAddress contact phone email settings termsDocument whiteLabel gstin pan invoicePrefix bankDetails upiQr")
     .lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) { res.status(403).json({ message: "Forbidden" }); return null; }
@@ -234,7 +239,9 @@ const storeQuoteDocument = async (req, res) => {
       quote = await VenueQuote.findOne({ venue: venue._id, enquiry: lead._id }).sort({ version: -1 }).lean();
       if (!quote) return res.status(400).json({ message: "This lead has no quote yet. Create one on the Money tab first.", code: "no_quote" });
     }
-    const buffer = await buildQuotePdfBuffer({ venue, enquiry: lead, quote });
+    const logoBuffer = await loadLogoBuffer((venue && venue.logo) || "");
+    const built = await buildVenueDocument("quote", { venue, lead, quote, logoBuffer });
+    const buffer = built.buffer;
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const key = `venues/${venue._id}/quotes/${stamp}.pdf`;
     let url;

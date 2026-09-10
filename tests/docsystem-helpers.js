@@ -4,8 +4,28 @@
  * The suite asserts on RENDERED BYTES — the standard this project holds for
  * the statement — so nothing here consults the data that built the PDF.
  */
-function pdfText(buffer) {
+/**
+ * QUOTEWIRE: real endpoints ship COMPRESSED pdfs (pdfkit's default), and a
+ * decoder that only reads literal streams sees nothing — which is precisely
+ * how the wrong renderer went unnoticed. Every FlateDecode stream is
+ * inflated before the text operators are read, so the same helpers read
+ * endpoint bytes and compress:false test bytes alike.
+ */
+function inflateStreams(buffer) {
+  const zlib = require("zlib");
   const raw = buffer.toString("latin1");
+  return raw.replace(/stream\r?\n([\s\S]*?)endstream/g, (m, body) => {
+    try {
+      const inflated = zlib.inflateSync(Buffer.from(body.replace(/\r?\n$/, ""), "latin1")).toString("latin1");
+      return `stream\n${inflated}endstream`;
+    } catch (_) {
+      return m; // already literal (compress:false) or not Flate — keep as-is
+    }
+  });
+}
+
+function pdfText(buffer) {
+  const raw = inflateStreams(buffer);
   const out = [];
   // literal strings inside text-showing operators, page order preserved
   const re = /\(((?:\\.|[^\\()])*)\)\s*Tj|<([0-9A-Fa-f]+)>\s*Tj|\[((?:\\.|[^\]])*)\]\s*TJ/g;
@@ -50,7 +70,7 @@ function normalise(s) {
  * in page order — so header/footer-on-every-page is assertable per sheet.
  */
 function pdfPagesText(buffer) {
-  const raw = buffer.toString("latin1");
+  const raw = inflateStreams(buffer);
   const streams = [];
   const re = /stream\r?\n([\s\S]*?)endstream/g;
   let m;

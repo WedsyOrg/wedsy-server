@@ -8,7 +8,7 @@ const VenueBooking = require("../models/VenueBooking");
 const VenueQuote = require("../models/VenueQuote");
 const VenueCounter = require("../models/VenueCounter");
 const { computeTotals, invoiceViewOfLines, GST_MODES } = require("../utils/venueMoney");
-const { streamInvoicePdf } = require("../utils/venuePdf");
+// QUOTEWIRE: the latent old-generator door, converted — see invoicePdf.
 const { isOwnerActor } = require("../utils/venueRbac");
 const { invoiceInScope } = require("../utils/venueBookingScope");
 const VenueTeamMember = require("../models/VenueTeamMember");
@@ -336,14 +336,27 @@ const rejectPayment = async (req, res) => {
 };
 
 // GET /venues/:slug/invoices/:invoiceId/pdf
+// QUOTEWIRE: the LATENT door — its only front-end caller was an orphaned
+// file, but the route was live and streamed the OLD generator. CONVERTED
+// rather than closed: an owner's stored link keeps its promise, and the
+// bytes now come from the document system like every other document. The
+// route also gains the capability gate it always lacked.
 const invoicePdf = async (req, res) => {
   try {
-    const venue = await resolveOwnedVenue(req, res, "name address formattedAddress contact phone email gstin pan logo");
+    const { BRANDING_SELECT } = require("../utils/venueBranding");
+    const venue = await resolveOwnedVenue(req, res, BRANDING_SELECT);
     if (!venue) return;
     const invoice = await VenueInvoice.findOne({ _id: req.params.invoiceId, venue: venue._id }).lean();
     if (!invoice) return res.status(404).json({ message: "Invoice not found" });
-    const booking = await VenueBooking.findById(invoice.booking).select("coupleName couplePhone").lean();
-    await streamInvoicePdf(res, { venue, booking, invoice });
+    const booking = invoice.booking ? await VenueBooking.findById(invoice.booking).lean() : null;
+    const lead = booking && booking.enquiry ? await require("../models/VenueEnquiry").findById(booking.enquiry).lean() : null;
+    const { buildVenueDocument } = require("../utils/docsystem");
+    const { loadLogoBuffer } = require("../utils/venuePdf");
+    const logoBuffer = await loadLogoBuffer((venue && venue.logo) || "");
+    const built = await buildVenueDocument("invoice", { venue, lead, booking, invoice, logoBuffer });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="invoice-${invoice.invoiceNumber || invoice._id}.pdf"`);
+    return res.status(200).send(built.buffer);
   } catch (err) { return res.status(500).json({ message: err.message }); }
 };
 
