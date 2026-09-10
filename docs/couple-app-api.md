@@ -413,3 +413,217 @@ Integration, **need a dev database, not yet run**:
 node tests/couple-auth-membership.int.test.js
 node tests/couple-wedding-home.int.test.js
 ```
+
+---
+
+# People — guests, tasks and family sharing
+
+*Appended by the people milestone. Nothing above this line was edited.*
+
+Files owned by this milestone:
+
+```
+routes/coupleApp-people.js          the routes and their gates
+controllers/coupleAppPeople.js      thirteen handlers, each wrapped
+services/CouplePeopleRules.js       PURE — filters, validation, shaping, denials
+services/CoupleGuestService.js      the guest list
+services/CoupleTaskService.js       the union, and the writes that stay on one side of it
+services/CoupleMemberService.js     family sharing
+```
+
+## P1 · Endpoints and their gates
+
+| Endpoint | Gate | Notes |
+|---|---|---|
+| `GET /wedding/:id/guests` `?side&rsvp&event&q` | `guests / view` | Returns a **bare array** — `api.guests()` reads `res.data` as one. |
+| `POST /wedding/:id/guests` | `guests / edit` | `201` + the created row. Writes `phoneNormalised`. |
+| `PATCH /guests/:id` | `guests / edit` | `weddingId` from the document. |
+| `DELETE /guests/:id` | `guests / edit` | |
+| `GET /wedding/:id/guests/headcount` | `guests / view` | `{ invited, yes, no, pending, headcount }`, unfiltered. |
+| `GET /wedding/:id/tasks` | `tasks / view` | `CoupleTask ∪ WeddingMilestone`. Bare array. |
+| `POST /wedding/:id/tasks` | `tasks / edit` | Always a `CoupleTask`. |
+| `PATCH /tasks/:id` | `tasks / edit` + `RefuseMilestone` | |
+| `DELETE /tasks/:id` | `tasks / edit` + `RefuseMilestone` | |
+| `GET /wedding/:id/members` | **`RequirePartner`** | Bare array. Revoked members are not on it. |
+| `POST /wedding/:id/members` | **`RequirePartner`** | `{ name, relation, access }` |
+| `PATCH /members/:id` | **`RequirePartner`** | |
+| `DELETE /members/:id` | **`RequirePartner`** | Sets `revokedAt`. Never a hard delete. |
+
+`RequirePartner` lives in `routes/coupleApp-people.js` and its body comes from
+`CouplePeopleRules.partnerDenial()`. It is mounted **instead of**
+`RequireSection`, exactly as `RequirePayout` is — and for the same structural
+reason: `"members"` is not one of the six grantable sections, `SharedMember.access`
+has no key for it, and `accessMapFrom` emits six keys and never a seventh. A
+member with all six sections at `edit` cannot invite anybody, cannot raise their
+own access, and cannot revoke the person who let them in. Asserted in
+`tests/couple-people-permissions.test.js` and `tests/couple-member-access.test.js`.
+
+### Refusal bodies
+
+Unchanged from § 3. `401 { error: "unauthenticated", message }` for a missing or
+invalid token; `403 { error: "forbidden", section, required, held, message }` for
+a real person without the section — including the members gate
+(`section: "members"`, `required: "partner"`) and a write aimed at the CRM's
+timeline (`section: "tasks"`, and a message that says whose row it is).
+Validation is `422 { error: "validation", fields: { … } }` and the duplicate
+guards are `409 { error: "duplicate_guest" | "duplicate_member", guestId | memberId }`.
+
+## P2 · The invariants are called, never reimplemented
+
+| Invariant | Where it is called |
+|---|---|
+| **Headcount** (§ 06.3 #1) | `CoupleGuestService.headcount` is four lines: read the wedding's guests, hand them to `CoupleHeadcountService.tally`, answer. `guestFields`' "a missing party is 1" mirrors the same rule at the door, and nothing anywhere in these files sums `party`. `tests/couple-guests-tasks.int.test.js` asserts the endpoint and the service agree over the same rows. |
+| **Phone match** (§ 06.3 #4) | `CoupleGuestService.assertNotDuplicate` calls `CoupleRsvpService.matchGuest`, which calls `utils/phone.normalisePhone`. Typed, imported and website-posted guests therefore collide on the one rule — including a stored row that predates `phoneNormalised`. A phone edit re-derives the key so the *next* website reply still matches. |
+| **Events defined once** (§ 06.3) | `CoupleGuestService.eventKeysOf` derives the wedding's function keys through `CoupleWeddingService.dayKey`, and a guest cannot be invited to a function this wedding does not have. |
+| **Activity** (§ 06.3) | Every mutation goes through `CoupleActivityService.record`: `guest.added`, `guest.rsvp`, `guest.removed`, `task.added`, `task.completed`, `task.reopened`, `task.removed`, `member.invited`, `member.access`, `member.removed`. A partner or member's identity rides in `meta.actor` — `ActivityLog.actorId` is `ref: "Admin"` and stays null. A party size nudged by one is deliberately **not** logged; four of those crowd the venue out of the digest. |
+| **Task shaping** | `CoupleTaskService.unite` calls `CoupleWeddingService.shapeTask` / `shapeMilestone`, the same two Home renders its task card with. |
+
+## P3 · The tasks union, and why the CRM's timeline is safe
+
+`GET /wedding/:id/tasks` returns both collections. `CoupleTask` rows carry
+`source: "couple"`, `readOnly: false`; `WeddingMilestone` rows carry
+`source: "milestone"`, `readOnly: true`, `createdBy: "Your planner"`.
+
+`readOnly` is a **courtesy, not the control**. The control is that no line in
+any file this milestone owns aims a write verb at `WeddingMilestone`:
+`tests/couple-tasks-union.test.js` reads the six source files and asserts it,
+in the manner of `tests/objectid-strict.test.js`. The only two calls that exist
+are `WeddingMilestone.find` (the union) and `WeddingMilestone.findById` (so the
+refusal can name the row instead of 404ing something the couple can see).
+
+`RefuseMilestone` is mounted **after** `CoupleAuth` and `RequireSection`. A
+stranger is refused on the wedding first and never learns the row exists; only a
+member who really can edit tasks is told whose task it is.
+
+`createdBy` is the one viewer-relative field in the whole feature: it reads
+`"you"` to its own author and the author's real name to the other partner,
+because `Tasks.js` hides the attribution line when it reads `"you"`. What is
+**stored** is always the real name — the client's `createdBy: "you"` is a
+rendering and is never written.
+
+## P4 · Child-resource routes, and the one line `routes/router.js` still needs
+
+`PATCH /guests/:id`, `/tasks/:id` and `/members/:id` carry no wedding id.
+`FromDocument(load, message)` loads the row, rewrites `req.params.id` to the
+`weddingId` **on the document**, and hands over to the ordinary `CoupleAuth` —
+so these routes run the *same* membership test as every other route, not a
+second one. It refuses a missing token **before** the lookup, so the route
+cannot be used to probe which ids exist.
+
+**The mounting gap.** `wedsy-user`'s `lib/plan/api.js` calls these at the API
+root (`PATCH /guests/:id`), and `routes/coupleApp` is mounted at `/wedding`, so
+today they answer at `/wedding/guests/:id`. `routes/router.js` was out of scope
+for this milestone, so the child routes are exported separately:
+
+```js
+// routes/router.js — one line, next to the existing /wedding mount
+router.use("/", require("./coupleApp-people").itemRoutes);
+```
+
+That serves the client's exact paths and touches nothing else. **The same gap
+applies to every other root-level path the client names** — `/registry-items/:id`,
+`/registry-funds/:id`, `/contributions/:id`, `/payments/:id/pay`,
+`/decor/:id/heart`, `/venues/:id/react`, `/makeup-bids/:id/accept` — so this is a
+merge-time decision for the whole couple app, not a people-only one.
+
+## P5 · Family sharing, in detail
+
+- **Relation** must be one of the seventeen presets, matched case-insensitively
+  and stored in the list's own spelling. `models/SharedMember` allows free text
+  and **this endpoint does not**: `You.js` renders a chip picker over exactly
+  those seventeen and compares `form.relation === r`, so a value outside the
+  list would render as no chip selected — an invitation the couple cannot then
+  edit.
+- **Access** is always exactly six keys, each `none | view | edit`. A key that
+  was not sent is `none`, so a partial map can only ever *reduce* what a member
+  holds. An unknown key is not an error to work around; it simply has nowhere to
+  go. An invitation with no `access` at all gets § 05.5's default — guest list at
+  `view`, everything else `none`.
+- **Removal is `revokedAt`**, never a delete: their Activity rows still name
+  them, and `CouplePermissions.isActiveMember` refuses them on their very next
+  request.
+- **`inviteTokenHash` never crosses the wire**, hashed or not (`select: false`
+  on the model, and `shapeMember` does not carry it).
+
+## P6 · Notifications
+
+**None were added.** Triggers only, through `services/NotificationService.js`,
+WhatsApp via the Meta Cloud API — never Aisensy — after the Notification System
+spec in Notion. Two marked comments name the ones this feature wants:
+
+| Moment | Trigger | Marked at |
+|---|---|---|
+| A shared member is invited | `couple_member_invite` — the invite link | `CoupleMemberService.create` |
+| `CoupleTask.remind` comes due | `couple_task_remind` — the flag is stored, nothing sends it | `CoupleTaskService.create` |
+
+The one-time token that invite link needs is deliberately **not minted** either:
+a credential with nothing to deliver it is a credential nobody revokes.
+
+## P7 · Contracts the client names that this milestone could not fully satisfy
+
+1. **Root-level child paths.** See P4. Reachable at `/wedding/guests/:id` today;
+   one line in `routes/router.js` gives the client's own paths.
+2. **A member has no way to accept.** § 05.5's invite form posts `{ name,
+   relation, access }` and nothing else — no phone, no email. `SharedMember.user`
+   is therefore null, `acceptedAt` stays null, and
+   `CouplePermissions.isActiveMember` correctly refuses them. `POST
+   /wedding/:id/members` accepts an optional `phone` when a caller sends one, but
+   **there is no accept endpoint in this milestone**, so the loop closes only
+   when the invite trigger and its accept route are built together. The
+   integration test binds the account directly to exercise the rest of the loop.
+   (There is deliberately no `email`: the model has no such field, and a value
+   mongoose would silently drop is worse than one the API never promised.)
+3. **`Tasks.js` offers its controls on every row.** The milestone half now comes
+   back with `readOnly: true`, but the finished screen does not read that flag
+   yet: toggling a planner's milestone optimistically flips the row, gets the
+   403, and rolls back with the generic error copy. Correct, and one line of
+   client work away from being graceful.
+4. **`?side&rsvp&event&q` is server-side and the screen filters locally anyway.**
+   `Guests.js` fetches the unfiltered list and narrows it in a `useMemo`. The
+   query is implemented, tested and faithful to what the box does; nothing calls
+   it yet.
+5. **A guest's `group` is free text.** § 05.2 shows a fixed-ish list
+   (`Family | Friends | Work | …`); the client sends whatever the couple typed,
+   and the server stores it. No enum was invented for it.
+
+## P8 · Tests
+
+Pure, no database — **these run and pass**:
+
+```
+node tests/couple-guest-filter.test.js        # 77 assertions — the ?side&rsvp&event&q filter and the guest body
+node tests/couple-tasks-union.test.js         # 43 — the union, its ordering, and source-level write isolation
+node tests/couple-member-access.test.js       # 86 — six sections, three levels, seventeen relations, fail closed
+node tests/couple-people-permissions.test.js  # 170 — every refusal path, through the REAL middlewares
+```
+
+Integration, **need a dev database (`DATABASE_URL`, never production — rule 7),
+and were not run**:
+
+```
+node tests/couple-guests-tasks.int.test.js    # the filter as mongo executes it, the duplicate guard,
+                                              # headcount agreement, and the milestone left byte-for-byte intact
+node tests/couple-members-sharing.int.test.js # the whole sharing loop: grant → the door opens → narrow →
+                                              # it closes on the next request → revoke → they stop resolving
+```
+
+Both integration files mount the real app the way `routes/router.js` does, plus
+`itemRoutes` at the root, and drive it over HTTP.
+
+## P9 · Untested seams (honest list)
+
+- **Everything that needs a database**, as above.
+- **Concurrency on the duplicate guard.** `assertNotDuplicate` is a read then a
+  write. Two simultaneous `POST /wedding/:id/guests` with the same number can
+  both pass the read. `Guest` has `{ weddingId, phoneNormalised }` as a plain
+  index, not a unique one, and making it unique is a migration this milestone
+  did not take — an existing wedding may already hold duplicates, and a unique
+  index would fail to build against them. The same is true of the member guard.
+- **Transactionality.** None of these endpoints writes two collections at once,
+  so none needs a transaction; the Activity append is deliberately fire-and-safe
+  (`ActivityLogService` swallows its own failures) so a feed row that cannot be
+  written never fails the couple's write.
+- **`?q=` collation.** The search is a case-insensitive regex, so it is not
+  accent- or transliteration-aware: "Meera" does not find "Mīra". No index
+  serves it either — acceptable at a guest list's size, wrong at a mailing
+  list's.
