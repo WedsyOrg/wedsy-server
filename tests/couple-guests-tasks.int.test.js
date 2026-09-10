@@ -84,7 +84,13 @@ const call = async (method, path, { as, body } = {}) => {
       user: bride._id,
       name: `${TAG} wedding`,
       brideName: "Ananya", groomName: "Karthik", eventDate: "2026-12-14",
-      eventDays: [{ name: "Haldi" }, { name: "Sangeet" }, { name: "Wedding" }],
+      // eventDays requires name, date, time and venue — a day missing any of
+      // them fails Event validation before the test reaches its first assertion.
+      eventDays: [
+        { name: "Haldi", date: "2026-12-12", time: "10:00", venue: "Home, Jayanagar" },
+        { name: "Sangeet", date: "2026-12-13", time: "19:00", venue: "The Tamarind Tree" },
+        { name: "Wedding", date: "2026-12-14", time: "07:40", venue: "The Tamarind Tree" },
+      ],
       coupleApp: { partners: [{ user: bride._id, name: "Ananya Sharma", role: "bride" }] },
     });
     created.events.push(event._id);

@@ -392,6 +392,11 @@ const call = async (method, path, { as, body } = {}) => {
         name: `${TAG} Floral cascade mandap`, category: `${TAG} Mandap`, unit: "piece",
         image: "/x.webp", thumbnail: "/x.webp", rating: 5, tags: [],
         productVisibility: true, productAvailability: true,
+        // The catalogue sorts by bestSellerOrder and caps at 300. On a dev
+        // database carrying real stock this fixture would otherwise fall off
+        // the end of the page and the assertions below would fail for a reason
+        // that has nothing to do with the endpoint.
+        bestSellerOrder: -1,
         productTypes: [{ name: "Natural", sellingPrice: 180000 }, { name: "Artificial", sellingPrice: 145000 }],
         productVariation: { occassion: ["Wedding"] },
       });

@@ -14,7 +14,12 @@ const { THEME_ID, PALETTE_ID, FONT_ID } = require("../utils/coupleEnums");
 // whose publishedAt is still null; only the SITE route requires publishedAt.
 const WebsiteSchema = new mongoose.Schema(
   {
-    weddingId: { type: ObjectId, ref: "Event", required: true, index: true },
+    // NOT `index: true` here. The unique index below is declared on the same
+    // key, and both resolve to the name `weddingId_1` — so mongoose asks the
+    // server to build one index twice with two different specs and the second
+    // attempt fails with IndexKeySpecsConflict (code 86), taking every read of
+    // this collection down with it. One declaration, at the bottom, unique.
+    weddingId: { type: ObjectId, ref: "Event", required: true },
 
     // Lowercase, hyphenated, globally unique. sparse so a wedding can hold a
     // draft website before the couple has chosen a name for it.

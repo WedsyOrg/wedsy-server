@@ -91,7 +91,11 @@ const call = async (method, path, { as, body } = {}) => {
     const mine = await Event.create({
       user: bride._id, name: `${TAG} wedding`,
       brideName: "Ananya", groomName: "Vikram", eventDate: "2026-12-11",
-      eventDays: [{ name: "Haldi" }, { name: "Wedding" }],
+      // name, date, time and venue are all required on an eventDay.
+      eventDays: [
+        { name: "Haldi", date: "2026-12-12", time: "10:00", venue: "Home, Jayanagar" },
+        { name: "Wedding", date: "2026-12-14", time: "07:40", venue: "The Tamarind Tree" },
+      ],
       coupleApp: { city: "Bengaluru", partners: [{ user: bride._id, name: "Ananya Sharma", role: "bride" }] },
     });
     const theirs = await Event.create({
