@@ -1313,3 +1313,408 @@ fires two concurrent "pay in full" requests at one gift and asserts exactly one
 200, exactly one 409, one Contribution, one credit and `funded` equal to the
 price — the race as MongoDB executes it rather than as a pure function decides
 it.
+
+---
+
+# Planning — venues, décor, the budget, the store and makeup
+
+*Appended by the planning milestone. Nothing above this line was edited.*
+
+Files owned by this milestone:
+
+```
+routes/coupleApp-planning.js          the routes and their gates
+controllers/coupleAppPlanning.js      nineteen handlers, each wrapped
+services/CouplePlanningRules.js       PURE — shaping, validation, the reaction seam, the bid decision
+services/CoupleDecorStateService.js   PURE — the five-state derivation, INCLUDING needs_input
+services/CoupleBudgetRules.js         PURE — the bands and the estimate arithmetic
+services/CoupleScheduleService.js     the ONE writer for a finalise plan (décor AND makeup)
+services/CoupleVenueService.js        the concierge shortlist, its holds, its chat and its offer
+services/CoupleDecorService.js        the décor journey and the finalise
+services/CoupleBudgetService.js       the estimate, the target and the tracker
+services/CoupleStoreService.js        the catalogue, the draft, and the one quote pipeline
+services/CoupleMakeupService.js       the brief, the bids, the accept and the trial
+```
+
+One model was touched, additively: `models/Event.coupleApp` gained four optional
+sub-documents — `decor`, `storeDraft`, `makeup` and `venues`. No existing field
+changed shape, no default moved, and all four are absent on every existing
+document. What they hold is only the couple-side state the existing records have
+no field for, plus the ids that point back at the record which *does* own the
+work. See PL2.
+
+## PL1 · Endpoints and their gates
+
+Every one of them is the **`decor`** section — `view` to read, `edit` to write.
+
+| Endpoint | Gate | Notes |
+|---|---|---|
+| `GET /wedding/:id/venues` | `decor / view` | `{ shortlist[], holds[], messages[], offer }`. Resolved through `Event.leadId` → `VenueShortlist`. |
+| `POST /venues/:id/react` | `decor / edit` | `{ reaction: "love"\|"maybe"\|"pass" }`. Stored as the venue team's `"no"` — see PL3. |
+| `POST /venues/:id/offer/accept` | `decor / edit` | `{ offerId }` — a `VenueMessage` of type `offer`. Idempotent. |
+| `POST /venues/:id/enquire` | `decor / edit` | Delegates to `controllers/venueEnquiry.createEnquiry` — see PL6. |
+| `GET /wedding/:id/decor` | `decor / view` | Per-day state (five values), the priced tiers, the looks, the brief, the hearts. |
+| `POST /decor/:id/heart` | `decor / edit` | `{ themeId \| productId }`. **A toggle** — the client's control is one. |
+| `POST /decor/:id/select-tier` | `decor / edit` | `{ tier }`. Wedding-wide, or one day when `:id` named a day. |
+| `POST /decor/:id/finalise` | `decor / edit` | **Irreversible.** Requires the ceremony's body. Calls `CoupleDecorFinaliseService`. |
+| `GET /wedding/:id/budget` | `decor / view` | `committed` is `committedTotal(event)`; `paid` is Σ paid `Payment` rows. |
+| `POST /wedding/:id/budget/estimate` | `decor / edit` | Stores the answers **and the server's own estimate**. |
+| `PUT /wedding/:id/budget/target` | `decor / edit` | `{ target }` — the one figure a request may set. |
+| `GET /wedding/:id/store/catalogue` | `decor / view` | ⛏ contract addition. The REAL `Decor` + `Category` catalogue. |
+| `GET /wedding/:id/store/draft` | `decor / view` | § 06.1's `StoreDraft`. |
+| `POST /wedding/:id/store/draft/items` | `decor / edit` | `{ productId }`. `201`. Priced from the catalogue, never from the body. |
+| `DELETE /wedding/:id/store/draft/items/:itemId` | `decor / edit` | ⛏ contract addition. `:itemId` is the **product** id, as the client sends. |
+| `POST /wedding/:id/store/draft/send` | `decor / edit` | Creates a **`QuoteRequest`** through `QuoteRequestService.ingest` (§ 06.3). |
+| `GET /wedding/:id/makeup` | `decor / view` | ⛏ contract addition. `{ brief, bids[], trial, artists[] }`. |
+| `PUT /wedding/:id/makeup/brief` | `decor / edit` | ⛏ contract addition. The brief IS the `Bidding` document. |
+| `POST /makeup-bids/:id/accept` | `decor / edit` | ⛏ contract addition. Marks the losers, closes the round, schedules the retainer. |
+
+`GET /venues` — **the marketplace — is deliberately not in this table.** It
+already exists (`routes/venue.js` → `controllers/venue.getVenues`, mounted at
+`/venues` well above this router), the client normalises its document shape in
+`lib/plan/normalise.js`, and a second browse endpoint would be two answers to
+"which venues does Wedsy work with". What it does not return is covered in PL9.
+
+Refusal bodies are unchanged from § 3: `401 { error: "unauthenticated" }`,
+`403 { error: "forbidden", section: "decor", required, held, message }`,
+`404 { error: "not_found" }`, `422 { error: "validation", fields }`, and the
+409s `price_changed`, `bid_already_accepted`, `offer_already_accepted`,
+`round_closed`, `draft_full`, `too_many_hearts`, `wedding_ambiguous`.
+
+### One section, and what that costs
+
+The Planner, the Store, the venue chat, the budget and the makeup round all sit
+behind `decor`. A shared family member at `decor: "view"` may read every one of
+them and change none — **a heart and a finalise are both refused at `view`**,
+because the level is on the route rather than in a handler.
+`tests/couple-planning-permissions.test.js` walks the route table and asserts
+that the thirteen write verbs in the file are exactly the thirteen `edit` gates,
+so a write can never be mounted behind a read.
+
+The two irreversible ones carry no gate beyond `decor / edit`, deliberately:
+unlike a payout, committing the décor is something a couple may genuinely ask a
+parent with edit rights to do. The money those two commit still cannot be
+**paid** by anybody but a partner — that is `RequirePayout` on
+`routes/coupleApp-money.js`, untouched.
+
+## PL2 · What was reused, what is new, and why
+
+| Concept | What it uses | Reasoning |
+|---|---|---|
+| **The venue shortlist** | `VenueShortlist` | Already the venue team's record, keyed by `crmEnquiryId` = `Event.leadId` as a string. The couple app reaches it and does not re-key it. |
+| **Venue reactions** | `VenueShortlist.items[].reaction` | The SAME field the venue team reads. Not a couple-app copy. |
+| **Venue holds** | `VenueHold` | A real approved hold with a real expiry. `holdUntil` is never a date this app invented. |
+| **The venue chat** | `VenueConversation` + `VenueMessage` | These already carry `senderType: couple \| venue \| wedsy` and a structured `offer` payload — which is § 3.2.1's thread and its offer card, already modelled. |
+| **A direct enquiry** | `controllers/venueEnquiry.createEnquiry` | Not a row, a pipeline: dedup, round-robin assignment, the first contact, the interaction log, and the `VenueConversation` this app then reads. Delegated to, not re-implemented. |
+| **The couple's décor** | `Event.eventDays[]` + `PlanSnapshot` | As the foundation said. `models/DecorDraft` is the A2S approval queue and is never touched here. |
+| **The priced tiers** | `PlanSnapshot` kind `comparison` + `draft` | P2's publish membrane: the couple sees a SNAPSHOT, frozen at publish, and `pricingVisible: false` is honoured (§ 3.2.2 state 2, "looks only, no prices yet"). |
+| **The store catalogue** | `Decor` + `Category` | The products the store actually sells, at their cheapest `productTypes[].sellingPrice`. A hardcoded list would go stale the first time a price moved. |
+| **A sent store draft** | `QuoteRequestService.ingest` | § 06.3's one pipeline. See PL4. |
+| **The makeup round** | `Bidding` + `BiddingBid` + `BiddingBooking` | The vendor marketplace's own three, with the SAME `status.userAccepted` / `status.userRejected` flags `routes/bidding.js` sets. No parallel bidding system. |
+| **The commitment** | `CoupleDecorFinaliseService` + `Payment.coupleApp.sourceKey` | Called, never reimplemented. See PL5. |
+
+**New (0 models.)** Four additive optional sub-documents on `Event.coupleApp`:
+
+| Field | Why it is there |
+|---|---|
+| `coupleApp.decor.hearts[]` | Which look the couple loved. Nothing in this repo records a couple's reaction to a lookbook. |
+| `coupleApp.decor.tier` | Which priced tier they are choosing between (§ 3.2.2 state 4). |
+| `coupleApp.decor.days[]` | Per-day: **`needsInput`**, its note, the day's own tier, and when it was finalised. See PL3. |
+| `coupleApp.storeDraft` | § 06.1's `StoreDraft` — one per wedding, which is what the Store screen holds. `quoteRequest` points at the row that owns the pricing. |
+| `coupleApp.makeup` | Three POINTERS: the `Bidding` round, the accepted `BiddingBid`, the trial `BiddingBooking`. |
+| `coupleApp.venues.acceptedOffer` | That the couple said yes to a `VenueMessage` offer, and when. |
+
+## PL3 · How `needs_input` is derived
+
+The foundation flagged it (§ 7): *"`decorStatus: "needs_input"` is not derivable
+from the Event; a day needing a palette currently reads as `"drafted"`, which
+understates it rather than inventing it."* This milestone supplies it, in
+`services/CoupleDecorStateService.stateOf`.
+
+**The other four are not re-derived.** `stateOf` CALLS
+`CoupleWeddingService.decorStateOf` for the base state and lays one overlay on
+top, so there is still exactly one place that decides `none` / `drafted` /
+`priced` / `finalised`. A second copy of that ladder is how the Planner and Home
+start telling a couple two different things about the same day.
+
+`needs_input` means **"the team cannot move until you answer"**, and it is
+raised three ways — only the first of which is a stored fact:
+
+1. **The team asked.** `Event.coupleApp.decor.days[].needsInput`, with a note.
+   It is a fact about a conversation and no amount of reading a day's contents
+   can recover it, which is exactly why it is the one thing stored rather than
+   derived.
+2. **Priced, and nobody has chosen.** Comparable tiers are in front of the
+   couple and no tier is set (§ 3.2.2 state 4, "compare & choose"). Home already
+   renders this as a decision card.
+3. **Drafted, and nothing hearted for that function.** Looks are up and the
+   couple has loved none of them — Home's "No palette · Pick". Nothing can be
+   priced until they do. A heart carrying **no** function key counts for every
+   day: a couple who expressed a direction must not be nagged for it.
+
+**It never overrides `finalised`** — the finalise is irreversible and terminal,
+and a stale flag must not unlock the ceremony's copy — **and never invents
+itself out of `none`**: a day with nothing drawn on it is waiting on the *team*.
+
+`reasonFor()` returns the team's own words, or the specific thing to do, or an
+empty string. Never invented copy.
+
+The journey's own five states (`holding` / `presented` / `selections` /
+`drafts` / `finalised` — the client's `ui.dxState`) are a **different
+vocabulary** from `DecorState`, and `journeyState()` is the one place they are
+mapped, so the two cannot be mixed halfway down a controller.
+
+## PL4 · The store draft and the concierge path converge — structurally
+
+§ 06.3: *"A sent store draft becomes a quote request and returns as a priced
+draft in the same Décor flow as concierge picks. Both paths converge on one
+Finalise."*
+
+`CoupleStoreService.send` calls **`QuoteRequestService.ingest`** — the one door
+onto `models/QuoteRequest`, which resolves the lead, queues the row on the
+Store/CS workspace queue, echoes the `quote_sent` activity, raises the
+needs-attention notification to the lead owner and drops the décor-lane entry.
+The call site carries a marked comment naming § 06.3.
+
+That it does not open a second pipeline is asserted at **source level** in
+`tests/couple-store-quote.test.js`, in the manner of
+`tests/couple-tasks-union.test.js`:
+
+- `CoupleStoreService` calls `QuoteRequestService.ingest`;
+- it never calls `QuoteRequest.create` or `new QuoteRequest`;
+- **it does not even import the model** — there is nothing in the file to write
+  a second kind of row with;
+- no price field is read or written anywhere in it, and nothing is multiplied
+  into a total.
+
+The **items sent are the server's**, not the body's: the client posts its local
+mirror of the draft, and pricing a list a browser assembled is pricing something
+nobody can audit. Only the draft's *name* comes from the request.
+
+**Events are defined once.** The quote payload carries the wedding's functions,
+their dates and their venues read off `Event.eventDays` — not a list retyped
+into the store. The same rule holds in the budget (days are distinct dates off
+the Event), the makeup brief (a function this wedding does not have is dropped)
+and the décor read.
+
+## PL5 · Where each invariant is called rather than reimplemented
+
+| Invariant | Where it is called |
+|---|---|
+| **Décor finalise → Budget → Payments** (§ 06.3 #3) | `CoupleDecorService.finalise` calls `CoupleDecorFinaliseService.plan()` once per day, folding each day's returned `budgetLines` into the next so four days are one write, and hands the result to `CoupleScheduleService.apply`. **There is no percentage, no due date and no source-key format in any file this milestone owns.** `tests/couple-makeup-bids.test.js` asserts that at source level. |
+| **…and the makeup retainer** | `CoupleMakeupService.acceptBid` calls the SAME `plan()` with `dayId: "makeup:<bidId>"`, and the SAME `apply()`. The retainer is the first row of the same 25/50/25 schedule; there is no bespoke retainer arithmetic, and the file does not import `models/Payment` at all. |
+| **Committed is Σ lines** | `finaliseService.committedTotal(event)` in `CoupleBudgetService.get` and in `CoupleDecorService.get`. No `committed` field was added anywhere. |
+| **Headcount** (§ 06.3 #1) | `CoupleBudgetService.estimate` reads the wedding's `Guest` rows, hands them to `CoupleHeadcountService.tally`, and passes the number to the estimator. `CoupleBudgetRules.buildEstimate` takes headcount as an **argument** and the request body's `headcount` reaches no variable — `estimateAnswers` is a whitelist that emits five keys and has no room for one. |
+| **Events defined once** (§ 06.3) | `CoupleBudgetService.daysOf` and `CoupleMakeupService.eventKeysOf` both derive the functions through `CoupleWeddingService.shapeDay` / `dayKey`; the quote payload reads `Event.eventDays`; the décor read shapes the same days. No second list exists. |
+| **Activity** (§ 06.3) | `venue.reaction`, `venue.offer_accepted`, `decor.tier_selected`, `decor.finalised`, `store.draft_sent`, `budget.target_set`, `makeup.brief_posted`, `makeup.bid_accepted` — all through `CoupleActivityService.record`, identity in `meta.actor`. **A heart is deliberately NOT logged**: a couple hearts a dozen looks in a minute and twelve rows would push the venue hold and the priced mandap out of Home's four-item digest. |
+| **Membership** (§ 06.4) | `FromDocument` is IMPORTED from `routes/coupleApp-people.js`; there is no second `resolveMembership` and no second `jwt.verify` anywhere in the file — asserted in `tests/couple-planning-permissions.test.js`. |
+
+### Why finalising twice cannot double anything
+
+Three things, and only the first is code this milestone wrote:
+
+- every `Payment` write is an **upsert on `{ coupleApp.weddingId,
+  coupleApp.sourceKey }`** — the keys `plan()` derived, so a retry lands on the
+  same row;
+- `Payment` carries a **unique sparse index** on that exact pair, so two
+  *concurrent* finalises cannot both insert. The loser takes E11000 and is
+  retried as a plain update onto the winner's row;
+- `plan()`'s returned array already **replaces** the line with the same source
+  key rather than appending one.
+
+A row that has already been **paid** is never rewritten (`status: { $ne:
+"paid" }` on every filter): a schedule that regenerated over a settled payment
+would reopen money the couple has sent.
+
+`alreadyFinalised` and `alreadyAccepted` come back as **values, not errors** —
+a couple who tapped twice has finalised, and the second answer equals the first.
+
+### The hold-confirm, and the price the couple was shown
+
+§ 3.2.2's ceremony is a 1.6-second hold (or, for a reader who has asked for less
+motion, typing FINALISE in full). Both produce **one** request, and what that
+request carries is `{ tier, total }`. The named tier IS the confirmation this
+server can check — a finalise with no tier in it did not come from the ceremony
+and is refused 422; an explicit `confirm: true` is accepted as well, for any
+caller that starts sending one. See PL9 #1 for the honest caveat.
+
+`total` is read as **the figure the couple was looking at**, never as the amount:
+the committed sum is the server's, from the frozen snapshot. When the two differ
+the finalise is refused with `409 price_changed` naming both, rather than
+quietly committing the larger one.
+
+## PL6 · Three seams worth naming
+
+**The reaction seam.** The couple app's vocabulary is Love / Maybe / **Pass**;
+`VenueShortlist.items.reaction`'s enum is `"" | love | maybe | no` — it has no
+room for "pass". The mapping is two functions in `CouplePlanningRules` and nowhere else, so no
+controller writes a reaction word by hand and an unknown word is refused rather
+than stored.
+
+**The enquiry delegation.** `POST /venues/:id/enquire` resolves the venue's slug
+and hands over to `controllers/venueEnquiry.createEnquiry` with a body built
+from the **couple's own record** — the name and phone are the wedding's, never
+the request's, so a couple cannot enquire in somebody else's name. The public
+enquiry route is rate-limited per IP and per phone because it is
+unauthenticated; this one is not, because it is behind `CoupleAuth` and the
+`decor / edit` gate, which is a stronger control and one that names who did it.
+
+**`FromCaller`.** `/decor/:id/*` and `/makeup-bids/:id/accept` resolve their
+wedding from the document through the people milestone's `FromDocument`.
+`/venues/:id/*` cannot — a `Venue` belongs to no wedding, since hundreds of
+couples shortlist the same one — so `FromCaller` resolves it from the request
+body's `weddingId` when the client sends one, else from the document, else from
+the caller's own weddings narrowed by which of them actually has this venue on
+its shortlist. Exactly one ⇒ that one; none ⇒ 404; more than one ⇒ `409
+wedding_ambiguous`, because guessing which of a person's two weddings a
+reaction belongs to is worse than asking. It then **rewrites `:id` and hands
+over to the ordinary `CoupleAuth`**: the resolution changes, the membership test
+does not. Identity comes from `middlewares/auth.CheckToken` — this repo's own
+token middleware, called rather than re-implemented, and it never refuses, so
+the refusal stays `CoupleAuth`'s in the couple app's shape.
+
+## PL7 · Notifications
+
+**None were added.** Triggers only, through `services/NotificationService.js`,
+WhatsApp via the **Meta Cloud API — never Aisensy** — and only after reading the
+Notification System spec in Notion. Four marked comments name the ones this
+feature wants, and two of the four already exist on the vendor path and should
+be reused rather than invented:
+
+| Moment | Trigger | Marked at |
+|---|---|---|
+| The couple finalises their décor | `couple_decor_finalised`, to the décor lead and the planner | `CoupleDecorService.finalise` |
+| The couple sends a store draft | `couple_store_draft_sent`, to the COUPLE. The team's half already exists — `QuoteRequestService.ingest` raises the needs-attention notification and the décor-lane entry today. | `CoupleStoreService.send` |
+| A makeup brief is posted | **`MUA_BID_REQS`** to each eligible vendor and **`cust_bidreqs_send`** to the couple — both already fired by `controllers/bidding.CreateNew`. The vendor fan-out is deliberately NOT wired here for exactly that reason. | `CoupleMakeupService.saveBrief` |
+| A bid is accepted | **`mua_bid_accept`** to the artist and **`cx_bid_cnfrm`** to the couple — both already fired by `controllers/bidding.UserAcceptBiddingBid`. A trigger for the artists who **lost** does not exist and should be decided with the spec in hand; silence is what they get today. | `CoupleMakeupService.acceptBid` |
+| The couple accepts a venue offer | `couple_venue_offer_accepted`, to the venue desk and the planner. The in-thread `VenueMessage` this endpoint writes is the in-app half and stands alone. | `CoupleVenueService.acceptOffer` |
+
+`tests/couple-makeup-bids.test.js` strips comments from every file this
+milestone owns and asserts no `NotificationService` import, no `send("…")` call
+and no trace of Aisensy in the **code**.
+
+## PL8 · Untested seams (honest list)
+
+- **Everything that needs a database.** `tests/couple-planning.int.test.js` was
+  written and **not run** — there is no MongoDB in this container.
+- **The `PlanSnapshot` join.** The priced tiers are matched to their itemisation
+  by **draft name**, because each tier is its own draft `Event` under the lead
+  and its day ids are not the couple's. A team that publishes two comparisons
+  with the same draft name would collide. Not exercised against real snapshots.
+- **The E11000 retry path** in `CoupleScheduleService.apply` is asserted by the
+  index's semantics, not by a test — the concurrent-finalise assertion lives in
+  the integration file.
+- **The enquiry delegation** is a controller calling a controller with a
+  rewritten `req`. It is not exercised anywhere without a database, and it is
+  the one place in this milestone where a change to `controllers/venueEnquiry`
+  could break a couple-app route silently.
+- **Transactionality of a finalise.** `runAtomically` is the money milestone's
+  and its dispatch is tested there; that the budget line and the twelve payment
+  rows commit together is MongoDB's property and needs a replica set to observe.
+  Against a standalone `mongod` the ordering is budget-line-then-rows, so a
+  crash leaves a commitment with a short schedule — reconcilable by re-running
+  the finalise, which is exactly what idempotence buys.
+- **`Vendor.category`** is free text with no enum and no agreed vocabulary, so
+  the artist roster is NOT filtered on it (see the comment in
+  `CoupleMakeupService.get`). If a non-makeup vendor type is ever added to that
+  collection, this list needs a real filter.
+- **`GET /wedding/:id` and Home still report the BASE décor state.**
+  `CoupleWeddingService.shapeDay` is the foundation's and was not edited, so it
+  cannot return `needs_input`. One line there — swapping `decorStateOf(day)` for
+  `CoupleDecorStateService.stateOf(day, event.coupleApp.decor, key)` — adopts
+  the overlay everywhere. Until then the Planner is the only screen that shows
+  the fifth state, and Home understates a day rather than inventing one.
+
+## PL9 · Client contracts this milestone could not fully satisfy
+
+1. **The hold-confirm is a client gesture, not a field.**
+   `PlannerDecor.finalise` sends `{ tier, total }` and nothing else — there is
+   no `confirm: true` on the wire. The server therefore treats **the named tier
+   as the confirmation** and refuses a bodiless finalise; it also accepts
+   `confirm: true` for any caller that starts sending one. If the ceremony
+   should be provable server-side, the client needs to send a token the modal
+   mints, and that is a client change.
+2. **`shortlisted` on the marketplace is always `false`.**
+   `api.venueMarket(id, query)` ignores its `id` and calls `GET /venues${query}`
+   with no wedding, so the existing route cannot know which venues are on this
+   couple's concierge shortlist. `GET /wedding/:id/venues` answers that question
+   properly; the marketplace's "Ravi's shortlist →" link is the surface that
+   uses it. Closing it means either a `?weddingId=` on `controllers/venue
+   .getVenues` (another milestone's file) or one line in the client.
+3. **The offer card is honestly partial.** `VenueMessage.offer` holds a title, a
+   body and a `validUntil`. The finished card also draws `rentalWas`,
+   `rentalNow`, `terms[]` and a site-visit block — none of which has a field.
+   They come back absent rather than invented: a rental figure this server made
+   up is a number the couple would plan around. Three additive optional fields
+   on that model close it.
+4. **A bid card's comparable facts are mostly empty.** `covers`, `travel` and
+   `trial` are five of the "same five facts" § 3.5 puts side by side, and
+   `BiddingBid` has a field for none of them (`bid`, `vendor_notes`, `status`).
+   They come back `""`; assembling them out of the artist's free-text note would
+   be an invention. Three additive optional fields on `BiddingBid` close it, and
+   the vendor app's bid form would have to ask for them.
+5. **The trial has no date.** `POST /makeup-bids/:id/accept` creates the
+   `BiddingBooking` as `requested` with `date: null` — the couple accepted a
+   bid; nobody has picked a time. The client's `trial` shape expects a date, a
+   start time and a place. There is no endpoint in either app for the artist to
+   confirm one yet, and that is the fourth makeup contract's missing half.
+6. **`GET /venues` is not this milestone's.** The client normalises its shape in
+   `lib/plan/normalise.js`; nothing was changed on that route. What it does not
+   carry that the screen would like: this wedding's date availability
+   (`available` defaults to true, worded as "we have not asked yet") and the
+   `shortlisted` flag (see #2).
+7. **A wedding with no `leadId` has no venue shortlist and no priced tiers.**
+   Both resolve through the CRM lead. A couple who signed up directly gets an
+   honest empty state, and `POST /venues/:id/react` refuses with a 404 that says
+   so — a reaction with nowhere to be written is a reaction the venue team will
+   never read, and storing it in a second place would be the parallel record
+   this whole feature avoids.
+8. **`api.heartDecor`/`selectTier`/`finaliseDecor` are called with the WEDDING
+   id**, while § 06.2 reads `/decor/:id` as a décor draft. Both are served:
+   `loadDecorTarget` accepts an `Event` id (the wedding) or an `eventDays[]`
+   subdocument id (one day). Nothing needs to change on either side.
+
+## PL10 · Tests
+
+Pure, no database — **these run and pass** (real output, in this container):
+
+```
+node tests/couple-decor-state.test.js           #  36 assertions — the five states, and needs_input's three
+                                                #       sources, its two vetoes, and the journey's own five
+node tests/couple-planning-schedule.test.js     #  54 — the fold, the upserts, idempotence, the makeup
+                                                #       retainer, snapshot-over-live precedence, and that an
+                                                #       unpriced snapshot leaks no figure
+node tests/couple-budget-estimate.test.js       #  61 — the bands against the client's own, distinct-date
+                                                #       days, and the catering line reading the SERVER headcount
+node tests/couple-store-quote.test.js           #  41 — the catalogue shaping, the quote-request payload, and
+                                                #       a source-level assertion that there is only one pipeline
+node tests/couple-makeup-bids.test.js           #  85 — bid acceptance and loser marking, the brief, and
+                                                #       source-level assertions: no bespoke retainer, no
+                                                #       notification, no console.log, no hardcoded URL
+node tests/couple-planning-permissions.test.js  # 331 — every refusal path through the REAL middlewares, plus
+                                                #       the route table itself
+```
+
+The existing couple-app suites were re-run and all still pass (headcount 26,
+wallet 49, finalise 36, rsvp 48, permissions 36, decisions 32, activity 22,
+guest-filter 77, tasks-union 43, member-access 86, people-permissions 170,
+site-withholding 76, website-builder 108, site-unlock 62, website-permissions
+116, site-rsvp-seam 92, money-ledger 95, registry-withholding 56,
+registry-linkfetch 128, money-permissions 192, money-atomicity 22), as does
+`tests/objectid-strict.test.js`.
+
+Integration, **needs a dev database (`DATABASE_URL`, never production — rule 7)
+and was NOT run**:
+
+```
+node tests/couple-planning.int.test.js
+```
+
+It mounts the real app the way `routes/router.js` does and drives it over HTTP.
+The assertion that matters most is this milestone's definition of done: **a
+couple finalises their décor and, with no manual step, the committed budget and
+the payment schedule are there on the very next read of
+`GET /wedding/:id/budget` and the money milestone's own
+`GET /wedding/:id/payments`.** It also fires two concurrent finalises at the
+same wedding and asserts there are still exactly six `Payment` rows — the unique
+sparse index as MongoDB enforces it, rather than as a pure function decides it.

@@ -383,6 +383,106 @@ const EventSchema = new mongoose.Schema(
           default: [],
         },
       },
+
+      // ── COUPLE APP · PLANNING (additive, optional) ─────────────────────
+      // Venues, décor, the wedding store and the makeup round.
+      //
+      // THE RULE THESE FOUR FOLLOW: the WORK stays where it already lives.
+      // The décor itself is eventDays[].decorItems / packages and the
+      // published view is PlanSnapshot; the venue shortlist and its reactions
+      // are VenueShortlist; a sent store draft is a QuoteRequest; the makeup
+      // round is Bidding / BiddingBid / BiddingBooking. NOTHING below
+      // duplicates any of that. What lives here is only the couple-side state
+      // those models have no field for — which look they loved, which tier
+      // they picked, which day the décor team is waiting on them about — plus
+      // the id that points back at the record which does own the work.
+      //
+      // Absent on every existing document, and absent is a valid state
+      // everywhere it is read.
+      decor: {
+        // § 3.2.2 state 2/3 — the lookbook is the catalogue's; this is only
+        // which of it the couple fell in love with. `ref` is a theme id or a
+        // product id as the client sends it (they are catalogue ids, not
+        // ObjectIds on this document), so it stays a String.
+        hearts: {
+          type: [
+            {
+              kind: {type: String, enum: ["theme", "product"], required: true},
+              ref: {type: String, required: true},
+              event: {type: String, default: ""}, // the function key, when known
+              at: {type: Date, default: Date.now},
+            },
+          ],
+          default: [],
+        },
+        // § 3.2.2 state 4 — which priced tier the couple is choosing.
+        tier: {type: String, default: ""},
+        tierAt: {type: Date, default: null},
+        // PER-DAY couple state. `needsInput` is the ONE DecorState value the
+        // Event could not express (docs/couple-app-api.md § 7): it means a
+        // human on the décor team is waiting on the couple for a direction.
+        // It is a RAISED FLAG, not a derived one — everything else about a
+        // day's state is derived from the day itself, and this is the piece
+        // that is genuinely a fact about a conversation.
+        days: {
+          type: [
+            {
+              dayId: {type: String, required: true},
+              needsInput: {type: Boolean, default: false},
+              needsInputNote: {type: String, default: ""},
+              needsInputAt: {type: Date, default: null},
+              tier: {type: String, default: ""},
+              finalisedAt: {type: Date, default: null},
+            },
+          ],
+          default: [],
+        },
+      },
+
+      // § 3.3 / § 06.1 StoreDraft — the couple's own pick-list. ONE draft per
+      // wedding, which is what the Store screen holds. Sending it creates a
+      // QuoteRequest (§ 06.3, "Store draft → Décor drafts") and `quoteRequest`
+      // is the pointer at it; the pricing lives there, never here.
+      storeDraft: {
+        name: {type: String, default: ""},
+        status: {type: String, enum: ["building", "sent", "quoted"], default: "building"},
+        items: {
+          type: [
+            {
+              productId: {type: String, required: true},
+              name: {type: String, default: ""},
+              cat: {type: String, default: ""},
+              from: {type: Number, default: 0},
+              addedAt: {type: Date, default: Date.now},
+            },
+          ],
+          default: [],
+        },
+        quoteRequest: {type: ObjectId, ref: "QuoteRequest", default: null},
+        sentAt: {type: Date, default: null},
+      },
+
+      // § 3.5 — the makeup bidding round. The ROUND is a Bidding document and
+      // the bids are BiddingBid rows; these are only the pointers, so the
+      // couple app never opens a second bidding system.
+      makeup: {
+        bidding: {type: ObjectId, ref: "Bidding", default: null},
+        acceptedBid: {type: ObjectId, ref: "BiddingBid", default: null},
+        acceptedAt: {type: Date, default: null},
+        trialBooking: {type: ObjectId, ref: "BiddingBooking", default: null},
+        briefAt: {type: Date, default: null},
+      },
+
+      // § 3.2.1 — the structured offer in the venue thread that the couple
+      // accepted. The offer itself is a VenueMessage (messageType "offer");
+      // this records that the couple said yes and when.
+      venues: {
+        acceptedOffer: {
+          message: {type: ObjectId, ref: "VenueMessage", default: null},
+          venue: {type: ObjectId, ref: "Venue", default: null},
+          at: {type: Date, default: null},
+        },
+      },
     },
   },
   {timestamps: true}
