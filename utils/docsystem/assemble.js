@@ -127,6 +127,8 @@ function clientParty({ name, contact, clientDetails, gstin, showGstin = true }) 
  * original — on a freshly cut document it says the same thing twice.
  * Pass the sibling date; identical days suppress the ref.
  */
+const MODE_LABEL = { bank_transfer: "Bank transfer", cash: "Cash", cheque: "Cheque", upi: "UPI", card: "Card", other: "Other" };
+
 function generatedRef(siblingDate) {
   const today = dateProse(new Date());
   if (siblingDate && dateProse(siblingDate) === today) return null;
@@ -576,7 +578,7 @@ async function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
 }
 
 // ── 4. STATEMENT OF ACCOUNT ─────────────────────────────────────────────────
-function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
+async function assembleStatement({ venue, lead, booking, summary, invoices, logoBuffer }) {
   const pct = Number(booking.gstPercent) || 0;
   const isLegacy = !(booking.lineItems || []).length;
   const legacy = isLegacy ? legacyAssembly(booking) : null;
@@ -603,18 +605,58 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
       }
       const totalPaid = siblings.reduce((s, x) => s + Math.round(Number(x.entry.amount) || 0), 0);
       const here = Math.round(Number(e.amount) || 0);
-      const text = siblings.length > 1
+      // f9 (founder ruling): amount, date, METHOD and REFERENCE — four facts
+      // and no more. The reference is what settles "we sent it on the 12th".
+      const how = [MODE_LABEL[e.method] || e.method || null, e.reference || null].filter(Boolean).join(" \u00b7 ");
+      const text = (siblings.length > 1
         ? `${money(totalPaid)} on ${dateCell(e.date)}, of which ${money(here)} to this instalment`
-        : `${money(here)} received on ${dateCell(e.date)}`;
+        : `${money(here)} received on ${dateCell(e.date)}`) + (how ? ` \u00b7 ${how}` : "");
       paymentSubRows.push({ rowRef: r._id, text, amountText: null });
     }
   }
   const paymentDates = (booking.paymentSchedule || []).flatMap((r) => (r.entries || []).filter((e) => e.status === "approved").map((e) => new Date(e.date)));
+  const firstPay = paymentDates.length ? dateCell(new Date(Math.min(...paymentDates))) : null;
+  const lastPay = paymentDates.length ? dateCell(new Date(Math.max(...paymentDates))) : null;
+  // f4: a range whose ends are the same day is one date, said once
   const receivedSub = paymentDates.length
-    ? `${paymentDates.length} payment${paymentDates.length === 1 ? "" : "s"}, ${dateCell(new Date(Math.min(...paymentDates)))} – ${dateCell(new Date(Math.max(...paymentDates)))}`
+    ? `${paymentDates.length} payment${paymentDates.length === 1 ? "" : "s"}, ${firstPay === lastPay ? firstPay : `${firstPay} \u2013 ${lastPay}`}`
     : "No payments yet";
   const overdueTotal = (summary && summary.overdueTotal) || 0;
+  // f11: when something is late, NAME it — the instalment, how many days,
+  // how much is left on it. That is the line an owner chases on.
+  const now = Date.now();
+  const { receivedOn: recvOn } = require("../venuePaymentStatus");
+  const overdueRows = ((booking.paymentSchedule || []).filter((r) => !r.isAdditional))
+    .map((r) => {
+      const left = Math.round(Number(r.amount) || 0) - Math.round(recvOn(r));
+      if (!r.dueDate || left <= 0) return null;
+      const days = Math.floor((now - new Date(r.dueDate).getTime()) / 86400000);
+      if (days <= 0) return null;
+      return { label: r.label || "Instalment", days, left };
+    })
+    .filter(Boolean);
+  // f10: the invoice trail — number, date, amount, what it is against
+  const invoiceTrail = (invoices || []).map((inv) => ({
+    number: inv.invoiceNumber,
+    date: dateCell(inv.createdAt),
+    amount: Math.round(Number((inv.totals || {}).grandTotal) || 0),
+    against: inv.kind === "addon" ? "Additional billing"
+      : inv.forPaymentId ? `Payment received${inv.stream === "taxed" ? " (tax)" : inv.stream === "untaxed" ? " (no GST)" : ""}`
+      : inv.forMilestoneId ? ((inv.lineItems && inv.lineItems[0] && inv.lineItems[0].label) || "Instalment")
+      : "Booking",
+  }));
+  // f6: the statement asks for money, so it carries the same two payment
+  // routes the invoice does — the ONE stored QR
+  let payQr = null;
   const stIdentity = identityFrom(venue, logoBuffer);
+  if (stIdentity.upiQr && stIdentity.upiQr.dataUrl) {
+    const b64 = (stIdentity.upiQr.dataUrl.split(",")[1]) || "";
+    if (b64) payQr = { buffer: Buffer.from(b64, "base64"), source: stIdentity.upiQr.source || "stored" };
+  } else if (stIdentity.bank && stIdentity.bank.upiId) {
+    const { generateUpiQr } = require("../venueUpiQr");
+    const q = await generateUpiQr(stIdentity.bank.upiId, stIdentity.name);
+    payQr = { buffer: Buffer.from(q.dataUrl.split(",")[1], "base64"), source: "fallback" };
+  }
   const stContact = primaryContactOf(lead);
   return {
     identity: stIdentity,
@@ -635,7 +677,7 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
       presentedTo: booking.coupleName,
       // "As of <today>" above IS this copy's date — a Generated ref beside it
       // would say the same thing twice on every copy (finding 1's rule)
-      refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateProse((booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn)}`],
+      refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateWindowProse(booking.checkIn || (booking.days && booking.days[0] && booking.days[0].date), booking.checkOut || booking.checkIn)}`],
     },
     bookedOn: booking.createdAt,
     priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
@@ -643,10 +685,28 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
     extras,
     totals,
     received, outstanding, receivedSub, overdueTotal,
+    overdueRows,
     schedule,
     paymentSubRows,
+    invoiceTrail,
+    payQr,
+    remit: stIdentity.bank ? {
+      lines: bankLines(stIdentity.bank).filter((l) => !/^UPI /.test(l)),
+      upiId: (stIdentity.bank.upiId || ""),
+    } : null,
+    // the as-of truth moves NEXT TO the outstanding figure (placement note);
+    // rendered there, not buried under the payment details
+    asOfLine: "Figures as recorded on the booking today. Payments claimed but not yet approved are not included.",
     contactLine: null,
-    noteLines: ["Figures as recorded on the booking as of the date above. Payments claimed but not yet approved are not included."],
+    noteLines: [
+      // f13: the deposit's fate — the process, stated without inventing the
+      // venue's own timeline (no per-venue deposit terms exist to print yet)
+      totals.refundable > 0
+        ? "The refundable deposit is returned after the event, once the venue has confirmed the spaces and rooms are as handed over; any deduction is itemised to you before the balance is returned."
+        : null,
+      // f14: what turns a dispute into a phone call
+      `If anything here does not match your records, contact ${stIdentity.name}${[stIdentity.phone, stIdentity.email].filter(Boolean).length ? " \u2014 " + [stIdentity.phone, stIdentity.email].filter(Boolean).join(" \u00b7 ") : ""}.`,
+    ].filter(Boolean),
     signatory: null,
   };
 }
@@ -687,7 +747,7 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
     };
   });
   const next = (summary && summary.next) || null;
-  const modeLabel = { bank_transfer: "Bank transfer", cash: "Cash", cheque: "Cheque", upi: "UPI", card: "Card", other: "Other" }[first.method] || first.method || DASH;
+  const modeLabel = MODE_LABEL[first.method] || first.method || DASH;
   const rcIdentity = identityFrom(venue, logoBuffer);
   const rcContact = primaryContactOf(lead);
   return {

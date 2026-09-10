@@ -185,7 +185,7 @@ const createStatement = async (req, res) => {
       const { buildVenueDocument } = require("../utils/docsystem");
       const { loadLogoBuffer } = require("../utils/venuePdf");
       const logoBuffer = await loadLogoBuffer(venue.logo);
-      const built = await buildVenueDocument("statement", { venue, lead, booking, summary, logoBuffer });
+      const built = await buildVenueDocument("statement", { venue, lead, booking, summary, invoices, logoBuffer });
       rendered = { buffer: built.buffer, gstStated: (built.data.totals.gst + built.data.totals.extrasGst) > 0 };
     } catch (e) {
       console.error(`[venueLeadStatement] render failed for lead ${lead._id}: ${e.message}`);

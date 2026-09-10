@@ -79,6 +79,10 @@ function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
   const sumA = priced.reduce((s2, l) => s2 + l.amount, 0);
   const sumT = priced.reduce((s2, l) => s2 + (l.taxable || 0), 0);
   const sumG = priced.reduce((s2, l) => s2 + (l.gst || 0), 0);
+  const sumL = priced.reduce((s2, l) => s2 + l.lineTotal, 0);
+  if (dense && sumL !== totals.charged + totals.gst) {
+    throw new Error(`the dense line-total column would lie: lines sum ${sumL} vs charged+gst ${totals.charged + totals.gst}`);
+  }
   if (sumA !== totals.charged || sumT !== totals.taxable || sumG !== totals.gst) {
     throw new Error(
       `the charged subtotal would lie: lines sum ${sumA}/${sumT}/${sumG} vs ` +
@@ -111,11 +115,21 @@ function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
     // is an em dash (LANGUAGES.md §1) — so that is what it holds.
     // A zero under TAXABLE or GST on a no-GST document is not a sum, it is
     // noise — the non-applicable cell is a dash (§1), same as the line rows.
+    //
+    // THE TWO SHAPES DIVERGE ON THE LINE-TOTAL CELL, deliberately
+    // (statementdoc f1): the FULL table dashes it — its column sits beside a
+    // TAXABLE column, and charged+GST there is an unnamed near-miss of
+    // collectable one block above the real thing. The DENSE table has no
+    // taxable column: its line-total column is the only sum a reader can
+    // check, every addend is printed above, and a dash refuses to confirm
+    // arithmetic the reader will do anyway — the opposite of a proof row's
+    // job. So the dense cell holds the true column sum, guarded like the
+    // rest (the lines' totals are asserted against charged+GST above).
     cells: dense ? {
       line: { text: WORDING.chargedSubtotal, caps: true, size: 9, color: R.T.mid },
       amount: { text: money(totals.charged).replace("Rs. ", ""), bold: true },
       gst: totals.gst ? { text: money(totals.gst).replace("Rs. ", ""), bold: true } : DASH,
-      total: DASH,
+      total: { text: money(totals.charged + totals.gst).replace("Rs. ", ""), bold: true },
     } : {
       line: { text: WORDING.chargedSubtotal, caps: true, size: 9, color: R.T.mid },
       amount: { text: money(totals.charged).replace("Rs. ", ""), bold: true },
@@ -284,6 +298,34 @@ function paymentBlock(R) {
     R.text(line, { size: TYPE.subLine + 1, color: R.T.mid, lineGap: 2 });
     R.gap(2);
   }
+}
+
+// ── the ONE payment-details block (statementdoc f6/f7): bank transfer and
+// UPI together, the QR beside the UPI ID it encodes, ONE name everywhere —
+// "Payment details" (the invoice's "Remit to" was a second name for it).
+function paymentDetailsBlock(R, { remit, payQr }, { x, w }) {
+  if (!remit && !payQr) return;
+  const py0 = R.y;
+  const qrSide = payQr ? 112 : 0;
+  const bw = w - qrSide - (qrSide ? 20 : 0);
+  R.text("Payment details", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, y: py0, width: bw, advance: false });
+  let by = py0 + 13;
+  const remitLines = [
+    ...((remit && remit.lines) || []),
+    remit && remit.upiId ? `UPI ${remit.upiId}` : null,
+  ].filter(Boolean);
+  for (const l of remitLines) {
+    R.text(l, { size: TYPE.subLine + 1, color: R.T.mid, x, y: by, width: bw, advance: false });
+    by += 14;
+  }
+  let qy = py0;
+  if (payQr) {
+    const qx = x + w - 100;
+    R.image(payQr.buffer, qx, py0, { fit: [100, 100] });
+    R.text("Scan to pay", { size: TYPE.subLine, color: R.T.mid, x: qx - 10, y: py0 + 102, width: 120, align: "center", advance: false });
+    qy = py0 + 102 + 12;
+  }
+  R.y = Math.max(by, qy) + 2;
 }
 
 // ── the fact strip ──────────────────────────────────────────────────────────
@@ -585,35 +627,13 @@ async function renderInvoice(R, d) {
         R.text("Amount in words", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: w });
         R.gap(3);
         R.text(amountInWords(d.sum.total), { size: TYPE.fine, x, width: w, lineGap: 3 });
-        // f6: ONE payment block, full width, below the words — here is what
-        // you owe, here is how to send it. Bank transfer and UPI together,
-        // the QR beside the UPI ID it encodes.
+        // ONE payment block, full width, below the words — shared with the
+        // statement, one name everywhere (statementdoc f7)
         if (d.remit || d.payQr) {
           R.gap(10);
           R.rule(x, R.y, x + w, 0.75, R.T.hairline);
           R.gap(8);
-          const py0 = R.y;
-          const qrSide = d.payQr ? 112 : 0;
-          const bw = w - qrSide - (qrSide ? 20 : 0);
-          R.text("Remit to", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, y: py0, width: bw, advance: false });
-          let by = py0 + 13;
-          const remitLines = [
-            ...((d.remit && d.remit.lines) || []),
-            d.remit && d.remit.upiId ? `UPI ${d.remit.upiId}` : null,
-          ].filter(Boolean);
-          for (const l of remitLines) {
-            R.text(l, { size: TYPE.subLine + 1, color: R.T.mid, x, y: by, width: bw, advance: false });
-            by += 14;
-          }
-          let qy = py0;
-          if (d.payQr) {
-            const qx = x + w - 100;
-            R.image(d.payQr.buffer, qx, py0, { fit: [100, 100] });
-            // the caption is "Scan to pay" — the app asks for the amount
-            R.text("Scan to pay", { size: TYPE.subLine, color: R.T.mid, x: qx - 10, y: py0 + 102, width: 120, align: "center", advance: false });
-            qy = py0 + 102 + 12;
-          }
-          R.y = Math.max(by, qy) + 2;
+          paymentDetailsBlock(R, { remit: d.remit, payQr: d.payQr }, { x, w });
         }
       }, { estHeight: 300 });
     };
@@ -651,12 +671,32 @@ async function renderStatement(R, d) {
         if (sub) R.text(sub, { size: TYPE.subLine, color: hero && d.overdueTotal ? R.T.accent : R.T.mid, x: cx, y: y0 + 13 + (hero ? R.T.heroSizes.statement : 24) + 4, width: cw, advance: false });
         cx += bw * widths[i];
       };
-      cell(0, "Total collectable", money(d.totals.collectable), `Agreed ${money(d.totals.charged + d.totals.refundable + d.totals.gst)} + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}`);
+      // f3: AGREED is the payable ex-extras (charged + refundable) — the old
+    // sub printed the collectable under the word Agreed; and a line about
+    // zero extras is a line about nothing
+    cell(0, "Total collectable", money(d.totals.collectable),
+      `Agreed ${money(d.totals.charged + d.totals.refundable)}${d.totals.extrasAmount + d.totals.extrasGst > 0 ? ` + extras ${money(d.totals.extrasAmount + d.totals.extrasGst)}` : ""}`);
       cell(1, "Received to date", money(d.received), d.receivedSub);
       cell(2, "Outstanding", money(d.outstanding), d.overdueTotal ? `${money(d.overdueTotal)} of this is overdue` : "Nothing overdue", true);
       R.y = y0 + Math.max(R.T.heroSizes.statement, 24) + 30;
     }, { x, width: w, estHeight: 110 });
     R.rule(x, R.y, x + w, 0.75, R.T.ink);
+    R.gap(4);
+    // the as-of truth lives NEXT TO the figure it qualifies (placement note)
+    if (d.asOfLine) {
+      R.text(d.asOfLine, { size: TYPE.subLine, color: R.T.mid });
+      R.gap(2);
+    }
+    // f11: when something is late, name it — instalment, days, amount left
+    if (d.overdueRows && d.overdueRows.length) {
+      R.gap(4);
+      for (const o of d.overdueRows) {
+        R.ensure(16);
+        R.text(`Overdue \u2014 ${o.label}: ${money(o.left)}, ${o.days} day${o.days === 1 ? "" : "s"} late`,
+          { size: TYPE.subLine, color: R.T.accent });
+        R.gap(2);
+      }
+    }
     R.gap(2);
   }
   R.sectionLabel(`The agreed lines — fixed at booking, ${dateProse(d.bookedOn)}`);
@@ -686,6 +726,29 @@ async function renderStatement(R, d) {
   }
   R.sectionLabel("Schedule & payments received");
   scheduleTable(R, d.schedule, d.totals, { withState: true, payments: d.paymentSubRows });
+  // f10: THE INVOICE TRAIL — what a couple's accountant reconciles against.
+  // Number, date, what it is against, amount; nothing exists → no section.
+  if (d.invoiceTrail && d.invoiceTrail.length) {
+    R.sectionLabel("Invoices raised");
+    R.table({
+      cellSize: TYPE.denseCell,
+      columns: [
+        { key: "number", label: "Invoice", width: 0.22 },
+        { key: "date", label: "Date", width: 0.16 },
+        { key: "against", label: "Against", width: 0.42 },
+        { key: "amount", label: "Amount", width: 0.20, numeric: true },
+      ],
+      rows: d.invoiceTrail.map((iv, i) => ({
+        cells: {
+          number: iv.number,
+          date: { text: iv.date, color: R.T.mid },
+          against: { text: iv.against, color: R.T.mid },
+          amount: money(iv.amount).replace("Rs. ", ""),
+        },
+        lastData: i === d.invoiceTrail.length - 1,
+      })),
+    });
+  }
   // ── THE CLOSING RECONCILIATION — full measure, never beside the notes ──
   // "How the outstanding figure is arrived at": one hairline row per step,
   // the GST and Received rows stating their basis inline. Outstanding is at
@@ -693,7 +756,10 @@ async function renderStatement(R, d) {
   // (Stationery states it once: heroSizes.statementClosing is null there and
   // the row's figure stays at body weight).
   R.gap(SPACE.block);
-  R.ensure(260);
+  // f5: reserve what the closing MEASURES — ensure(260) was the same guessed
+  // reserve the confirmation shed; with the resolution row (f8) the true
+  // height moved again, which is exactly why guesses rot
+  const drawClosing = () => {
   R.text("How the outstanding figure is arrived at", { font: "Times-Italic", size: 15 });
   R.gap(9);
   R.emphasisBlock((x, w) => {
@@ -711,6 +777,10 @@ async function renderStatement(R, d) {
     }
     R.rule(x, R.y - 3, x + w, 0.5, R.T.hairline); R.gap(3);
     step(`GST at ${d.totals.pct}% — on the taxable ${money(d.totals.taxable + Math.round(d.totals.extrasGst / 0.18))} of the lines and extras`, money(d.totals.gst + d.totals.extrasGst));
+    // f8: show the running figure RESOLVING before anything is subtracted —
+    // the reader was holding payable + GST in their head
+    kvRow(R, { x, width: w, label: WORDING.totalIncludingGst, value: money(d.totals.collectable), figure: true, figureSize: 26, gapAfter: 3 });
+    R.rule(x, R.y - 3, x + w, 0.5, R.T.hairline); R.gap(3);
     step(`Received to date — ${d.receivedSub}`, `- ${money(d.received)}`);
     kvRow(R, {
       x, width: w, label: "Outstanding", value: money(d.outstanding),
@@ -720,7 +790,25 @@ async function renderStatement(R, d) {
       gapAfter: 2,
     });
   }, { estHeight: 250 });
-  paymentBlock(R);
+  };
+  {
+    const h = R.measure_height(drawClosing);
+    R.ensure(Math.min(h + 4, R.contentBottom - R.contentTop));
+    drawClosing();
+  }
+  // f6/f7: the ONE payment block — bank + UPI + the stored QR, same name
+  // and shape as the invoice's
+  if (d.remit || d.payQr) {
+    const pdDraw = () => {
+      R.gap(14);
+      R.rule(R.margin, R.y, R.margin + R.width, 0.75, R.T.hairline);
+      R.gap(8);
+      paymentDetailsBlock(R, { remit: d.remit, payQr: d.payQr }, { x: R.margin, w: R.width });
+    };
+    const ph = R.measure_height(pdDraw);
+    R.ensure(Math.min(ph + 4, R.contentBottom - R.contentTop));
+    pdDraw();
+  }
   // the notes sit below, behind a 0.5px rule, at 74% measure
   R.gap(12);
   R.rule(R.margin, R.y, R.margin + R.width * 0.74, 0.5, R.T.hairline);
