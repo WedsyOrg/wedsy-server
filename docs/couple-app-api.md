@@ -924,3 +924,392 @@ node tests/couple-public-site.int.test.js       # the withholding rule on the RA
 
 Both integration files mount the real app the way `routes/router.js` does, plus
 `itemRoutes` at the root, and drive it over HTTP.
+
+---
+
+# Money — the registry, the wallet and payments
+
+*Appended by the money milestone. Nothing above this line was edited.*
+
+Files owned by this milestone:
+
+```
+routes/coupleApp-money.js             the routes and their gates
+controllers/coupleAppMoney.js         sixteen handlers, each wrapped
+services/CoupleRegistryRules.js       PURE — shaping, validation, withholding, the offset's door
+services/CoupleRegistryService.js     the couple's side of the registry
+services/CoupleContributionService.js the public registry, and the one place money arrives
+services/CoupleMoneyService.js        the wallet and payments
+services/CoupleLinkFetchService.js    fetch-link: the SSRF guard, the budget, the parser
+utils/coupleTransaction.js            runAtomically — one write, or none
+utils/coupleRegistryRateLimit.js      the contribute bucket, keyed by the website's own ipAndSlug
+```
+
+Nothing in `services/CoupleWalletService.js` was changed. Every sign, every
+total and every re-derivation in this milestone is that file's; the services
+above call it and never re-implement it.
+
+## M1 · Endpoints and their gates
+
+| Endpoint | Gate | Notes |
+|---|---|---|
+| `GET /wedding/:id/registry` | `registry / view` | `{ items[], funds[], intro, layout, slug, thanked, pending }`. Contributions are attached to their gift, because `money/shared.js`'s `contributionRows()` walks `item.contributions[]`. |
+| `PATCH /wedding/:id/registry` | `registry / edit` | `{ intro, layout }`. **Upserts the `Website` document** — § 05.1's registry works with no website. |
+| `POST /wedding/:id/registry/fetch-link` | `registry / edit` | An **edit**, not a view: it spends this server's network on an address the caller chose. |
+| `POST /wedding/:id/registry/items` | `registry / edit` | `201` + the row, with `id` — `api.addRegistryItem` reads `res.data.id`. |
+| `PATCH /registry-items/:id` | `registry / edit` | pin (exclusive), price, title, image. |
+| `DELETE /registry-items/:id` | `registry / edit` | Archive once money has arrived; remove otherwise. |
+| `POST /wedding/:id/registry/funds` | `registry / edit` | |
+| `PATCH /registry-funds/:id` | `registry / edit` | ⛏ contract addition. |
+| `DELETE /registry-funds/:id` | `registry / edit` | ⛏ contract addition. |
+| `PATCH /contributions/:id` | `registry / edit` | ⛏ contract addition — `{ thanked }`. |
+| `GET /wedding/:id/wallet` | `registry / view` **and** `payments / view` | See M5. |
+| `POST /wedding/:id/wallet/claim` | **`RequirePayout`** | Never a section gate. |
+| `GET /wedding/:id/payments` | `payments / view` | A **bare array**, as `api.payments()` reads it. |
+| `POST /payments/:id/pay` | **`RequirePayout`** | `{ method, useWallet: boolean }`. |
+| `GET /registry/:slug` | **public**, `siteReadLimiter` | Resolves regardless of `publishedAt`. |
+| `POST /registry/:slug/contribute` | **public**, `contributeLimiter` | 6/hour per IP-and-slug. |
+
+Refusal bodies are unchanged from § 3: `401 { error: "unauthenticated" }`,
+`403 { error: "forbidden", section, required, held }`,
+`403 { error: "forbidden_payout" }`, `422 { error: "validation", fields }`,
+`409 { error: "already_funded", funded, price }`, `409 { error: "already_paid" }`,
+`429 { error: "rate_limited", retryAfter }`.
+
+The child routes reuse `FromDocument` **imported from
+`routes/coupleApp-people.js`** rather than rewritten: two implementations of
+"which wedding does this row belong to" is exactly the second membership test
+§ 06.4 exists to prevent. `routes/router.js` already mounts
+`require("./coupleApp-money").itemRoutes` at the root, so the client's own paths
+(`/registry-items/:id`, `/payments/:id/pay`, `/registry/:slug`) are served.
+
+**A `Payment` with no `coupleApp.weddingId` 404s** at `/payments/:id/pay`: a CRM
+or store row that was never part of the couple's schedule is not payable through
+this door.
+
+## M2 · Contribution → wallet: what "one write" actually guarantees
+
+`utils/coupleTransaction.runAtomically(work)` runs the whole contribution inside
+**one MongoDB transaction** wherever the deployment supports one. Production
+does: hard rule 4 says the database URL ends `.mongodb.net`, every Atlas cluster
+is a replica set, and a replica set is exactly what multi-document transactions
+require. There, the gift's running total, the `Contribution` and the `WalletTxn`
+credit commit together or not at all, and the endpoint reports `atomic: true`.
+
+**Where a transaction is genuinely unavailable — a standalone `mongod` on a
+laptop — this does not pretend.** `runAtomically` detects the refusal
+(`IllegalOperation` / code 20, or the driver's replica-set message), says so in
+the return value, and runs the work with no session. The ordering is chosen so
+the failure mode is reconcilable rather than wrong:
+
+1. **Reserve on the gift first** — a conditional single-document update, which
+   is atomic on *any* MongoDB and does not depend on transactions at all.
+2. Write the `Contribution` as **`pending`**, which counts towards nothing: not
+   `balance()`, not `funded`, not the thank-you list, not the registry read.
+3. Write the `WalletTxn` credit.
+4. Only then flip the Contribution to `settled` with its `walletTxn` set.
+
+A failure at 2–4 compensates the reserve on the way out and marks the row
+`failed`; a crash leaves a `pending` row that no screen reads.
+
+> **The invariant that survives either path: a *settled* Contribution always has
+> its credit.** `status: "settled"` ⟺ `walletTxn != null` is the reconciliation
+> query — `Contribution.find({ status: "pending", createdAt: { $lt: … } })` is
+> the list of things to complete or fail. There is no state in which the couple
+> has money they cannot see, and none in which they have money that never
+> arrived.
+
+`tests/couple-money-atomicity.test.js` asserts the **dispatch** (which path runs,
+that a domain 409 aborts rather than being retried without a session, that a real
+error surfaces). It does not assert durability — that is MongoDB's, and
+`tests/couple-registry-money.int.test.js` exercises it against a real cluster.
+
+## M3 · The race, and why it is one conditional update
+
+Two guests tap **Pay in full** on the same lamp within the same second.
+
+```js
+RegistryItem.findOneAndUpdate(
+  { _id, weddingId, archivedAt: null, price, funded: { $lt: price } },
+  { $set: { funded: price } },
+  { new: false }              // ← the PRE-IMAGE
+)
+```
+
+The winner's update matches and returns the document **as it was**; the amount
+charged is then `CoupleWalletService.contributionAmount(preImage, "full")` —
+the remainder the database actually saw, not the remainder the browser was
+showing a second ago, and never a figure from the request body. The loser's
+update matches nothing and becomes `409 already_funded`.
+
+This is a single-document atomic update, so it holds with or without a
+transaction — and inside one, a write conflict makes `withTransaction` re-run
+the whole callback, which re-reads and re-derives rather than reusing a stale
+amount. The decision itself is pure and tested:
+`CoupleRegistryRules.fullReserve` / `partReserve`.
+
+A **priced item** may not be over-funded (`$expr: funded + amount <= price`,
+else `422` naming what is left). A **fund** is never capped — § 06.1: money past
+a fund's target is still welcome. An item with **no price yet** cannot be taken
+"in full" (`422`, not a race) but accepts any chip-in.
+
+## M4 · The offset cannot be client-supplied — three doors, none of them open
+
+1. **The client already strips it.** `api.pay` sends
+   `{ method, useWallet: Boolean(...) }` and nothing else.
+2. **The server strips it again.** `CoupleRegistryRules.payBody(body)` is the
+   only thing that reads a Pay request, and it **emits exactly two keys**. A body
+   carrying `walletApplied: 999999`, `amount: 1` or `gatewayAmount: 0` posts
+   fields that reach no variable, because there is no variable for them.
+   Asserted by key-set equality in `tests/couple-money-ledger.test.js`.
+3. **The arithmetic has no parameter for one.**
+   `applyWallet(amountDue, walletBalance, useWallet)` — three arguments,
+   `applyWallet.length === 3`, and the two amounts were computed by this server
+   a line earlier. Passing a fourth argument changes nothing; asserted.
+
+`useWallet` is compared `=== true`. The **string** `"false"` is truthy in
+JavaScript, and a form that serialised a checkbox as text would otherwise spend
+the couple's gift money.
+
+The integration test fires the hostile body over real HTTP and asserts the
+offset is the server's ₹999, not the client's ₹999,999.
+
+## M5 · Two figures: `balance` and `spendable`
+
+`CoupleWalletService.balance()` counts **settled** rows only, and
+`claimWrite()` writes a claim as **`pending`**. Read together, a claim in flight
+does not reduce the balance — so the same ₹50,000 could be claimed twice while
+the first request is still on its way to the bank, and the ledger would agree
+with both. **This is a real seam in the foundation's service, found here rather
+than in an incident.**
+
+Nothing in the ledger's arithmetic was changed. `CoupleRegistryRules.spendable`
+computes a second, narrower figure from the ledger's own primitives
+(`balance`, `signOf`, `money`):
+
+```
+pendingOutflow = Σ pending claims and debits
+spendable      = max(0, balance − pendingOutflow)
+```
+
+`spendable` is what is handed to `claimWrite` and to `applyWallet`. `balance` is
+still what the couple is shown. Both are in the wallet payload, with `credited`,
+`claimed`, `pending` and the readable `transactions[]`.
+
+`POST /payments/:id/pay` uses the same idea from the other end: when the wallet
+does **not** cover the row, the debit is written **`pending`** — a reservation,
+so the same rupees cannot also be claimed to the bank while the card is being
+typed. When it **does** cover the row there is no gateway at all, the debit is
+`settled` and the `Payment` is marked paid in the same act.
+
+## M6 · Razorpay: an intent, and the honest reason it is only an intent
+
+`POST /payments/:id/pay` returns a well-formed intent
+(`{ provider: "razorpay", mode, dormant, currency, amount, method, orderId: null,
+paymentId, walletTxnId }`) and **does not call the gateway**. `mode` and
+`dormant` come from `utils/payment`'s own `razorpayMode()` /
+`razorpayConfigured()`, so the response tells the truth about this deploy. No key
+name appears anywhere in this milestone's code.
+
+`utils/payment.CreatePayment` could not be reused as-is: it creates the order for
+`Payment.amount`, and a wallet-offset payment owes `amount − walletApplied`.
+Wiring the order creation and its webhook — which is what flips the reserved
+debit to `settled` and the `Payment` to `paid` — is the next piece of work, and
+it needs a decision about the paise-vs-rupees inconsistency between
+`CreatePayment` (passes rupees) and `CreatePaymentLink` (passes paise) that
+predates this milestone.
+
+**Until that lands, an abandoned intent leaves a `pending` debit.** The
+reconciliation query is
+`WalletTxn.find({ type: "debit", status: "pending", createdAt: { $lt: … } })`;
+those should be set `failed` (which releases the reservation, since only settled
+and pending rows are counted, and a failed one is neither).
+
+## M7 · The public registry, and what a guest may be given
+
+`CoupleRegistryRules.publicRegistryPayload` is the **one** function that builds
+the guest's body and the **one** function that can withhold — the same
+discipline as `CoupleWebsiteRules.publicPayload`, which it borrows
+`publicPrivacy` and `publicPartners` from so the "`passwordRequired`, never the
+hash" rule has one implementation on this server.
+
+**Never in it, on any branch:** the bcrypt hash, any guest's name, phone number
+or note, any contribution id or date, the couple's thank-you counters, the guest
+list, the budget, the payments, the wallet balance.
+
+**The one that needed thought.** `components/registry/GuestRegistry.js` draws its
+progress bars with `(row.contributions || []).reduce((n, c) => n + c.amount)`.
+Sending the real rows would put every other guest's **name, phone number and
+private note** on a page anyone with the link can open. Sending nothing would
+draw every bar at zero. So the public payload carries the **total, as one
+anonymous row** — `contributions: [{ amount: <funded> }]`, a single key, no id,
+no name, no date, no per-gift granularity anyone could correlate against a guest
+list — beside `funded`/`raised`, which carry the same number. The client's own
+derivation reaches the right answer and learns nothing.
+`tests/couple-registry-withholding.test.js` asserts the absence by **searching
+the serialised payload as text**, so a leak at any nesting depth is caught.
+
+**Two deliberate differences from the site route:**
+
+- **`publishedAt` is not consulted.** § 05.1 is explicit that the registry "works
+  on its own — no website needed", so a registry link resolves on a `Website`
+  whose `publishedAt` is still null. `GET /site/:slug` still withholds an
+  unpublished site; asserted side by side.
+- **The password *is* consulted.** A gated wedding's registry returns the shell —
+  `slug`, `paletteId`, `fontId`, `privacy`, `wedding.partners` — and `items`,
+  `funds` and `intro` are **absent, not empty**. The contribute endpoint 404s
+  too, so a stranger cannot move rupees against a gift id they guessed.
+
+  This is the **one product decision here worth a second opinion**, and it is
+  deliberately one condition in one place (`locked` in
+  `publicRegistryPayload`, and the matching guard in
+  `CoupleContributionService.contribute`) so it can be reversed in a line. The
+  case for it: a password on a wedding is the couple's only expression of "not
+  for strangers", the registry lives on the same slug, and this codebase fails
+  closed everywhere else. The case against it: § 05.1 promises the registry
+  works alone, and a couple who set a site password may not expect their gift
+  link to go blank. **The shipped `pages/registry/[slug].js` has no gate UI**, so
+  today a locked registry renders as an empty gift list rather than a password
+  prompt — noted in M10.
+
+## M8 · `fetch-link` treats the response as hostile
+
+This is the only endpoint on the couple app where a user chooses an address and
+a machine inside our network fetches it. Four controls, each of which **refuses**
+rather than sanitises:
+
+| Control | What it does |
+|---|---|
+| **Scheme** | `http:` and `https:`. Not `file:`, `gopher:`, `dict:`, `data:`, `javascript:`, `ftp:`. No credentials in the URL. |
+| **Port** | 80 and 443. An internal service on 8080 behind a public DNS name is not a shop. |
+| **Address** | Every resolved IP is checked against the private, loopback, link-local (**including `169.254.169.254`**), carrier-NAT, TEST-NET, benchmarking, multicast and reserved ranges — v4 and v6, including the shapes that smuggle a v4 address inside a v6 one (`::ffff:`, `::`, `2002::` 6to4, `64:ff9b::` NAT64). Hostnames `localhost`, `*.localhost`, `*.local`, `*.internal`, `*.home.arpa`, `metadata.google.internal` are refused whatever DNS says. |
+| **Budget** | 6 s hard total timeout, 512 KB cap **enforced as the body arrives**, `Content-Type` must be HTML, at most 3 redirects and **every redirect re-vetted from scratch** — a 302 to `http://169.254.169.254/` is the oldest trick here. |
+
+**DNS rebinding is defeated at the socket, not the pre-check.** The guard is
+installed as the request's own `lookup`, so it runs again at connect time; a name
+that answers publicly on the first query and privately on the second is refused
+by the connection. **A host that resolves to both a public and a private address
+is refused entirely** — we do not guess which one the socket would pick.
+
+`parseProduct(html, url)` is pure: regular expressions over meta tags, JSON-LD
+read **as text and never evaluated**, entities decoded, a relative image resolved
+against the page, a `javascript:`/`data:` image refused (the client renders it as
+a CSS background). **Every field is optional** — a missing price and a missing
+photograph are the ordinary case, exactly as `api.fetchRegistryLink` says.
+
+## M9 · Rate limiting, and its real scope
+
+`POST /registry/:slug/contribute` is limited to **6 per hour** per IP-and-slug
+(`REGISTRY_CONTRIBUTE_WINDOW_MS`, `REGISTRY_CONTRIBUTE_MAX`).
+`GET /registry/:slug` reuses the website milestone's `siteReadLimiter` directly.
+
+The **key** — the part with a security consequence — is `ipAndSlug`, **imported
+from `utils/coupleSiteRateLimit.js`**, not re-written: one key implementation on
+this server, not two that could drift. A separate bucket rather than one more
+export in that file, because the website milestone owns it; a separate *counter*
+because sharing the RSVP's would mean a guest who replied twenty times could not
+then send a gift.
+
+**Honestly: the store is `express-rate-limit`'s default MEMORY STORE, so the
+limiter is PER NODE PROCESS.** Behind two instances the ceiling is 2×, and a
+restart forgives everything (§ W6 says the same about the website's). For an RSVP
+that is fine. **On a payment endpoint it is a speed bump, not a control** — the
+defence against card testing is the gateway's own fraud checks. The day this
+server runs more than one instance, this bucket wants Redis before the unlock one
+does.
+
+## M10 · Client contracts this milestone could not fully satisfy
+
+1. **`RegistryFund.note`.** `registry-stub.js` seeds a fund with `note: ""` and
+   `GuestRegistry.js` renders `row.note` under a fund's name. `models/RegistryFund`
+   has no such field and this milestone does not modify existing models, so the
+   value would be silently dropped by mongoose. It is neither stored nor
+   promised. One additive optional field on that model closes it.
+2. **A locked registry has no gate UI.** `pages/registry/[slug].js` reads
+   `data.items` and renders an empty list; it has no password prompt of its own
+   (only `/site/:slug` does). A gated wedding's registry link therefore looks
+   empty rather than locked. Correct on the server, and one client state away
+   from being graceful. See M7 for the flag that reverses the decision instead.
+3. **The gateway is not called.** See M6. `api.pay`'s optimistic client flips the
+   row to `paid` and would need to roll back when the intent is only an intent —
+   today the response's `fullyCovered: false` and `intent` are the honest signal
+   and the screen does not read them yet.
+4. **`WalletTxn.status` and the client's vocabulary.** `registry-stub.js` writes
+   `status: "cleared"` for a credit and `"requested"` / `"applied"` for claims;
+   the model's enum is `pending | settled | failed`. The server sends the model's
+   values. The wallet strip renders the amount and the label and does not branch
+   on status, so nothing is broken — but a screen that starts reading it should
+   read the server's three.
+5. **`GET /wedding/:id/wallet` needs BOTH sections**, per § 5's table
+   ("registry / view + payments / view"). The consequence is real: a shared
+   member with only the registry loses the wallet strip on the Registry screen,
+   and one with only payments loses the Gift wallet tile. It is `RequireEvery`
+   in one line in `routes/coupleApp-money.js` if Rohaan wants either half to be
+   enough.
+6. **The couple's `layout` (grid/list) is stored and returned** but the public
+   payload does not carry it — `pages/registry/[slug].js` does not read one.
+
+## M11 · Notifications
+
+**None were added.** Triggers only, through `services/NotificationService.js`,
+WhatsApp via the **Meta Cloud API — never Aisensy** — and only after the
+Notification System spec in Notion. Three marked comments name the ones this
+feature wants:
+
+| Moment | Trigger | Marked at |
+|---|---|---|
+| A contribution arrives | `couple_registry_gift` | `CoupleContributionService.contribute` |
+| A claim is requested / settles | `couple_wallet_claim` | `CoupleMoneyService.claim` |
+| A payment succeeds | reuse the `event_pmnt_rmnd` family | `CoupleMoneyService.pay` |
+
+## M12 · Untested seams (honest list)
+
+- **Everything that needs a database**, as always. The integration test below was
+  written and **not run**.
+- **Transaction durability.** The dispatch is tested; that MongoDB commits both
+  documents or neither is MongoDB's property, and needs a replica set to observe.
+  Against a standalone `mongod` the integration test's `atomic: true` assertions
+  will fail — correctly.
+- **The real network in `fetch-link`.** The guard's decisions are tested
+  exhaustively with no DNS and no sockets; that Node's `lookup` option is honoured
+  by every redirect hop is asserted by reading the code, not by a live rebinding
+  attack. Worth one manual check against a controlled host before this is
+  advertised.
+- **The rate limiters** are not exercised (an hour-long window; a test that waits
+  or reaches into the store proves something about the test).
+- **The `pending` debit's reconciliation** is specified in M6 and **not
+  implemented** — no job sweeps abandoned intents yet.
+- **Concurrency on the exclusive pin.** Two simultaneous "pin this one" writes can
+  briefly leave two pinned items. Cosmetic, not money.
+
+## M13 · Tests
+
+Pure, no database — **these run and pass** (output as run):
+
+```
+node tests/couple-money-ledger.test.js         #  95 — the offset both ways, the full re-derivation,
+                                               #       the 409 race, all four ledger types, spendable
+node tests/couple-registry-withholding.test.js #  56 — a guest's name, number and note never reach
+                                               #       another guest; the hash never crosses; the gate
+node tests/couple-registry-linkfetch.test.js   # 128 — the SSRF accept/refuse table, v4 and v6, the
+                                               #       rebinding decision, and the parser
+node tests/couple-money-permissions.test.js    # 192 — every refusal path through the REAL middlewares,
+                                               #       including both payout gates
+node tests/couple-money-atomicity.test.js      #  22 — which write path runs, and what aborts
+```
+
+Integration, **needs a dev database (`DATABASE_URL`, never production — rule 7)
+and a replica set for the atomicity assertions; NOT run**:
+
+```
+node tests/couple-registry-money.int.test.js
+```
+
+It mounts the real app the way `routes/router.js` does and drives it over HTTP.
+The assertion that matters most is § 07.1's definition of done for this
+milestone: **a guest contributes on the public route and the money is the offset
+on the couple's very next payment, with no manual step in between.** It also
+fires two concurrent "pay in full" requests at one gift and asserts exactly one
+200, exactly one 409, one Contribution, one credit and `funded` equal to the
+price — the race as MongoDB executes it rather than as a pure function decides
+it.
