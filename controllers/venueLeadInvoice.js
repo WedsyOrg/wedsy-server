@@ -648,6 +648,30 @@ const createLeadInvoice = async (req, res) => {
     // The check above is the friendly path; the {enquiry, forMilestoneId} unique
     // index is the guarantee. Two members pressing Raise at the same moment both
     // pass the check — only one of them gets past this write.
+    // ── THE POSITION, FROZEN AT CUT TIME (invoicedoc2 f5) ───────────────────
+    // Where this instalment sits, what the booking totals, what has been
+    // received, and the ONE instalment ahead — a statement of what was true
+    // when the invoice was cut. Never the remaining schedule: it goes stale
+    // the moment an owner absorbs a change, and an invoice that outlives its
+    // schedule describes money the couple does not owe.
+    let position = null;
+    if (milestone && !milestone.isAdditional) {
+      const { receivedOn } = require("../utils/venuePaymentStatus");
+      const agreed = (booking.paymentSchedule || []).filter((r) => !r.isAdditional);
+      const idx = agreed.findIndex((r) => String(r._id) === String(milestone._id));
+      if (idx >= 0) {
+        const nextRow = agreed[idx + 1] || null;
+        position = {
+          index: idx + 1,
+          count: agreed.length,
+          bookingTotal: agreed.reduce((s2, r) => s2 + Math.round(Number(r.amount) || 0), 0),
+          receivedToDate: agreed.reduce((s2, r) => s2 + Math.round(receivedOn(r)), 0),
+          next: nextRow ? { amount: Math.round(Number(nextRow.amount) || 0), dueDate: nextRow.dueDate || null } : null,
+          isFinal: idx === agreed.length - 1,
+        };
+      }
+    }
+
     let invoice;
     try {
       invoice = await allocateInvoice(venue, {
@@ -655,6 +679,9 @@ const createLeadInvoice = async (req, res) => {
         enquiry: lead._id,
         forMilestoneId,
         forPaymentId,
+        // the schedule's own due date is a TERM of a milestone invoice
+        dueDate: milestone ? (milestone.dueDate || null) : null,
+        position,
         // the OLD branch hard-coded every milestone invoice "final" — the
         // position decides: the last agreed instalment is final, the rest
         // are instalments, a payment invoice evidences a completed payment

@@ -519,7 +519,11 @@ async function renderInvoice(R, d) {
     },
     lastData: i === d.items.length - 1,
   }));
-  rows.push({
+  // f2: on a SINGLE-LINE invoice the total row repeats the line verbatim —
+  // its purpose (proving the sum) is vacuous with one line, and the
+  // amount-due block restates the figures anyway. Suppressed; multi-line
+  // invoices keep their proof row.
+  if (d.items.length > 1) rows.push({
     kind: "total",
     cells: {
       particulars: { text: "Invoice total", bold: true },
@@ -547,43 +551,71 @@ async function renderInvoice(R, d) {
   {
     const drawDue = () => {
       R.emphasisBlock((x, w) => {
-        const y0 = R.y;
-        // the QR claims the right edge when it exists — roughly 25mm on A4
-        // (94px at design scale), black on white, its caption beneath
-        const qrSide = d.payQr ? 96 : 0;
-        const lw = w - (qrSide ? qrSide + 20 : 0);
-        const line = (label, value, mid) => kvRow(R, { x, width: lw, label, value, mid, gapAfter: 4 });
+        const line = (label, value, mid) => kvRow(R, { x, width: w, label, value, mid, gapAfter: 4 });
         if (!d.plain) {
           line("Taxable value", money(d.sum.taxable), true);
-          if (d.sum.nonTaxable) line("Non-taxable recoveries", money(d.sum.nonTaxable), true);
+          // f3: "non-taxable recoveries" was accounting language for the
+          // untaxed portion of the amount — say so plainly
+          if (d.sum.nonTaxable) line("Untaxed portion", money(d.sum.nonTaxable), true);
           line(`CGST ${d.sum.pctHalf}% + SGST ${d.sum.pctHalf}%`, money(d.sum.cgst + d.sum.sgst), true);
           R.gap(4);
         }
-        kvRow(R, { x, width: lw, label: "Amount due", value: money(d.sum.total), figure: true, gapAfter: 4 });
-        if (d.dueDate) R.text(`Due ${dateProse(d.dueDate)}`, { size: TYPE.subLine, color: R.T.mid, x, width: lw });
-        R.gap(6);
-        R.text("Amount in words", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: lw });
-        R.gap(3);
-        R.text(amountInWords(d.sum.total), { size: TYPE.fine, x, width: lw, lineGap: 3 });
-        if (d.remit) {
-          R.gap(10);
-          R.rule(x, R.y, x + lw, 0.75, R.T.hairline);
-          R.gap(8);
-          R.text("Remit to", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: lw });
+        kvRow(R, { x, width: w, label: "Amount due", value: money(d.sum.total), figure: true, gapAfter: 4 });
+        if (d.dueDate) R.text(`Due ${dateProse(d.dueDate)}`, { size: TYPE.subLine, color: R.T.mid, x, width: w });
+        // f5: THE LINE OF POSITION — the invoice's own frozen snapshot, one
+        // instalment ahead only; the statement carries the full picture
+        if (d.position) {
+          const p = d.position;
+          R.gap(6);
+          R.text(
+            `Instalment ${p.index} of ${p.count} \u00b7 Booking total ${money(p.bookingTotal)} \u00b7 ${money(p.receivedToDate)} received to date`,
+            { size: TYPE.subLine, color: R.T.mid, x, width: w }
+          );
           R.gap(3);
-          R.text(d.remit, { size: TYPE.subLine, color: R.T.mid, lineGap: 3, x, width: lw });
+          if (p.isFinal) {
+            R.text("This is the final instalment.", { size: TYPE.subLine, color: R.T.mid, x, width: w });
+          } else if (p.next) {
+            R.text(
+              `Next: ${money(p.next.amount)}${p.next.dueDate ? `, due ${dateProse(p.next.dueDate)}` : ""}`,
+              { size: TYPE.subLine, color: R.T.mid, x, width: w }
+            );
+          }
         }
-        if (d.payQr) {
-          const qx = x + w - 94;
-          R.image(d.payQr.buffer, qx, y0 + 2, { fit: [94, 94] });
-          // the caption promises what the QR actually does — the account is
-          // right, the figure is theirs to enter (no amount is encoded)
-          R.text("Scan to pay by UPI \u2014 enter the amount", { size: TYPE.subLine, color: R.T.mid, x: qx - 20, y: y0 + 2 + 96 + 4, width: 114, align: "center", advance: false });
-          // the caption never moves the cursor; the block's height is the
-          // taller of the rows and the QR column
-          if (R.y < y0 + 96 + 22) R.y = y0 + 96 + 22;
+        R.gap(6);
+        R.text("Amount in words", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, width: w });
+        R.gap(3);
+        R.text(amountInWords(d.sum.total), { size: TYPE.fine, x, width: w, lineGap: 3 });
+        // f6: ONE payment block, full width, below the words — here is what
+        // you owe, here is how to send it. Bank transfer and UPI together,
+        // the QR beside the UPI ID it encodes.
+        if (d.remit || d.payQr) {
+          R.gap(10);
+          R.rule(x, R.y, x + w, 0.75, R.T.hairline);
+          R.gap(8);
+          const py0 = R.y;
+          const qrSide = d.payQr ? 112 : 0;
+          const bw = w - qrSide - (qrSide ? 20 : 0);
+          R.text("Remit to", { size: TYPE.fieldLabel, caps: true, tracking: 0.14, color: R.T.mid, x, y: py0, width: bw, advance: false });
+          let by = py0 + 13;
+          const remitLines = [
+            ...((d.remit && d.remit.lines) || []),
+            d.remit && d.remit.upiId ? `UPI ${d.remit.upiId}` : null,
+          ].filter(Boolean);
+          for (const l of remitLines) {
+            R.text(l, { size: TYPE.subLine + 1, color: R.T.mid, x, y: by, width: bw, advance: false });
+            by += 14;
+          }
+          let qy = py0;
+          if (d.payQr) {
+            const qx = x + w - 100;
+            R.image(d.payQr.buffer, qx, py0, { fit: [100, 100] });
+            // the caption is "Scan to pay" — the app asks for the amount
+            R.text("Scan to pay", { size: TYPE.subLine, color: R.T.mid, x: qx - 10, y: py0 + 102, width: 120, align: "center", advance: false });
+            qy = py0 + 102 + 12;
+          }
+          R.y = Math.max(by, qy) + 2;
         }
-      }, { estHeight: 240 });
+      }, { estHeight: 300 });
     };
     const h = R.measure_height(drawDue);
     R.ensure(Math.min(h + 4, R.contentBottom - R.contentTop));

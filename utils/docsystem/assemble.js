@@ -121,8 +121,16 @@ function clientParty({ name, contact, clientDetails, gstin, showGstin = true }) 
  * the reference row: a couple holding two copies of a regenerated statement
  * needs to know which is newer. Plain fact, not a system stamp.
  */
-function generatedRef() {
-  return `Generated ${dateProse(new Date())}`;
+/**
+ * Only when it DIFFERS from the document's own issue-type date (finding 1):
+ * the generation date exists to distinguish a reissued copy from the
+ * original — on a freshly cut document it says the same thing twice.
+ * Pass the sibling date; identical days suppress the ref.
+ */
+function generatedRef(siblingDate) {
+  const today = dateProse(new Date());
+  if (siblingDate && dateProse(siblingDate) === today) return null;
+  return `Generated ${today}`;
 }
 
 function primaryContactOf(lead) {
@@ -286,7 +294,7 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
         `Quote ${quote.quoteNumber || `v${quote.version || 1}`}`,
         `Issued ${dateProse(quote.createdAt || new Date())}`,
         heldUntil ? `Held until ${dateProse(heldUntil)}` : null,
-        generatedRef(),
+        generatedRef(quote.createdAt || new Date()),
       ].filter(Boolean),
     },
     facts: windowFacts(lead, booking || null, booking ? spacesOf(booking) : null),
@@ -354,7 +362,7 @@ function assembleConfirmation({ venue, lead, booking, logoBuffer, policyBlocks =
       title: "Booking confirmation",
       subject: [held, booking.coupleName ? `For ${booking.coupleName}` : null].filter(Boolean).join(" \u00b7 "),
       presentedTo: booking.coupleName,
-      refs: [bookingRef, `Confirmed ${dateProse(booking.createdAt)}`, generatedRef()],
+      refs: [bookingRef, `Confirmed ${dateProse(booking.createdAt)}`, generatedRef(booking.createdAt)].filter(Boolean),
     },
     intro: "The booking amount has been received and the dates below are held exclusively. This page records the agreed amount and the plan for the balance.",
     // venue left, client right — as Indian tax documents read. Address and
@@ -534,7 +542,7 @@ async function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
         `Invoice ${inv.invoiceNumber}`,
         `Issued ${dateProse(inv.createdAt || new Date())}`,
         isTax ? "Place of supply \u2014 Karnataka (29)" : null,
-        generatedRef(),
+        generatedRef(inv.createdAt || new Date()),
       ].filter(Boolean),
     },
     facts: [
@@ -550,9 +558,17 @@ async function assembleInvoice({ venue, lead, booking, invoice, logoBuffer }) {
     ].filter(Boolean),
     items, sum,
     dueDate: inv.dueDate || null,
-    // The amount-due block's designed remit slot. Composed from Settings →
-    // Business; null when nothing is filled, and the slot then never draws.
-    remit: identity.bank ? bankLines(identity.bank).join("\n") : null,
+    // THE POSITION, printed from the invoice's own frozen snapshot (f5) —
+    // never re-derived from the live schedule. Older invoices have none and
+    // print none.
+    position: inv.position || null,
+    // ONE payment block (f6): bank transfer and UPI together, the QR beside
+    // the UPI ID it encodes. The UPI line is split out so the two halves of
+    // "how to pay us" are never separated by the amount again.
+    remit: identity.bank ? {
+      lines: bankLines(identity.bank).filter((l) => !/^UPI /.test(l)),
+      upiId: (identity.bank.upiId || ""),
+    } : null,
     payQr,
     noteLines: [],
     signatory: null,
@@ -617,7 +633,9 @@ function assembleStatement({ venue, lead, booking, summary, logoBuffer }) {
       title: booking.coupleName || "Statement",
       subject: `As of ${dateProse(new Date())}`,
       presentedTo: booking.coupleName,
-      refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateProse((booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn)}`, generatedRef()],
+      // "As of <today>" above IS this copy's date — a Generated ref beside it
+      // would say the same thing twice on every copy (finding 1's rule)
+      refs: [`Booking ${String(booking._id).slice(-6).toUpperCase()}`, `Event ${dateProse((booking.days && booking.days[0] && booking.days[0].date) || booking.checkIn)}`],
     },
     bookedOn: booking.createdAt,
     priced: isLegacy ? legacy.priced : lines.filter((l) => !l.refundable),
@@ -689,7 +707,7 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
       title: "Received, with thanks",
       subject: booking.coupleName ? `From ${booking.coupleName}` : undefined,
       presentedTo: booking.coupleName,
-      refs: [`Receipt ${String(paymentId).slice(-8).toUpperCase()}`, generatedRef()],
+      refs: [`Receipt ${String(paymentId).slice(-8).toUpperCase()}`, `Generated ${dateProse(new Date())}`],
     },
     amount,
     receivedOn: first.date,

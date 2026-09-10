@@ -13,6 +13,32 @@ const VenueInvoiceSchema = new mongoose.Schema(
     // milestone invoice to "final"; a middle instalment is neither an advance
     // nor final, and the title follows this.
     kind: { type: String, enum: ["advance", "instalment", "final", "addon"], default: "advance" },
+    // f4 (invoicedoc2): the schedule's due date is a TERM of a milestone
+    // invoice, frozen here like everything else on it.
+    dueDate: { type: Date, default: null },
+    // ── A LINE OF POSITION (founder ruling, invoicedoc2 f5) ────────────────
+    // Where this instalment sits in the plan, FROZEN WHEN THE INVOICE IS
+    // CUT — like every other figure on an immutable document. The renderer
+    // prints this snapshot and never re-derives from the live schedule,
+    // which an owner may since have absorbed or extended; the statement of
+    // account exists for the full live picture. One instalment ahead only.
+    position: {
+      type: new mongoose.Schema({
+        index: { type: Number, required: true },   // 1-based
+        count: { type: Number, required: true },
+        bookingTotal: { type: Number, required: true },
+        receivedToDate: { type: Number, default: 0 },
+        next: {
+          type: new mongoose.Schema({
+            amount: { type: Number, required: true },
+            dueDate: { type: Date, default: null },
+          }, { _id: false }),
+          default: null,
+        },
+        isFinal: { type: Boolean, default: false },
+      }, { _id: false }),
+      default: null,
+    },
     lineItems: [
       {
         label: { type: String, default: "" },
