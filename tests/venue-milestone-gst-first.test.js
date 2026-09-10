@@ -68,6 +68,18 @@ const TAG = `msgst-${Date.now()}`;
     ok(inv2.kind === "final", "…and the LAST instalment is 'final'");
     ok(inv2.gstMode === "none", "…stored as an ordinary (no-GST) shape");
 
+    console.log("\n[the position, frozen at cut time (invoicedoc2 f5) + the due-date term (f4)]");
+    ok(String(inv1.dueDate) !== "null" && new Date(inv1.dueDate).getTime() === new Date(booking.paymentSchedule[1].dueDate).getTime(),
+      "f4: the schedule's due date is stored as a term of the invoice");
+    ok(inv1.position && inv1.position.index === 2 && inv1.position.count === 3,
+      `f5: position stored — instalment 2 of 3 (${inv1.position && inv1.position.index}/${inv1.position && inv1.position.count})`);
+    ok(inv1.position.bookingTotal === 676000, "…booking total = the schedule's own sum");
+    ok(inv1.position.receivedToDate === 0, "…received-to-date frozen at cut time");
+    ok(inv1.position.next && inv1.position.next.amount === 383962 && !inv1.position.isFinal,
+      "…and ONE instalment ahead — the Balance, never the whole schedule");
+    ok(inv2.position && inv2.position.isFinal === true && inv2.position.next === null,
+      "the LAST instalment's position says final and names nothing ahead");
+
     console.log("\n[the schedule's rows and the invoices agree — the cross-document promise]");
     const { decomposeGstInsideRows } = require("../utils/docsystem/shared");
     const { computeLineTotals } = require("../utils/venueMoney");

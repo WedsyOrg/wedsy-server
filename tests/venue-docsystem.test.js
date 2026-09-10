@@ -703,7 +703,8 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       ok(/^upi:\/\/pay\?pa=.+&pn=.+&cu=INR$/.test(decoded), `…exactly pa+pn+cu (${decoded})`);
       ok(built.buffer.toString("latin1").includes("/Subtype /Image"), "…and an image object is actually embedded in the PDF");
       hasNot(pdfFlat(built.buffer), "Scan to pay Rs.", "the caption promises no figure the QR does not encode");
-      has(pdfFlat(built.buffer), "enter the amount", "…it says the figure is the payer's to enter");
+      has(pdfFlat(built.buffer), "Scan to pay", "…the caption is 'Scan to pay' — nothing more; the app asks for the amount");
+      hasNot(pdfFlat(built.buffer), "enter the amount", "…and does not narrate what the app is about to say");
       // a venue WITH a stored QR: the invoice uses THE STORED IMAGE —
       // one image, one code path, byte-identical to Settings
       const storedVenue = venue.toObject();
@@ -751,31 +752,99 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       has(fo, "Hesaraghatta Main Road", "…the venue's address still prints (identity, not registration)");
     }
 
-    // ══ 13. THE GENERATION DATE — every document, beside its event date ═════
-    console.log("\n[13. Generated <today> on all five; event dates unchanged and distinct]");
+    // ══ 13. THE GENERATION DATE — only when it DIFFERS from the issue date ══
+    // (invoicedoc2 f1): on a freshly cut document the two said the same
+    // thing twice; the Generated ref exists to mark a REISSUED copy.
+    console.log("\n[13. Generated only when it differs; a reissued copy carries it]");
     {
       const today = require("../utils/docsystem/shared").dateProse(new Date());
+      // fresh copies of the dated documents: the sibling date is today, so
+      // Generated is SUPPRESSED — the event date alone speaks
+      const freshQuote = { ...quote.toObject(), createdAt: new Date() };
+      const fq = pdfFlat((await buildVenueDocument("quote", { venue, lead, quote: freshQuote }, { compress: false, language: "classic" })).buffer);
+      ok(fq.includes("Issued") && !fq.includes("Generated"), "fresh quote: Issued alone — no same-day echo");
+      const freshBooking = booking.toObject(); freshBooking.createdAt = new Date();
+      const fc = pdfFlat((await buildVenueDocument("confirmation", { venue, lead, booking: freshBooking }, { compress: false, language: "classic" })).buffer);
+      ok(fc.includes("Confirmed") && !fc.includes("Generated"), "fresh confirmation: Confirmed alone");
+      const fi = pdfFlat((await buildVenueDocument("invoice", { venue, lead, booking, invoice: { ...mkInvoice("Fresh today", 100000, 100000, 18000), createdAt: new Date() } }, { compress: false, language: "classic" })).buffer);
+      ok(fi.includes("Issued") && !fi.includes("Generated"), "fresh invoice: Issued alone");
+      // REISSUED copies (created on an earlier day) carry Generated, distinct
+      const oldDay = new Date(Date.now() - 5 * 86400000);
       for (const language of LANGUAGE_NAMES) {
-        for (const type of ["quote", "confirmation", "invoice", "statement", "receipt"]) {
-          const inputs = { venue, lead, booking, quote, summary, paymentId: P2, invoice: mkInvoice(`G ${language} ${type}`, 100000, 100000, 18000) };
-          const built = await buildVenueDocument(type, inputs, { compress: false, language });
-          const flat = pdfFlat(built.buffer);
-          has(flat, `Generated ${today}`, `${language} × ${type}: the copy says when it was made`);
-        }
+        const ri = await buildVenueDocument("invoice", { venue, lead, booking, invoice: { ...mkInvoice(`Re ${language}`, 100000, 100000, 18000), createdAt: oldDay } }, { compress: false, language });
+        const fr2 = pdfFlat(ri.buffer);
+        ok(fr2.includes(`Generated ${today}`) && fr2.includes("Issued") && !fr2.includes(`Issued ${today}`),
+          `${language}: a reissued invoice says Issued <then> AND Generated <today>`);
       }
-      // the event dates are UNCHANGED and distinguishable from the generation
-      // date — different labels, and (where stored) different instants
-      const qb = await buildVenueDocument("quote", { venue, lead, quote }, { compress: false, language: "classic" });
-      const fq = pdfFlat(qb.buffer);
-      has(fq, "Issued", "quote: the stored issue date stays, its own label");
-      const cb = await buildVenueDocument("confirmation", { venue, lead, booking }, { compress: false, language: "classic" });
-      has(pdfFlat(cb.buffer), "Confirmed", "confirmation: Confirmed stays — a regenerated copy still says when it was confirmed");
-      const rb = await buildVenueDocument("receipt", { venue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" });
-      const frr = pdfFlat(rb.buffer);
-      hasNot(frr, "Issued", "receipt: the LIVE date no longer wears an event label");
-      has(frr, "Received on", "…the receipt's true event date is untouched");
-      const sb = await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" });
-      has(pdfFlat(sb.buffer), `As of ${today}`, "statement: the position's As-of cutoff stays beside the generation date");
+      const rq = pdfFlat((await buildVenueDocument("quote", { venue, lead, quote: { ...quote.toObject(), createdAt: oldDay } }, { compress: false, language: "classic" })).buffer);
+      ok(rq.includes(`Generated ${today}`), "a re-rendered quote carries Generated");
+      const rc = booking.toObject(); rc.createdAt = oldDay;
+      ok(pdfFlat((await buildVenueDocument("confirmation", { venue, lead, booking: rc }, { compress: false, language: "classic" })).buffer).includes(`Generated ${today}`),
+        "a re-rendered confirmation carries Generated");
+      // statement: As-of IS this copy's date — no Generated beside it, ever
+      const sb = pdfFlat((await buildVenueDocument("statement", { venue, lead, booking, summary }, { compress: false, language: "classic" })).buffer);
+      ok(sb.includes(`As of ${today}`) && !sb.includes("Generated"), "statement: As of alone — never the same date twice");
+      // receipt: Generated always (its event date is Received on)
+      const frr = pdfFlat((await buildVenueDocument("receipt", { venue, lead, booking, summary, paymentId: P2 }, { compress: false, language: "classic" })).buffer);
+      ok(frr.includes(`Generated ${today}`) && !frr.includes("Issued") && frr.includes("Received on"),
+        "receipt: Generated always, Received on untouched, no Issued");
+    }
+
+    // ══ 14. INVOICEDOC2 — the seven findings on bytes ═══════════════════════
+    console.log("\n[14. single-line total gone, untaxed plainly, due date, the position line, one payment block]");
+    {
+      const bankVenue2 = venue.toObject();
+      bankVenue2.bankDetails = { accountName: "Aranya Estate LLP", accountNumber: "50100987654321", ifsc: "HDFC0001234", bankName: "HDFC Bank", branch: "MG Road", upiId: "aranyaestate@icici" };
+      const posInv = {
+        invoiceNumber: `${TAG}-P1`, kind: "instalment", gstMode: "exclusive", gstPercent: 18, createdAt: new Date(),
+        forMilestoneId: new mongoose.Types.ObjectId(), billedTo: { name: "Ananya Rao & Karthik Menon", gstin: "" },
+        lineItems: [{ label: "First instalment", qty: 1, unitPrice: 171292, taxable: 115254, gst: 20746 }],
+        totals: { subtotal: 171292, taxable: 115254, gst: 20746, grandTotal: 192038 },
+        dueDate: new Date("2026-10-11"),
+        position: { index: 1, count: 4, bookingTotal: 676000, receivedToDate: 100000, next: { amount: 147840, dueDate: new Date("2026-11-14") }, isFinal: false },
+      };
+      const b1 = await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: posInv }, { compress: false, language: "classic" });
+      const f1 = pdfFlat(b1.buffer);
+      hasNot(f1, "Invoice total", "f2: a single-line invoice prints no total row that repeats the line");
+      has(f1, "Untaxed portion", "f3: the untaxed share is said plainly");
+      hasNot(f1, "Non-taxable recoveries", "…and the accounting phrase is gone");
+      has(f1, "Due 11 October 2026", "f4: the due date is a term beside the amount due");
+      has(f1, "Instalment 1 of 4 · Booking total Rs. 6,76,000 · Rs. 1,00,000 received to date", "f5: the position line, verbatim");
+      has(f1, "Next: Rs. 1,47,840, due 14 November 2026", "…and ONE instalment ahead");
+      has(f1, "Scan to pay", "f6: the caption");
+      hasNot(f1, "enter the amount", "…nothing more — the app asks for the amount");
+      has(f1, "UPI aranyaestate@icici", "…the QR sits with the UPI ID it encodes");
+      // the final instalment: the second line changes, nothing ahead printed
+      const finInv = { ...posInv, invoiceNumber: `${TAG}-P2`, forMilestoneId: new mongoose.Types.ObjectId(),
+        position: { index: 4, count: 4, bookingTotal: 676000, receivedToDate: 528160, next: null, isFinal: true } };
+      const b2 = await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: finInv }, { compress: false, language: "classic" });
+      const f2 = pdfFlat(b2.buffer);
+      has(f2, "This is the final instalment.", "the last instalment says so");
+      hasNot(f2, "Next:", "…and names nothing ahead");
+      // a MIDDLE instalment for completeness
+      const midInv = { ...posInv, invoiceNumber: `${TAG}-P3`, forMilestoneId: new mongoose.Types.ObjectId(),
+        position: { index: 2, count: 4, bookingTotal: 676000, receivedToDate: 292038, next: { amount: 147840, dueDate: new Date("2026-11-14") }, isFinal: false } };
+      const fm = pdfFlat((await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: midInv }, { compress: false, language: "classic" })).buffer);
+      has(fm, "Instalment 2 of 4", "a middle instalment states its place");
+      // an invoice with NO position snapshot (older) prints no position line
+      const noPos = { ...posInv, invoiceNumber: `${TAG}-P4`, forMilestoneId: new mongoose.Types.ObjectId(), position: null };
+      hasNot(pdfFlat((await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: noPos }, { compress: false, language: "classic" })).buffer),
+        "Instalment 1 of", "an older invoice without the snapshot prints no position — never re-derived");
+      // a MULTI-LINE invoice keeps its proof row
+      const multiInv = { ...posInv, invoiceNumber: `${TAG}-P5`, forMilestoneId: new mongoose.Types.ObjectId(), position: null,
+        lineItems: [
+          { label: "First instalment", qty: 1, unitPrice: 100000, taxable: 80000, gst: 14400 },
+          { label: "Second instalment", qty: 1, unitPrice: 71292, taxable: 35254, gst: 6346 },
+        ],
+        totals: { subtotal: 171292, taxable: 115254, gst: 20746, grandTotal: 192038 } };
+      has(pdfFlat((await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: multiInv }, { compress: false, language: "classic" })).buffer),
+        "Invoice total", "a multi-line invoice keeps its proof row");
+      // all four languages carry the block coherently
+      for (const language of LANGUAGE_NAMES) {
+        const lb = pdfFlat((await buildVenueDocument("invoice", { venue: bankVenue2, lead, booking, invoice: { ...posInv, invoiceNumber: `${TAG}-L2${language}`, forMilestoneId: new mongoose.Types.ObjectId() } }, { compress: false, language })).buffer);
+        ok(lb.includes("Instalment 1 of 4") && lb.includes("Scan to pay") && lb.includes("Due 11 October 2026"),
+          `${language}: position, caption and due date all present`);
+      }
     }
 
     console.log(`\n${pass} passed, ${fail} failed`);
