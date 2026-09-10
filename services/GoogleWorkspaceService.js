@@ -129,6 +129,57 @@ const status = async (adminId) => {
   };
 };
 
+// WHO ON THE TEAM HAS LINKED — the team-wide counterpart to status().
+//
+// Every other read of GoogleAccount is scoped to a single admin: status() and
+// disconnect() take an adminId, and createMeetEvent looks up the organizer's
+// row. So nothing could answer "who has NOT linked", and the consequence is
+// not cosmetic — an admin without a linked account books meetings that create
+// no Meet link and invite nobody, while the UI reports "Invite sent". This is
+// the read that makes that visible.
+//
+// "Active" is assignableFilter() — the repo's ONE definition (status "active"
+// AND isDisabled !== true). Filtering on status alone would silently keep
+// disabled admins in the roster, which is the exact bug utils/assignable.js
+// exists to prevent.
+//
+// THE REFRESH TOKEN IS NEVER READ HERE. The projection asks for adminId and
+// linkedAt and nothing else, so the durable credential cannot reach a response
+// even by accident — not its value, not its length, not a hash of it. An admin
+// list is a reasonable thing to expose to someone who can already see users; a
+// live Google credential is not, at any permission level.
+const linkRoster = async () => {
+  const admins = await Admin.find(assignableFilter(), { name: 1, email: 1 })
+    .sort({ name: 1 })
+    .lean();
+  const linkedRows = await GoogleAccount.find({}, { adminId: 1, linkedAt: 1 }).lean();
+  const byAdmin = new Map(linkedRows.map((r) => [String(r.adminId), r]));
+
+  const roster = admins.map((a) => {
+    const row = byAdmin.get(String(a._id));
+    return {
+      adminId: a._id,
+      name: a.name || "",
+      email: a.email || "",
+      linked: !!row,
+      // null rather than an absent key: a missing field reads as "unknown",
+      // and this is known — they have not linked.
+      linkedAt: row && row.linkedAt ? row.linkedAt : null,
+    };
+  });
+
+  const unlinkedCount = roster.filter((r) => !r.linked).length;
+  return {
+    configured: isConfigured(),
+    total: roster.length,
+    linkedCount: roster.length - unlinkedCount,
+    // The number that matters: how many people can book a meeting today and be
+    // told it worked when it did not.
+    unlinkedCount,
+    roster,
+  };
+};
+
 const disconnect = async (adminId) => {
   await GoogleAccount.deleteMany({ adminId });
   return { ok: true };
@@ -398,6 +449,7 @@ module.exports = {
   startUrl,
   handleCallback,
   status,
+  linkRoster,
   disconnect,
   availability,
   bookMeet,

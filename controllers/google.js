@@ -40,6 +40,15 @@ const Status = async (req, res) => {
   }
 };
 
+// GET /google/link-roster — team-wide link status. Read-only.
+const LinkRoster = async (req, res) => {
+  try {
+    res.status(200).json(await GoogleWorkspaceService.linkRoster());
+  } catch (error) {
+    res.status(error.status || 500).json({ message: error.message || "Something went wrong" });
+  }
+};
+
 const Disconnect = async (req, res) => {
   try {
     res.status(200).json(await GoogleWorkspaceService.disconnect(req.auth.user_id));
@@ -70,4 +79,4 @@ const Book = async (req, res) => {
   }
 };
 
-module.exports = { Start, Callback, Status, Disconnect, Availability, Book };
+module.exports = { Start, Callback, Status, LinkRoster, Disconnect, Availability, Book };
