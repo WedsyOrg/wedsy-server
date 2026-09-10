@@ -6,7 +6,7 @@ const LeadIntakeService = require("./LeadIntakeService");
 const LeadInternalEventService = require("./LeadInternalEventService");
 const { sendWhatsApp } = require("../utils/whatsapp");
 const { toIstWallClock, goldenWindowFor } = require("../utils/goldenWindow");
-const { normalisePhone, leadingDigits, defaultCountryCode } = require("../utils/phone");
+const { normalisePhone, leadingDigits, isPlaceholder } = require("../utils/phone");
 
 // KIARA SAFETY NET (MB5 Slice 5) — template-gated, ships DORMANT.
 // When kiara.welcomeTemplateName is set:
@@ -44,23 +44,35 @@ const inWorkingHours = async (now = new Date()) => {
 const engageLead = async (lead, reason, now = new Date()) => {
   const tpl = await templateName();
   if (!tpl) return false; // dormant
-  const phone = metaPhone(lead.phone, String(lead._id));
-  // `length < 12` is "91 + ten digits" — an INDIAN length standing in for "is
-  // this a usable number". It is not one: a US number is 11 digits with its
-  // country code and a Maldives number 10, and the production census found
-  // leads in both. Those leads were dropped here in silence.
+  // KIARA ENGAGES INTERNATIONAL LEADS TOO (decision, 2026-09-10).
   //
-  // WHO gets engaged is deliberately UNCHANGED — widening this is a product
-  // call, because Meta bills per destination country and the welcome template
-  // is a fixed language. What changes is that the drop now says so, with the
-  // lead id, exactly as the SMS refusal does. See the report on this branch.
-  if (!phone || phone.length < 12) {
-    console.log(
-      `[kiara-safety-net] SKIPPED lead=${lead._id} — number begins ` +
-        `${leadingDigits(lead.phone) || "(unreadable)"} and is ${phone ? `${phone.length} digits` : "unusable"}; ` +
-        `the engage guard requires ${String(defaultCountryCode()).length + 10}. ` +
-        `Non-${defaultCountryCode()} leads are not engaged (unchanged) — widening this is a product decision.`
-    );
+  // This gated on `phone.length < 12` — "91 + ten digits" wearing a disguise.
+  // The effect was that UK, Germany, Greece and UAE leads were engaged while
+  // US/Canada, France and Maldives were not, decided by digit counts rather
+  // than by anyone.
+  //
+  // LENGTH CANNOT ANSWER THE QUESTION, so no threshold replaces it. A Maldives
+  // number is 960 + 7 = TEN digits in total, exactly the length of a bare
+  // Indian mobile carrying no country code. No number separates those two
+  // cases. What separates them is the leading "+", which is what
+  // utils/phone.js already keys on.
+  //
+  // So the guard asks the real question — did normalisation yield a number we
+  // can message? — and decides on that answer. metaPhone() returns the
+  // normalised digits or an empty string, and it returns empty for exactly the
+  // three cases that must still be refused: an "ig:" placeholder, an empty
+  // value, and anything too short to be a phone number.
+  const phone = metaPhone(lead.phone, String(lead._id));
+  if (!phone) {
+    // Name WHICH refusal it was. "unusable" covers three different situations
+    // and only one of them is a data problem worth chasing.
+    const raw = String(lead.phone || "").trim();
+    const why = isPlaceholder(raw)
+      ? "an Instagram placeholder, not a number — no phone captured yet"
+      : !raw
+        ? "no phone stored at all"
+        : `too short to be a phone number (begins ${leadingDigits(raw) || raw.slice(0, 4)})`;
+    console.log(`[kiara-safety-net] SKIPPED lead=${lead._id} — ${why}`);
     return false;
   }
 

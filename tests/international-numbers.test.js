@@ -154,17 +154,19 @@ const ORIGINAL_CC = process.env.DEFAULT_COUNTRY_CODE;
       await mongoose.disconnect();
     }
 
-    // ══ D. THE SAFETY NET'S LENGTH GUARD ═════════════════════════════════════
-    console.log("\nD. THE KIARA SAFETY NET SKIPS SHORT NUMBERS — OUT LOUD");
+    // ══ D. THE SAFETY NET NO LONGER APPLIES AN INDIAN LENGTH ═════════════════
+    console.log("\nD. THE KIARA SAFETY NET ENGAGES INTERNATIONAL LEADS");
     {
-      // engageLead gated on `phone.length < 12`, which is "91 + ten digits" —
-      // an INDIAN length standing in for "is this a usable number". A US number
-      // is 11 digits with its code and a Maldives number 10, so both were
-      // dropped, silently. The census found leads in exactly those countries.
+      // THIS SECTION ASSERTED THE OPPOSITE UNTIL 2026-09-10. It pinned "a US
+      // number is still not engaged (policy unchanged)", which was correct while
+      // engageLead gated on `phone.length < 12` and the widening was still an
+      // open product decision. Rohaan has now decided: Kiara engages
+      // international leads. The old assertions are obsolete by RULING, not
+      // softened — the behaviour they described was deliberately reversed.
       //
-      // WHO gets messaged is deliberately NOT changed here: that is a product
-      // call (Meta bills per country, and the template's language is fixed).
-      // The SILENCE is the bug, and the silence is what this asserts.
+      // The full per-country matrix lives in tests/kiara-international-engage.js
+      // and is not duplicated here. What this suite keeps is the one thing it
+      // has always owned: that a REFUSAL is still loud.
       const mongoose = require("mongoose");
       if (mongoose.connection.readyState !== 1) {
         await mongoose.connect(process.env.DATABASE_URL, { serverSelectionTimeoutMS: 10000 });
@@ -180,8 +182,6 @@ const ORIGINAL_CC = process.env.DEFAULT_COUNTRY_CODE;
         made.push(l._id);
         return l.toObject();
       };
-      // The safety net is dormant without a template name; give it one so the
-      // guard under test is actually reached.
       const realGet = SettingsService.get;
       SettingsService.get = async (k) =>
         k === "kiara.welcomeTemplateName" ? "kiara_welcome" : realGet(k);
@@ -190,16 +190,20 @@ const ORIGINAL_CC = process.env.DEFAULT_COUNTRY_CODE;
         reset();
         const us = await mk("+14155550134", "us");
         await KiaraSafetyNet.engageLead(us, "test");
-        eq(sent.whatsapp.length, 0, "a US number is still not engaged (policy unchanged)");
-        ok(logs.some((l) => l.includes("[kiara-safety-net] SKIPPED")),
-          "…but the skip is LOGGED instead of returning silently");
-        ok(logs.some((l) => l.includes(String(us._id))), "…naming the lead");
-        ok(logs.some((l) => l.includes("1415")), "…and the number's leading digits");
+        eq(sent.whatsapp.length, 1, "a US number IS now engaged — the length proxy is gone");
 
         reset();
-        const inr = await mk("+919876500099", "in");
+        const inr = await mk("+919876500098", "in");
         await KiaraSafetyNet.engageLead(inr, "test");
         eq(sent.whatsapp.length, 1, "an Indian number is still engaged, exactly as before");
+
+        reset();
+        const ph = await mk("ig:17841400000055", "placeholder");
+        await KiaraSafetyNet.engageLead(ph, "test");
+        eq(sent.whatsapp.length, 0, "an ig: placeholder is still refused");
+        ok(logs.some((l) => l.includes("[kiara-safety-net] SKIPPED")),
+          "…and the refusal is still LOUD, not a silent return");
+        ok(logs.some((l) => l.includes(String(ph._id))), "…naming the lead");
       } finally {
         SettingsService.get = realGet;
         if (made.length) await Enquiry.deleteMany({ _id: { $in: made } });
