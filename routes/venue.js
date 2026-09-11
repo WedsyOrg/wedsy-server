@@ -296,7 +296,8 @@ router.post("/:slug/quotes/:quoteId/confirm-booking", venueOwnerAuth, requireCap
 // ── Phase 3: invoices (3.3) — reads/PDF open (FLAGGED), writes=leads ──
 router.get("/:slug/invoices", venueOwnerAuth, listInvoices);
 router.post("/:slug/invoices", venueOwnerAuth, requireCapability("leads"), createFromBooking);
-router.get("/:slug/invoices/:invoiceId/pdf", venueOwnerAuth, invoicePdf);
+// converted to the document system + the capability gate it always lacked
+router.get("/:slug/invoices/:invoiceId/pdf", venueOwnerAuth, requireCapability("documents"), invoicePdf);
 router.get("/:slug/invoices/:invoiceId", venueOwnerAuth, getInvoice);
 // D7: recording money is a bookings_money capability (alias-compatible with
 // legacy "billing"); owner approval decisions are owner-gated in-controller.

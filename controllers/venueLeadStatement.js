@@ -35,7 +35,6 @@ const { cleanStr } = require("../utils/venueInput");
 const { BRANDING_SELECT } = require("../utils/venueBranding");
 const { summarizeSchedule } = require("../utils/venuePaymentStatus");
 const { computeLineTotals } = require("../utils/venueMoney");
-const { buildStatementPdf } = require("../utils/venueStatementPdf");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { insertNextVersion } = require("./venueLeadDocument");
 

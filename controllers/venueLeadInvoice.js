@@ -50,7 +50,6 @@ const { cleanStr } = require("../utils/venueInput");
 const { computeTotals, invoiceViewOfLines } = require("../utils/venueMoney");
 const { resolveBranding, BRANDING_SELECT } = require("../utils/venueBranding");
 const { billedToSnapshot } = require("../utils/venueBilledTo");
-const { buildInvoicePdf } = require("../utils/venueInvoicePdf");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { allocateInvoice, isMilestoneCollision } = require("./venueInvoice");
 const { insertNextVersion } = require("./venueLeadDocument");

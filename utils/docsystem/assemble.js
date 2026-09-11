@@ -254,11 +254,51 @@ function stateOf(row) {
   return s === "paid" ? "Paid" : s === "partial" ? "Part-paid" : s === "overdue" ? "Late" : "Upcoming";
 }
 
+/**
+ * ── LEGACY QUOTES (pre-money-lines) — THE BLOCKER ───────────────────────────
+ * A legacy row is qty × unitPrice with amount: null and gstTreatment: "" —
+ * lineFigures and computeLineTotals both read it as zero, so switching the
+ * CRM's quote onto this assembler without this branch would print a
+ * ZERO-RUPEE QUOTE for every lead still on one. The branch trusts the
+ * STORED totals (the same rule as legacy bookings trusting their schedule)
+ * and keeps the Day / Qty / Unit composition — on a legacy quote those
+ * columns are the only place the composition is stated.
+ */
+function legacyQuoteAssembly(quote) {
+  const rows = (quote.lineItems || []).map((li) => {
+    const qty = Number(li.qty) || 0;
+    const unit = Math.round(Number(li.unitPrice) || 0);
+    const label = li.perDay && li.day ? `${li.label || "Item"} (per day)` : (li.label || "Item");
+    const comp = [li.day != null ? `Day ${li.day}` : null, `${qty} \u00d7 ${money(unit)}`].filter(Boolean).join(" \u00b7 ");
+    return { label, amount: qty * unit, taxable: null, gst: null, lineTotal: qty * unit, refundable: false, treatment: "", subLine: comp };
+  });
+  const st = quote.totals || {};
+  const subtotal = Math.round(Number(st.subtotal) || rows.reduce((s2, r) => s2 + r.amount, 0));
+  const discount = Math.round(Number(quote.discount) || 0);
+  const gst = Math.round(Number(st.gst) || 0);
+  const grandTotal = Math.round(Number(st.grandTotal) || 0);
+  const pct = Number(quote.gstPercent) || 0;
+  const inclusive = quote.gstMode === "inclusive";
+  // exclusive/none map cleanly onto the definitions; INCLUSIVE folds its GST
+  // into the figures and states it as prose (inclusiveGst) — every printed
+  // number is a stored number, and no guard is asked to believe otherwise
+  const totals = inclusive
+    ? { pct, charged: subtotal, taxable: 0, gst: 0, refundable: 0, discount,
+        extrasAmount: 0, extrasGst: 0, inclusiveGst: gst, legacyLines: true,
+        payable: subtotal - discount, collectable: grandTotal }
+    : { pct, charged: subtotal, taxable: Math.round(Number(st.taxable) || (gst ? subtotal - discount : 0)), gst, refundable: 0, discount,
+        extrasAmount: 0, extrasGst: 0, legacyLines: true,
+        payable: subtotal - discount, collectable: grandTotal };
+  return { rows, totals };
+}
+
 // ── 1. QUOTE ────────────────────────────────────────────────────────────────
 function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
   const pct = Number(quote.gstPercent) || 0;
-  const lines = (quote.lineItems || []).map((l) => lineFigures(l, pct));
-  const totals = documentTotals(quote.lineItems || [], [], pct);
+  const isLegacy = (quote.lineItems || []).length > 0 && (quote.lineItems || []).some((l) => l.amount === null || l.amount === undefined);
+  const legacyQ = isLegacy ? legacyQuoteAssembly(quote) : null;
+  const lines = isLegacy ? legacyQ.rows : (quote.lineItems || []).map((l) => lineFigures(l, pct));
+  const totals = isLegacy ? legacyQ.totals : documentTotals(quote.lineItems || [], [], pct);
   const spaceNames = spacesOf(null).length ? spacesOf(null) : null;
   const heldUntil = quote.validUntil || null;
   // The quote's plan: the stored schedule does not exist pre-booking; the
@@ -269,6 +309,9 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
     totals
   );
   const qIdentity = identityFrom(venue, logoBuffer);
+  // loss #3: a white-label quote must not gain Wedsy's mark — the footer
+  // recipes read this off the identity
+  if (quote.whiteLabel) qIdentity.whiteLabel = true;
   const qContact = primaryContactOf(lead);
   return {
     identity: qIdentity,
@@ -305,6 +348,12 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
     totals,
     inclusions: [],
     schedule,
+    // loss #1: the venue's own numbered T&C block
+    termsLines: (quote.terms || []).filter(Boolean),
+    // loss #2: the acceptance evidence from the public /doc-ack flow
+    acceptanceLine: quote.acceptance && quote.acceptance.at
+      ? `Accepted by ${quote.acceptance.name || "\u2014"} on ${dateProse(quote.acceptance.at)} via ${quote.acceptance.channel || "link"} (phone verified).`
+      : null,
     noteLines: [
       "This quote is not a booking until the booking amount is received. Each instalment is invoiced separately with GST on its taxable share; the refundable deposit is never invoiced.",
       "Amounts in Indian rupees. Rates are for the stated dates, hours and spaces; changes to any of these are re-quoted before they are charged.",

@@ -83,7 +83,11 @@ function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
   if (dense && sumL !== totals.charged + totals.gst) {
     throw new Error(`the dense line-total column would lie: lines sum ${sumL} vs charged+gst ${totals.charged + totals.gst}`);
   }
-  if (sumA !== totals.charged || sumT !== totals.taxable || sumG !== totals.gst) {
+  // a legacy quote's per-line taxable/gst are unknowable (quote-level GST),
+  // so its guard is the amounts alone
+  const wantT = totals.legacyLines ? sumT : totals.taxable;
+  const wantG = totals.legacyLines ? sumG : totals.gst;
+  if (sumA !== totals.charged || sumT !== wantT || sumG !== wantG) {
     throw new Error(
       `the charged subtotal would lie: lines sum ${sumA}/${sumT}/${sumG} vs ` +
       `charged ${totals.charged} / taxable ${totals.taxable} / gst ${totals.gst}`
@@ -98,7 +102,10 @@ function pricedLinesTable(R, priced, totals, { dense = false } = {}) {
       gst: l.gst ? money(l.gst).replace("Rs. ", "") : DASH,
       total: money(l.lineTotal).replace("Rs. ", ""),
     } : {
-      line: { text: l.label, subLine: treatmentSubLine(l) },
+      // a legacy quote line's sub-line is its COMPOSITION (Day · qty × unit)
+      // — the only place that is stated; treatment prose would claim "No
+      // GST" about a line whose GST lives at the quote level
+      line: { text: l.label, subLine: l.subLine || treatmentSubLine(l) },
       amount: money(l.amount).replace("Rs. ", ""),
       taxable: l.taxable ? money(l.taxable).replace("Rs. ", "") : DASH,
       gst: l.gst ? money(l.gst).replace("Rs. ", "") : DASH,
@@ -165,6 +172,8 @@ function refundableBand(R, refundables) {
 function totalsStack(R, totals, x, width) {
   const row = (label, value, opts = {}) => kvRow(R, { x, width, label, value, ...opts });
   row("Charged", money(totals.charged), { mid: true });
+  // the quote-level discount (legacy quotes; loss #4 of the old generator)
+  if (totals.discount) row("Discount", `\u2212 ${money(totals.discount)}`, { mid: true });
   if (totals.extrasAmount) row("Extras", money(totals.extrasAmount), { mid: true });
   if (totals.refundable) row("Refundable deposit", money(totals.refundable), { mid: true });
   R.gap(6);
@@ -182,6 +191,12 @@ function totalsStack(R, totals, x, width) {
     R.text(WORDING.refundableHeld(totals.refundable), { size: TYPE.subLine, color: R.T.mid, x: px, width: pw });
     R.gap(4);
   };
+  // legacy INCLUSIVE quotes: the GST is inside the figures — stated as
+  // prose, never re-summed (every printed number stays a stored number)
+  if (totals.inclusiveGst) {
+    R.text(`GST at ${totals.pct}% \u2014 ${money(totals.inclusiveGst)} \u2014 is included in the figures above.`, { size: TYPE.fine, color: R.T.mid, x, width, lineGap: 3 });
+    R.gap(6);
+  }
   const gstAll = totals.gst + totals.extrasGst;
   if (gstAll > 0) {
     row(WORDING.totalPayable, money(totals.payable), { gapAfter: 4 });
@@ -240,7 +255,7 @@ function scheduleTable(R, schedule, totals, { withState = false, payments = null
   // payable = charged + refundable + extras, collectable = payable + GST
   // (LANGUAGES.md §1) — so a relabeled figure fails generation the same way a
   // wrong sum does.
-  if (totals.payable !== totals.charged + totals.refundable + totals.extrasAmount
+  if (totals.payable !== totals.charged - (totals.discount || 0) + totals.refundable + totals.extrasAmount
     || totals.collectable !== totals.payable + totals.gst + totals.extrasGst) {
     throw new Error(
       `schedule totals violate the fixed definitions: payable ${totals.payable} vs ` +
@@ -441,6 +456,22 @@ async function renderQuote(R, d) {
   R.sectionLabel("Booking amount & instalment plan");
   scheduleTable(R, d.schedule, d.totals);
   paymentBlock(R);
+  // loss #1: the venue's own numbered terms, exactly as stored
+  if (d.termsLines && d.termsLines.length) {
+    R.sectionLabel("Terms & conditions");
+    d.termsLines.forEach((t, i) => {
+      R.ensure(24);
+      R.text(`${i + 1}. ${t}`, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
+      R.gap(4);
+    });
+  }
+  // loss #2: the acceptance evidence — ink, not a footnote; it is the
+  // record of the public doc-ack flow
+  if (d.acceptanceLine) {
+    R.gap(10);
+    R.ensure(24);
+    R.text(d.acceptanceLine, { size: TYPE.fine, color: R.T.ink });
+  }
   closingRow(R, d.noteLines, d.signatory);
 }
 

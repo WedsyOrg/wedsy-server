@@ -183,6 +183,9 @@ function documentTotals(lines, extras = [], pct = 18) {
   return {
     pct,
     charged: lf.charged, taxable: lf.taxable, gst: lf.gst, refundable: lf.refundable,
+    // a quote-level discount (legacy quotes carry one; line quotes 0) — the
+    // definitions guard reads it: payable = charged − discount + refundable
+    discount: 0,
     extrasAmount: ef.charged + ef.refundable, extrasGst: ef.gst,
     payable: lf.charged + lf.refundable + ef.charged + ef.refundable,
     collectable: lf.charged + lf.refundable + ef.charged + ef.refundable + lf.gst + ef.gst,
