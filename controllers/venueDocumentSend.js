@@ -37,6 +37,7 @@ const { sanitizeContacts } = require("../utils/venueContacts");
 const { recipientOptions, isOnLead, EMAIL_RE } = require("../utils/venueRecipients");
 const VenueMail = require("../services/VenueMail");
 const { insertNextVersion } = require("./venueLeadDocument");
+const { parseDocNotes, resolveDocNotes } = require("../utils/venueDocNotes");
 
 const MAX_MESSAGE = 4000;
 const SENDABLE_KINDS = Object.keys(VenueMail.KINDS);
@@ -239,9 +240,79 @@ const storeQuoteDocument = async (req, res) => {
       quote = await VenueQuote.findOne({ venue: venue._id, enquiry: lead._id }).sort({ version: -1 }).lean();
       if (!quote) return res.status(400).json({ message: "This lead has no quote yet. Create one on the Money tab first.", code: "no_quote" });
     }
+
+    // ── DOCGEN: what the owner set in the generate box ──────────────────────
+    // The token and validity are STORED ON THE QUOTE, not merely rendered:
+    // the confirm wizard pre-fills its token from the latest quote (the same
+    // precedence as the quoted value), and that only works if the figure
+    // lives where the wizard can read it.
+    const quoteSets = {};
+    if (body.tokenAmount !== undefined && body.tokenAmount !== null && body.tokenAmount !== "") {
+      const tok = Math.round(Number(body.tokenAmount));
+      if (!Number.isFinite(tok) || tok <= 0) {
+        return res.status(400).json({ message: "The booking amount must be a positive number.", code: "bad_token" });
+      }
+      const collectable = Math.round((quote.totals && quote.totals.grandTotal) || 0);
+      if (collectable > 0 && tok > collectable) {
+        // the wizard3 rule, applied where the figure is typed: an over-token
+        // is refused here, never silently shrunk — and an exact token is
+        // legitimate (the couple may pay everything up front).
+        return res.status(400).json({
+          message: `The booking amount exceeds the quote's total including GST (Rs. ${collectable.toLocaleString("en-IN")}). A token larger than the whole quote leaves nothing to schedule.`,
+          code: "token_exceeds_total",
+        });
+      }
+      quoteSets.tokenAmount = tok;
+    }
+    if (body.validUntil !== undefined && body.validUntil !== null && body.validUntil !== "") {
+      const until = new Date(body.validUntil);
+      if (Number.isNaN(until.getTime())) {
+        return res.status(400).json({ message: "validUntil is not a valid date.", code: "bad_valid_until" });
+      }
+      quoteSets.validUntil = until;
+    }
+    if (Object.keys(quoteSets).length) {
+      await VenueQuote.updateOne({ _id: quote._id }, { $set: quoteSets });
+      Object.assign(quote, quoteSets);
+    }
+    const wantTerms = body.attachTerms === true || body.attachTerms === "true";
+    if (wantTerms && !(venue.termsDocument && venue.termsDocument.url)) {
+      return res.status(400).json({
+        message: "No T&C PDF uploaded yet. Add it in Settings, then attach it here.",
+        code: "no_terms_document",
+      });
+    }
+    const notesParse = parseDocNotes(body.docNotes);
+    if (!notesParse.ok) return res.status(400).json({ message: notesParse.message, code: "bad_doc_notes" });
+    const docNotes = await resolveDocNotes(notesParse.value, { enquiry: lead._id, kind: "quote" });
+
     const logoBuffer = await loadLogoBuffer((venue && venue.logo) || "");
-    const built = await buildVenueDocument("quote", { venue, lead, quote, logoBuffer });
-    const buffer = built.buffer;
+    const built = await buildVenueDocument("quote", { venue, lead, quote, logoBuffer, docNotes });
+    let buffer = built.buffer;
+    let attached = null;
+    if (wantTerms) {
+      // the venue's own T&C PDF, carried not re-rendered — the same stitch
+      // and the same preservation proof the confirmation earns
+      let sourceBuffer;
+      try {
+        sourceBuffer = await pdfStitch.fetchSourcePdf(venue.termsDocument.url);
+        const stitched = await pdfStitch.stitchCoverOntoPdf(buffer, sourceBuffer);
+        const verified = await pdfStitch.verifySourcePreserved(stitched.buffer, sourceBuffer, { coverPages: stitched.coverPages });
+        if (!verified.ok) {
+          console.error(`[venueDocumentSend] stitch altered the T&Cs for lead ${lead._id}: ${verified.reason || verified.mismatches.join(",")}`);
+          return res.status(500).json({
+            message: "The attached terms did not come through unchanged, so nothing was saved. Please report this.",
+            code: "terms_not_preserved",
+          });
+        }
+        buffer = stitched.buffer;
+        attached = { filename: venue.termsDocument.filename || "terms.pdf", pages: stitched.sourcePages };
+        sourceBuffer = null;
+      } catch (e) {
+        if (e instanceof pdfStitch.StitchError) return res.status(e.status || 400).json({ message: e.message, code: e.code });
+        throw e;
+      }
+    }
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const key = `venues/${venue._id}/quotes/${stamp}.pdf`;
     let url;
@@ -263,6 +334,12 @@ const storeQuoteDocument = async (req, res) => {
         url,
         sizeBytes: buffer.length,
         contentType: "application/pdf",
+        docNotes: docNotes || undefined,
+        sourcePages: attached ? attached.pages : undefined,
+        source: attached
+          ? { url: venue.termsDocument.url, filename: attached.filename, sizeBytes: venue.termsDocument.sizeBytes || null }
+          : undefined,
+        sourceVerified: Boolean(attached),
         cover: { coupleName: lead.coupleName || "", quotedAmount: (quote.totals && quote.totals.grandTotal) || null },
         generatedBy: actor.id,
         generatedByName: actor.name,
@@ -279,7 +356,10 @@ const storeQuoteDocument = async (req, res) => {
       refModel: "VenueLeadDocument",
     });
     await lead.save();
-    return res.status(201).json({ success: true, documentId: doc._id, version: doc.version, filename: doc.filename, quoteVersion: quote.version || 1 });
+    return res.status(201).json({
+      success: true, documentId: doc._id, version: doc.version, filename: doc.filename, quoteVersion: quote.version || 1,
+      tokenAmount: quote.tokenAmount || null, validUntil: quote.validUntil || null, attachedTerms: attached,
+    });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }
@@ -290,8 +370,13 @@ const quoteOptions = async (req, res) => {
   try {
     const owned = await resolveOwnedLead(req, res);
     if (!owned) return;
-    const quotes = await VenueQuote.find({ venue: owned.venue._id, enquiry: owned.lead._id }).sort({ version: -1 }).select("version status totals.grandTotal updatedAt").lean();
-    return res.status(200).json({ quotes: quotes.map((q) => ({ _id: q._id, version: q.version, status: q.status, grandTotal: (q.totals && q.totals.grandTotal) || 0, updatedAt: q.updatedAt })) });
+    const quotes = await VenueQuote.find({ venue: owned.venue._id, enquiry: owned.lead._id }).sort({ version: -1 }).select("version status totals.grandTotal updatedAt tokenAmount validUntil").lean();
+    return res.status(200).json({
+      quotes: quotes.map((q) => ({
+        _id: q._id, version: q.version, status: q.status, grandTotal: (q.totals && q.totals.grandTotal) || 0,
+        updatedAt: q.updatedAt, tokenAmount: q.tokenAmount || null, validUntil: q.validUntil || null,
+      })),
+    });
   } catch (err) {
     return res.status(500).json({ message: err.message });
   }

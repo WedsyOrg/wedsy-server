@@ -27,6 +27,7 @@ const { resolveScopedEnquiry } = require("../utils/venueLeadScope");
 const { cleanStr } = require("../utils/venueInput");
 const { BRANDING_SELECT } = require("../utils/venueBranding");
 const { fetchSourcePdf, stitchCoverOntoPdf, verifySourcePreserved, StitchError } = require("../utils/pdfStitch");
+const { parseDocNotes, resolveDocNotes } = require("../utils/venueDocNotes");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { insertNextVersion } = require("./venueLeadDocument");
 
@@ -139,12 +140,16 @@ const generateBookingConfirmation = async (req, res) => {
       });
     }
 
+    const notesParse = parseDocNotes(body.docNotes);
+    if (!notesParse.ok) return res.status(400).json({ message: notesParse.message, code: "bad_doc_notes" });
+    const docNotes = await resolveDocNotes(notesParse.value, { enquiry: lead._id, kind: "booking_confirmation" });
+
     const issuedAt = new Date();
     const { buildVenueDocument } = require("../utils/docsystem");
     const { loadLogoBuffer } = require("../utils/venuePdf");
     const logoBuffer = await loadLogoBuffer((venue && venue.logo) || "");
     const built = await buildVenueDocument("confirmation", {
-      venue, lead, booking, logoBuffer,
+      venue, lead, booking, logoBuffer, docNotes,
       policyBlocks: wantPolicy ? policyBlocks : [],
     });
 
@@ -204,6 +209,7 @@ const generateBookingConfirmation = async (req, res) => {
         url,
         sizeBytes: buffer.length,
         contentType: "application/pdf",
+        docNotes: docNotes || undefined,
         sourcePages: attached ? attached.pages : undefined,
         source: attached
           ? { url: venue.termsDocument.url, filename: attached.filename, sizeBytes: venue.termsDocument.sizeBytes || null }

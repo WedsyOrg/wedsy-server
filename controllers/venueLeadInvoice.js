@@ -53,6 +53,7 @@ const { billedToSnapshot } = require("../utils/venueBilledTo");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { allocateInvoice, isMilestoneCollision } = require("./venueInvoice");
 const { insertNextVersion } = require("./venueLeadDocument");
+const { parseDocNotes, resolveDocNotes } = require("../utils/venueDocNotes");
 
 const DEFAULT_GST_PERCENT = 18;
 const MAX_NOTE = 2000;
@@ -283,13 +284,19 @@ async function createGstFirstSplitInvoices({ req, res, venue, lead, booking, pay
   // tax records and survive a failed render exactly as on the single path
   const docs = [];
   const note = cleanStr(body.note).slice(0, MAX_NOTE);
+  // docgen: notes print on the document and carry forward across versions of
+  // the kind; parsed once, stamped on BOTH halves of a split — they are two
+  // documents of one generation, and a note written for it belongs to both.
+  const notesParse = parseDocNotes(body.docNotes);
+  if (!notesParse.ok) return res.status(400).json({ message: notesParse.message, code: "bad_doc_notes" });
+  const docNotes = await resolveDocNotes(notesParse.value, { enquiry: lead._id, kind: "invoice" });
   for (const inv of raised) {
     let rendered;
     try {
       const { buildVenueDocument } = require("../utils/docsystem");
       const { loadLogoBuffer } = require("../utils/venuePdf");
       const logoBuffer = await loadLogoBuffer(resolveBranding(venue).logo);
-      rendered = await buildVenueDocument("invoice", { venue, lead, booking, invoice: inv, logoBuffer });
+      rendered = await buildVenueDocument("invoice", { venue, lead, booking, invoice: inv, logoBuffer, docNotes });
     } catch (e) {
       console.error(`[venueLeadInvoice] render failed for ${inv.invoiceNumber}: ${e.message}`);
       return res.status(500).json({
@@ -319,6 +326,7 @@ async function createGstFirstSplitInvoices({ req, res, venue, lead, booking, pay
           ? `${inv.invoiceNumber} (tax invoice — GST ${pct}%)`
           : `${inv.invoiceNumber} (no GST)`),
         url, sizeBytes: rendered.buffer.length, contentType: "application/pdf",
+        docNotes: docNotes || undefined,
         source: { url: "", filename: "", sizeBytes: null }, sourceVerified: false,
         generatedBy: actorId(req), generatedByName: await actorName(req),
       },
@@ -720,6 +728,9 @@ const createLeadInvoice = async (req, res) => {
     }
 
     // ── render, store, and file it in the Documents tab ────────────────────
+    const notesParse = parseDocNotes(body.docNotes);
+    if (!notesParse.ok) return res.status(400).json({ message: notesParse.message, code: "bad_doc_notes" });
+    const docNotes = await resolveDocNotes(notesParse.value, { enquiry: lead._id, kind: "invoice" });
     let rendered;
     try {
       // For a payment invoice the "payment" the PDF describes is the first row
@@ -727,7 +738,7 @@ const createLeadInvoice = async (req, res) => {
       const { buildVenueDocument } = require("../utils/docsystem");
       const { loadLogoBuffer } = require("../utils/venuePdf");
       const logoBuffer = await loadLogoBuffer(resolveBranding(venue).logo);
-      rendered = await buildVenueDocument("invoice", { venue, lead, booking, invoice, logoBuffer });
+      rendered = await buildVenueDocument("invoice", { venue, lead, booking, invoice, logoBuffer, docNotes });
     } catch (e) {
       // The invoice row exists and has consumed its number; that is correct —
       // the tax record is the thing that matters and the PDF can be re-rendered.
@@ -768,6 +779,7 @@ const createLeadInvoice = async (req, res) => {
         url,
         sizeBytes: rendered.buffer.length,
         contentType: "application/pdf",
+        docNotes: docNotes || undefined,
         pageCount: rendered.tableStats ? undefined : undefined,
         source: { url: "", filename: "", sizeBytes: null },
         sourceVerified: false,

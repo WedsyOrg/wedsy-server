@@ -76,7 +76,7 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     // by declaring itself rather than by someone remembering to update a UI.
     kind: {
       type: String,
-      enum: ["terms", "quote", "booking_confirmation", "invoice", "statement", "address_proof", "client_document"],
+      enum: ["terms", "quote", "booking_confirmation", "invoice", "statement", "receipt", "address_proof", "client_document"],
       default: "terms",
       required: true,
     },
@@ -106,6 +106,21 @@ const VenueLeadDocumentSchema = new mongoose.Schema(
     // rows of the same filename and different timestamps, which answers nothing.
     // Optional, because forcing a note produces "asdf" rather than meaning.
     note: { type: String, default: "", maxlength: 2000 },
+
+    // ── NOTES ON THE DOCUMENT (docgen) ───────────────────────────────────────
+    // Owner-written notes that PRINT on the document, as their own section at
+    // the end. They belong to the document they were written on — not the
+    // lead — and a new version of the same kind carries the previous
+    // version's forward, editable. `lines` is A LIST and the numbers are
+    // derived at render, never baked into the text: deleting a middle note
+    // renumbers the rest, and the printed numbers can never drift from the
+    // stored ones (the instalment-renumbering rule). `numbered` is the
+    // owner's toggle. Distinct from `note` above, which is the version label
+    // on the LIST ROW and never prints.
+    docNotes: {
+      numbered: { type: Boolean, default: false },
+      lines: { type: [String], default: [] },
+    },
 
     // ── the stitched artefact ────────────────────────────────────────────────
     url: { type: String, default: "" },

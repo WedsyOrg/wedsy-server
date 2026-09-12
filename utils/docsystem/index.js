@@ -38,6 +38,15 @@ async function buildVenueDocument(type, inputs, opts = {}) {
   const language = (opts.language && LANGUAGES[opts.language]) || resolveLanguage(inputs.venue);
   const data = await assembler(inputs);
   if (!data) return null;
+  // ── NOTES (docgen): owner-written lines that print as their own section ──
+  // Attached HERE, not in the assemblers: notes belong to the stored document
+  // record, and every kind renders them the same way. Lines are a list;
+  // numbering is derived at render (documents.js notesSection), never baked
+  // into the text.
+  if (inputs.docNotes && Array.isArray(inputs.docNotes.lines)) {
+    const lines = inputs.docNotes.lines.map((l) => String(l || "").trim()).filter(Boolean);
+    if (lines.length) data.docNotes = { numbered: Boolean(inputs.docNotes.numbered), lines };
+  }
   const R = new Engine({ language, identity: data.identity, meta: data.meta, compress: opts.compress !== false });
   await renderer(R, data);
   const buffer = await R.finish();

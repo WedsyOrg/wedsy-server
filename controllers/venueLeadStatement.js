@@ -37,6 +37,7 @@ const { summarizeSchedule } = require("../utils/venuePaymentStatus");
 const { computeLineTotals } = require("../utils/venueMoney");
 const { uploadBufferToS3 } = require("../utils/s3Upload");
 const { insertNextVersion } = require("./venueLeadDocument");
+const { parseDocNotes, resolveDocNotes } = require("../utils/venueDocNotes");
 
 const MAX_NOTE = 2000;
 
@@ -177,6 +178,10 @@ const createStatement = async (req, res) => {
     }
     const { booking, summary, invoices } = gathered;
 
+    const notesParse = parseDocNotes(req.body && req.body.docNotes);
+    if (!notesParse.ok) return res.status(400).json({ message: notesParse.message, code: "bad_doc_notes" });
+    const docNotes = await resolveDocNotes(notesParse.value, { enquiry: lead._id, kind: "statement" });
+
     let rendered;
     try {
       // The document system renders the venue's chosen language; gstStated
@@ -184,7 +189,7 @@ const createStatement = async (req, res) => {
       const { buildVenueDocument } = require("../utils/docsystem");
       const { loadLogoBuffer } = require("../utils/venuePdf");
       const logoBuffer = await loadLogoBuffer(venue.logo);
-      const built = await buildVenueDocument("statement", { venue, lead, booking, summary, invoices, logoBuffer });
+      const built = await buildVenueDocument("statement", { venue, lead, booking, summary, invoices, logoBuffer, docNotes });
       rendered = { buffer: built.buffer, gstStated: (built.data.totals.gst + built.data.totals.extrasGst) > 0 };
     } catch (e) {
       console.error(`[venueLeadStatement] render failed for lead ${lead._id}: ${e.message}`);
@@ -229,6 +234,7 @@ const createStatement = async (req, res) => {
         url,
         sizeBytes: rendered.buffer.length,
         contentType: "application/pdf",
+        docNotes: docNotes || undefined,
         source: { url: "", filename: "", sizeBytes: null },
         sourceVerified: false,
         cover: {

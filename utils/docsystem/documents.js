@@ -363,6 +363,31 @@ function factStrip(R, facts) {
   R.y = y0 + maxH;
 }
 
+/**
+ * ── NOTES ON THE DOCUMENT (docgen) ──────────────────────────────────────────
+ * Owner-written notes: their own section at the end, a heading set apart by a
+ * RULE — never a box. The design language forbids enclosure and the suite
+ * counts rectangle operators; rule() strokes a line. Numbers are DERIVED here
+ * from the stored list, never baked into the text: deleting a middle note
+ * renumbers the rest, and the printed numbers cannot drift from the stored
+ * ones (the instalment-renumbering rule). Every document kind renders notes
+ * through this one function, so the section cannot diverge per kind.
+ */
+function notesSection(R, notes) {
+  if (!notes || !notes.lines || !notes.lines.length) return;
+  R.gap(SPACE.block);
+  R.ensure(52);
+  R.rule(R.margin, R.y, R.margin + R.width, 0.5, R.T.hairline);
+  R.gap(9);
+  R.text("Notes", { font: "Times-Italic", size: TYPE.sectionLabel, tracking: 0.01 });
+  R.gap(7);
+  notes.lines.forEach((line, i) => {
+    R.ensure(24);
+    R.text(notes.numbered ? `${i + 1}. ${line}` : line, { size: TYPE.fine, color: R.T.mid, lineGap: 3 });
+    R.gap(4);
+  });
+}
+
 // ── note + signature closing row ────────────────────────────────────────────
 function closingRow(R, noteLines, signatory) {
   const notes = noteLines.filter(Boolean);
@@ -470,13 +495,48 @@ async function renderQuote(R, d) {
     drawQuoted();
   }
   R.sectionLabel("Booking amount");
-  if (d.schedule && d.schedule.length) {
+  if (d.bookingToken) {
+    // ── THE TOKEN THE OWNER SET (docgen) — a real figure, guarded ───────────
+    // The document prints what was typed in the generate box, never a derived
+    // number. PROVEN, NOT PRINTED: the balance is asserted against the
+    // document's own collectable before anything is drawn, so the proof line
+    // beneath cannot certify arithmetic that does not hold.
+    const tk = d.bookingToken;
+    if (tk.amount <= 0 || tk.balance < 0 || tk.amount + tk.balance !== d.totals.collectable) {
+      throw new Error(`booking token does not reconcile: token ${tk.amount} + balance ${tk.balance} !== collectable ${d.totals.collectable}`);
+    }
+    R.table({
+      cellSize: TYPE.cell,
+      columns: [
+        { key: "what", label: "Instalment", width: 0.58 },
+        { key: "due", label: "Due", width: 0.2 },
+        { key: "amount", label: "Amount", width: 0.22, numeric: true },
+      ],
+      rows: [{
+        cells: {
+          what: { text: "Booking amount (token)", subLine: "Confirms the date and holds the spaces" },
+          due: "On confirmation",
+          amount: money(tk.amount).replace("Rs. ", ""),
+        },
+        lastData: true,
+      }],
+    });
+    R.gap(8);
+    R.ensure(30);
+    R.text(
+      tk.balance > 0
+        ? `The balance of ${money(tk.balance)} is scheduled at confirmation, instalment by instalment.`
+        : "The token covers the whole amount — nothing remains to schedule at confirmation.",
+      { size: TYPE.cell, color: R.T.ink, lineGap: 4 }
+    );
+    R.gap(5);
+    R.text(`Token and balance sum exactly to the total including GST, ${money(d.totals.collectable)}.`, { size: TYPE.subLine + 0.5, color: R.T.mid });
+  } else if (d.schedule && d.schedule.length) {
     scheduleTable(R, d.schedule, d.totals);
   } else {
     // NO INVENTED FIGURE (quotedoc f1, founder ruling): the booking amount is
-    // the token — the sum that holds the date — and no quote stores one yet.
-    // Words that mean what they say, until the owner can set the token at
-    // generation (the next build).
+    // the token — the sum that holds the date — and none was set on this
+    // quote. Words that mean what they say, never a number nobody chose.
     R.ensure(40);
     R.text(
       "The booking amount — the sum that confirms the date and holds the spaces — is agreed at confirmation. The instalment plan is set out in the booking confirmation.",
@@ -500,6 +560,7 @@ async function renderQuote(R, d) {
     R.ensure(24);
     R.text(d.acceptanceLine, { size: TYPE.fine, color: R.T.ink });
   }
+  notesSection(R, d.docNotes);
   closingRow(R, d.noteLines, d.signatory);
 }
 
@@ -581,6 +642,7 @@ async function renderConfirmation(R, d) {
       R.gap(5);
     }
   }
+  notesSection(R, d.docNotes);
   closingRow(R, d.noteLines, d.signatory);
 }
 
@@ -700,6 +762,7 @@ async function renderInvoice(R, d) {
     R.ensure(Math.min(h + 4, R.contentBottom - R.contentTop));
     drawDue();
   }
+  notesSection(R, d.docNotes);
   closingRow(R, d.noteLines, d.signatory);
 }
 
@@ -868,6 +931,7 @@ async function renderStatement(R, d) {
     R.ensure(Math.min(ph + 4, R.contentBottom - R.contentTop));
     pdDraw();
   }
+  notesSection(R, d.docNotes);
   // the notes sit below, behind a 0.5px rule, at 74% measure
   R.gap(12);
   R.rule(R.margin, R.y, R.margin + R.width * 0.74, 0.5, R.T.hairline);
@@ -975,6 +1039,7 @@ async function renderReceipt(R, d) {
     R.text(WORDING.neverInvoiced, { size: TYPE.fine, color: R.T.mid, lineGap: 3, x: nx, width: rightW });
   }
   R.y = Math.max(R.y, leftBottom);
+  notesSection(R, d.docNotes);
   closingRow(R, d.noteLines || [], d.signatory);
 }
 

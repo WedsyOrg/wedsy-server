@@ -301,14 +301,17 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
   const totals = isLegacy ? legacyQ.totals : documentTotals(quote.lineItems || [], [], pct);
   const heldUntil = quote.validUntil || null;
   // ── NO INVENTED SCHEDULE (quotedoc f1, founder ruling) ────────────────────
-  // The booking amount is the TOKEN — the sum that holds the date — and no
-  // token exists on a quote today: VenueQuote stores no schedule and no token
-  // field. The old row printed totals.payable under "Booking amount · On
-  // confirmation", asking the couple for the WHOLE amount to confirm, and the
-  // proven "Sums exactly" line made the invented figure look verified. Until
-  // the owner can set the token at generation (the next build), the section
-  // states the terms in words and prints no number nobody chose.
+  // The booking amount is the TOKEN — the sum that holds the date — and the
+  // document prints only a token the owner actually set (the generate box
+  // writes quote.tokenAmount). Without one, the section states the terms in
+  // words and prints no number nobody chose: the old derived row printed
+  // totals.payable under "Booking amount · On confirmation", asking the
+  // couple for the WHOLE amount to confirm.
   const schedule = [];
+  const tokenSet = Number(quote.tokenAmount) > 0;
+  const bookingToken = tokenSet
+    ? { amount: Math.round(Number(quote.tokenAmount)), balance: totals.collectable - Math.round(Number(quote.tokenAmount)) }
+    : null;
   // ── THE SPACES, LINE BY LINE (quotedoc f2) ────────────────────────────────
   // The confirmation's source once a booking exists; before one, the lead's
   // own functions name the spaces (Venue.spaces subdoc ids → names). No
@@ -368,6 +371,7 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
     totals,
     inclusions: [],
     schedule,
+    bookingToken,
     // loss #1: the venue's own numbered T&C block
     termsLines: (quote.terms || []).filter(Boolean),
     // loss #2: the acceptance evidence from the public /doc-ack flow

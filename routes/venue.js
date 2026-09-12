@@ -233,6 +233,10 @@ router.get("/:slug/enquiries/:enquiryId/documents/:documentId/download", venueOw
 // `documents`, like the tab it lives on; the quote filing is the same, so a
 // quote becomes a document under the capability that governs documents.
 router.get("/:slug/enquiries/:enquiryId/documents/quote/options", venueOwnerAuth, requireCapability("documents"), docSend.quoteOptions);
+// DOCGEN: one endpoint the generate box reads — every kind's availability,
+// its refusal sentence when unavailable (the ruling: pickable, never hidden),
+// its choices, and the notes each kind carries forward.
+router.get("/:slug/enquiries/:enquiryId/document-options", venueOwnerAuth, requireCapability("documents"), require("../controllers/venueDocumentOptions").documentOptions);
 router.post("/:slug/enquiries/:enquiryId/documents/quote", venueOwnerAuth, requireCapability("documents"), docSend.storeQuoteDocument);
 router.get("/:slug/enquiries/:enquiryId/documents/:documentId/send-preview", venueOwnerAuth, requireCapability("documents"), docSend.sendPreview);
 router.post("/:slug/enquiries/:enquiryId/documents/:documentId/send", venueOwnerAuth, requireCapability("documents"), docSend.sendDocument);
@@ -268,6 +272,8 @@ router.post("/:slug/enquiries/:enquiryId/payments", venueOwnerAuth, requireCapab
 router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/approve", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.approveLeadPayment);
 router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/reject", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.rejectLeadPayment);
 router.get("/:slug/enquiries/:enquiryId/payments/:paymentId/receipt.pdf", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.receiptPdf);
+// DOCGEN: the receipt FILED as a stored document (generate-then-preview flow).
+router.post("/:slug/enquiries/:enquiryId/payments/:paymentId/receipt", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.storeReceiptDocument);
 // Additional billing is money owed, so it sits behind the same capability as
 // the rest of the schedule and the same lead scope (404, never 403).
 router.post("/:slug/enquiries/:enquiryId/additional-billing", venueOwnerAuth, requireCapability("bookings_money"), leadPayment.addAdditionalBilling);

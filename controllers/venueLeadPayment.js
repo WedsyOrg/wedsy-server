@@ -654,4 +654,82 @@ const receiptPdf = async (req, res) => {
   }
 };
 
-module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, addAdditionalBilling, removeAdditionalBilling, receiptPdf, MODES };
+/**
+ * ── POST /venues/:slug/enquiries/:enquiryId/payments/:paymentId/receipt ─────
+ * DOCGEN: file the receipt as a stored document. The streaming route above
+ * stays (a receipt is re-derivable at any time), but the generate box's flow
+ * is Generate → the STORED document previews → send or download — one render
+ * path, and the preview is of the actual filed artefact. Same bytes as the
+ * stream, plus a row, a version, and a Send button.
+ */
+const storeReceiptDocument = async (req, res) => {
+  try {
+    const owned = await resolveOwnedLead(req, res);
+    if (!owned) return;
+    const { lead } = owned;
+    const body = req.body || {};
+    const venue = await Venue.findOne({ _id: req.venueOwner.venueId })
+      .select("name slug address formattedAddress contact phone email logo tagline gstin pan settings bankDetails")
+      .lean();
+    const booking = await VenueBooking.findOne({ enquiry: lead._id }).lean();
+    if (!booking) return res.status(400).json({ message: "This lead has no confirmed booking yet.", code: "no_booking" });
+
+    const { parseDocNotes, resolveDocNotes } = require("../utils/venueDocNotes");
+    const notesParse = parseDocNotes(body.docNotes);
+    if (!notesParse.ok) return res.status(400).json({ message: notesParse.message, code: "bad_doc_notes" });
+    const docNotes = await resolveDocNotes(notesParse.value, { enquiry: lead._id, kind: "receipt" });
+
+    const summary = summarizeSchedule(booking);
+    const { buildVenueDocument } = require("../utils/docsystem");
+    const { loadLogoBuffer } = require("../utils/venuePdf");
+    const logoBuffer = await loadLogoBuffer(venue.logo);
+    const built = await buildVenueDocument("receipt", {
+      venue, lead, booking, summary, paymentId: req.params.paymentId, logoBuffer, docNotes,
+    });
+    if (!built) {
+      return res.status(404).json({
+        message: "That payment is not on this booking, or is not approved yet — a receipt records money received.",
+        code: "no_receiptable_payment",
+      });
+    }
+
+    const s3 = require("../utils/s3Upload");
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    let url;
+    try {
+      url = await s3.uploadBufferToS3({
+        buffer: built.buffer,
+        key: `venues/${venue._id}/receipts/${stamp}.pdf`,
+        contentType: "application/pdf",
+      });
+    } catch (e) {
+      console.error(`[venueLeadPayment] S3 upload failed for receipt ${req.params.paymentId}: ${e.message}`);
+      return res.status(502).json({ message: "The receipt was generated but could not be stored. Try again.", code: "storage_failed" });
+    }
+
+    const { insertNextVersion } = require("./venueLeadDocument");
+    const amount = Math.round(Number(built.data && built.data.amount) || 0);
+    const doc = await insertNextVersion(
+      {
+        venue: venue._id,
+        enquiry: lead._id,
+        kind: "receipt",
+        note: cleanStr(body.note).slice(0, 2000) || `Rs. ${amount.toLocaleString("en-IN")} received`,
+        url,
+        sizeBytes: built.buffer.length,
+        contentType: "application/pdf",
+        docNotes: docNotes || undefined,
+        source: { url: "", filename: "", sizeBytes: null },
+        sourceVerified: false,
+        generatedBy: actorId(req),
+        generatedByName: await actorName(req),
+      },
+      (version) => ({ filename: `receipt-${String(req.params.paymentId).slice(-8)}-v${version}.pdf` })
+    );
+    return res.status(201).json({ success: true, documentId: doc._id, version: doc.version, filename: doc.filename, amount });
+  } catch (err) {
+    return res.status(500).json({ message: err.message });
+  }
+};
+
+module.exports = { getLeadPayments, recordPayment, previewPayment, approveLeadPayment, rejectLeadPayment, addAdditionalBilling, removeAdditionalBilling, receiptPdf, storeReceiptDocument, MODES };

@@ -75,6 +75,18 @@ const VenueQuoteSchema = new mongoose.Schema(
       charged: { type: Number, default: 0 },
       refundable: { type: Number, default: 0 },
     },
+    // ── DOCGEN (additive): what the owner sets when generating the document ─
+    // tokenAmount is THE BOOKING AMOUNT — the sum that holds the date, never
+    // the total. Typed in the generate box, printed on the quote's Booking
+    // amount section, and read by the confirm wizard as its token pre-fill
+    // (latest quote wins, the same precedence as the quoted value). null =
+    // never set; the document falls back to stating the terms in words.
+    tokenAmount: { type: Number, default: null },
+    // How long the quote holds. The assembler read quote.validUntil since the
+    // docsystem switch, but the field was never in the schema — mongoose
+    // silently stripped every write, so "Held until" never printed. The shape
+    // that vanishes without complaint, named at last.
+    validUntil: { type: Date, default: null },
     // D8 (additive): T&C block + acceptance log.
     terms: [String],
     acceptance: {
