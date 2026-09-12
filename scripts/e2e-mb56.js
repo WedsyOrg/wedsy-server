@@ -1170,11 +1170,31 @@ const inboundText = (phone, text, profileName = "MB56 Customer") => ({
       "consent URL pins the redirect URI"
     );
     const gState = new URL(gStart.data.url).searchParams.get("state");
-    const cbRes = await fetch(`${BASE}/google/oauth/callback?code=mock-code&state=${encodeURIComponent(gState)}`);
-    ok(cbRes.status === 200, "oauth callback succeeds");
+    // redirect:"manual" — the callback no longer renders a page, it 302s back
+    // into the OS. Without this, fetch follows the Location to a frontend host
+    // that does not resolve in an e2e environment and the step dies on a
+    // network error rather than on anything it is testing.
+    const cbRes = await fetch(
+      `${BASE}/google/oauth/callback?code=mock-code&state=${encodeURIComponent(gState)}`,
+      { redirect: "manual" }
+    );
+    ok(cbRes.status === 302, "oauth callback redirects back into the OS");
+    ok(/[?&]google=connected/.test(cbRes.headers.get("location") || ""), "…flagged as connected");
     const GoogleAccount = require("../models/GoogleAccount");
     const gAcc = await GoogleAccount.findOne({ adminId: salesLead._id }).lean();
-    ok(!!gAcc && gAcc.refreshToken === "mock-refresh-token" && gAcc.email === "saleslead@wedsy.test", "GoogleAccount stored (refresh token + email)");
+    // ASSERT THE PROPERTY, NOT THE LITERAL. The refresh token is sealed at rest
+    // now, so the stored string is ciphertext and comparing it to the mock
+    // value would be asserting that encryption had NOT happened. What matters
+    // is that it round-trips — and, when a key is configured, that the
+    // plaintext is not what sits on disk.
+    const { storedRefreshToken } = require("../services/GoogleWorkspaceService");
+    ok(!!gAcc && gAcc.email === "saleslead@wedsy.test", "GoogleAccount stored (email)");
+    ok(!!gAcc && storedRefreshToken(gAcc) === "mock-refresh-token", "…refresh token round-trips");
+    ok(
+      !process.env.CREDENTIAL_ENC_KEY ||
+        (gAcc && gAcc.refreshToken !== "mock-refresh-token" && gAcc.refreshToken.startsWith("v1.gcm:")),
+      "…and with a key configured, the plaintext is NOT what is stored"
+    );
     gStatus = await api("GET", "/google/status", { token: salesLeadToken });
     ok(gStatus.data.linked === true && gStatus.data.email === "saleslead@wedsy.test", "status reflects the link");
     const badState = await fetch(`${BASE}/google/oauth/callback?code=x&state=tampered`);

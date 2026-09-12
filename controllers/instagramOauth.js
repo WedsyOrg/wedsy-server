@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { sealAccessToken } = require("../services/ConnectedInstagramAccountService");
 const ConnectedInstagramAccount = require("../models/ConnectedInstagramAccount");
 const InstagramOAuthState = require("../models/InstagramOAuthState");
 const { adminHasPermission } = require("../middlewares/requirePermission");
@@ -173,7 +174,7 @@ const Callback = async (req, res) => {
         {
           $set: {
             username: profile.username,
-            accessToken: longLived.accessToken,
+            accessToken: sealAccessToken(longLived.accessToken),
             tokenExpiresAt: new Date(Date.now() + longLived.expiresIn * 1000),
             lastRefreshedAt: new Date(),
             status: "active",

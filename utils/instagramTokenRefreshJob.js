@@ -1,3 +1,4 @@
+const { sealAccessToken, storedAccessToken } = require("../services/ConnectedInstagramAccountService");
 const ConnectedInstagramAccount = require('../models/ConnectedInstagramAccount');
 const NotificationFailureLog = require('../models/NotificationFailureLog');
 const Admin = require('../models/Admin');
@@ -89,13 +90,13 @@ const refreshOne = async (account) => {
   try {
     // logParams tags the NotificationFailureLog row igRequest writes on failure
     // with WHICH account failed — countFailuresSinceLastSuccess keys on it.
-    refreshed = await refreshLongLivedToken(account.accessToken, {
+    refreshed = await refreshLongLivedToken(storedAccessToken(account), {
       logParams: { instagramUserId: account.instagramUserId, username: account.username },
     });
   } catch (error) {
     // The sanitised failure row is already persisted by igRequest. All that is
     // left is deciding whether this failure is loud yet.
-    const safe = sanitizeError(error, account.accessToken);
+    const safe = sanitizeError(error, storedAccessToken(account));
     const failureCount = await countFailuresSinceLastSuccess(account);
     if (failureCount >= 2) await alertOwners(account, safe, failureCount);
     return { instagramUserId: account.instagramUserId, ok: false, error: safe, failureCount };
@@ -115,7 +116,7 @@ const refreshOne = async (account) => {
     { _id: account._id },
     {
       $set: {
-        accessToken: refreshed.accessToken,
+        accessToken: sealAccessToken(refreshed.accessToken),
         tokenExpiresAt: new Date(now.getTime() + refreshed.expiresIn * 1000),
         lastRefreshedAt: now,
       },
@@ -150,7 +151,7 @@ const runInstagramTokenRefresh = async () => {
         results.push(await refreshOne(account));
       } catch (error) {
         // Belt and braces — refreshOne handles its own failures.
-        results.push({ instagramUserId: account.instagramUserId, ok: false, error: sanitizeError(error, account.accessToken) });
+        results.push({ instagramUserId: account.instagramUserId, ok: false, error: sanitizeError(error, storedAccessToken(account)) });
       }
     }
   } catch (error) {
