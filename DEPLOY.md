@@ -106,3 +106,59 @@ Never the other way round. To verify, create one lead and grep for
 The message wording lives in `utils/chatMessages.js` — one pure function,
 deliberately isolated from the transport so it can be reworded without touching
 the HTTP call, the secret, or the fire-and-forget contract.
+
+## Encrypted credentials at rest
+
+Two stored third-party credentials are sealed with AES-256-GCM via
+`utils/secretBox.js`: `GoogleAccount.refreshToken` (per-admin, calendar write)
+and `ConnectedInstagramAccount.accessToken` (the business account's DM token).
+`VenueSheetIntegration.refreshToken` was already encrypted and keeps its own
+key.
+
+| Variable | Used by | Notes |
+| --- | --- | --- |
+| `CREDENTIAL_ENC_KEY` | GoogleAccount, ConnectedInstagramAccount | **Secret.** Any passphrase; a 32-byte key is derived from it. |
+| `SHEETS_TOKEN_ENC_KEY` | VenueSheetIntegration | **Unchanged.** Deliberately a separate key — rotating one store must not break another. |
+
+**Unset `CREDENTIAL_ENC_KEY` is safe to deploy.** Sealing degrades to storing
+plain text — exactly today's behaviour — and logs
+`[secretbox] NO KEY …`. Grep for that line to confirm the key is actually in
+use after setting it.
+
+**Stored format:** `v1.gcm:<iv>:<tag>:<ciphertext>`. A value **without** that
+prefix is plain text, from before this shipped, and is returned as-is. That one
+rule is the whole migration: rows re-encrypt as they are rewritten, and nothing
+needs a backfill script.
+
+### ROLLBACK — read this before reverting
+
+Reverting the code is **safe but not free**, and the cost is bounded:
+
+* Rows still in plain text (never re-linked) keep working — the old code reads
+  plain text.
+* Rows written **while the new code was live** are `v1.gcm:…`. The old code
+  hands that string to Google or Meta as a token, it is rejected, and
+  `accessTokenFor` raises `502 Google token refresh failed`.
+
+**Nothing is lost and nothing corrupts.** Those people reconnect —
+`/google/oauth/start` for Google, the Instagram connect flow for Meta — and are
+fine. Meetings booked in the gap fall back to OS-only (no Meet link, no
+invitations), which is the same fallback as an unlinked account.
+
+So the recovery plan is: **whoever linked during the window links again.** With
+a handful of linked accounts that is minutes of work, which is why no
+decrypt-in-place script is kept. If the number of linked accounts ever grows
+into the hundreds, write one before reverting.
+
+### If the key is lost or rotated
+
+Every sealed credential becomes unreadable — the GCM tag fails, `decryptSecret`
+returns `""` and logs `[secretbox] DECRYPT FAILED` with the row's id. Then:
+
+* **Google:** each admin reconnects. Calendar events are unaffected — they live
+  in Google, not here.
+* **Instagram:** reconnect the business account once. DM history is in
+  `WAAgentMessage` and is untouched.
+
+**Nothing irreplaceable is protected by this key.** Every credential under it is
+re-obtainable by a consent flow, so key loss costs a reconnect, not data.

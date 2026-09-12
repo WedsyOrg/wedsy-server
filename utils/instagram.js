@@ -146,7 +146,14 @@ const resolveAccessToken = async (instagramUserId = null) => {
     const account = await ConnectedInstagramAccount.findOne(filter)
       .sort({ updatedAt: -1 })
       .lean();
-    if (account && account.accessToken) return account.accessToken;
+    if (account && account.accessToken) {
+      // Sealed at rest — resolve through the one place that knows the format.
+      const token = require("../services/ConnectedInstagramAccountService").storedAccessToken(account);
+      if (token) return token;
+      // Unresolvable (wrong key after a rotation): secretBox has already logged
+      // it loudly. Fall through to the env token rather than returning "" and
+      // taking the inbox down on a credential problem that reconnecting fixes.
+    }
   } catch (error) {
     // A DB hiccup must not take the inbox down while the fallback still exists.
     console.error('[Instagram] token lookup failed, falling back to env:', sanitizeError(error));

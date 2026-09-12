@@ -6,6 +6,7 @@ const Role = require("../models/Role");
 const Enquiry = require("../models/Enquiry");
 const CalendarEvent = require("../models/CalendarEvent");
 const SettingsService = require("./SettingsService");
+const { encryptSecret, decryptSecret } = require("../utils/secretBox");
 
 // MB6 Slice 8 — Google Workspace, built fully behind env seams (the
 // ANTHROPIC_API_URL pattern): every Google URL is overridable so the e2e
@@ -33,6 +34,40 @@ const SCOPES = [
 ];
 
 const isConfigured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
+
+// ── Credential at rest ────────────────────────────────────────────────────
+// The refresh token is the durable credential: it grants calendar write access
+// to a person's Google account and survives until they revoke it. It is sealed
+// before storage and resolved on the two lines that need it.
+//
+// CREDENTIAL_ENC_KEY, not the Sheets key — a name that does not imply one
+// feature, and a key that can be rotated without touching Sheets.
+//
+// UNSET KEY IS NOT A FAILURE, it is today's behaviour. Deploying this before
+// the key is set must not break linking, so sealing degrades to storing
+// plaintext and says so. The loud line is what stops "we'll set it later"
+// becoming permanent.
+const credentialKey = () => process.env.CREDENTIAL_ENC_KEY || "";
+
+const sealRefreshToken = (plain) => {
+  if (!plain) return "";
+  if (!credentialKey()) {
+    console.log(
+      "[secretbox] NO KEY GoogleAccount — CREDENTIAL_ENC_KEY is unset, so the refresh token is stored " +
+        "in PLAIN TEXT (unchanged from before). Set it to encrypt at rest."
+    );
+    return String(plain);
+  }
+  return encryptSecret(String(plain), credentialKey());
+};
+
+// Resolve a stored row's token. Returns "" when it cannot be resolved — the
+// caller treats that as "not linked", which is the correct remedy: reconnect.
+const storedRefreshToken = (account) =>
+  decryptSecret(account && account.refreshToken, credentialKey(), {
+    label: "GoogleAccount",
+    ref: account && account.adminId ? String(account.adminId) : "",
+  });
 
 // ── OAuth ─────────────────────────────────────────────────────────────────────
 
@@ -161,7 +196,7 @@ const handleCallback = async (code, state) => {
     {
       $set: {
         email,
-        refreshToken: tokens.refresh_token,
+        refreshToken: sealRefreshToken(tokens.refresh_token),
         scopes: String(tokens.scope || "").split(" ").filter(Boolean),
         linkedAt: new Date(),
       },
@@ -176,7 +211,7 @@ const accessTokenFor = async (account) => {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      refresh_token: account.refreshToken,
+      refresh_token: storedRefreshToken(account),
       client_id: process.env.GOOGLE_CLIENT_ID,
       client_secret: process.env.GOOGLE_CLIENT_SECRET,
       grant_type: "refresh_token",
@@ -513,6 +548,8 @@ const bookMeet = async (leadId, { start, end }, actorId) => {
 
 module.exports = {
   isConfigured,
+  sealRefreshToken,
+  storedRefreshToken,
   startUrl,
   osReturnUrl,
   originFromState,
