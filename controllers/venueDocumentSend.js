@@ -43,7 +43,7 @@ const SENDABLE_KINDS = Object.keys(VenueMail.KINDS);
 
 async function resolveOwnedLead(req, res) {
   const venue = await Venue.findOne({ slug: req.params.slug })
-    .select("_id name slug logo address formattedAddress contact phone email settings termsDocument whiteLabel gstin pan invoicePrefix bankDetails upiQr")
+    .select("_id name slug logo address formattedAddress contact phone email settings termsDocument whiteLabel gstin pan invoicePrefix bankDetails upiQr spaces")
     .lean();
   if (!venue) { res.status(404).json({ message: "Venue not found" }); return null; }
   if (String(venue._id) !== String(req.venueOwner.venueId)) { res.status(403).json({ message: "Forbidden" }); return null; }

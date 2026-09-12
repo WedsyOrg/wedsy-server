@@ -108,7 +108,12 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
       has(flat, "Total payable", `${language}: fixed label`);
       has(flat, "of which refundable, held — returned after the event: Rs. 1,50,000", `${language}: fixed refundable line, verbatim`);
       has(flat, "GST at 18% applies to the taxable Rs. 10,77,500 of the quoted lines — Rs. 1,93,950 in all", `${language}: GST stated with its base, verbatim`);
-      has(flat, "Sums exactly to total payable", `${language}: the schedule's proof row`);
+      // quotedoc f1: no schedule exists at quote time, so the quote prints
+      // NO schedule table, no proof row, and no figure nobody chose — the
+      // booking amount is stated in words until the owner can set the token
+      has(flat, "is agreed at confirmation", `${language}: the booking amount in words, no invented figure`);
+      hasNot(flat, "On confirmation", `${language}: the old invented row is gone`);
+      hasNot(flat, "Sums exactly to total payable", `${language}: …and so is its proof row`);
       // the vocabulary rule governs SYSTEM copy; the venue's own tagline is
       // their voice (the handoff fixture's tagline says "weddings" itself)
       hasNot(flat.toLowerCase().replace(/estate weddings & celebrations/g, ""), "wedding", `${language}: "event", never "wedding" (outside the venue's own tagline)`);
@@ -915,6 +920,92 @@ const mkEntry = (amount, date, paymentId, method = "bank_transfer", reference = 
         ok(lf2.includes("Invoices raised") && lf2.includes("PAYMENT DETAILS") && lf2.includes("Total including GST"),
           `${language}: trail, payment block and resolution all present`);
       }
+    }
+
+    // ══ 16. QUOTEDOC: spaces, window, full width, honest words; receipt ═════
+    console.log("\n[16. quotedoc: spaces line by line, window title, sequential totals; receipt From once, no Reference column]");
+    {
+      // a venue whose spaces the lead's functions can reference
+      const qdVenue = await Venue.create({
+        name: `${TAG} Meadow House`, slug: `${TAG}-qd`, address: "9 Lake Road, Bengaluru 560064",
+        gstin: "29AAGCA4821K1ZP", pan: "AAGCA4821K",
+        contact: { primaryPhone: "+91 80 2222 3300", email: "hello@meadowhouse.in" },
+        spaces: [
+          { name: "Estate Lawn", type: "outdoor" },
+          { name: "Banyan Courtyard", type: "semi-outdoor" },
+          { name: "Glasshouse", type: "indoor" },
+        ],
+      });
+      created.venues.push(qdVenue._id);
+      const s = qdVenue.spaces;
+      // MULTI-DAY lead whose functions name two of the three spaces
+      const qdLead = await VenueEnquiry.create({
+        venueId: qdVenue._id, coupleName: "Meera & Dev", couplePhone: "9811223344", stage: "booked",
+        checkIn: new Date("2027-01-01T10:00:00+05:30"), checkOut: new Date("2027-01-03T11:00:00+05:30"),
+        contacts: [{ name: "Meera Iyer", phone: "9811223344", isPrimary: true }],
+        functions: [
+          { name: "wedding", date: new Date("2027-01-01"), space: s[0]._id },
+          { name: "reception", date: new Date("2027-01-02"), space: s[2]._id },
+          { name: "reception", date: new Date("2027-01-02T18:00:00+05:30"), space: s[0]._id },
+        ],
+      });
+      const qdQuote = { lineItems: [{ label: "Venue rental", amount: 640000, gstTreatment: "none", taxableAmount: 0, qty: 1, unitPrice: 640000 }], gstPercent: 18, version: 1, createdAt: new Date() };
+      const fq = pdfFlat((await buildVenueDocument("quote", { venue: qdVenue, lead: qdLead, quote: qdQuote }, { compress: false, language: "classic" })).buffer);
+      // f2: the spaces, line by line, from the lead's functions — deduped
+      ok(/quoted for/i.test(fq), "f2: the spaces get their own section");
+      has(fq, "Estate Lawn", "…naming the lawn");
+      has(fq, "Glasshouse", "…and the glasshouse");
+      hasNot(fq, "Banyan Courtyard", "…and only the spaces the functions name");
+      // f3: the TITLE carries the window, not its first day
+      ok(/Event . 1 . 3 January 2027/.test(fq), "f3: a 1–3 January booking is titled with the window");
+      // f4: the totals stack is full-width sequential — its label prints
+      has(fq, "The quoted amount", "f4: the sequential totals block, labelled");
+      // f1: honest words, no invented figure, no proof row
+      has(fq, "is agreed at confirmation", "f1: the booking amount in words");
+      hasNot(fq, "On confirmation", "…no invented due row");
+      // SINGLE-DAY lead, NO functions → no spaces section, single-date title
+      const qdLead2 = await VenueEnquiry.create({
+        venueId: qdVenue._id, coupleName: "Rhea & Kabir", couplePhone: "9822334455", stage: "booked",
+        checkIn: new Date("2027-02-14T09:00:00+05:30"), checkOut: new Date("2027-02-14T23:00:00+05:30"),
+        contacts: [{ name: "Rhea Shah", phone: "9822334455", isPrimary: true }],
+      });
+      const fq2 = pdfFlat((await buildVenueDocument("quote", { venue: qdVenue, lead: qdLead2, quote: qdQuote }, { compress: false, language: "classic" })).buffer);
+      ok(!/quoted for/i.test(fq2), "no spaces chosen → the quote says NOTHING about spaces (the rooms rule)");
+      ok(/Event . 14 February 2027/.test(fq2), "single-day: one date, no range");
+      // …and the four languages all carry the new quote anatomy
+      for (const language of LANGUAGE_NAMES) {
+        const lf3 = pdfFlat((await buildVenueDocument("quote", { venue: qdVenue, lead: qdLead, quote: qdQuote }, { compress: false, language })).buffer);
+        ok(/quoted for/i.test(lf3) && lf3.includes("The quoted amount") && lf3.includes("is agreed at confirmation"),
+          `${language}: spaces section, sequential totals, honest words`);
+      }
+
+      // ── THE RECEIPT: cash vs transfer ──────────────────────────────────────
+      const P4 = new mongoose.Types.ObjectId(), P5 = new mongoose.Types.ObjectId();
+      const qdBooking = await VenueBooking.create({
+        venue: qdVenue._id, enquiry: qdLead._id, coupleName: qdLead.coupleName, couplePhone: qdLead.couplePhone,
+        status: "confirmed", gstPercent: 18, gstMode: "none", totalValue: 640000,
+        checkIn: qdLead.checkIn, checkOut: qdLead.checkOut,
+        lineItems: [{ label: "Venue rental", amount: 640000, gstTreatment: "none", taxableAmount: 0 }],
+        paymentSchedule: [
+          { label: "Token", amount: 100000, dueDate: new Date("2026-09-01"), entries: [mkEntry(100000, "2026-09-01", P4, "cash")] },
+          { label: "First instalment", amount: 200000, dueDate: new Date("2026-10-01"), entries: [mkEntry(200000, "2026-10-02", P5, "bank_transfer", "UTR-900")] },
+          { label: "Balance", amount: 340000, dueDate: new Date("2026-12-15"), entries: [] },
+        ],
+      });
+      const qdSummary = summarizeSchedule(qdBooking);
+      const fCash = pdfFlat((await buildVenueDocument("receipt", { venue: qdVenue, lead: qdLead, booking: qdBooking, summary: qdSummary, paymentId: P4 }, { compress: false, language: "classic" })).buffer);
+      // f8: a cash payment has no reference — the word appears NOWHERE, not
+      // as a dashed column and not as an empty fact
+      hasNot(fCash, "Reference", "f8: a cash receipt says nothing about a reference");
+      has(fCash, "Cash", "…while the mode says cash");
+      // f7: the payer named ONCE — the subtitle beneath the title, and never
+      // again in the facts block
+      ok((fCash.match(/From Meera & Dev/g) || []).length === 1, `f7: "From ${"Meera & Dev"}" exactly once (subtitle only)`);
+      const fBank = pdfFlat((await buildVenueDocument("receipt", { venue: qdVenue, lead: qdLead, booking: qdBooking, summary: qdSummary, paymentId: P5 }, { compress: false, language: "classic" })).buffer);
+      has(fBank, "Bank reference", "a transfer states its reference as a fact of the payment");
+      has(fBank, "UTR-900", "…the reference itself");
+      ok((fBank.match(/reference/gi) || []).length === 1, "…stated ONCE — the per-row column that repeated or dashed it is gone");
+      ok((fBank.match(/From Meera & Dev/g) || []).length === 1, "…and the payer once here too");
     }
 
     console.log(`\n${pass} passed, ${fail} failed`);

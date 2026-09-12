@@ -430,31 +430,59 @@ async function renderQuote(R, d) {
   R.L.titleBlock(R, d.titleMeta);
   partiesBlock(R, d.parties);
   factStrip(R, d.facts);
+  // THE SPACES, line by line (quotedoc f2) — the quote's main subject is
+  // which spaces the couple gets, printed exactly as the confirmation prints
+  // them. No spaces chosen → no section: a heading over silence is a claim
+  // (the BOOKING 3 rooms rule).
+  if (d.spaces && d.spaces.length) {
+    R.sectionLabel("Spaces");
+    R.table({
+      cellSize: TYPE.cell,
+      columns: [{ key: "space", label: "Quoted for", width: 1 }],
+      rows: d.spaces.map((s, i) => ({ cells: { space: s.name }, lastData: i === d.spaces.length - 1 })),
+    });
+  }
   R.sectionLabel("Quoted lines");
   pricedLinesTable(R, d.priced, d.totals);
   refundableBand(R, d.refundables);
-  // inclusions (left) + totals stack (right 46%)
-  R.gap(SPACE.block);
-  R.ensure(210);
-  const y0 = R.y;
-  const rightW = R.width * 0.46;
-  const leftW = R.width - rightW - 18;
-  let leftBottom = y0;
   if (d.inclusions && d.inclusions.length) {
-    // plain — nothing is enclosed: a small-caps label and the list
-    R.text("What the price includes", { size: 8.5, caps: true, tracking: 0.2, color: R.T.mid, x: R.margin, width: leftW });
+    R.gap(12);
+    R.text("What the price includes", { size: 8.5, caps: true, tracking: 0.2, color: R.T.mid });
     R.gap(8);
     for (const inc of d.inclusions) {
-      R.text(inc, { size: TYPE.cell, lineGap: 4, x: R.margin, width: leftW });
+      R.text(inc, { size: TYPE.cell, lineGap: 4 });
       R.gap(3);
     }
-    leftBottom = R.y;
   }
-  R.y = y0;
-  totalsStack(R, d.totals, R.margin + R.width - rightW, rightW);
-  R.y = Math.max(R.y, leftBottom);
-  R.sectionLabel("Booking amount & instalment plan");
-  scheduleTable(R, d.schedule, d.totals);
+  R.gap(SPACE.block);
+  // Full width, sequential (quotedoc f4) — the two-panel ghost removed from
+  // the confirmation and the invoice is removed here too. And the reserve is
+  // MEASURED, not guessed (f5): the flat ensure(210) was the third document
+  // with the same stranded-page cause as confirmdoc3 f8.
+  {
+    const drawQuoted = () => {
+      R.text("The quoted amount", { font: "Times-Italic", size: TYPE.sectionLabel });
+      R.gap(8);
+      totalsStack(R, d.totals, R.margin, R.width);
+    };
+    const h = R.measure_height(drawQuoted);
+    R.ensure(Math.min(h + 4, R.contentBottom - R.contentTop));
+    drawQuoted();
+  }
+  R.sectionLabel("Booking amount");
+  if (d.schedule && d.schedule.length) {
+    scheduleTable(R, d.schedule, d.totals);
+  } else {
+    // NO INVENTED FIGURE (quotedoc f1, founder ruling): the booking amount is
+    // the token — the sum that holds the date — and no quote stores one yet.
+    // Words that mean what they say, until the owner can set the token at
+    // generation (the next build).
+    R.ensure(40);
+    R.text(
+      "The booking amount — the sum that confirms the date and holds the spaces — is agreed at confirmation. The instalment plan is set out in the booking confirmation.",
+      { size: TYPE.cell, color: R.T.ink, lineGap: 4 }
+    );
+  }
   paymentBlock(R);
   // loss #1: the venue's own numbered terms, exactly as stored
   if (d.termsLines && d.termsLines.length) {
@@ -882,7 +910,9 @@ async function renderReceipt(R, d) {
       fact("Received on", dateProse(d.receivedOn));
       fact("Mode", d.mode);
       fact("Bank reference", d.reference);
-      fact("From", d.from);
+      // no "From" here (quotedoc f7): the payer is the document's addressee —
+      // the subtitle beneath the title already says it, and this block is for
+      // facts of the TRANSACTION (date, mode, reference)
       fact("Credited to", d.creditedTo);
       R.y = Math.max(y0 + 14 + R.T.heroSizes.receipt + 34, fy) + 4;
     }, { x, width: w, estHeight: 160 });
@@ -890,16 +920,18 @@ async function renderReceipt(R, d) {
     R.gap(2);
   }
   R.sectionLabel("What this payment was towards");
+  // NO REFERENCE COLUMN (quotedoc f8): the reference is a fact of THE
+  // PAYMENT, stated once in the block above — one payment has one reference,
+  // so a per-allocation column could only repeat it or dash. On a cash
+  // receipt it dashed every row; on a transfer it said the same thing twice.
   const columns = [
-    { key: "applied", label: "Applied to", width: 0.46 },
-    { key: "reference", label: "Reference", width: 0.18 },
-    { key: "amount", label: "Applied", width: 0.18, numeric: true },
-    { key: "left", label: "Left on it", width: 0.18, numeric: true },
+    { key: "applied", label: "Applied to", width: 0.56 },
+    { key: "amount", label: "Applied", width: 0.22, numeric: true },
+    { key: "left", label: "Left on it", width: 0.22, numeric: true },
   ];
   const rows = d.applied.map((a, i) => ({
     cells: {
       applied: { text: a.label, subLine: a.subLine },
-      reference: { text: a.reference || DASH, color: R.T.mid },
       amount: money(a.amount).replace("Rs. ", ""),
       left: a.left === 0 ? { text: "Settled", color: R.T.mid, size: TYPE.subLine + 0.5 } : money(a.left).replace("Rs. ", ""),
     },
