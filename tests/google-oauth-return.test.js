@@ -136,9 +136,32 @@ const restore = () => Object.entries(SAVED).forEach(([k, v]) => { if (v === unde
       const legacy = jwt.sign({ g: String(admin._id) }, process.env.JWT_SECRET, { expiresIn: "15m" });
       const res = await hit(`code=good&state=${encodeURIComponent(legacy)}`);
       eq(res.status, 302, "a legacy state still redirects");
-      ok(loc(res).startsWith("https://os.example/settings/account"),
-        `…falling back to account settings (got ${loc(res)})`);
+      ok(loc(res).startsWith("https://os.example/settings/integrations"),
+        `…falling back to the INTEGRATIONS page (got ${loc(res)})`);
+      ok(!loc(res).includes("/settings/account"),
+        "…and NOT to account settings, which no longer carries the Google card");
       ok(/[?&]google=connected/.test(loc(res)), "…still flagged as connected");
+    }
+
+    console.log("\n4b. THE DEFAULT IS THE PAGE THAT CARRIES THE CARD");
+    {
+      // The Google connect card moved from Settings → My Account to
+      // Settings → Integrations. The fallback has to move with it: someone
+      // completing an old link, or returning after a state expiry, would
+      // otherwise land on a page with no Google card and no explanation.
+      eq(GoogleWorkspaceService.DEFAULT_ORIGIN, "/settings/integrations",
+        "DEFAULT_ORIGIN is the integrations page");
+      eq(GoogleWorkspaceService.safeOriginPath("https://evil.example"), "/settings/integrations",
+        "…and it is what a rejected origin falls back to");
+      eq(GoogleWorkspaceService.safeOriginPath(""), "/settings/integrations",
+        "…and what an absent origin falls back to");
+
+      // The origin in state STILL WINS when it is present and safe — this
+      // change moves the fallback only.
+      eq(GoogleWorkspaceService.safeOriginPath("/leads/abc123"), "/leads/abc123",
+        "a real origin is untouched by the change");
+      eq(GoogleWorkspaceService.safeOriginPath("/settings/account"), "/settings/account",
+        "…including account settings, if someone genuinely starts there");
     }
 
     console.log("\n5. AN ORIGIN CANNOT BECOME AN OPEN REDIRECT");
@@ -152,7 +175,8 @@ const restore = () => Object.entries(SAVED).forEach(([k, v]) => { if (v === unde
         const url = GoogleWorkspaceService.startUrl(admin._id, evil);
         const state = new URL(url).searchParams.get("state");
         const res = await hit(`code=good&state=${encodeURIComponent(state)}`);
-        ok(loc(res).startsWith("https://os.example/"), `${why} is refused — redirect stays on the OS host`);
+        ok(loc(res).startsWith("https://os.example/settings/integrations"),
+          `${why} is refused — it falls back to the default, on the OS host`);
         ok(!loc(res).includes("evil.example"), `…and evil.example appears nowhere (${why})`);
       }
     }
@@ -171,7 +195,7 @@ const restore = () => Object.entries(SAVED).forEach(([k, v]) => { if (v === unde
       // (b) An expired or tampered state cannot be trusted for a destination.
       const bad = await hit(`code=good&state=not-a-real-jwt`);
       eq(bad.status, 302, "an invalid state redirects");
-      ok(loc(bad).startsWith("https://os.example/settings/account"),
+      ok(loc(bad).startsWith("https://os.example/settings/integrations"),
         "…to the safe default, since its origin cannot be trusted");
       ok(/[?&]google=error/.test(loc(bad)), "…flagged as an error");
 
@@ -192,6 +216,61 @@ const restore = () => Object.entries(SAVED).forEach(([k, v]) => { if (v === unde
       // Nothing raw is echoed into the URL.
       for (const r of [denied, bad, nr, tf]) {
         ok(!/<|>|script/i.test(loc(r)), "no failure echoes markup into the redirect");
+      }
+    }
+
+    // ══ 7. A MISSING ?origin IS VISIBLE ══════════════════════════════════════
+    console.log("\n7. STARTING WITHOUT AN ORIGIN SAYS SO");
+    {
+      // A silent fallback is how a defect stays invisible. If the OS forgets
+      // ?origin — or a future page ships without it — the connect lands on the
+      // default instead of where the person started, and nobody finds out. This
+      // line is the same idea as [phone] ASSUMED and [chat-notify] SKIPPED: the
+      // one guess in the path announces itself.
+      //
+      // It is EXPECTED to fire on every connect until the frontend passes
+      // ?origin. Once it does, the line stops; if it ever returns, a new page
+      // shipped without it.
+      const logs = [];
+      const realLog = console.log;
+      console.log = (...a) => { logs.push(a.join(" ")); realLog(...a); };
+      const startTok = jwt.sign({ _id: String(admin._id), isAdmin: true }, process.env.JWT_SECRET, { expiresIn: "1h" });
+      const start = (qs) =>
+        fetch(`${base}/google/oauth/start${qs}`, { headers: { Authorization: `Bearer ${startTok}` } });
+
+      try {
+        logs.length = 0;
+        const noOrigin = await start("");
+        eq(noOrigin.status, 200, "a connect with no origin still succeeds");
+        const line = logs.find((l) => l.includes("[google-oauth]"));
+        ok(!!line, "…and logs a [google-oauth] line");
+        ok(line && line.includes(String(admin._id)), "…naming the admin");
+        ok(line && line.includes("/settings/integrations"),
+          "…saying where it will land instead");
+        ok(line && /not the page|rather than/i.test(line),
+          "…and that this is NOT where they started");
+
+        logs.length = 0;
+        const withOrigin = await start("?origin=%2Fleads%2Fabc123");
+        eq(withOrigin.status, 200, "a connect WITH an origin succeeds");
+        ok(!logs.some((l) => l.includes("[google-oauth]")),
+          "…and logs NOTHING — the line disappears once the frontend sends it");
+        const st = new URL((await withOrigin.json()).url).searchParams.get("state");
+        eq(jwt.verify(st, process.env.JWT_SECRET).p, "/leads/abc123",
+          "…and the origin really did ride in the state");
+
+        // A supplied-but-rejected origin lands on the default too, and just as
+        // silently. Same defect, so the same line — with its own reason.
+        logs.length = 0;
+        const badOrigin = await start("?origin=https%3A%2F%2Fevil.example");
+        eq(badOrigin.status, 200, "a rejected origin still succeeds");
+        const bl = logs.find((l) => l.includes("[google-oauth]"));
+        ok(!!bl, "…and is ALSO logged, rather than silently discarded");
+        ok(bl && /reject/i.test(bl), "…as a rejection, not as an absence");
+        ok(bl && !bl.includes("evil.example"),
+          "…without echoing the hostile value into the log");
+      } finally {
+        console.log = realLog;
       }
     }
 

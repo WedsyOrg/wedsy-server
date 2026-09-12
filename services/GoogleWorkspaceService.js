@@ -36,10 +36,20 @@ const isConfigured = () => !!(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE
 
 // ── OAuth ─────────────────────────────────────────────────────────────────────
 
-// Where someone lands if we do not know where they came from. The Google card
-// lives on this page, so it is the one place the result is guaranteed to make
-// sense (wedsy-crm/src/app/(app)/settings/account/page.tsx).
-const DEFAULT_ORIGIN = "/settings/account";
+// Where someone lands if we do not know where they came from — an old link in
+// flight during a deploy, an expired state, or an origin the guard rejected.
+//
+// IT MUST BE THE PAGE THAT CARRIES THE GOOGLE CARD, and that page moved: the
+// connect card is going from Settings → My Account to Settings → Integrations
+// (wedsy-crm/src/app/(app)/settings/integrations/page.tsx). Left pointing at
+// account settings, someone finishing the flow would land on a page with no
+// Google card and nothing explaining what just happened — the "did that work?"
+// dead end this whole redirect exists to remove.
+//
+// This is a FALLBACK only. An origin carried in the signed state still wins
+// whenever it is present and passes safeOriginPath, including /settings/account
+// if someone genuinely starts there.
+const DEFAULT_ORIGIN = "/settings/integrations";
 
 // The OS base for the return trip. NEVER a literal — staging and production are
 // different hosts and a hardcoded link would send people to the wrong product.
