@@ -299,15 +299,30 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
   const legacyQ = isLegacy ? legacyQuoteAssembly(quote) : null;
   const lines = isLegacy ? legacyQ.rows : (quote.lineItems || []).map((l) => lineFigures(l, pct));
   const totals = isLegacy ? legacyQ.totals : documentTotals(quote.lineItems || [], [], pct);
-  const spaceNames = spacesOf(null).length ? spacesOf(null) : null;
   const heldUntil = quote.validUntil || null;
-  // The quote's plan: the stored schedule does not exist pre-booking; the
-  // document prints the venue's proposed split only when the quote carries
-  // one. Without one, the schedule section states the booking amount alone.
-  const schedule = allocateScheduleGst(
-    [{ label: "Booking amount", subLine: "Confirms the date and holds the spaces", dueLabel: "On confirmation", amount: totals.payable }],
-    totals
-  );
+  // ── NO INVENTED SCHEDULE (quotedoc f1, founder ruling) ────────────────────
+  // The booking amount is the TOKEN — the sum that holds the date — and no
+  // token exists on a quote today: VenueQuote stores no schedule and no token
+  // field. The old row printed totals.payable under "Booking amount · On
+  // confirmation", asking the couple for the WHOLE amount to confirm, and the
+  // proven "Sums exactly" line made the invented figure look verified. Until
+  // the owner can set the token at generation (the next build), the section
+  // states the terms in words and prints no number nobody chose.
+  const schedule = [];
+  // ── THE SPACES, LINE BY LINE (quotedoc f2) ────────────────────────────────
+  // The confirmation's source once a booking exists; before one, the lead's
+  // own functions name the spaces (Venue.spaces subdoc ids → names). No
+  // spaces chosen → the document says NOTHING about spaces (the BOOKING 3
+  // rooms rule: a heading over silence is a claim).
+  const spaceNameById = new Map(((venue && venue.spaces) || []).map((s) => [String(s._id), s.name]));
+  const quoteSpaces = (booking
+    ? [...new Set(((booking.days || []).length
+        ? (booking.days || []).flatMap((day) => (day.spaces || []).length ? day.spaces : ["Venue"])
+        : spacesOf(booking)))]
+    : [...new Set(((lead && lead.functions) || [])
+        .map((f) => (f.space != null ? spaceNameById.get(String(f.space)) : null))
+        .filter(Boolean))]
+  ).map((name) => ({ name }));
   const qIdentity = identityFrom(venue, logoBuffer);
   // loss #3: a white-label quote must not gain Wedsy's mark — the footer
   // recipes read this off the identity
@@ -329,10 +344,12 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
     meta: { reference: quote.quoteNumber || `Quote v${quote.version || 1}` },
     titleMeta: {
       eyebrow: "Quote",
-      // the design titles the quote with WHAT IS QUOTED (the spaces); a lead
-      // has no spaces yet, so the event window carries the title instead —
-      // never the couple's name, which "Prepared for" already says
-      title: lead && lead.checkIn ? `Event — ${dateProse(lead.checkIn)}` : "Venue quote",
+      // the event WINDOW carries the title (quotedoc f3: a 1–3 January
+      // booking titled "1 January" dropped two of its days) — never the
+      // couple's name, which "Prepared for" already says
+      title: lead && lead.checkIn
+        ? `Event — ${dateWindowProse(lead.checkIn, lead.checkOut || lead.checkIn)}`
+        : "Venue quote",
       subject: lead && lead.coupleName ? `Prepared for ${lead.coupleName}` : undefined,
       presentedTo: lead && lead.coupleName,
       refs: [
@@ -342,7 +359,10 @@ function assembleQuote({ venue, lead, quote, booking, logoBuffer }) {
         generatedRef(quote.createdAt || new Date()),
       ].filter(Boolean),
     },
-    facts: windowFacts(lead, booking || null, booking ? spacesOf(booking) : null),
+    // spaces get their own full-width section (same rule as the
+    // confirmation), so the strip must not carry a cramped duplicate
+    facts: windowFacts(lead, booking || null, null, { includeSpaces: false }),
+    spaces: quoteSpaces,
     priced: lines.filter((l) => !l.refundable),
     refundables: lines.filter((l) => l.refundable),
     totals,
@@ -790,7 +810,6 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
       subLine: pieces.length > 1
         ? `${money(amount)} in one payment, of which ${money(here)} to this instalment`
         : undefined,
-      reference: x.entry.reference || null,
       amount: here,
       left,
     };
@@ -822,7 +841,6 @@ function assembleReceipt({ venue, lead, booking, summary, paymentId, logoBuffer 
     receivedOn: first.date,
     mode: modeLabel,
     reference: first.reference || null,
-    from: booking.coupleName || null,
     creditedTo: null,
     applied,
     totals,
